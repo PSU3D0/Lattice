@@ -1,0 +1,21 @@
+[package]
+name = "registry-cert"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Certification harnesses for determinism, idempotency, and contract testing."
+
+[dependencies]
+dag-core = { path = "../dag-core" }
+registry-client = { path = "../registry-client" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+testing-harness-idem = { path = "../testing-harness-idem" }

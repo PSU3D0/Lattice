@@ -1,0 +1,19 @@
+[package]
+name = "kernel-plan"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Flow IR validation and lowering into executable plans."
+
+[dependencies]
+dag-core = { path = "../dag-core" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true

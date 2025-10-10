@@ -1,0 +1,181 @@
+use once_cell::sync::Lazy;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+/// Canonical diagnostic severity levels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Severity {
+    /// Build or runtime must halt.
+    Error,
+    /// Action recommended but execution may proceed.
+    Warn,
+    /// Informational context only.
+    Info,
+}
+
+/// Structured metadata for a diagnostic emitted by the platform.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DiagnosticCode {
+    /// Stable identifier (e.g. `DAG200`).
+    pub code: &'static str,
+    /// Primary subsystem or producer of the diagnostic.
+    pub subsystem: &'static str,
+    /// Default severity when policies do not override the level.
+    pub default_severity: Severity,
+    /// Short human-readable description.
+    pub summary: &'static str,
+}
+
+/// Concrete diagnostic emitted during validation or runtime.
+#[derive(Debug, Clone)]
+pub struct Diagnostic {
+    /// Diagnostic code metadata.
+    pub code: &'static DiagnosticCode,
+    /// Long form message presented to the user.
+    pub message: String,
+    /// Optional machine-readable location (file span, node id, etc.).
+    pub location: Option<String>,
+}
+
+impl Diagnostic {
+    /// Convenience constructor.
+    pub fn new(code: &'static DiagnosticCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            location: None,
+        }
+    }
+
+    /// Attach location metadata to an existing diagnostic.
+    pub fn with_location(mut self, location: impl Into<String>) -> Self {
+        self.location = Some(location.into());
+        self
+    }
+}
+
+/// Public accessor for the registry.
+pub fn diagnostic_codes() -> &'static [DiagnosticCode] {
+    &DIAGNOSTIC_CODES
+}
+
+/// Canonical diagnostic registry used across the workspace.
+pub static DIAGNOSTIC_CODES: Lazy<Vec<DiagnosticCode>> = Lazy::new(|| {
+    vec![
+        DiagnosticCode {
+            code: "DAG001",
+            subsystem: "macros",
+            default_severity: Severity::Error,
+            summary: "Missing or unknown port type on a node definition",
+        },
+        DiagnosticCode {
+            code: "DAG002",
+            subsystem: "macros",
+            default_severity: Severity::Error,
+            summary: "Node parameters could not be reflected into a schema",
+        },
+        DiagnosticCode {
+            code: "DAG003",
+            subsystem: "macros",
+            default_severity: Severity::Error,
+            summary: "Referenced resource or capability is undefined",
+        },
+        DiagnosticCode {
+            code: "DAG004",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Effectful node lacks a valid idempotency declaration",
+        },
+        DiagnosticCode {
+            code: "DAG005",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Node concurrency hints exceed allowed bounds",
+        },
+        DiagnosticCode {
+            code: "DAG006",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Conflicting batch configuration detected on node",
+        },
+        DiagnosticCode {
+            code: "DAG101",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Trigger definition does not expose an output port",
+        },
+        DiagnosticCode {
+            code: "DAG102",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Trigger respond configuration incompatible with profile",
+        },
+        DiagnosticCode {
+            code: "DAG103",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Trigger route or method conflicts with an existing trigger",
+        },
+        DiagnosticCode {
+            code: "DAG200",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Cycle detected in workflow graph",
+        },
+        DiagnosticCode {
+            code: "DAG201",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Port type mismatch between connected nodes",
+        },
+        DiagnosticCode {
+            code: "DAG205",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Duplicate node alias encountered in workflow",
+        },
+        DiagnosticCode {
+            code: "EFFECT201",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Declared effects do not match bound capabilities",
+        },
+        DiagnosticCode {
+            code: "DET301",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Determinism claim conflicts with resource usage",
+        },
+        DiagnosticCode {
+            code: "CTRL001",
+            subsystem: "lint",
+            default_severity: Severity::Warn,
+            summary: "Control-flow surface hint recommended for branching or loop",
+        },
+        DiagnosticCode {
+            code: "IDEM020",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Effectful sink missing partition key and idempotency key",
+        },
+        DiagnosticCode {
+            code: "IDEM025",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Idempotency key references non-deterministic fields",
+        },
+        DiagnosticCode {
+            code: "CACHE001",
+            subsystem: "validation",
+            default_severity: Severity::Warn,
+            summary: "Strict node missing cache specification",
+        },
+        DiagnosticCode {
+            code: "CACHE002",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Stable node missing pinned inputs or cache policy",
+        },
+    ]
+});

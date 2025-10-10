@@ -1,0 +1,20 @@
+[package]
+name = "testing-harness-idem"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Idempotency replay harness for validating effectful LatticeFlow nodes and flows."
+
+[dependencies]
+dag-core = { path = "../dag-core" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tokio-stream.workspace = true

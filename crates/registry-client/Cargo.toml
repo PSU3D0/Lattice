@@ -1,0 +1,20 @@
+[package]
+name = "registry-client"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Client SDK for publishing and retrieving artifacts from the LatticeFlow registry."
+
+[dependencies]
+dag-core = { path = "../dag-core" }
+anyhow.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true

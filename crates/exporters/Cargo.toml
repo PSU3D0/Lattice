@@ -1,0 +1,19 @@
+[package]
+name = "exporters"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Export pipelines for Flow IR artifacts (JSON, DOT, OpenAPI, WIT)."
+
+[dependencies]
+dag-core = { path = "../dag-core" }
+anyhow.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true

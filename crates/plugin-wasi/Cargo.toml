@@ -1,0 +1,19 @@
+[package]
+name = "plugin-wasi"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "WASI plugin host for running WASM nodes under capability sandboxing."
+
+[dependencies]
+dag-core = { path = "../dag-core" }
+anyhow.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+wasmtime.workspace = true
+wit-bindgen.workspace = true

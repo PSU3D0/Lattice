@@ -1,0 +1,22 @@
+[package]
+name = "dag-core"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Core types, traits, and IR definitions for the LatticeFlow workflow platform."
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+once_cell.workspace = true
+semver.workspace = true

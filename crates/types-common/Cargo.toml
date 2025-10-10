@@ -1,0 +1,15 @@
+[package]
+name = "types-common"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Shared domain types (email, money, identifiers) used across LatticeFlow crates."
+
+[dependencies]
+serde.workspace = true
+schemars.workspace = true
+thiserror.workspace = true

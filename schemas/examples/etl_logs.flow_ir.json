@@ -1,0 +1,259 @@
+{
+  "$schema": "../flow_ir.schema.json",
+  "id": "etl_logs",
+  "name": "ETL Logs",
+  "version": "1.0.0",
+  "profile": "Queue",
+  "description": "Window S3 logs and write to warehouse with exactly-once semantics.",
+  "nodes": [
+    {
+      "id": "s3_list",
+      "name": "S3List",
+      "kind": "Activity",
+      "in": {
+        "id": "unit",
+        "version": "1.0.0"
+      },
+      "out": {
+        "id": "object_ref",
+        "version": "1.0.0"
+      },
+      "effects": "ReadOnly",
+      "determinism": "Stable",
+      "capabilities": [
+        {
+          "name": "blob.read",
+          "version": "1.0.0"
+        }
+      ]
+    },
+    {
+      "id": "parse",
+      "name": "Parse",
+      "kind": "Inline",
+      "in": {
+        "id": "object_bytes",
+        "version": "1.0.0"
+      },
+      "out": {
+        "id": "log_event",
+        "version": "1.0.0"
+      },
+      "effects": "Pure",
+      "determinism": "Strict"
+    },
+    {
+      "id": "window",
+      "name": "WindowTumbling",
+      "kind": "Builtin",
+      "in": {
+        "id": "log_event",
+        "version": "1.0.0"
+      },
+      "out": {
+        "id": "window_batch",
+        "version": "1.0.0"
+      },
+      "effects": "ReadOnly",
+      "determinism": "Stable",
+      "schedule": {
+        "batch": {
+          "mode": "Fixed",
+          "size": 1000
+        },
+        "timeout": "PT5M"
+      },
+      "params": {
+        "window": {
+          "type": "tumbling",
+          "size": "PT5M",
+          "allowedLateness": "PT2M",
+          "watermark": "max(ts)-PT2M"
+        }
+      }
+    },
+    {
+      "id": "write_wh",
+      "name": "WriteWarehouse",
+      "kind": "Activity",
+      "in": {
+        "id": "agg_row",
+        "version": "1.0.0"
+      },
+      "out": {
+        "id": "ack",
+        "version": "1.0.0"
+      },
+      "effects": "Effectful",
+      "determinism": "BestEffort",
+      "retryOwner": "Orchestrator",
+      "idem": {
+        "scope": "Partition",
+        "key": {
+          "encoding": "CborCanonical",
+          "hash": "Blake3",
+          "fields": [
+            {
+              "path": "customer_id",
+              "determinism": "Strict"
+            },
+            {
+              "path": "window.start",
+              "determinism": "Strict"
+            },
+            {
+              "path": "window.end",
+              "determinism": "Strict"
+            }
+          ],
+          "scope": "Partition"
+        },
+        "ttl": "P1D"
+      },
+      "capabilities": [
+        {
+          "name": "db.write",
+          "version": "1.0.0"
+        },
+        {
+          "name": "dedupe.store",
+          "version": "1.0.0"
+        }
+      ],
+      "compensate": {
+        "target": "refund_wh",
+        "timeout": "PT2M"
+      }
+    },
+    {
+      "id": "refund_wh",
+      "name": "RefundWarehouse",
+      "kind": "Activity",
+      "in": {
+        "id": "agg_row",
+        "version": "1.0.0"
+      },
+      "out": {
+        "id": "ack",
+        "version": "1.0.0"
+      },
+      "effects": "Effectful",
+      "determinism": "BestEffort",
+      "capabilities": [
+        {
+          "name": "db.write",
+          "version": "1.0.0"
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "from": "s3_list",
+      "to": "parse",
+      "ordering": "Ordered",
+      "delivery": "AtLeastOnce"
+    },
+    {
+      "id": "e2",
+      "from": "parse",
+      "to": "window",
+      "ordering": "Ordered",
+      "delivery": "AtLeastOnce"
+    },
+    {
+      "id": "e3",
+      "from": "window",
+      "to": "write_wh",
+      "delivery": "ExactlyOnce",
+      "partition": {
+        "expression": "record.customer_id",
+        "determinism": "Strict"
+      },
+      "buffer": {
+        "maxItems": 5000,
+        "spillThresholdBytes": 67108864,
+        "spillTier": "Disk",
+        "onOverflow": "Backpressure"
+      }
+    }
+  ],
+  "controlSurfaces": [
+    {
+      "id": "partition_customers",
+      "type": "Partition",
+      "origin": {
+        "macro": "partition_by!"
+      },
+      "targets": [
+        "e3"
+      ],
+      "config": {
+        "hash": "Blake3",
+        "keyExpr": "record.customer_id"
+      }
+    },
+    {
+      "id": "window_control",
+      "type": "Window",
+      "origin": {
+        "macro": "window!"
+      },
+      "targets": [
+        "window"
+      ],
+      "config": {
+        "window": "tumbling",
+        "size": "PT5M",
+        "allowedLateness": "PT2M",
+        "watermark": "max(ts)-PT2M"
+      }
+    }
+  ],
+  "policies": {
+    "rateLimit": {
+      "qps": 2000,
+      "burst": 4000
+    },
+    "lint": {
+      "requireControlHints": true
+    }
+  },
+  "metadata": {
+    "effectsSummary": "Mixed",
+    "determinismSummary": "Stable",
+    "capabilities": [
+      {
+        "name": "blob.read",
+        "version": "1.0.0"
+      },
+      {
+        "name": "db.write",
+        "version": "1.0.0"
+      },
+      {
+        "name": "dedupe.store",
+        "version": "1.0.0"
+      }
+    ],
+    "idempotencyCoverage": {
+      "write_wh": "Partition"
+    },
+    "partitionTopology": {
+      "strategy": "Keyed",
+      "keys": [
+        {
+          "expression": "record.customer_id",
+          "determinism": "Strict"
+        }
+      ]
+    }
+  },
+  "artifacts": [
+    {
+      "kind": "dot",
+      "path": "artifacts/etl_logs.dot"
+    }
+  ]
+}

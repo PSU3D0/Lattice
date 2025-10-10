@@ -1,0 +1,22 @@
+[package]
+name = "host-queue-redis"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Redis-backed queue host for LatticeFlow with visibility timeouts and dedupe."
+
+[dependencies]
+dag-core = { path = "../dag-core" }
+kernel-exec = { path = "../kernel-exec" }
+capabilities = { path = "../capabilities" }
+cap-dedupe-redis = { path = "../cap-dedupe-redis" }
+anyhow.workspace = true
+redis.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true

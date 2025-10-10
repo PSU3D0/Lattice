@@ -1,0 +1,15 @@
+[package]
+name = "example-s1-echo"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "S1 echo workflow example built with LatticeFlow macros."
+
+[dependencies]
+dag-core = { path = "../../crates/dag-core" }
+dag-macros = { path = "../../crates/dag-macros" }
+serde.workspace = true

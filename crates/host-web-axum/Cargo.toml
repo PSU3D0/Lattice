@@ -1,0 +1,22 @@
+[package]
+name = "host-web-axum"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Axum-based web host for LatticeFlow workflows (HTTP triggers, SSE, deadlines)."
+
+[dependencies]
+dag-core = { path = "../dag-core" }
+kernel-exec = { path = "../kernel-exec" }
+capabilities = { path = "../capabilities" }
+anyhow.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true

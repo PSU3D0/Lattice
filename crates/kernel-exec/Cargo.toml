@@ -1,0 +1,22 @@
+[package]
+name = "kernel-exec"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "In-process runtime for executing LatticeFlow plans with scheduling, backpressure, and capability injection."
+
+[dependencies]
+dag-core = { path = "../dag-core" }
+kernel-plan = { path = "../kernel-plan" }
+capabilities = { path = "../capabilities" }
+anyhow.workspace = true
+futures.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true

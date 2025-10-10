@@ -1,0 +1,18 @@
+[package]
+name = "cap-kv-sqlite"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "SQLite-backed key/value capability for dev and testing profiles."
+
+[dependencies]
+capabilities = { path = "../capabilities" }
+anyhow.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

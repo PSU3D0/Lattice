@@ -1,0 +1,33 @@
+[package]
+name = "flows-cli"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+description = "Command-line tools for authoring, validating, and running LatticeFlow workflows."
+
+[[bin]]
+name = "flows"
+path = "src/main.rs"
+
+[dependencies]
+adapters = { path = "../adapters" }
+dag-core = { path = "../dag-core" }
+kernel-plan = { path = "../kernel-plan" }
+kernel-exec = { path = "../kernel-exec" }
+capabilities = { path = "../capabilities" }
+registry-client = { path = "../registry-client" }
+registry-cert = { path = "../registry-cert" }
+connector-spec = { path = "../connector-spec" }
+exporters = { path = "../exporters" }
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true

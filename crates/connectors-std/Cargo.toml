@@ -1,0 +1,18 @@
+[package]
+name = "connectors-std"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Standard library of first-party LatticeFlow connectors."
+
+[dependencies]
+dag-core = { path = "../dag-core" }
+capabilities = { path = "../capabilities" }
+anyhow.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
