@@ -72,6 +72,11 @@
 - Implemented `cap-http-reqwest` with a production-ready `ReqwestHttpClient`, end-to-end unit tests (using `httpmock`), and automatic hint registration on construction so flows inherit effect/determinism guardrails without manual wiring.
 - Updated `dag-macros` to infer both read/write effect hints and domain-level determinism hints from `resources(...)` declarations, plus added `node_hints` coverage to verify the emitted metadata.
 
+## Week 2 — CLI diagnostics upgrades
+
+- Extended `flows graph check` to surface full diagnostic metadata (severity, subsystem, summary, location) and added a machine-readable `--json` mode for agents/automation (`crates/cli/src/main.rs`).
+- Captured unit tests that lock in the textual formatter and JSON payload structure, ensuring future diagnostics stay backwards compatible with tooling expectations.
+
 ## Week 2 — CLI & Example Flow
 
 - Replaced CLI stub with functional `flows graph check` command (`crates/cli/src/main.rs`):
