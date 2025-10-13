@@ -93,6 +93,16 @@ impl FlowBuilder {
             effects: spec.effects,
             determinism: spec.determinism,
             idempotency: Default::default(),
+            determinism_hints: spec
+                .determinism_hints
+                .iter()
+                .map(|hint| hint.to_string())
+                .collect(),
+            effect_hints: spec
+                .effect_hints
+                .iter()
+                .map(|hint| hint.to_string())
+                .collect(),
         };
         self.flow.nodes.push(node_ir);
         self.alias_map.insert(alias.clone(), node_id);

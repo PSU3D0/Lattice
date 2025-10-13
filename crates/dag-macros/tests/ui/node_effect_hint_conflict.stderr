@@ -1,0 +1,13 @@
+error: [EFFECT201] resource `resource::http::write` (from `http`) requires effects >= Effectful, but node declares Pure. HTTP writes are effectful; declare effects = Effectful or refactor to read-only operations.
+ --> tests/ui/node_effect_hint_conflict.rs:4:53
+  |
+4 | #[node(name = "Writer", effects = "Pure", resources(http(HttpWrite)))]
+  |                                                     ^^^^
+
+warning: unused import: `dag_core::NodeResult`
+ --> tests/ui/node_effect_hint_conflict.rs:1:5
+  |
+1 | use dag_core::NodeResult;
+  |     ^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default

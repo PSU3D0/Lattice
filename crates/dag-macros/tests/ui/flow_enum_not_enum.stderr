@@ -1,0 +1,7 @@
+error: #[flow_enum] can only be applied to enum definitions
+ --> tests/ui/flow_enum_not_enum.rs:4:1
+  |
+4 | / struct NotAnEnum {
+5 | |     value: i32,
+6 | | }
+  | |_^

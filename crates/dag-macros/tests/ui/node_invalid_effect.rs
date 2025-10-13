@@ -6,3 +6,5 @@ async fn invalid(input: ()) -> NodeResult<()> {
     let _ = input;
     Ok(())
 }
+
+fn main() {}

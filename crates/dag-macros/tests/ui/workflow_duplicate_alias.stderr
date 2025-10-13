@@ -1,0 +1,5 @@
+error: [DAG205] duplicate node alias `first_alias`
+  --> tests/ui/workflow_duplicate_alias.rs:21:9
+   |
+21 |     let first_alias = second_node_spec();
+   |         ^^^^^^^^^^^

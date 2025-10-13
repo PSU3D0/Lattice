@@ -16,12 +16,10 @@ async fn second(input: ()) -> NodeResult<()> {
 workflow! {
     name: dup_flow,
     version: "1.2.3",
-    profile: Web,
-    nodes: {
-        first_alias => first_node_spec(),
-        first_alias => second_node_spec(),
-    },
-    edges: [
-        first_alias => first_alias,
-    ],
+    profile: Web;
+    let first_alias = first_node_spec();
+    let first_alias = second_node_spec();
+    connect!(first_alias -> first_alias);
 }
+
+fn main() {}

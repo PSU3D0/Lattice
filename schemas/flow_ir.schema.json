@@ -436,6 +436,20 @@
         "determinism": {
           "$ref": "#/$defs/Determinism"
         },
+        "determinismHints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Aggregated determinism hints (resources like clock, rng)."
+        },
+        "effectHints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Aggregated effect hints (resources requiring Effectful)."
+        },
         "docs": {
           "type": "string",
           "description": "Optional explanation for tooling."

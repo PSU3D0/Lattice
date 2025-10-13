@@ -1,0 +1,13 @@
+error: [DET302] resource `resource::clock` (from `clock`) requires determinism >= BestEffort, but node declares Strict. Clock access introduces wall-clock time; downgrade determinism to BestEffort or surface the timestamp as an input.
+ --> tests/ui/node_determinism_hint_conflict.rs:7:15
+  |
+7 |     resources(clock(Clock))
+  |               ^^^^^
+
+warning: unused import: `dag_core::NodeResult`
+ --> tests/ui/node_determinism_hint_conflict.rs:1:5
+  |
+1 | use dag_core::NodeResult;
+  |     ^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default

@@ -20,6 +20,31 @@ impl Default for Effects {
     }
 }
 
+impl Effects {
+    /// Convert effects level into a comparable rank (higher is more permissive).
+    pub const fn rank(self) -> u8 {
+        match self {
+            Effects::Pure => 0,
+            Effects::ReadOnly => 1,
+            Effects::Effectful => 2,
+        }
+    }
+
+    /// Returns true if `self` is at least as permissive as `minimum`.
+    pub const fn is_at_least(self, minimum: Effects) -> bool {
+        self.rank() >= minimum.rank()
+    }
+
+    /// Human-readable representation of the effect level.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Effects::Pure => "Pure",
+            Effects::ReadOnly => "ReadOnly",
+            Effects::Effectful => "Effectful",
+        }
+    }
+}
+
 /// Determinism lattice describing replay guarantees.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -37,6 +62,33 @@ pub enum Determinism {
 impl Default for Determinism {
     fn default() -> Self {
         Determinism::BestEffort
+    }
+}
+
+impl Determinism {
+    /// Convert determinism level into a comparable rank (higher is less strict).
+    pub const fn rank(self) -> u8 {
+        match self {
+            Determinism::Strict => 0,
+            Determinism::Stable => 1,
+            Determinism::BestEffort => 2,
+            Determinism::Nondeterministic => 3,
+        }
+    }
+
+    /// Returns true if `self` is at least as permissive as `minimum`.
+    pub const fn is_at_least(self, minimum: Determinism) -> bool {
+        self.rank() >= minimum.rank()
+    }
+
+    /// Human-readable representation used in diagnostics.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Determinism::Strict => "Strict",
+            Determinism::Stable => "Stable",
+            Determinism::BestEffort => "BestEffort",
+            Determinism::Nondeterministic => "Nondeterministic",
+        }
     }
 }
 

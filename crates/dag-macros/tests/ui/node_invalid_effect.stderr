@@ -1,0 +1,13 @@
+error: [EFFECT201] unknown effects value `Unknown`
+ --> tests/ui/node_invalid_effect.rs:4:36
+  |
+4 | #[node(name = "Invalid", effects = "Unknown")]
+  |                                    ^^^^^^^^^
+
+warning: unused import: `dag_core::NodeResult`
+ --> tests/ui/node_invalid_effect.rs:1:5
+  |
+1 | use dag_core::NodeResult;
+  |     ^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default

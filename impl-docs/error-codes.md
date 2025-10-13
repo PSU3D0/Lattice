@@ -32,6 +32,7 @@ ensure the registry stays in sync with the implementation.
 | DAG341    | Validation     | Error   | Variable binding has incompatible type. |
 | EFFECT201 | Validation     | Error   | Declared effects do not match bound capabilities. |
 | DET301    | Validation     | Error   | Determinism claim conflicts with resource usage. |
+| DET302    | Validation     | Error   | Declared determinism conflicts with registered resource hints. |
 | CTRL001   | Lint           | Warn    | Control-flow surface hint recommended for branching/loop. |
 | IDEM020   | Validation     | Error   | Effectful sink missing partition key and idempotency key. |
 | IDEM025   | Validation     | Error   | Idempotency key references non-deterministic fields. |

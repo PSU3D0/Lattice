@@ -6,3 +6,5 @@ async fn missing(input: ()) -> NodeResult<()> {
     let _ = input;
     Ok(())
 }
+
+fn main() {}

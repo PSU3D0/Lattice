@@ -130,6 +130,12 @@ pub static DIAGNOSTIC_CODES: Lazy<Vec<DiagnosticCode>> = Lazy::new(|| {
             summary: "Port type mismatch between connected nodes",
         },
         DiagnosticCode {
+            code: "DAG202",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Referenced workflow variable or alias is undefined",
+        },
+        DiagnosticCode {
             code: "DAG205",
             subsystem: "validation",
             default_severity: Severity::Error,
@@ -146,6 +152,12 @@ pub static DIAGNOSTIC_CODES: Lazy<Vec<DiagnosticCode>> = Lazy::new(|| {
             subsystem: "validation",
             default_severity: Severity::Error,
             summary: "Determinism claim conflicts with resource usage",
+        },
+        DiagnosticCode {
+            code: "DET302",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Declared determinism is incompatible with referenced resource hints",
         },
         DiagnosticCode {
             code: "CTRL001",

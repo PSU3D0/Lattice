@@ -1,0 +1,5 @@
+error: [DAG202] unknown node alias `missing`
+  --> tests/ui/workflow_unknown_alias.rs:20:22
+   |
+20 |     connect!(prod -> missing);
+   |                      ^^^^^^^

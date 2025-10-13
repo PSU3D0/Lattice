@@ -29,6 +29,8 @@ pub fn validate(flow: &FlowIR) -> Result<ValidatedIR, Vec<Diagnostic>> {
     check_cycles(flow, &mut diagnostics);
     check_port_compatibility(flow, &mut diagnostics);
     check_effectful_idempotency(flow, &mut diagnostics);
+    check_effect_conflicts(flow, &mut diagnostics);
+    check_determinism_conflicts(flow, &mut diagnostics);
 
     if diagnostics.is_empty() {
         Ok(ValidatedIR { flow: flow.clone() })
@@ -52,14 +54,20 @@ fn check_duplicate_aliases(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
 fn check_edge_references(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
     let aliases: HashSet<_> = flow.nodes.iter().map(|node| node.alias.as_str()).collect();
     for edge in &flow.edges {
-        if !aliases.contains(edge.from.as_str()) || !aliases.contains(edge.to.as_str()) {
+        if !aliases.contains(edge.from.as_str()) {
             diagnostics.push(diagnostic(
-                "DAG201",
-                format!(
-                    "edge references undefined node (`{} -> {}`)",
-                    edge.from, edge.to
-                ),
+                "DAG202",
+                format!("unknown node alias `{}` referenced as source", edge.from),
             ));
+        }
+        if !aliases.contains(edge.to.as_str()) {
+            diagnostics.push(diagnostic(
+                "DAG202",
+                format!("unknown node alias `{}` referenced as target", edge.to),
+            ));
+        }
+        if !aliases.contains(edge.from.as_str()) || !aliases.contains(edge.to.as_str()) {
+            continue;
         }
     }
 }
@@ -155,6 +163,50 @@ fn check_effectful_idempotency(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>)
     }
 }
 
+fn check_effect_conflicts(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    for node in &flow.nodes {
+        for hint in &node.effect_hints {
+            if let Some(conflict) = dag_core::effects_registry::constraint_for_hint(hint) {
+                if !node.effects.is_at_least(conflict.minimum) {
+                    diagnostics.push(diagnostic(
+                        "EFFECT201",
+                        format!(
+                            "node `{}` declares effects {} but resource `{}` requires at least {}: {}",
+                            node.alias,
+                            node.effects.as_str(),
+                            hint,
+                            conflict.minimum.as_str(),
+                            conflict.guidance
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+fn check_determinism_conflicts(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    for node in &flow.nodes {
+        for hint in &node.determinism_hints {
+            if let Some(conflict) = dag_core::determinism::constraint_for_hint(hint) {
+                if !node.determinism.is_at_least(conflict.minimum) {
+                    diagnostics.push(diagnostic(
+                        "DET302",
+                        format!(
+                            "node `{}` declares determinism {} but resource `{}` requires at least {}: {}",
+                            node.alias,
+                            node.determinism.as_str(),
+                            hint,
+                            conflict.minimum.as_str(),
+                            conflict.guidance
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+}
+
 fn diagnostic(code: &str, message: impl Into<String>) -> Diagnostic {
     let entry = diagnostic_codes()
         .iter()
@@ -225,13 +277,81 @@ mod tests {
     #[test]
     fn detect_cycles() {
         let mut flow = build_sample_flow();
-        flow.edges.push(dag_core::ir::EdgeIR {
+        flow.edges.push(dag_core::EdgeIR {
             from: "consumer".to_string(),
             to: "producer".to_string(),
-            ..dag_core::ir::EdgeIR::default()
+            ..dag_core::EdgeIR::default()
         });
         let diagnostics = validate(&flow).err().expect("expected cycle diagnostic");
         assert!(diagnostics.iter().any(|d| d.code.code == "DAG200"));
+    }
+
+    #[test]
+    fn detect_unknown_aliases() {
+        let mut flow = build_sample_flow();
+        flow.edges.push(dag_core::EdgeIR {
+            from: "missing".to_string(),
+            to: "consumer".to_string(),
+            ..dag_core::EdgeIR::default()
+        });
+        flow.edges.push(dag_core::EdgeIR {
+            from: "producer".to_string(),
+            to: "absent".to_string(),
+            ..dag_core::EdgeIR::default()
+        });
+        let diagnostics = validate(&flow).err().expect("expected alias diagnostics");
+        let mut seen_source = false;
+        let mut seen_target = false;
+        for diag in diagnostics {
+            if diag.code.code == "DAG202" && diag.message.contains("source") {
+                seen_source = true;
+            }
+            if diag.code.code == "DAG202" && diag.message.contains("target") {
+                seen_target = true;
+            }
+        }
+        assert!(seen_source, "missing source alias diagnostic not emitted");
+        assert!(seen_target, "missing target alias diagnostic not emitted");
+    }
+
+    #[test]
+    fn detect_effect_conflicts() {
+        let mut builder = FlowBuilder::new("effect_conflict", Version::new(1, 0, 0), Profile::Web);
+        let writer = builder
+            .add_node(
+                "writer",
+                &NodeSpec::inline_with_hints(
+                    "tests::writer",
+                    "Writer",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                    &[],
+                    &["resource::http::write"],
+                ),
+            )
+            .expect("add writer node");
+        let sink = builder
+            .add_node(
+                "sink",
+                &NodeSpec::inline(
+                    "tests::sink",
+                    "Sink",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::ReadOnly,
+                    Determinism::BestEffort,
+                    None,
+                ),
+            )
+            .expect("add sink node");
+        builder.connect(&writer, &sink);
+        let flow = builder.build();
+
+        let diagnostics = validate(&flow).err().expect("expected effect diagnostic");
+        assert!(diagnostics.iter().any(|d| d.code.code == "EFFECT201"));
     }
 
     #[test]
@@ -245,5 +365,98 @@ mod tests {
             .err()
             .expect("expected idempotency diagnostic");
         assert!(diagnostics.iter().any(|d| d.code.code == "DAG004"));
+    }
+
+    #[test]
+    fn detect_determinism_conflicts() {
+        let mut builder = FlowBuilder::new("det_conflict", Version::new(1, 0, 0), Profile::Web);
+        let clock = builder
+            .add_node(
+                "clock",
+                &NodeSpec::inline_with_hints(
+                    "tests::clock",
+                    "Clock",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::ReadOnly,
+                    Determinism::Strict,
+                    None,
+                    &["resource::clock"],
+                    &[],
+                ),
+            )
+            .expect("add clock node");
+        let sink = builder
+            .add_node(
+                "sink",
+                &NodeSpec::inline(
+                    "tests::sink",
+                    "Sink",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::ReadOnly,
+                    Determinism::BestEffort,
+                    None,
+                ),
+            )
+            .expect("add sink node");
+        builder.connect(&clock, &sink);
+        let flow = builder.build();
+
+        let diagnostics = validate(&flow)
+            .err()
+            .expect("expected determinism diagnostic");
+        assert!(diagnostics.iter().any(|d| d.code.code == "DET302"));
+    }
+
+    #[test]
+    fn respect_registered_custom_conflicts() {
+        const HINT: &str = "test::custom";
+        dag_core::determinism::register_determinism_constraint(
+            dag_core::determinism::DeterminismConstraint::new(
+                HINT,
+                Determinism::Stable,
+                "Custom resource requires Stable determinism",
+            ),
+        );
+
+        let mut builder = FlowBuilder::new("custom_conflict", Version::new(1, 0, 0), Profile::Web);
+        let source = builder
+            .add_node(
+                "source",
+                &NodeSpec::inline_with_hints(
+                    "tests::source",
+                    "Source",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::ReadOnly,
+                    Determinism::Strict,
+                    None,
+                    &[HINT],
+                    &[],
+                ),
+            )
+            .expect("add source node");
+        let sink = builder
+            .add_node(
+                "sink",
+                &NodeSpec::inline(
+                    "tests::sink",
+                    "Sink",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::ReadOnly,
+                    Determinism::BestEffort,
+                    None,
+                ),
+            )
+            .expect("add sink node");
+        builder.connect(&source, &sink);
+        let flow = builder.build();
+
+        let diagnostics = validate(&flow)
+            .err()
+            .expect("expected determinism diagnostic");
+        assert!(diagnostics.iter().any(|d| d.code.code == "DET302"));
     }
 }

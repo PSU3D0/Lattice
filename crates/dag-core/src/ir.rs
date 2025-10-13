@@ -153,6 +153,10 @@ pub struct NodeSpec {
     pub effects: Effects,
     /// Declared determinism metadata.
     pub determinism: Determinism,
+    /// Determinism hints emitted by macros or plugins.
+    pub determinism_hints: &'static [&'static str],
+    /// Effect hints emitted by macros or plugins.
+    pub effect_hints: &'static [&'static str],
 }
 
 impl NodeSpec {
@@ -166,6 +170,31 @@ impl NodeSpec {
         determinism: Determinism,
         summary: Option<&'static str>,
     ) -> Self {
+        Self::inline_with_hints(
+            identifier,
+            name,
+            in_schema,
+            out_schema,
+            effects,
+            determinism,
+            summary,
+            &[],
+            &[],
+        )
+    }
+
+    /// Helper for inline nodes with explicit determinism hints.
+    pub const fn inline_with_hints(
+        identifier: &'static str,
+        name: &'static str,
+        in_schema: SchemaSpec,
+        out_schema: SchemaSpec,
+        effects: Effects,
+        determinism: Determinism,
+        summary: Option<&'static str>,
+        determinism_hints: &'static [&'static str],
+        effect_hints: &'static [&'static str],
+    ) -> Self {
         Self {
             identifier,
             name,
@@ -175,6 +204,8 @@ impl NodeSpec {
             out_schema,
             effects,
             determinism,
+            determinism_hints,
+            effect_hints,
         }
     }
 }
@@ -250,6 +281,12 @@ pub struct NodeIR {
     /// Optional idempotency configuration.
     #[serde(default)]
     pub idempotency: IdempotencySpec,
+    /// Determinism hints recorded during macro expansion.
+    #[serde(rename = "determinismHints", default)]
+    pub determinism_hints: Vec<String>,
+    /// Effect hints recorded during macro expansion.
+    #[serde(rename = "effectHints", default)]
+    pub effect_hints: Vec<String>,
 }
 
 /// Edge entry within the Flow IR.

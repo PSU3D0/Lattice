@@ -4,6 +4,7 @@
 
 ## Surface
 - Proc-macro entry points for nodes, triggers, workflows, inline nodes, and attribute helpers like `#[flow::switch]`.
+- `#[flow_enum]` helper that guarantees enum payloads carry `serde::Serialize`, `serde::Deserialize`, and `schemars::JsonSchema` derives with a tagged representation.
 - Diagnostics infrastructure keyed to the error-code registry (`DAG*`, `CTRL*`, etc.).
 - Glue for emitting Flow IR JSON alongside the generated Rust.
 

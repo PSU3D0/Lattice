@@ -7,8 +7,8 @@ use std::collections::HashSet;
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::{
-    Expr, ExprLit, Ident, ItemFn, Lit, LitStr, Meta, MetaNameValue, Result, Token, braced,
-    bracketed, parse_macro_input, spanned::Spanned,
+    Attribute, Expr, ExprLit, Ident, ItemEnum, ItemFn, Lit, LitStr, Macro, Meta, MetaNameValue,
+    Path, Result, Token, parse_macro_input, parse_quote, spanned::Spanned,
 };
 
 /// Attribute macro for defining workflow nodes.
@@ -33,38 +33,229 @@ pub fn workflow(input: TokenStream) -> TokenStream {
     }
 }
 
+/// Attribute helper for Flow-value enums used to constrain generics.
+#[proc_macro_attribute]
+pub fn flow_enum(attr: TokenStream, item: TokenStream) -> TokenStream {
+    if !attr.is_empty() {
+        let err = syn::Error::new(
+            Span::call_site(),
+            "#[flow_enum] does not accept attribute arguments",
+        );
+        return TokenStream::from(err.to_compile_error());
+    }
+
+    let item_tokens: TokenStream2 = item.clone().into();
+    let mut enum_item = match syn::parse2::<ItemEnum>(item_tokens.clone()) {
+        Ok(item) => item,
+        Err(_) => {
+            let err = syn::Error::new_spanned(
+                item_tokens,
+                "#[flow_enum] can only be applied to enum definitions",
+            );
+            return TokenStream::from(err.to_compile_error());
+        }
+    };
+
+    match ensure_flow_enum_attrs(&mut enum_item) {
+        Ok(()) => TokenStream::from(quote!(#enum_item)),
+        Err(err) => TokenStream::from(err.to_compile_error()),
+    }
+}
+
 struct NodeDefaults {
     kind: &'static str,
-    effects: &'static str,
-    determinism: &'static str,
+    effects: EffectLevel,
+    determinism: DeterminismLevel,
 }
 
 impl NodeDefaults {
     fn node() -> Self {
         Self {
             kind: "Inline",
-            effects: "Pure",
-            determinism: "BestEffort",
+            effects: EffectLevel::Pure,
+            determinism: DeterminismLevel::BestEffort,
         }
     }
 
     fn trigger() -> Self {
         Self {
             kind: "Trigger",
-            effects: "ReadOnly",
-            determinism: "Strict",
+            effects: EffectLevel::ReadOnly,
+            determinism: DeterminismLevel::Strict,
         }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+enum EffectLevel {
+    Pure,
+    ReadOnly,
+    Effectful,
+}
+
+impl EffectLevel {
+    fn parse(value: &str, span: Span) -> Result<Self> {
+        match value {
+            "Pure" | "pure" => Ok(EffectLevel::Pure),
+            "ReadOnly" | "readonly" => Ok(EffectLevel::ReadOnly),
+            "Effectful" | "effectful" => Ok(EffectLevel::Effectful),
+            other => Err(syn::Error::new(
+                span,
+                format!("[EFFECT201] unknown effects value `{other}`"),
+            )),
+        }
+    }
+
+    fn to_tokens(self, span: Span) -> TokenStream2 {
+        match self {
+            EffectLevel::Pure => enum_expr("Effects", "Pure", span),
+            EffectLevel::ReadOnly => enum_expr("Effects", "ReadOnly", span),
+            EffectLevel::Effectful => enum_expr("Effects", "Effectful", span),
+        }
+    }
+
+    fn to_runtime(self) -> dag_core::Effects {
+        match self {
+            EffectLevel::Pure => dag_core::Effects::Pure,
+            EffectLevel::ReadOnly => dag_core::Effects::ReadOnly,
+            EffectLevel::Effectful => dag_core::Effects::Effectful,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            EffectLevel::Pure => "Pure",
+            EffectLevel::ReadOnly => "ReadOnly",
+            EffectLevel::Effectful => "Effectful",
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+enum DeterminismLevel {
+    Strict,
+    Stable,
+    BestEffort,
+    Nondeterministic,
+}
+
+impl DeterminismLevel {
+    fn parse(value: &str, span: Span) -> Result<Self> {
+        match value {
+            "Strict" | "strict" => Ok(DeterminismLevel::Strict),
+            "Stable" | "stable" => Ok(DeterminismLevel::Stable),
+            "BestEffort" | "best_effort" | "besteffort" => Ok(DeterminismLevel::BestEffort),
+            "Nondeterministic" | "non_deterministic" | "nondet" => {
+                Ok(DeterminismLevel::Nondeterministic)
+            }
+            other => Err(syn::Error::new(
+                span,
+                format!("[DET301] unknown determinism value `{other}`"),
+            )),
+        }
+    }
+
+    fn to_tokens(self, span: Span) -> TokenStream2 {
+        match self {
+            DeterminismLevel::Strict => enum_expr("Determinism", "Strict", span),
+            DeterminismLevel::Stable => enum_expr("Determinism", "Stable", span),
+            DeterminismLevel::BestEffort => enum_expr("Determinism", "BestEffort", span),
+            DeterminismLevel::Nondeterministic => {
+                enum_expr("Determinism", "Nondeterministic", span)
+            }
+        }
+    }
+
+    fn to_runtime(self) -> dag_core::Determinism {
+        match self {
+            DeterminismLevel::Strict => dag_core::Determinism::Strict,
+            DeterminismLevel::Stable => dag_core::Determinism::Stable,
+            DeterminismLevel::BestEffort => dag_core::Determinism::BestEffort,
+            DeterminismLevel::Nondeterministic => dag_core::Determinism::Nondeterministic,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            DeterminismLevel::Strict => "Strict",
+            DeterminismLevel::Stable => "Stable",
+            DeterminismLevel::BestEffort => "BestEffort",
+            DeterminismLevel::Nondeterministic => "Nondeterministic",
+        }
+    }
+}
+
+struct ParsedEffects {
+    tokens: TokenStream2,
+    level: EffectLevel,
+}
+
+impl ParsedEffects {
+    fn new(level: EffectLevel, span: Span) -> Self {
+        Self {
+            tokens: level.to_tokens(span),
+            level,
+        }
+    }
+}
+
+struct ParsedDeterminism {
+    tokens: TokenStream2,
+    level: DeterminismLevel,
+}
+
+impl ParsedDeterminism {
+    fn new(level: DeterminismLevel, span: Span) -> Self {
+        Self {
+            tokens: level.to_tokens(span),
+            level,
+        }
+    }
+}
+
+struct ResourceSpec {
+    alias: Ident,
+    capability: Path,
+    span: Span,
+}
+
+impl Parse for ResourceSpec {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let alias: Ident = input.parse()?;
+        let span = alias.span();
+        let content;
+        syn::parenthesized!(content in input);
+        let capability: Path = content.parse()?;
+        Ok(ResourceSpec {
+            alias,
+            capability,
+            span,
+        })
+    }
+}
+
+struct ResourceList {
+    entries: Vec<ResourceSpec>,
+}
+
+impl Parse for ResourceList {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let punctuated = Punctuated::<ResourceSpec, Token![,]>::parse_terminated(input)?;
+        Ok(ResourceList {
+            entries: punctuated.into_iter().collect(),
+        })
     }
 }
 
 struct NodeArgs {
     name: Option<LitStr>,
     summary: Option<LitStr>,
-    effects: Option<TokenStream2>,
-    determinism: Option<TokenStream2>,
+    effects: Option<ParsedEffects>,
+    determinism: Option<ParsedDeterminism>,
     kind: Option<TokenStream2>,
     input_schema: Option<LitStr>,
     output_schema: Option<LitStr>,
+    resources: Vec<ResourceSpec>,
 }
 
 impl NodeArgs {
@@ -77,6 +268,7 @@ impl NodeArgs {
             kind: None,
             input_schema: None,
             output_schema: None,
+            resources: Vec::new(),
         };
 
         for meta in args {
@@ -137,9 +329,27 @@ impl NodeArgs {
                         }
                     }
                 }
-                _ => {
+                Meta::List(list) => {
+                    let ident = list
+                        .path
+                        .get_ident()
+                        .ok_or_else(|| syn::Error::new(list.path.span(), "expected identifier"))?;
+                    match ident.to_string().as_str() {
+                        "resources" => {
+                            let entries = syn::parse2::<ResourceList>(list.tokens.clone())?.entries;
+                            parsed.resources.extend(entries.into_iter());
+                        }
+                        other => {
+                            return Err(syn::Error::new(
+                                ident.span(),
+                                format!("[DAG003] unknown attribute `{other}`"),
+                            ));
+                        }
+                    }
+                }
+                Meta::Path(path) => {
                     return Err(syn::Error::new(
-                        meta.span(),
+                        path.span(),
                         "expected key = \"value\" pairs in attribute",
                     ));
                 }
@@ -147,11 +357,10 @@ impl NodeArgs {
         }
 
         if parsed.effects.is_none() {
-            parsed.effects = Some(enum_expr("Effects", defaults.effects, Span::call_site()));
+            parsed.effects = Some(ParsedEffects::new(defaults.effects, Span::call_site()));
         }
         if parsed.determinism.is_none() {
-            parsed.determinism = Some(enum_expr(
-                "Determinism",
+            parsed.determinism = Some(ParsedDeterminism::new(
                 defaults.determinism,
                 Span::call_site(),
             ));
@@ -204,9 +413,26 @@ fn node_impl(
     let spec_ident = format_ident!("{}_NODE_SPEC", fn_name.to_string().to_uppercase());
     let accessor_ident = format_ident!("{}_node_spec", fn_name);
 
-    let effects_expr = config.effects.unwrap();
-    let determinism_expr = config.determinism.unwrap();
-    let kind_expr = config.kind.unwrap();
+    let effects = config
+        .effects
+        .as_ref()
+        .expect("effects default should be populated");
+    let determinism = config
+        .determinism
+        .as_ref()
+        .expect("determinism default should be populated");
+    let kind_expr = config
+        .kind
+        .as_ref()
+        .expect("node kind default should be populated");
+
+    let (determinism_hints, effect_hints) = compute_resource_hints(&config.resources);
+    validate_effect_hints(&effect_hints, effects)?;
+    validate_determinism_hints(&determinism_hints, determinism)?;
+    let determinism_hints_expr = hint_array_tokens(&determinism_hints);
+    let effect_hints_expr = hint_array_tokens(&effect_hints);
+    let effects_expr = &effects.tokens;
+    let determinism_expr = &determinism.tokens;
 
     Ok(quote! {
         #function
@@ -221,6 +447,8 @@ fn node_impl(
             out_schema: #output_schema_expr,
             effects: #effects_expr,
             determinism: #determinism_expr,
+            determinism_hints: #determinism_hints_expr,
+            effect_hints: #effect_hints_expr,
         };
 
         #[allow(dead_code)]
@@ -228,6 +456,231 @@ fn node_impl(
             &#spec_ident
         }
     })
+}
+
+struct HintSpec {
+    value: String,
+    span: Span,
+    origin: String,
+}
+
+fn compute_resource_hints(resources: &[ResourceSpec]) -> (Vec<HintSpec>, Vec<HintSpec>) {
+    let mut determinism = Vec::new();
+    let mut effects = Vec::new();
+    let mut determinism_seen = HashSet::new();
+    let mut effects_seen = HashSet::new();
+
+    for resource in resources {
+        let alias = resource.alias.to_string();
+        let alias_lower = alias.to_ascii_lowercase();
+        let cap_ident = resource
+            .capability
+            .segments
+            .last()
+            .map(|segment| segment.ident.to_string())
+            .unwrap_or_default();
+        let cap_lower = cap_ident.to_ascii_lowercase();
+        let namespace = canonical_namespace(&alias_lower, &cap_lower);
+
+        push_determinism_hint(
+            &mut determinism,
+            &mut determinism_seen,
+            &alias,
+            &alias_lower,
+            &cap_lower,
+            resource.span,
+        );
+
+        push_effect_hints(
+            &mut effects,
+            &mut effects_seen,
+            &alias,
+            &alias_lower,
+            &cap_lower,
+            &namespace,
+            resource.span,
+        );
+    }
+
+    (determinism, effects)
+}
+
+fn canonical_namespace(alias: &str, cap_lower: &str) -> String {
+    for domain in ["http", "kv", "db", "queue", "blob"] {
+        if alias.contains(domain) || cap_lower.contains(domain) {
+            return domain.to_string();
+        }
+    }
+    alias
+        .split('_')
+        .next()
+        .map(|part| part.to_ascii_lowercase())
+        .unwrap_or_else(|| alias.to_string())
+}
+
+fn push_determinism_hint(
+    accumulator: &mut Vec<HintSpec>,
+    seen: &mut HashSet<String>,
+    alias: &str,
+    alias_lower: &str,
+    cap_lower: &str,
+    span: Span,
+) {
+    if alias_lower.contains("clock") || cap_lower.contains("clock") {
+        push_hint(accumulator, seen, "resource::clock", alias, span);
+    }
+
+    if alias_lower.contains("rng")
+        || alias_lower.contains("random")
+        || cap_lower.contains("rng")
+        || cap_lower.contains("random")
+    {
+        push_hint(accumulator, seen, "resource::rng", alias, span);
+    }
+
+    if alias_lower.contains("http") || cap_lower.contains("http") {
+        push_hint(accumulator, seen, "resource::http", alias, span);
+    }
+
+    if alias_lower.contains("kv") || cap_lower.contains("kv") {
+        push_hint(accumulator, seen, "resource::kv", alias, span);
+    }
+
+    if alias_lower.contains("db") || cap_lower.contains("db") {
+        push_hint(accumulator, seen, "resource::db", alias, span);
+    }
+}
+
+fn push_effect_hints(
+    accumulator: &mut Vec<HintSpec>,
+    seen: &mut HashSet<String>,
+    alias: &str,
+    alias_lower: &str,
+    cap_lower: &str,
+    namespace: &str,
+    span: Span,
+) {
+    if let Some(hint) = classify_read_hint(alias_lower, cap_lower, namespace) {
+        push_hint(accumulator, seen, hint.as_str(), alias, span);
+    }
+
+    if let Some(hint) = classify_write_hint(alias_lower, cap_lower, namespace) {
+        push_hint(accumulator, seen, hint.as_str(), alias, span);
+    }
+}
+
+fn classify_read_hint(alias_lower: &str, cap_lower: &str, namespace: &str) -> Option<String> {
+    const TOKENS: &[&str] = &["read", "fetch", "load", "get"];
+    if TOKENS
+        .iter()
+        .any(|token| cap_lower.contains(token) || alias_lower.contains(token))
+    {
+        return Some(format!("resource::{}::read", namespace));
+    }
+    None
+}
+
+fn classify_write_hint(alias_lower: &str, cap_lower: &str, namespace: &str) -> Option<String> {
+    const TOKENS: &[&str] = &[
+        "write",
+        "producer",
+        "publish",
+        "publisher",
+        "sender",
+        "send",
+        "emit",
+        "upsert",
+        "insert",
+        "delete",
+        "update",
+        "post",
+        "put",
+        "patch",
+    ];
+    if TOKENS
+        .iter()
+        .any(|token| cap_lower.contains(token) || alias_lower.contains(token))
+    {
+        return Some(format!("resource::{}::write", namespace));
+    }
+    None
+}
+
+fn push_hint(
+    accumulator: &mut Vec<HintSpec>,
+    seen: &mut HashSet<String>,
+    hint: &str,
+    origin: &str,
+    span: Span,
+) {
+    let value = hint.to_string();
+    if seen.insert(value.clone()) {
+        accumulator.push(HintSpec {
+            value,
+            span,
+            origin: origin.to_string(),
+        });
+    }
+}
+
+fn hint_array_tokens(hints: &[HintSpec]) -> TokenStream2 {
+    if hints.is_empty() {
+        quote!(&[] as &[&'static str])
+    } else {
+        let values = hints.iter().map(|hint| {
+            let lit = LitStr::new(&hint.value, Span::call_site());
+            quote!(#lit)
+        });
+        quote!(&[#(#values),*] as &[&'static str])
+    }
+}
+
+fn validate_effect_hints(hints: &[HintSpec], effects: &ParsedEffects) -> Result<()> {
+    for hint in hints {
+        if let Some(constraint) =
+            dag_core::effects_registry::constraint_for_hint(hint.value.as_str())
+        {
+            if !effects.level.to_runtime().is_at_least(constraint.minimum) {
+                return Err(syn::Error::new(
+                    hint.span,
+                    format!(
+                        "[EFFECT201] resource `{}` (from `{}`) requires effects >= {}, but node declares {}. {}",
+                        hint.value,
+                        hint.origin,
+                        constraint.minimum.as_str(),
+                        effects.level.as_str(),
+                        constraint.guidance,
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_determinism_hints(hints: &[HintSpec], determinism: &ParsedDeterminism) -> Result<()> {
+    for hint in hints {
+        if let Some(constraint) = dag_core::determinism::constraint_for_hint(hint.value.as_str()) {
+            if !determinism
+                .level
+                .to_runtime()
+                .is_at_least(constraint.minimum)
+            {
+                return Err(syn::Error::new(
+                    hint.span,
+                    format!(
+                        "[DET302] resource `{}` (from `{}`) requires determinism >= {}, but node declares {}. {}",
+                        hint.value,
+                        hint.origin,
+                        constraint.minimum.as_str(),
+                        determinism.level.as_str(),
+                        constraint.guidance,
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn infer_schemas(function: &ItemFn, config: &NodeArgs) -> Result<(TokenStream2, TokenStream2)> {
@@ -298,35 +751,103 @@ fn schema_from_return(ty: &syn::Type) -> Result<TokenStream2> {
     ))
 }
 
-fn parse_effects(lit: &Lit) -> Result<TokenStream2> {
-    let value = lit_to_string(lit)?;
-    match value.as_str() {
-        "Pure" | "pure" => Ok(enum_expr("Effects", "Pure", lit.span())),
-        "ReadOnly" | "readonly" => Ok(enum_expr("Effects", "ReadOnly", lit.span())),
-        "Effectful" | "effectful" => Ok(enum_expr("Effects", "Effectful", lit.span())),
-        other => Err(syn::Error::new(
-            lit.span(),
-            format!("[EFFECT201] unknown effects value `{other}`"),
-        )),
+fn ensure_flow_enum_attrs(item: &mut ItemEnum) -> Result<()> {
+    ensure_flow_enum_derives(item)?;
+    ensure_flow_enum_tag(item);
+    Ok(())
+}
+
+fn ensure_flow_enum_derives(item: &mut ItemEnum) -> Result<()> {
+    let required_traits: [(&str, Path); 5] = [
+        ("Debug", parse_quote!(Debug)),
+        ("Clone", parse_quote!(Clone)),
+        ("Serialize", parse_quote!(::serde::Serialize)),
+        ("Deserialize", parse_quote!(::serde::Deserialize)),
+        ("JsonSchema", parse_quote!(::schemars::JsonSchema)),
+    ];
+
+    if let Some(index) = item
+        .attrs
+        .iter()
+        .position(|attr| attr.path().is_ident("derive"))
+    {
+        let original = item.attrs.remove(index);
+        let mut traits: Vec<Path> = original
+            .parse_args_with(Punctuated::<Path, Token![,]>::parse_terminated)?
+            .into_iter()
+            .collect();
+
+        for (ident, path) in &required_traits {
+            let already_present = traits.iter().any(|existing| {
+                existing
+                    .segments
+                    .last()
+                    .map(|segment| segment.ident == *ident)
+                    .unwrap_or(false)
+            });
+            if !already_present {
+                traits.push(path.clone());
+            }
+        }
+
+        let updated: Attribute = parse_quote! {
+            #[derive(#(#traits),*)]
+        };
+        item.attrs.insert(index, updated);
+    } else {
+        let attr: Attribute = parse_quote! {
+            #[derive(Debug, Clone, ::serde::Serialize, ::serde::Deserialize, ::schemars::JsonSchema)]
+        };
+        item.attrs.insert(0, attr);
+    }
+
+    Ok(())
+}
+
+fn ensure_flow_enum_tag(item: &mut ItemEnum) {
+    let mut has_tag = false;
+    for attr in &item.attrs {
+        if !attr.path().is_ident("serde") {
+            continue;
+        }
+
+        if let Ok(meta) = attr.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated) {
+            for entry in meta {
+                if let Meta::NameValue(name_value) = entry {
+                    if name_value.path.is_ident("tag") {
+                        if let Expr::Lit(ExprLit {
+                            lit: Lit::Str(value),
+                            ..
+                        }) = name_value.value
+                        {
+                            if value.value() == "type" {
+                                has_tag = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if !has_tag {
+        let attr: Attribute = parse_quote! {
+            #[serde(tag = "type")]
+        };
+        item.attrs.push(attr);
     }
 }
 
-fn parse_determinism(lit: &Lit) -> Result<TokenStream2> {
+fn parse_effects(lit: &Lit) -> Result<ParsedEffects> {
     let value = lit_to_string(lit)?;
-    match value.as_str() {
-        "Strict" | "strict" => Ok(enum_expr("Determinism", "Strict", lit.span())),
-        "Stable" | "stable" => Ok(enum_expr("Determinism", "Stable", lit.span())),
-        "BestEffort" | "besteffort" | "best_effort" => {
-            Ok(enum_expr("Determinism", "BestEffort", lit.span()))
-        }
-        "Nondeterministic" | "non_deterministic" | "nondet" => {
-            Ok(enum_expr("Determinism", "Nondeterministic", lit.span()))
-        }
-        other => Err(syn::Error::new(
-            lit.span(),
-            format!("[DET301] unknown determinism value `{other}`"),
-        )),
-    }
+    let level = EffectLevel::parse(&value, lit.span())?;
+    Ok(ParsedEffects::new(level, lit.span()))
+}
+
+fn parse_determinism(lit: &Lit) -> Result<ParsedDeterminism> {
+    let value = lit_to_string(lit)?;
+    let level = DeterminismLevel::parse(&value, lit.span())?;
+    Ok(ParsedDeterminism::new(level, lit.span()))
 }
 
 fn parse_node_kind(lit: &Lit) -> Result<TokenStream2> {
@@ -365,18 +886,38 @@ struct WorkflowInput {
     version: LitStr,
     profile: Ident,
     summary: Option<LitStr>,
-    nodes: Vec<NodeEntry>,
-    edges: Vec<EdgeEntry>,
+    bindings: Vec<Binding>,
+    connects: Vec<ConnectEntry>,
 }
 
-struct NodeEntry {
+struct Binding {
     alias: Ident,
     expr: Expr,
 }
 
-struct EdgeEntry {
+struct ConnectEntry {
     from: Ident,
     to: Ident,
+}
+
+struct ConnectArgs {
+    from: Ident,
+    to: Ident,
+}
+
+impl Parse for ConnectArgs {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let from: Ident = input.parse()?;
+        input.parse::<Token![->]>()?;
+        let to: Ident = input.parse()?;
+        if !input.is_empty() {
+            return Err(syn::Error::new(
+                input.span(),
+                "connect! currently supports only `from -> to` syntax",
+            ));
+        }
+        Ok(Self { from, to })
+    }
 }
 
 impl Parse for WorkflowInput {
@@ -385,8 +926,8 @@ impl Parse for WorkflowInput {
         let mut version = None;
         let mut profile = None;
         let mut summary = None;
-        let mut nodes = None;
-        let mut edges = None;
+        let mut bindings = Vec::new();
+        let mut connects = Vec::new();
 
         while !input.is_empty() {
             let key: Ident = input.parse()?;
@@ -413,42 +954,6 @@ impl Parse for WorkflowInput {
                 "summary" => {
                     summary = Some(input.parse()?);
                 }
-                "nodes" => {
-                    if nodes.is_some() {
-                        return Err(syn::Error::new(key.span(), "duplicate `nodes` block"));
-                    }
-                    let nodes_content;
-                    braced!(nodes_content in input);
-                    let mut entries = Vec::new();
-                    while !nodes_content.is_empty() {
-                        let alias: Ident = nodes_content.parse()?;
-                        nodes_content.parse::<Token![=>]>()?;
-                        let expr: Expr = nodes_content.parse()?;
-                        entries.push(NodeEntry { alias, expr });
-                        if nodes_content.peek(Token![,]) {
-                            nodes_content.parse::<Token![,]>()?;
-                        }
-                    }
-                    nodes = Some(entries);
-                }
-                "edges" => {
-                    if edges.is_some() {
-                        return Err(syn::Error::new(key.span(), "duplicate `edges` block"));
-                    }
-                    let edges_content;
-                    bracketed!(edges_content in input);
-                    let mut entries = Vec::new();
-                    while !edges_content.is_empty() {
-                        let from: Ident = edges_content.parse()?;
-                        edges_content.parse::<Token![=>]>()?;
-                        let to: Ident = edges_content.parse()?;
-                        entries.push(EdgeEntry { from, to });
-                        if edges_content.peek(Token![,]) {
-                            edges_content.parse::<Token![,]>()?;
-                        }
-                    }
-                    edges = Some(entries);
-                }
                 other => {
                     return Err(syn::Error::new(
                         key.span(),
@@ -457,9 +962,61 @@ impl Parse for WorkflowInput {
                 }
             }
 
-            if input.peek(Token![,]) {
+            if input.peek(Token![;]) {
+                input.parse::<Token![;]>()?;
+                break;
+            } else if input.peek(Token![,]) {
                 input.parse::<Token![,]>()?;
+            } else {
+                return Err(syn::Error::new(
+                    input.span(),
+                    "expected `,` or `;` after workflow metadata",
+                ));
             }
+        }
+
+        while !input.is_empty() {
+            if input.peek(Token![let]) {
+                input.parse::<Token![let]>()?;
+                let alias: Ident = input.parse()?;
+                input.parse::<Token![=]>()?;
+                let expr: Expr = input.parse()?;
+                input.parse::<Token![;]>()?;
+                bindings.push(Binding { alias, expr });
+                continue;
+            }
+
+            if input.peek(Token![if])
+                || input.peek(Token![match])
+                || input.peek(Token![while])
+                || input.peek(Token![for])
+            {
+                return Err(syn::Error::new(
+                    input.span(),
+                    "workflow! does not support Rust control-flow statements; use the flow::switch/for_each helpers",
+                ));
+            }
+
+            let mac: Macro = input.parse()?;
+            if !mac.path.is_ident("connect") {
+                return Err(syn::Error::new(
+                    mac.span(),
+                    "workflow! body currently supports only `let` bindings and `connect!` statements",
+                ));
+            }
+            let args = syn::parse2::<ConnectArgs>(mac.tokens)?;
+            if input.peek(Token![;]) {
+                input.parse::<Token![;]>()?;
+            } else {
+                return Err(syn::Error::new(
+                    input.span(),
+                    "expected `;` after connect! statement",
+                ));
+            }
+            connects.push(ConnectEntry {
+                from: args.from,
+                to: args.to,
+            });
         }
 
         Ok(WorkflowInput {
@@ -472,10 +1029,8 @@ impl Parse for WorkflowInput {
                 syn::Error::new(Span::call_site(), "workflow! requires `profile`")
             })?,
             summary,
-            nodes: nodes.ok_or_else(|| {
-                syn::Error::new(Span::call_site(), "workflow! requires `nodes` block")
-            })?,
-            edges: edges.unwrap_or_default(),
+            bindings,
+            connects,
         })
     }
 }
@@ -495,30 +1050,32 @@ impl WorkflowInput {
             )
         })?;
 
-        let mut node_aliases = HashSet::new();
-        for node in &self.nodes {
-            if !node_aliases.insert(node.alias.to_string()) {
+        let mut alias_set = HashSet::new();
+        for binding in &self.bindings {
+            let alias_str = binding.alias.to_string();
+            if !alias_set.insert(alias_str.clone()) {
                 return Err(syn::Error::new(
-                    node.alias.span(),
-                    format!("[DAG205] duplicate node alias `{}`", node.alias),
+                    binding.alias.span(),
+                    format!("[DAG205] duplicate node alias `{}`", binding.alias),
                 ));
             }
         }
 
-        let mut missing_nodes = Vec::new();
-        for edge in &self.edges {
-            if !node_aliases.contains(&edge.from.to_string()) {
-                missing_nodes.push(edge.from.span());
+        for connect in &self.connects {
+            let from = connect.from.to_string();
+            let to = connect.to.to_string();
+            if !alias_set.contains(&from) {
+                return Err(syn::Error::new(
+                    connect.from.span(),
+                    format!("[DAG202] unknown node alias `{}`", connect.from),
+                ));
             }
-            if !node_aliases.contains(&edge.to.to_string()) {
-                missing_nodes.push(edge.to.span());
+            if !alias_set.contains(&to) {
+                return Err(syn::Error::new(
+                    connect.to.span(),
+                    format!("[DAG202] unknown node alias `{}`", connect.to),
+                ));
             }
-        }
-        if let Some(span) = missing_nodes.first() {
-            return Err(syn::Error::new(
-                *span,
-                "[DAG201] edge references undefined node",
-            ));
         }
 
         let summary_stmt = if let Some(summary) = &self.summary {
@@ -527,20 +1084,24 @@ impl WorkflowInput {
             quote!()
         };
 
-        let node_statements = self.nodes.iter().map(|node| {
-            let alias = &node.alias;
-            let alias_lit = LitStr::new(&node.alias.to_string(), node.alias.span());
-            let expr = &node.expr;
+        let binding_statements = self.bindings.iter().map(|binding| {
+            let alias = &binding.alias;
+            let alias_str = binding.alias.to_string();
+            let expr = &binding.expr;
             quote! {
                 let #alias = builder
-                    .add_node(#alias_lit, #expr)
-                    .expect(concat!("[DAG205] duplicate node alias `", stringify!(#alias), "`"));
+                    .add_node(#alias_str, #expr)
+                    .expect(concat!(
+                        "[DAG205] duplicate node alias `",
+                        stringify!(#alias),
+                        "`"
+                    ));
             }
         });
 
-        let edge_statements = self.edges.iter().map(|edge| {
-            let from = &edge.from;
-            let to = &edge.to;
+        let connect_statements = self.connects.iter().map(|connect| {
+            let from = &connect.from;
+            let to = &connect.to;
             quote! {
                 builder.connect(&#from, &#to);
             }
@@ -557,8 +1118,8 @@ impl WorkflowInput {
                 );
 
                 #summary_stmt
-                #(#node_statements)*
-                #(#edge_statements)*
+                #(#binding_statements)*
+                #(#connect_statements)*
 
                 builder.build()
             }

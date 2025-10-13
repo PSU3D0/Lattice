@@ -1,8 +1,10 @@
 //! Core types, diagnostics, and Flow IR structures for LatticeFlow.
 
 mod builder;
+pub mod determinism;
 mod diagnostics;
 mod effects;
+pub mod effects_registry;
 mod ir;
 
 pub use builder::{EdgeHandle, FlowBuilder, FlowBuilderError, NodeHandle};
@@ -62,6 +64,8 @@ mod tests {
             out_schema: SchemaSpec::Named("EchoRequest"),
             effects: Effects::ReadOnly,
             determinism: Determinism::Strict,
+            determinism_hints: &[],
+            effect_hints: &[],
         };
 
         let normalize_spec = NodeSpec::inline(

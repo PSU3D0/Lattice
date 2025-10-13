@@ -47,16 +47,12 @@ dag_macros::workflow! {
     name: s1_echo_flow,
     version: "1.0.0",
     profile: Web,
-    summary: "Implements the S1 webhook echo example",
-    nodes: {
-        trigger => http_trigger_node_spec(),
-        normalize => normalize_node_spec(),
-        responder => responder_node_spec(),
-    },
-    edges: [
-        trigger => normalize,
-        normalize => responder,
-    ],
+    summary: "Implements the S1 webhook echo example";
+    let trigger = http_trigger_node_spec();
+    let normalize = normalize_node_spec();
+    let responder = responder_node_spec();
+    connect!(trigger -> normalize);
+    connect!(normalize -> responder);
 }
 
 /// Convenience helper to fetch the Flow IR for the example workflow.

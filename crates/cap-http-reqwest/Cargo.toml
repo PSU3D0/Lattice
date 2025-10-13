@@ -12,8 +12,13 @@ description = "Reqwest-backed HTTP capability implementations for LatticeFlow."
 [dependencies]
 capabilities = { path = "../capabilities" }
 anyhow.workspace = true
+async-trait.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+dag-core = { path = "../dag-core" }
+httpmock = "0.7"
