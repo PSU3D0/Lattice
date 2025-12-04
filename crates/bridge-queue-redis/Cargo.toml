@@ -1,0 +1,33 @@
+[package]
+name = "bridge-queue-redis"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Redis-backed queue bridge for LatticeFlow with visibility timeouts and dedupe."
+
+[dependencies]
+host-inproc = { path = "../host-inproc" }
+cap-redis = { path = "../contrib/redis/cap-redis" }
+capabilities = { path = "../capabilities" }
+anyhow.workspace = true
+redis.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+metrics.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+testcontainers = { version = "0.18", features = ["blocking"] }
+semver.workspace = true
+dag-core = { path = "../dag-core" }
+kernel-exec = { path = "../kernel-exec" }
+kernel-plan = { path = "../kernel-plan" }
+reqwest = { workspace = true, features = ["native-tls-vendored"] }

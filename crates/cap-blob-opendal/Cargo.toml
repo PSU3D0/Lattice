@@ -1,0 +1,44 @@
+[package]
+name = "cap-blob-opendal"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "OpenDAL-backed blob capability for LatticeFlow."
+
+[features]
+default = []
+services-fs = ["cap-opendal-core/services-fs"]
+services-s3 = ["cap-opendal-core/services-s3"]
+services-gcs = ["cap-opendal-core/services-gcs"]
+services-azblob = ["cap-opendal-core/services-azblob"]
+services-http = ["cap-opendal-core/services-http"]
+services-memory = ["cap-opendal-core/services-memory"]
+services-cloudflare-kv = ["cap-opendal-core/services-cloudflare-kv"]
+services-d1 = ["cap-opendal-core/services-d1"]
+layers-chaos = ["cap-opendal-core/layers-chaos"]
+layers-metrics = ["cap-opendal-core/layers-metrics"]
+layers-mime-guess = ["cap-opendal-core/layers-mime-guess"]
+layers-prometheus = ["cap-opendal-core/layers-prometheus"]
+layers-prometheus-client = ["cap-opendal-core/layers-prometheus-client"]
+layers-fastmetrics = ["cap-opendal-core/layers-fastmetrics"]
+layers-fastrace = ["cap-opendal-core/layers-fastrace"]
+layers-otel-metrics = ["cap-opendal-core/layers-otel-metrics"]
+layers-otel-trace = ["cap-opendal-core/layers-otel-trace"]
+layers-throttle = ["cap-opendal-core/layers-throttle"]
+layers-await-tree = ["cap-opendal-core/layers-await-tree"]
+layers-async-backtrace = ["cap-opendal-core/layers-async-backtrace"]
+layers-dtrace = ["cap-opendal-core/layers-dtrace"]
+layers-tracing = ["cap-opendal-core/layers-tracing"]
+
+[dependencies]
+async-trait.workspace = true
+cap-opendal-core = { path = "../cap-opendal-core" }
+capabilities = { path = "../capabilities" }
+opendal = { version = "0.54.1", default-features = false }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }

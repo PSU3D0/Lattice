@@ -1,0 +1,13 @@
+error: [EFFECT201] resource `resource::db::write` (from `db_writer`) requires effects >= Effectful, but node declares Pure. Database writes mutate external systems; declare effects = Effectful and supply idempotency.
+  --> tests/ui/node_db_effect_conflict.rs:10:15
+   |
+10 |     resources(db_writer(DbWriter))
+   |               ^^^^^^^^^
+
+warning: unused import: `dag_core::NodeResult`
+ --> tests/ui/node_db_effect_conflict.rs:1:5
+  |
+1 | use dag_core::NodeResult;
+  |     ^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default

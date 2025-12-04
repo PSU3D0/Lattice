@@ -1,0 +1,15 @@
+[package]
+name = "cap-redis"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+redis.workspace = true
+tokio.workspace = true

@@ -85,6 +85,7 @@ impl FlowBuilder {
         let node_ir = NodeIR {
             id: node_id.clone(),
             alias: alias.clone(),
+            identifier: spec.identifier.to_string(),
             name: spec.name.to_string(),
             kind: spec.kind,
             summary: spec.summary.map(|s| s.to_string()),

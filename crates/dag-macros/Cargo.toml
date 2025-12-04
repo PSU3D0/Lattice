@@ -14,6 +14,7 @@ proc-macro = true
 
 [dependencies]
 dag-core = { path = "../dag-core" }
+capabilities = { path = "../capabilities" }
 proc-macro2.workspace = true
 quote.workspace = true
 syn.workspace = true

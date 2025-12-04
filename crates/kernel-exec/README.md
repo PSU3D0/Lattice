@@ -14,4 +14,4 @@
 
 ## Depends on
 - Requires validated plans from `kernel-plan` and capability traits from `capabilities`.
-- Host crates (`host-web-axum`, `host-queue-redis`, etc.) will layer on top once this runtime is stable.
+- Bridge/host crates (`host-web-axum`, `bridge-queue-redis`, etc.) layer on top once this runtime is stable.

@@ -20,14 +20,31 @@ dag-core = { path = "../dag-core" }
 kernel-plan = { path = "../kernel-plan" }
 kernel-exec = { path = "../kernel-exec" }
 capabilities = { path = "../capabilities" }
+host-web-axum = { path = "../host-web-axum" }
 registry-client = { path = "../registry-client" }
 registry-cert = { path = "../registry-cert" }
 connector-spec = { path = "../connector-spec" }
 exporters = { path = "../exporters" }
+example-s1-echo = { path = "../../examples/s1_echo" }
+example-s2-site = { path = "../../examples/s2_site" }
+host-inproc = { path = "../host-inproc" }
 anyhow.workspace = true
 clap.workspace = true
+axum.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+tower = { workspace = true, features = ["make"] }
+futures.workspace = true
+metrics.workspace = true
+metrics-util.workspace = true
+
+[dev-dependencies]
+assert_cmd = "2.0"
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+proptest.workspace = true

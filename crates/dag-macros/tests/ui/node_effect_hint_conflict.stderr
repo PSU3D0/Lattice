@@ -1,4 +1,4 @@
-error: [EFFECT201] resource `resource::http::write` (from `http`) requires effects >= Effectful, but node declares Pure. HTTP writes are effectful; declare effects = Effectful or refactor to read-only operations.
+error: [EFFECT201] resource `resource::http::write` (from `http`) requires effects >= Effectful, but node declares Pure. HTTP writes are effectful; declare effects = Effectful and provide idempotency keys.
  --> tests/ui/node_effect_hint_conflict.rs:4:53
   |
 4 | #[node(name = "Writer", effects = "Pure", resources(http(HttpWrite)))]

@@ -1,4 +1,5 @@
 // TODO
+use capabilities::hints;
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{ToTokens, format_ident, quote};
@@ -480,26 +481,43 @@ fn compute_resource_hints(resources: &[ResourceSpec]) -> (Vec<HintSpec>, Vec<Hin
             .map(|segment| segment.ident.to_string())
             .unwrap_or_default();
         let cap_lower = cap_ident.to_ascii_lowercase();
-        let namespace = canonical_namespace(&alias_lower, &cap_lower);
 
-        push_determinism_hint(
-            &mut determinism,
-            &mut determinism_seen,
-            &alias,
-            &alias_lower,
-            &cap_lower,
-            resource.span,
-        );
+        let inferred = hints::infer(&alias_lower, &cap_lower);
 
-        push_effect_hints(
-            &mut effects,
-            &mut effects_seen,
-            &alias,
-            &alias_lower,
-            &cap_lower,
-            &namespace,
-            resource.span,
-        );
+        for hint in inferred.determinism_hints {
+            push_hint(
+                &mut determinism,
+                &mut determinism_seen,
+                hint,
+                &alias,
+                resource.span,
+            );
+        }
+
+        for hint in inferred.effect_hints {
+            push_hint(&mut effects, &mut effects_seen, hint, &alias, resource.span);
+        }
+
+        if inferred.is_empty() {
+            let namespace = canonical_namespace(&alias_lower, &cap_lower);
+            push_determinism_hint(
+                &mut determinism,
+                &mut determinism_seen,
+                &alias,
+                &alias_lower,
+                &cap_lower,
+                resource.span,
+            );
+            push_effect_hints(
+                &mut effects,
+                &mut effects_seen,
+                &alias,
+                &alias_lower,
+                &cap_lower,
+                &namespace,
+                resource.span,
+            );
+        }
     }
 
     (determinism, effects)

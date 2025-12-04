@@ -3,8 +3,12 @@ resolver = "3"
 members = [
   "crates/adapters",
   "crates/cap-blob-fs",
-  "crates/cap-cache-redis",
-  "crates/cap-dedupe-redis",
+  "crates/cap-blob-opendal",
+  "crates/cap-kv-opendal",
+  "crates/cap-opendal-core",
+  "crates/contrib/redis/cap-cache-redis",
+  "crates/contrib/redis/cap-dedupe-redis",
+  "crates/contrib/redis/cap-redis",
   "crates/cap-http-reqwest",
   "crates/cap-kv-sqlite",
   "crates/capabilities",
@@ -14,8 +18,9 @@ members = [
   "crates/dag-core",
   "crates/dag-macros",
   "crates/exporters",
-  "crates/host-queue-redis",
+  "crates/bridge-queue-redis",
   "crates/host-temporal",
+  "crates/host-inproc",
   "crates/host-web-axum",
   "crates/importer-n8n",
   "crates/kernel-exec",
@@ -28,7 +33,8 @@ members = [
   "crates/studio-backend",
   "crates/testing-harness-idem",
   "crates/types-common",
-  "examples/s1_echo"
+  "examples/s1_echo",
+  "examples/s2_site"
 ]
 
 [workspace.package]
@@ -46,23 +52,25 @@ msrv = "1.90"
 [workspace.dependencies]
 anyhow = "1"
 async-trait = "0.1"
-axum = { version = "0.7", features = ["json"] }
+axum = { version = "0.7", features = ["json", "tokio", "http1"] }
 bytes = "1"
 clap = { version = "4.5", features = ["derive"] }
 config = "0.14"
 redis = { version = "0.32.7", features = ["tokio-comp"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "native-tls-vendored"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 schemars = "0.8"
 thiserror = "1"
 tonic = { version = "0.11", features = ["transport"] }
-tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread", "signal"] }
+tokio = { version = "1", default-features = false, features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time", "fs"] }
 tokio-stream = "0.1"
+tokio-util = "0.7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 futures = "0.3"
+hyper = { version = "1", features = ["full"] }
 proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full"] }
@@ -74,8 +82,14 @@ rustls = { version = "0.23", features = ["ring"] }
 rustls-pemfile = "2"
 rusqlite = { version = "0.30", features = ["bundled"] }
 flate2 = "1"
+hex = "0.4"
 walkdir = "2"
 tempfile = "3"
 once_cell = "1.19"
 semver = { version = "1.0", features = ["serde"] }
 trybuild = "1.0"
+tower = "0.4"
+async-stream = "0.3"
+metrics = "0.24.2"
+metrics-util = "0.20"
+proptest = "1.5"

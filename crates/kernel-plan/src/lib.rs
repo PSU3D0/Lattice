@@ -1,6 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
-use dag_core::{Diagnostic, Effects, FlowIR, SchemaRef, diagnostic_codes};
+use dag_core::{Delivery, Diagnostic, Effects, FlowIR, SchemaRef, diagnostic_codes};
+
+const MIN_EXACTLY_ONCE_TTL_MS: u64 = 300_000;
+const DEDUPE_HINT_PREFIX: &str = "resource::dedupe";
 
 /// Result of a successful validation run.
 #[derive(Debug, Clone)]
@@ -31,12 +34,84 @@ pub fn validate(flow: &FlowIR) -> Result<ValidatedIR, Vec<Diagnostic>> {
     check_effectful_idempotency(flow, &mut diagnostics);
     check_effect_conflicts(flow, &mut diagnostics);
     check_determinism_conflicts(flow, &mut diagnostics);
+    check_exactly_once_requirements(flow, &mut diagnostics);
+    check_spill_requirements(flow, &mut diagnostics);
 
     if diagnostics.is_empty() {
         Ok(ValidatedIR { flow: flow.clone() })
     } else {
         Err(diagnostics)
     }
+}
+
+fn check_exactly_once_requirements(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    let nodes: HashMap<_, _> = flow
+        .nodes
+        .iter()
+        .map(|node| (node.alias.as_str(), node))
+        .collect();
+
+    for edge in &flow.edges {
+        if edge.delivery == Delivery::ExactlyOnce {
+            let Some(target) = nodes.get(edge.to.as_str()) else {
+                continue;
+            };
+
+            if !has_dedupe_binding(target) {
+                diagnostics.push(diagnostic(
+                    "EXACT001",
+                    format!(
+                        "edge `{}` -> `{}` requests Delivery::ExactlyOnce but node `{}` does not bind a dedupe capability (hint `{}` expected)",
+                        edge.from,
+                        edge.to,
+                        target.alias,
+                        DEDUPE_HINT_PREFIX
+                    ),
+                ));
+            }
+
+            if target.idempotency.key.is_none() {
+                diagnostics.push(diagnostic(
+                    "EXACT002",
+                    format!(
+                        "edge `{}` -> `{}` requests Delivery::ExactlyOnce but node `{}` has no idempotency key",
+                        edge.from, edge.to, target.alias
+                    ),
+                ));
+            }
+
+            match target.idempotency.ttl_ms {
+                Some(ttl) if ttl >= MIN_EXACTLY_ONCE_TTL_MS => {}
+                Some(ttl) => diagnostics.push(diagnostic(
+                    "EXACT003",
+                    format!(
+                        "edge `{}` -> `{}` requests Delivery::ExactlyOnce but node `{}` declares dedupe TTL {}ms (minimum {}ms)",
+                        edge.from,
+                        edge.to,
+                        target.alias,
+                        ttl,
+                        MIN_EXACTLY_ONCE_TTL_MS
+                    ),
+                )),
+                None => diagnostics.push(diagnostic(
+                    "EXACT003",
+                    format!(
+                        "edge `{}` -> `{}` requests Delivery::ExactlyOnce but node `{}` does not declare a dedupe TTL (minimum {}ms)",
+                        edge.from,
+                        edge.to,
+                        target.alias,
+                        MIN_EXACTLY_ONCE_TTL_MS
+                    ),
+                )),
+            }
+        }
+    }
+}
+
+fn has_dedupe_binding(node: &dag_core::NodeIR) -> bool {
+    node.effect_hints
+        .iter()
+        .any(|hint| hint.starts_with(DEDUPE_HINT_PREFIX))
 }
 
 fn check_duplicate_aliases(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
@@ -207,6 +282,41 @@ fn check_determinism_conflicts(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>)
     }
 }
 
+fn check_spill_requirements(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    let has_blob_hint = flow.nodes.iter().any(|node| {
+        node.effect_hints
+            .iter()
+            .any(|hint| hint.starts_with("resource::blob::"))
+    });
+
+    let mut emitted_blob_diagnostic = false;
+
+    for edge in &flow.edges {
+        if let Some(tier) = &edge.buffer.spill_tier {
+            if edge.buffer.max_items.is_none() {
+                diagnostics.push(diagnostic(
+                    "SPILL001",
+                    format!(
+                        "edge `{}` -> `{}` configures `spill_tier = {tier}` without bounding `max_items`",
+                        edge.from, edge.to
+                    ),
+                ));
+            }
+
+            if !has_blob_hint && !emitted_blob_diagnostic {
+                diagnostics.push(diagnostic(
+                    "SPILL002",
+                    format!(
+                        "edge `{}` -> `{}` configures `spill_tier = {tier}` but no node declares a blob capability hint",
+                        edge.from, edge.to
+                    ),
+                ));
+                emitted_blob_diagnostic = true;
+            }
+        }
+    }
+}
+
 fn diagnostic(code: &str, message: impl Into<String>) -> Diagnostic {
     let entry = diagnostic_codes()
         .iter()
@@ -218,7 +328,14 @@ fn diagnostic(code: &str, message: impl Into<String>) -> Diagnostic {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use capabilities::{blob, db, http, kv, queue};
+    use dag_core::IdempotencyScope;
+    use dag_core::NodeResult;
     use dag_core::prelude::*;
+    use dag_macros::node;
+    use proptest::prelude::*;
+    use proptest::sample::select;
+    use std::collections::BTreeSet;
 
     fn build_sample_flow() -> FlowIR {
         let mut builder = FlowBuilder::new("sample", Version::new(1, 0, 0), Profile::Web);
@@ -251,6 +368,140 @@ mod tests {
         builder.connect(&producer, &consumer);
 
         builder.build()
+    }
+
+    fn downgrade_effect(level: Effects) -> Option<Effects> {
+        match level {
+            Effects::Effectful => Some(Effects::ReadOnly),
+            Effects::ReadOnly => Some(Effects::Pure),
+            Effects::Pure => None,
+        }
+    }
+
+    fn downgrade_determinism(level: Determinism) -> Option<Determinism> {
+        match level {
+            Determinism::Nondeterministic => Some(Determinism::BestEffort),
+            Determinism::BestEffort => Some(Determinism::Stable),
+            Determinism::Stable => Some(Determinism::Strict),
+            Determinism::Strict => None,
+        }
+    }
+
+    const DEDUPE_HINT_WRITE: &str = "resource::dedupe::write";
+
+    fn set_idempotency(flow: &mut FlowIR, alias: &str) {
+        if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == alias) {
+            node.idempotency.key = Some("prop.case".to_string());
+            node.idempotency.scope = Some(IdempotencyScope::Node);
+            node.idempotency.ttl_ms = Some(MIN_EXACTLY_ONCE_TTL_MS);
+        }
+    }
+
+    fn ensure_dedupe_hint(flow: &mut FlowIR, alias: &str) {
+        if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == alias) {
+            if !node
+                .effect_hints
+                .iter()
+                .any(|hint| hint == DEDUPE_HINT_WRITE)
+            {
+                node.effect_hints.push(DEDUPE_HINT_WRITE.to_string());
+            }
+        }
+    }
+
+    fn register_all_hints() {
+        http::ensure_registered();
+        db::ensure_registered();
+        kv::ensure_registered();
+        blob::ensure_registered();
+        queue::ensure_registered();
+        capabilities::clock::ensure_registered();
+        capabilities::rng::ensure_registered();
+    }
+
+    #[test]
+    fn exactly_once_requires_dedupe_binding() {
+        let mut flow = build_sample_flow();
+        if let Some(edge) = flow.edges.first_mut() {
+            edge.delivery = Delivery::ExactlyOnce;
+        }
+        set_idempotency(&mut flow, "consumer");
+
+        let diagnostics = validate(&flow).err().expect("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "EXACT001"));
+    }
+
+    #[test]
+    fn exactly_once_requires_idempotency_key() {
+        let mut flow = build_sample_flow();
+        if let Some(edge) = flow.edges.first_mut() {
+            edge.delivery = Delivery::ExactlyOnce;
+        }
+        set_idempotency(&mut flow, "consumer");
+        ensure_dedupe_hint(&mut flow, "consumer");
+        if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "consumer") {
+            node.idempotency.key = None;
+        }
+
+        let diagnostics = validate(&flow).err().expect("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "EXACT002"));
+        // Without a key TTL is irrelevant; ensure no panic when missing.
+    }
+
+    #[test]
+    fn exactly_once_requires_ttl() {
+        let mut flow = build_sample_flow();
+        if let Some(edge) = flow.edges.first_mut() {
+            edge.delivery = Delivery::ExactlyOnce;
+        }
+        set_idempotency(&mut flow, "consumer");
+        ensure_dedupe_hint(&mut flow, "consumer");
+        if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "consumer") {
+            node.idempotency.ttl_ms = None;
+        }
+
+        let diagnostics = validate(&flow).err().expect("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "EXACT003"));
+    }
+
+    #[test]
+    fn exactly_once_requires_minimum_ttl() {
+        let mut flow = build_sample_flow();
+        if let Some(edge) = flow.edges.first_mut() {
+            edge.delivery = Delivery::ExactlyOnce;
+        }
+        set_idempotency(&mut flow, "consumer");
+        ensure_dedupe_hint(&mut flow, "consumer");
+        if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "consumer") {
+            node.idempotency.ttl_ms = Some(MIN_EXACTLY_ONCE_TTL_MS - 1);
+        }
+
+        let diagnostics = validate(&flow).err().expect("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "EXACT003"));
+    }
+
+    #[test]
+    fn exactly_once_succeeds_when_prerequisites_met() {
+        let mut flow = build_sample_flow();
+        if let Some(edge) = flow.edges.first_mut() {
+            edge.delivery = Delivery::ExactlyOnce;
+        }
+        set_idempotency(&mut flow, "consumer");
+        ensure_dedupe_hint(&mut flow, "consumer");
+        if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "consumer") {
+            node.idempotency.ttl_ms = Some(MIN_EXACTLY_ONCE_TTL_MS);
+        }
+
+        let result = validate(&flow);
+        assert!(result.is_ok(), "unexpected diagnostics: {result:?}");
+    }
+
+    fn dedup_hints(hints: Vec<&'static str>) -> Vec<&'static str> {
+        let mut set = BTreeSet::new();
+        for hint in hints {
+            set.insert(hint);
+        }
+        set.into_iter().collect()
     }
 
     #[test]
@@ -315,6 +566,148 @@ mod tests {
     }
 
     #[test]
+    fn fuzz_registry_hint_enforcement() {
+        register_all_hints();
+        let effect_universe: Vec<&'static str> = dag_core::effects_registry::all_constraints()
+            .into_iter()
+            .map(|c| c.hint)
+            .collect();
+        let determinism_universe: Vec<&'static str> = dag_core::determinism::all_constraints()
+            .into_iter()
+            .map(|c| c.hint)
+            .collect();
+
+        let effect_levels = vec![Effects::Pure, Effects::ReadOnly, Effects::Effectful];
+        let determinism_levels = vec![
+            Determinism::Strict,
+            Determinism::Stable,
+            Determinism::BestEffort,
+            Determinism::Nondeterministic,
+        ];
+
+        let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
+            cases: 64,
+            ..ProptestConfig::default()
+        });
+
+        let strategy = (
+            proptest::collection::vec(select(effect_universe.clone()), 0..=3),
+            proptest::collection::vec(select(determinism_universe.clone()), 0..=3),
+            select(effect_levels.clone()),
+            select(determinism_levels.clone()),
+            proptest::bool::ANY,
+            proptest::bool::ANY,
+        );
+
+        runner
+            .run(
+                &strategy,
+                |(
+                    effect_hints_case,
+                    det_hints_case,
+                    base_effect,
+                    base_det,
+                    degrade_effect_flag,
+                    degrade_det_flag,
+                )| {
+                    let effect_vec = dedup_hints(effect_hints_case);
+                    let det_vec = dedup_hints(det_hints_case);
+
+                    let required_effect = effect_vec
+                        .iter()
+                        .filter_map(|hint| {
+                            dag_core::effects_registry::constraint_for_hint(hint).map(|c| c.minimum)
+                        })
+                        .fold(None::<Effects>, |acc, next| match acc {
+                            Some(current) if current.rank() >= next.rank() => Some(current),
+                            Some(_) => Some(next),
+                            None => Some(next),
+                        });
+
+                    let required_det = det_vec
+                        .iter()
+                        .filter_map(|hint| {
+                            dag_core::determinism::constraint_for_hint(hint).map(|c| c.minimum)
+                        })
+                        .fold(None::<Determinism>, |acc, next| match acc {
+                            Some(current) if current.rank() >= next.rank() => Some(current),
+                            Some(_) => Some(next),
+                            None => Some(next),
+                        });
+
+                    let declared_effect = if degrade_effect_flag {
+                        downgrade_effect(base_effect).unwrap_or(base_effect)
+                    } else {
+                        base_effect
+                    };
+                    let declared_det = if degrade_det_flag {
+                        downgrade_determinism(base_det).unwrap_or(base_det)
+                    } else {
+                        base_det
+                    };
+
+                    let effect_slice: &'static [&'static str] =
+                        Box::leak(effect_vec.clone().into_boxed_slice());
+                    let det_slice: &'static [&'static str] =
+                        Box::leak(det_vec.clone().into_boxed_slice());
+
+                    let spec_box = Box::new(NodeSpec::inline_with_hints(
+                        "tests::prop_validator",
+                        "PropValidator",
+                        SchemaSpec::Opaque,
+                        SchemaSpec::Opaque,
+                        declared_effect,
+                        declared_det,
+                        None,
+                        det_slice,
+                        effect_slice,
+                    ));
+                    let spec: &'static NodeSpec = Box::leak(spec_box);
+
+                    let mut builder =
+                        FlowBuilder::new("prop_validation", Version::new(0, 0, 1), Profile::Web);
+                    builder.add_node("entry", spec).expect("add node");
+                    let mut flow = builder.build();
+                    if declared_effect == Effects::Effectful {
+                        set_idempotency(&mut flow, "entry");
+                    }
+
+                    let result = validate(&flow);
+
+                    let violates_effect = required_effect
+                        .map(|req| !declared_effect.is_at_least(req))
+                        .unwrap_or(false);
+                    let violates_det = required_det
+                        .map(|req| !declared_det.is_at_least(req))
+                        .unwrap_or(false);
+
+                    if violates_effect || violates_det {
+                        let diagnostics = result.err().expect("expected validation errors");
+                        if violates_effect {
+                            prop_assert!(
+                                diagnostics.iter().any(|d| d.code.code == "EFFECT201"),
+                                "expected EFFECT201 diagnostic"
+                            );
+                        }
+                        if violates_det {
+                            prop_assert!(
+                                diagnostics.iter().any(|d| d.code.code == "DET302"),
+                                "expected DET302 diagnostic"
+                            );
+                        }
+                    } else {
+                        prop_assert!(
+                            result.is_ok(),
+                            "expected validation success when declared policies satisfy hints"
+                        );
+                    }
+                    Ok(())
+                },
+            )
+            .unwrap();
+    }
+
+    #[test]
     fn detect_effect_conflicts() {
         let mut builder = FlowBuilder::new("effect_conflict", Version::new(1, 0, 0), Profile::Web);
         let writer = builder
@@ -365,6 +758,143 @@ mod tests {
             .err()
             .expect("expected idempotency diagnostic");
         assert!(diagnostics.iter().any(|d| d.code.code == "DAG004"));
+    }
+
+    #[test]
+    fn spill_requires_max_items_bound() {
+        let mut builder = FlowBuilder::new("spill_no_bound", Version::new(1, 0, 0), Profile::Queue);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let worker = builder
+            .add_node(
+                "worker",
+                &NodeSpec::inline(
+                    "tests::worker",
+                    "Worker",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &worker);
+
+        let mut flow = builder.build();
+        for edge in &mut flow.edges {
+            edge.buffer.spill_tier = Some("local".into());
+            edge.buffer.max_items = None;
+        }
+
+        let diagnostics = validate(&flow).err().expect("expected spill diagnostic");
+        assert!(diagnostics.iter().any(|d| d.code.code == "SPILL001"));
+    }
+
+    #[test]
+    fn spill_requires_blob_hint() {
+        let mut builder =
+            FlowBuilder::new("spill_blob_hint", Version::new(1, 0, 0), Profile::Queue);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let worker = builder
+            .add_node(
+                "worker",
+                &NodeSpec::inline(
+                    "tests::worker",
+                    "Worker",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &worker);
+
+        let mut flow = builder.build();
+        for edge in &mut flow.edges {
+            edge.buffer.spill_tier = Some("local".into());
+            edge.buffer.max_items = Some(1);
+        }
+
+        let diagnostics = validate(&flow)
+            .err()
+            .expect("expected blob hint diagnostic");
+        assert!(diagnostics.iter().any(|d| d.code.code == "SPILL002"));
+    }
+
+    #[test]
+    fn spill_passes_when_blob_hint_declared() {
+        let mut builder = FlowBuilder::new("spill_blob_ok", Version::new(1, 0, 0), Profile::Queue);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let worker_spec = NodeSpec::inline_with_hints(
+            "tests::worker",
+            "Worker",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Effectful,
+            Determinism::BestEffort,
+            None,
+            &[],
+            &["resource::blob::write"],
+        );
+        let worker = builder.add_node("worker", &worker_spec).unwrap();
+        builder.connect(&trigger, &worker);
+
+        let mut flow = builder.build();
+        for edge in &mut flow.edges {
+            edge.buffer.spill_tier = Some("local".into());
+            edge.buffer.max_items = Some(1);
+        }
+        set_idempotency(&mut flow, "worker");
+
+        let result = validate(&flow);
+        if let Err(diags) = &result {
+            let codes: Vec<&str> = diags.iter().map(|d| d.code.code).collect();
+            panic!(
+                "spill validation should succeed when blob hints are present, diagnostics: {:?}",
+                codes
+            );
+        }
     }
 
     #[test]
@@ -458,5 +988,142 @@ mod tests {
             .err()
             .expect("expected determinism diagnostic");
         assert!(diagnostics.iter().any(|d| d.code.code == "DET302"));
+    }
+
+    mod auto_hint_validation {
+        use super::*;
+        use dag_core::IdempotencyScope;
+
+        struct HttpWrite;
+        struct TestClock;
+        struct DbHandle;
+        struct Noop;
+
+        #[node(
+            name = "HttpWriter",
+            effects = "Effectful",
+            determinism = "BestEffort",
+            resources(http(HttpWrite))
+        )]
+        async fn http_writer(_: ()) -> NodeResult<()> {
+            Ok(())
+        }
+
+        #[node(
+            name = "ClockBestEffort",
+            effects = "ReadOnly",
+            determinism = "BestEffort",
+            resources(clock(TestClock))
+        )]
+        async fn clock_best_effort(_: ()) -> NodeResult<()> {
+            Ok(())
+        }
+
+        #[node(
+            name = "DbWriter",
+            effects = "Effectful",
+            determinism = "BestEffort",
+            resources(db_writer(DbHandle))
+        )]
+        async fn db_writer(_: ()) -> NodeResult<()> {
+            Ok(())
+        }
+
+        #[node(name = "NoResources", effects = "Pure", determinism = "Strict")]
+        async fn no_resources(_: ()) -> NodeResult<()> {
+            Ok(())
+        }
+
+        fn single_node_flow(alias: &str, spec: &'static NodeSpec) -> FlowIR {
+            let mut builder = FlowBuilder::new(alias, Version::new(1, 0, 0), Profile::Web);
+            builder.add_node(alias, spec).expect("add node");
+            builder.build()
+        }
+
+        fn ensure_idempotency(flow: &mut FlowIR, alias: &str) {
+            if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == alias) {
+                node.idempotency.key = Some("request.id".to_string());
+                node.idempotency.scope = Some(IdempotencyScope::Node);
+            }
+        }
+
+        #[test]
+        fn validator_flags_effect_conflict_from_registry_hint() {
+            capabilities::http::ensure_registered();
+            let mut flow = single_node_flow("writer", http_writer_node_spec());
+            ensure_idempotency(&mut flow, "writer");
+            if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "writer") {
+                node.effects = Effects::Pure;
+            }
+            let diagnostics = validate(&flow)
+                .err()
+                .expect("expected effect mismatch diagnostic");
+            assert!(
+                diagnostics.iter().any(|d| d.code.code == "EFFECT201"),
+                "expected EFFECT201, got: {:?}",
+                diagnostics
+            );
+        }
+
+        #[test]
+        fn validator_accepts_effectful_node_with_registry_hint() {
+            capabilities::http::ensure_registered();
+            let flow = single_node_flow("writer_ok", http_writer_node_spec());
+            // effectful nodes require idempotency; clone and set before validation
+            let mut flow = flow;
+            ensure_idempotency(&mut flow, "writer_ok");
+            assert!(
+                validate(&flow).is_ok(),
+                "effectful http writer should validate cleanly"
+            );
+        }
+
+        #[test]
+        fn validator_flags_determinism_conflict_from_registry_hint() {
+            capabilities::clock::ensure_registered();
+            let mut flow = single_node_flow("clock", clock_best_effort_node_spec());
+            if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "clock") {
+                node.determinism = Determinism::Strict;
+            }
+            let diagnostics = validate(&flow)
+                .err()
+                .expect("expected determinism mismatch diagnostic");
+            assert!(
+                diagnostics.iter().any(|d| d.code.code == "DET302"),
+                "expected DET302, got: {:?}",
+                diagnostics
+            );
+        }
+
+        #[test]
+        fn fallback_hints_still_trigger_conflicts() {
+            let mut flow = single_node_flow("db_writer", db_writer_node_spec());
+            ensure_idempotency(&mut flow, "db_writer");
+            if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "db_writer") {
+                node.effects = Effects::Pure;
+            }
+            let diagnostics = validate(&flow)
+                .err()
+                .expect("expected effect conflict from fallback hints");
+            assert!(
+                diagnostics.iter().any(|d| d.code.code == "EFFECT201"),
+                "expected EFFECT201 from fallback hints, got: {:?}",
+                diagnostics
+            );
+        }
+
+        #[test]
+        fn nodes_without_resources_remain_hint_free() {
+            let spec = no_resources_node_spec();
+            assert!(
+                spec.effect_hints.is_empty() && spec.determinism_hints.is_empty(),
+                "expected no hints for resource-free node"
+            );
+            let flow = single_node_flow("noop", spec);
+            assert!(
+                validate(&flow).is_ok(),
+                "resource-free nodes with pure/strict defaults should validate"
+            );
+        }
     }
 }

@@ -126,7 +126,7 @@ Refer to `impl-docs/impl-plan.md` for full detail; immediate priorities:
    - CLI milestone: `flows run local` executing `examples/s1_echo` with latency target (`impl-docs/impl-plan.md` Phase 2 exit criteria).
 
 2. **Phase 3 — Queue profile, dedupe, idempotency harness (RFC §6.4, §5.2):**
-   - Implement `host-queue-redis`, `cap-dedupe-redis`, `cap-cache-redis`, `cap-blob-fs`.
+   - Implement `bridge-queue-redis`, `cap-dedupe-redis`, `cap-cache-redis`, `cap-blob-fs`.
    - Extend validator for delivery semantics (`Delivery::ExactlyOnce` guardrails), dedupe requirements, cache policies.
    - Build `testing-harness-idem` duplicate injection harness and wire into CLI (`flows certify idem`).
 
@@ -168,4 +168,108 @@ Agents picking up Phase 2 work should start by reading RFC §6 (Kernel runtime) 
   - `crates/cli/src/main.rs` — CLI command structure for future expansion.
   - `examples/s1_echo/src/lib.rs` — canonical macro usage example.
 
+## Week 3 — Phase 2 Runtime Kickoff
+
+- Implemented the first slice of the in-process executor (`crates/kernel-exec`): node registry, bounded edge channels, cancellation propagation, and semaphore-governed capture backpressure aligned with RFC §6.1–§6.5. Captured outputs now release permits only when drained via `FlowInstance::next`.
+- Added async unit coverage: `backpressure_applies_when_capture_is_full` verifies capture queue saturation stalls producers, and `cancellation_propagates_on_error` checks that node failures cancel downstream work. Command: `CARGO_TARGET_DIR=.target cargo test -p kernel-exec`.
+- Updated Flow IR emission to include `NodeIR.identifier`, enabling runtime handler lookup without re-parsing macro metadata.
+- Next steps:
+  1. Extend `capabilities` with shared context accessors plus in-memory cache/clock hints (RFC §6.3) so the executor can wire resources.
+  2. Stand up `host-web-axum` with HttpTrigger/Respond, SSE streaming, and structured deadline handling (user stories S1/S2).
+  3. Expose `flows run local/serve` in the CLI and run S1/S2 end-to-end against the new runtime (Phase 2 exit criteria).
+  4. Document runtime metrics emission expectations and wire structured logging once the host is in place.
+
+## Week 3 — Axum Host Integration & CLI Serve
+
+- Introduced `HostHandle` in `crates/host-web-axum`: wraps the Axum router, exposes `into_service()` returning a `tower::make::Shared` make-service, and provides `spawn()` for background servers. Added `RouteConfig` helpers for deadlines/resources and ensured the router resolves to `Router<()>` for `axum::serve` compatibility.
+- Wired `flows run serve` to the host through Tokio's multi-thread runtime. The command now binds a `TcpListener`, builds the host from example metadata, serves the `/echo` route, and listens for `Ctrl+C` via `tokio::signal::ctrl_c` before graceful shutdown.
+- Added integration coverage in `crates/cli/tests/`: `run_local.rs` shells out with `assert_cmd` to verify payload normalization, while `serve.rs` spins up the Axum host on an ephemeral port and uses `reqwest` + `tokio::time::timeout` to assert round-trip JSON responses.
+- Normalised the S1 example (`examples/s1_echo`) to register node handlers under the correct crate path and mark `Responder` as `Pure/Strict`, keeping Plan validator `DAG004` satisfied.
+- Updated `impl-plan.md` Phase 2 test matrix to reference the new CLI/HTTP harnesses so future agents maintain the regression coverage.
+- Next steps: extend the same pattern to S2 SSE flows once stream surfaces land, emit effect/determinism hints from macros automatically, and introduce capability default registries so runtime validations no longer rely on manual test plumbing.
+- Test plan expansion:
+  - New `trybuild` fixtures where a node omits effectful metadata; macro-inferred hints should trigger `EFFECT201`/`DET302` without manual hint wiring.
+  - Macro unit tests (Rust `#[test]`) ensuring `NodeSpec::effect_hints`/`determinism_hints` include canonical IDs for HTTP read/write, clock, cache, and custom aliases.
+  - Validator regression tests that feed the generated `NodeSpec` into `kernel-plan` to confirm diagnostics surface with macro-produced hints.
+  - CLI smoke test invoking `flows graph check` on an example with conflicting hints to verify the richer diagnostics path emits the expected code/summary.
+  - Future SSE coverage once S2 lands to ensure streaming connectors inherit determinism hints automatically.
+
 Maintaining this log alongside implementation ensures every phase has traceable context, code touchpoints, and clear next actions for agents joining mid-stream.
+
+## Week 4 — SSE Streaming & S2 Example
+
+- Extended the executor with streaming captures: `FlowExecutor::run_once` now returns an `ExecutionResult` enum (`Value` or `Stream`), with `StreamHandle` holding the active `FlowInstance` and releasing backpressure permits only when the stream completes or is dropped. New tests `streaming_capture_emits_events` and `dropping_stream_cancels_run` exercise incremental consumption, cancellation, and error propagation.
+- Added `NodeRegistry::register_stream_fn` plus `StreamHandle` helpers, enabling nodes declared with `#[node]` to emit `NodeOutput::Stream`. Streaming hints honour `CancellationToken::cancelled_owned()` so dropping an SSE client tears down the producer.
+- Implemented SSE hosting in `crates/host-web-axum`: `streaming_response` wraps `StreamHandle` into `axum::response::Sse`, maps JSON payloads into `Event::data`, and hearts-beat every 15s. Added integration coverage (`serves_sse_stream`) verifying `text/event-stream` responses and event contents.
+- Introduced the `examples/s2_site` crate: trigger/snapshot/stream nodes, async instrumentation via `async_stream::stream!`, executor wiring registering the streaming handler, and unit tests validating IR structure. Added `src/bin/dump_ir.rs` to emit prettified Flow IR for schema snapshots.
+- CLI upgrades:
+  - `flows run local` gained `--stream`, printing JSON lines for streaming captures and gating SSE examples unless the flag is supplied.
+  - `flows run serve` now supports S2 via POST + JSON payload, and new integration tests (`serve_streaming_route_emits_sse`) assert SSE delivery end-to-end.
+  - `load_example` metadata tracks per-example HTTP method and streaming status to drive both CLI commands.
+- Schema/doc updates: captured Flow IR under `schemas/examples/s2_site.json`, documented streaming surfaces in the RFC §6.4/§14 notes, and marked the Phase 2 SSE DoD as complete in `impl-plan.md`.
+- Next steps:
+  1. Auto-emit effect/determinism hints from macros when streaming connectors declare resources (currently tests seed hints manually).
+  2. Expand capability registry coverage (HTTP read/write, cache, clock) so validators catch mismatches without bespoke fixtures.
+  3. Instrument runtime metrics per RFC §14 once streaming execution paths are stable.
+  4. Add property/fuzz tests for validator hint combinations and executor backpressure once the capability metadata lands.
+
+## Week 5 — Capability Hint Expansion
+
+- Broadened the capability hint taxonomy (`crates/capabilities/src/hints.rs`) to recognise `resource::kv`, `resource::blob`, `resource::queue`, and `resource::db::read` aliases. `dag-macros` now auto-register constraint metadata and surface `EFFECT201`/`DET302` diagnostics for queue publishes and blob access via new `trybuild` fixtures.
+- Introduced in-memory capability stubs (`MemoryKv`, `MemoryBlobStore`, `MemoryQueue`) plus error/trait definitions so executors and tests can exercise KV/Blob/Queue behaviours without platform SDKs. `ResourceBag` exposes the new capabilities with builder helpers and regression tests.
+- Registered canonical effect/determinism constraints (`capabilities::db::ensure_registered`, etc.) and updated the RFC/implementation plan to document the standard hint IDs consumed by validators and Studio policy tooling.
+- Updated `impl-plan.md` Phase 2 scope to note the expanded registry/stub work; refreshed the work log and RFC sections on capability metadata so downstream agents understand the default coverage.
+- Next steps:
+  1. Teach platform adapters (Workers KV/R2, Neon Postgres) to reuse the shared traits and register platform-specific hints.
+  2. Integrate the new capability accessors into executor contexts once runtime metrics land.
+  3. Layer property tests over the validator to fuzz combinations of kv/blob/queue hints and ensure diagnostics remain stable.
+
+## Week 6 — Runtime Metrics & CLI Summaries
+
+- Instrumented the executor with `HostMetrics` and friends: per-request guards increment/decrement `latticeflow.executor.*` gauges/counters, queue depth tracking now rides RAII permits, and new unit tests under `kernel-exec` verify histogram/counter updates via `metrics-util::DebuggingRecorder`.
+- Extended the Axum host to emit `latticeflow.host.*` telemetry (request latency, inflight gauges, SSE client counts, deadline breaches). Streaming responses wrap `StreamHandle` with an `async_stream` guard so gauges drop when clients disconnect, and fresh tests (`records_host_metrics_for_success`) assert the HTTP/SSE paths publish metrics.
+- Added `impl-docs/metrics.md` to catalogue every metric (`executor`, `host`, `cli`) with labels/units, and refreshed RFC §14 to point at the catalog.
+- CLI upgrades: `flows run local` now clears the recorder per invocation, captures a `RunSummary` (duration, per-node stats, stream counts), prints a human-readable summary to stderr, and exposes `--json` for structured `{ result, summary }` output. Integration coverage in `crates/cli/tests/run_local.rs` checks both pretty prints and JSON payloads. JSON mode is rejected when combined with `--stream` to keep output deterministic.
+- Recorded CLI-level metrics (`latticeflow.cli.*`) after each run (duration histogram, nodes succeeded/failed counters, capture-emitted totals) so future observability backends can ingest high-level run data without scraping stdout.
+- Next steps:
+  1. Thread metrics export hooks into future deployment targets (e.g., Prometheus exporter behind a flag) once we stabilise control plane requirements.
+  2. Fold the same summary/recorder pattern into `flows run serve --inspect` once interactive tooling lands.
+  3. Explore structured logging spans for CLI runs so summaries and executor traces share the same `run_id` for downstream correlation.
+
+## Week 7 — Property & Behavioural Fuzzing
+
+- Executor invariants: added a proptest-driven scenario (`flow_instance_respects_capture_capacity`) that prefills capture queues, forces backpressure, and asserts permit accounting never exceeds channel capacity while retries succeed after draining.
+- Streaming order guarantees: `host-web-axum` now fuzzes SSE responses (`sse_stream_preserves_event_sequence`) with arbitrary integer payloads, ensuring event ordering and guard teardown remain correct under varied inter-arrival patterns.
+- Validator coverage: introduced `fuzz_registry_hint_enforcement`, generating combinations of effect/determinism hints across HTTP/DB/KV/Blob/Queue domains and randomly downgrading declared guarantees to assert diagnostics surface iff the lattice requirements are violated.
+- CLI robustness: layered a property test over `flows run local --example s1_echo` that synthesises mixed-case, whitespace-heavy, and Unicode payloads, verifying normalisation behaviour matches the S1 contract for every sampled string.
+- Documentation: Phase 2’s property-test deliverable is now marked complete in `impl-plan.md`; future work shifts to long-haul fuzzing (queue profile, plugin registration churn) as the runtime expands.
+- Bridge/host split groundwork: introduced the `host-inproc` crate with canonical `Invocation` metadata and refactored `host-web-axum` into a thin HTTP bridge that delegates execution to the shared runtime, setting the stage for environment-specific bridges (Redis, Workers, Lambda) to reuse the same in-process host.
+- Axum bridge now forwards HTTP metadata (`http.method`, `http.path`, headers, parsed query params, `auth.user`) into `InvocationMetadata`, and `host-inproc` exposes an `EnvironmentPlugin` trait so platform-specific adapters (Lambda, Workers) can react to the enriched context. Tests cover metadata propagation and plugin hook invocation, and `examples/s1_echo` demonstrates the pattern with a mock Auth0-style middleware that enriches responses with the authenticated user.
+
+## Week 8 — Redis capability consolidation
+
+- Reorganised Redis-specific capability crates beneath `crates/contrib/redis/`, introducing a shared `cap-redis` crate that centralises connection pooling, namespacing, and concurrency limits. Updated workspace membership, READMEs, and surface docs to reflect the new layout.
+- Extended the capability registry with an explicit `dedupe` module: registered effect/determinism constraints, expanded `ResourceBag`/`ResourceAccess`, and taught the hint inference table to emit `resource::dedupe::*` metadata so macros auto-propagate requirements for dedupe bindings.
+- Implemented `cap-dedupe-redis` atop the shared factory with atomic `SET NX PX` semantics, TTL floor enforcement, namespaced key encoding, and lightweight unit tests covering TTL and key derivation.
+- Implemented `cap-cache-redis` using the shared factory, reusing hex-encoded namespacing, honoring default TTLs, and guarding async Redis calls behind runtime-aware blocking helpers to satisfy the synchronous cache trait.
+- Updated crate READMEs to reflect the completed Redis command plumbing and refined upcoming work (instrumentation, integration harnesses, queue bridge wiring). Workspace `cargo check` stays green with the new structure.
+- Delivered the initial `bridge-queue-redis` skeleton: enqueue serialisation, worker spawning on top of `host-inproc`, Redis list polling with `BRPOPLPUSH`, and round-trip tests for queue envelopes. The bridge now exposes a usable API for higher-level integration work in Phase 3.
+- Next steps: extend the bridge with visibility timeouts + dedupe hints, add Redis-backed integration tests, and hook queue execution metrics into the runtime instrumentation before progressing to the idempotency harness.
+
+## Week 9 — Queue leases & KV idempotency harness
+
+- Upgraded `bridge-queue-redis` with visibility-timeout leasing, Redis processing lists, periodic lease extension, and a background reaper that returns expired messages to the ready queue. Queue bridges now emit metrics under the `latticeflow.queue.*` namespace (enqueue/dequeue, duplicates, requeues, lease events, inflight gauge).
+- Added optional dedupe enforcement: queue messages carry optional dedupe metadata extracted from invocation labels/extensions, and bridges consult any registered `DedupeStore` before executing. The bridge records duplicate suppression metrics and releases dedupe keys on failure paths.
+- Extended the validator with `EXACT001`/`EXACT002`/`EXACT003` diagnostics: Exactly-once edges now require both a dedupe capability binding and idempotency metadata (key + TTL meeting the 300 s minimum). Flow IR’s `IdempotencySpec` gained an optional `ttl_ms`, schema/docs were updated, and new validation tests cover missing bindings, keys, and under-sized TTLs.
+- Implemented spill-to-blob buffering in the executor with a tempdir-backed spill store, `FlowMessage::Spilled` rehydration, and a queue integration test proving overflow messages persist while downstream workers catch up. Validator now emits `SPILL001`/`SPILL002` when flows enable spilling without a bounded buffer or blob capability hint, and the diagnostics/doc registry reflects the new codes.
+- Added an initial KV-centric idempotency harness (`testing-harness-idem`) that exercises the `KeyValue` trait (using `MemoryKv`) to verify duplicate blocking and TTL expiry. The harness produces a `HarnessReport` consumed by future certification suites.
+- Documentation updates: queue metrics catalogued in `impl-docs/metrics.md`, bridge README refreshed with new behaviour, and the Phase 2 work log now captures the queue bridge progress.
+
+## Week 10 — OpenDAL capability scaffold
+
+- Introduced `cap-opendal-core`, a shared helper crate that mirrors OpenDAL’s service/layer feature flags, exposes an async `OperatorFactory` trait, and provides `SchemeOperatorFactory` plus `OperatorLayerExt` so downstream capability crates can assemble operators without duplicating boilerplate.
+- Centralised error translation via `OpendalError`, mapping `opendal::ErrorKind` into portable capability errors that future blob/KV adapters can reuse.
+- Documented the new crate, refreshed `impl-docs/opendal-capability-plan.md`, and recorded the scaffold in the Cloudflare host design notes to show how bridge crates will pull from the shared OpenDAL core.
+- Landed `cap-blob-opendal` with `OpendalBlobStore`, builder hooks (`with_layer`, `map_operator`), and memory-backend tests; docs updated so Phase 2 of the OpenDAL plan now points at the implementation.
+- Added `cap-kv-opendal`, exposing `OpendalKvStore` with capability metadata (`KvCapabilityInfo`), Tokio-friendly blocking adapters, and namespace TTL validation; updated plan/docs to mark Phase 3 complete and broaden host runtime references to cover both blob and KV providers.
+- Converted the shared `KeyValue` capability trait to async (`capabilities/src/lib.rs`), updated `MemoryKv`, the idempotency harness, kernel resource tests, and the OpenDAL-backed store to await operations, and introduced `context::with_current_async` so node implementations can use async capability calls without manual plumbing.

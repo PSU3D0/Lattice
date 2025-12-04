@@ -42,7 +42,11 @@ ensure the registry stays in sync with the implementation.
 | RETRY010  | Validation     | Error   | Retry ownership declared on both connector and orchestrator. |
 | RETRY011  | Validation     | Error   | Retry ownership violates capability policy defaults. |
 | EXACT001  | Validation     | Error   | Exactly-once delivery requested without dedupe binding. |
+| EXACT002  | Validation     | Error   | Exactly-once delivery requested without idempotency metadata. |
+| EXACT003  | Validation     | Error   | Exactly-once delivery requested without a sufficient dedupe TTL. |
 | EXACT005  | Validation     | Error   | Exactly-once sink lacks documented idempotent contract. |
+| SPILL001  | Validation     | Error   | Spill tiers must declare an in-memory `max_items` budget. |
+| SPILL002  | Validation     | Error   | Spill tiers require a blob capability binding. |
 | TIME015   | Runtime        | Error   | Execution exceeded configured timeout budget. |
 | RUN030    | Runtime        | Warn    | Workflow experiencing sustained backpressure stall. |
 | RUN040    | Runtime        | Info    | Buffer spill to blob tier triggered. |

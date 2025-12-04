@@ -12,4 +12,8 @@ description = "S1 echo workflow example built with LatticeFlow macros."
 [dependencies]
 dag-core = { path = "../../crates/dag-core" }
 dag-macros = { path = "../../crates/dag-macros" }
+kernel-exec = { path = "../../crates/kernel-exec" }
+kernel-plan = { path = "../../crates/kernel-plan" }
+host-inproc = { path = "../../crates/host-inproc" }
 serde.workspace = true
+serde_json.workspace = true

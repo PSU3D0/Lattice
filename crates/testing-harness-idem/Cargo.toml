@@ -11,6 +11,7 @@ description = "Idempotency replay harness for validating effectful LatticeFlow n
 
 [dependencies]
 dag-core = { path = "../dag-core" }
+capabilities = { path = "../capabilities" }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -18,3 +19,11 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tokio-stream.workspace = true
+
+[dev-dependencies]
+cap-dedupe-redis = { path = "../contrib/redis/cap-dedupe-redis" }
+cap-redis = { path = "../contrib/redis/cap-redis" }
+redis.workspace = true
+testcontainers = { version = "0.18", features = ["blocking"] }
+uuid.workspace = true
+reqwest = { workspace = true, features = ["native-tls-vendored"] }

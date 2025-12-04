@@ -31,7 +31,7 @@ The workspace provides everything needed to go from macro-authored code to runni
   kernel-plan/                    # Flow IR validators + lowering scaffolding
   kernel-exec/                    # (Scaffold) runtime for execution plans
   capabilities/, cap-*            # Capability typestates + concrete providers
-  host-web-axum/, host-queue-redis/, host-temporal/  # Execution hosts
+  host-inproc/, host-web-axum/, bridge-queue-redis/, host-temporal/  # Runtime + execution bridges
   plugin-wasi/, plugin-python/    # Sandbox runtimes for WASM and gRPC plugins
   exporters/                      # Flow IR exporters (JSON, DOT, future OpenAPI/WIT)
   registry-client/, registry-cert/# Certification + registry publication tooling
@@ -102,11 +102,12 @@ Validation highlights implemented in `kernel-plan::validate`:
 
 Additional rules (delivery requirements, capability overlap, policy waivers) are outlined in the RFC and queued for future phases.
 
-## Runtime & Hosts (Scaffold)
+## Runtime, Bridges & Hosts (Scaffold)
 
 - **kernel-exec:** Will host the async scheduler, cancellation tokens, partition routing, backpressure, and spill-to-blob logic. Targets the Web, Queue, Temporal, WASM profiles enumerated in `impl-docs/impl-plan.md`.
+- **host-inproc:** Shared runtime harness used by all bridges to execute validated flows within the current process.
 - **host-web-axum:** Axum adapter that mounts HTTP triggers, handles SSE streaming, request facet injection, deadlines, and cancellation propagation.
-- **host-queue-redis:** Redis-based queue runner managing visibility timeouts, dedupe integration (`cap-dedupe-redis`), rate limits, and fairness scheduling.
+- **bridge-queue-redis:** Redis-based queue bridge managing visibility timeouts, dedupe integration (`cap-dedupe-redis`), rate limits, and fairness scheduling before delegating to `host-inproc`.
 - **host-temporal:** Code generation + Rust activity worker bridging Flow IR to Temporal workflows and activity semantics (signals, timers, Continue-As-New).
 - **plugin-wasi / plugin-python:** Sandboxed plugin hosts enforcing declared capabilities, memory/timeout budgets, and determinism evidence.
 

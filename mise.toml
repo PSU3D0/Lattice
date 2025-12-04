@@ -1,0 +1,36 @@
+min_version = { soft = "2024.9.0", hard = "2024.11.1" }
+
+[tools]
+rust = "1.90.0"
+
+[env]
+CARGO_TERM_COLOR = "always"
+
+[vars]
+cargo_workspace = "--workspace"
+
+[tasks.bootstrap]
+description = "Install all toolchains declared in mise.toml"
+run = "mise install"
+
+[tasks.check]
+description = "Fast type-check across the Rust workspace"
+run = "cargo check {{vars.cargo_workspace}}"
+
+[tasks.fmt]
+description = "Ensure Rust source is formatted"
+run = "cargo fmt -- --check"
+
+[tasks.clippy]
+description = "Run clippy with warnings elevated to errors"
+run = "cargo clippy --all-targets --all-features -D warnings"
+
+[tasks.test]
+description = "Execute the full Rust test suite"
+depends = ["check"]
+run = "cargo test {{vars.cargo_workspace}}"
+
+[tasks.validate]
+description = "Aggregate validation task for CI"
+depends = ["fmt", "clippy", "test"]
+run = "echo finished validation checks"

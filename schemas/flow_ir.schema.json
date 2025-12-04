@@ -533,9 +533,10 @@
         "key": {
           "$ref": "#/$defs/IdempotencyKeySpec"
         },
-        "ttl": {
-          "$ref": "#/$defs/Duration",
-          "description": "TTL for dedupe entries. Required for Effectful nodes."
+        "ttlMs": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "TTL for dedupe reservations in milliseconds."
         }
       }
     },

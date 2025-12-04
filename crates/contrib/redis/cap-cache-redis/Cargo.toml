@@ -1,5 +1,5 @@
 [package]
-name = "cap-dedupe-redis"
+name = "cap-cache-redis"
 version = "0.1.0"
 authors.workspace = true
 edition.workspace = true
@@ -7,12 +7,15 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Redis-backed dedupe store capability for exactly-once delivery guarantees."
+description = "Redis-backed cache capability supporting strict/stable memoization."
 
 [dependencies]
-capabilities = { path = "../capabilities" }
+capabilities = { path = "../../../capabilities" }
+cap-redis = { path = "../cap-redis" }
 anyhow.workspace = true
 redis.workspace = true
+serde.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+hex.workspace = true

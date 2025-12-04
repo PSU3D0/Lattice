@@ -1,0 +1,43 @@
+[package]
+name = "cap-opendal-core"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Shared OpenDAL helpers for LatticeFlow capability crates."
+
+[features]
+default = []
+services-fs = ["opendal/services-fs"]
+services-s3 = ["opendal/services-s3"]
+services-gcs = ["opendal/services-gcs"]
+services-azblob = ["opendal/services-azblob"]
+services-http = ["opendal/services-http"]
+services-memory = ["opendal/services-memory"]
+services-cloudflare-kv = ["opendal/services-cloudflare-kv"]
+services-d1 = ["opendal/services-d1"]
+layers-chaos = ["opendal/layers-chaos"]
+layers-metrics = ["opendal/layers-metrics"]
+layers-mime-guess = ["opendal/layers-mime-guess"]
+layers-prometheus = ["opendal/layers-prometheus"]
+layers-prometheus-client = ["opendal/layers-prometheus-client"]
+layers-fastmetrics = ["opendal/layers-fastmetrics"]
+layers-fastrace = ["opendal/layers-fastrace"]
+layers-otel-metrics = ["opendal/layers-otel-metrics"]
+layers-otel-trace = ["opendal/layers-otel-trace"]
+layers-throttle = ["opendal/layers-throttle"]
+layers-await-tree = ["opendal/layers-await-tree"]
+layers-async-backtrace = ["opendal/layers-async-backtrace"]
+layers-dtrace = ["opendal/layers-dtrace"]
+layers-tracing = ["opendal/layers-tracing"]
+
+[dependencies]
+async-trait.workspace = true
+opendal = { version = "0.54.1", default-features = false }
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }

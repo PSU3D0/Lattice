@@ -263,6 +263,8 @@ pub struct NodeIR {
     pub id: NodeId,
     /// Alias used within the workflow definition.
     pub alias: String,
+    /// Fully-qualified implementation identifier used for runtime lookup.
+    pub identifier: String,
     /// Human readable name.
     pub name: String,
     /// Node kind.
@@ -495,6 +497,9 @@ pub struct IdempotencySpec {
     /// Scope for the idempotency key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<IdempotencyScope>,
+    /// Optional TTL (in milliseconds) for dedupe reservations.
+    #[serde(rename = "ttlMs", skip_serializing_if = "Option::is_none")]
+    pub ttl_ms: Option<u64>,
 }
 
 /// Supported idempotency scopes.

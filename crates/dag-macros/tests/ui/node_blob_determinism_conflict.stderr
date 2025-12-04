@@ -1,0 +1,13 @@
+error: [DET302] resource `resource::blob` (from `blob_fetch`) requires determinism >= BestEffort, but node declares Strict. Blob storage responses can change over time; downgrade determinism or pin versions.
+  --> tests/ui/node_blob_determinism_conflict.rs:10:15
+   |
+10 |     resources(blob_fetch(BlobClient))
+   |               ^^^^^^^^^^
+
+warning: unused import: `dag_core::NodeResult`
+ --> tests/ui/node_blob_determinism_conflict.rs:1:5
+  |
+1 | use dag_core::NodeResult;
+  |     ^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default

@@ -16,3 +16,4 @@ serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 dag-core = { path = "../dag-core" }
+tokio.workspace = true

@@ -142,6 +142,36 @@ pub static DIAGNOSTIC_CODES: Lazy<Vec<DiagnosticCode>> = Lazy::new(|| {
             summary: "Duplicate node alias encountered in workflow",
         },
         DiagnosticCode {
+            code: "EXACT001",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Exactly-once delivery requires a dedupe capability binding",
+        },
+        DiagnosticCode {
+            code: "EXACT002",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Exactly-once delivery requires an idempotency key",
+        },
+        DiagnosticCode {
+            code: "EXACT003",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Exactly-once delivery requires a minimum dedupe TTL",
+        },
+        DiagnosticCode {
+            code: "SPILL001",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Spill tiers require a bounded in-memory buffer",
+        },
+        DiagnosticCode {
+            code: "SPILL002",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Spill tiers require a blob capability binding",
+        },
+        DiagnosticCode {
             code: "EFFECT201",
             subsystem: "validation",
             default_severity: Severity::Error,

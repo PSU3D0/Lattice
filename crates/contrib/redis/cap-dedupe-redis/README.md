@@ -8,10 +8,11 @@
 - Error taxonomy aligning with IDEM* diagnostics.
 
 ## Next steps
-- Implement Redis commands with async pipelines and reliability instrumentation.
+- Add tracing/metrics instrumentation around Redis calls to feed queue diagnostics.
 - Write integration tests that exercise duplicate bursts and TTL expiry behaviour.
-- Wire into `host-queue-redis` and validator checks in `kernel-plan`.
+- Wire into `bridge-queue-redis` and validator checks in `kernel-plan`.
 
 ## Depends on
 - Capability traits from `capabilities`.
-- Redis connection management shared with `host-queue-redis`.
+- Shared Redis client plumbing from `cap-redis`.
+- Queue bridge/integration tests in `bridge-queue-redis`.

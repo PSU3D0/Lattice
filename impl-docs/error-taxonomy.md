@@ -159,7 +159,7 @@ Similarly, calling `SystemTime::now()` or `Instant::now()` in a `Strict` node wo
 
 ## 5. Idempotency & Delivery Semantics
 - **Missing keys** — `DAG004`, `IDEM020`/`IDEM025` (RFC §5.2 & §5.4). Effectful nodes must define deterministic idempotency keys. Rust-logic mistakes: forgetting to attach `idempotency =` attribute, or adding non-deterministic fields to key expression.
-- **Exactly-once prerequisites** — `EXACT001`, `EXACT005` (RFC §5.4). Validator ensures dedupe capability bound and sink contract documented. Queue/Temporal hosts also enforce before runtime.
+- **Exactly-once prerequisites** — `EXACT001`/`EXACT002`/`EXACT003` and `EXACT005` (RFC §5.4). Validator ensures a dedupe capability binding exists, nodes expose idempotency metadata (key + TTL), and sink contracts are documented. Queue/Temporal hosts also enforce these checks before runtime.
 
 ### Example: Missing idempotency (`DAG004`)
 
@@ -204,7 +204,50 @@ workflow! {
 
 Mitigation: bind `cap-dedupe-redis` (or equivalent) via `capabilities` and ensure `UpsertRow` references it.
 
-## 6. Policy & Compliance
+### Example: Exactly-once without TTL (`EXACT003`)
+
+```rust
+#[node(
+    name = "UpsertRow",
+    effects = "Effectful",
+    determinism = "BestEffort",
+    idempotency = "partition_by!(|req: &UpsertRequest| req.row_id.clone())"
+    // ttl_ms omitted -> EXACT003 (minimum 300_000ms by default)
+)]
+```
+
+Mitigation: declare an explicit TTL that meets or exceeds the platform minimum (e.g. `ttl_ms = 300_000` for a five minute lease) so the queue bridge can safely dedupe retries.
+
+## 6. Spill Configuration
+- **Missing buffer bound** — `SPILL001` (RFC §6.4). Any edge that enables `spill_tier` must still declare an in-memory `max_items` budget so the executor knows when to begin spilling. Rust mistakes: setting `spill_tier = "local"` without bounding the queue, or forgetting to propagate the configuration when composing flows.
+- **Missing blob binding** — `SPILL002` (RFC §6.4). Spilling to blob storage requires the flow to bind a blob capability (e.g., `cap-blob-fs`, `cap-blob-s3`) and emit the corresponding `resource::blob::write` hint. Without the hint the validator assumes the runtime cannot persist overflow safely.
+
+### Example: Spill tier without buffer (`SPILL001`)
+
+```rust
+builder.connect(&trigger, &worker);
+let mut flow = builder.build();
+for edge in &mut flow.edges {
+    edge.buffer.spill_tier = Some("local".into());
+    edge.buffer.max_items = None; // -> SPILL001
+}
+```
+
+**Mitigation:** specify a finite in-memory buffer (e.g., `max_items = Some(128)`) before enabling spill so the executor can decide when to offload messages.
+
+### Example: Spill without blob capability (`SPILL002`)
+
+```rust
+// Worker node lacks resource::blob::write hint
+let worker = builder.add_node("worker", &worker_spec_without_blob).unwrap();
+// Edge requests spill tier
+edge.buffer.spill_tier = Some("s3".into());
+edge.buffer.max_items = Some(64);
+```
+
+**Mitigation:** bind a blob capability (e.g., `cap-blob-fs`, `cap-blob-s3`) and ensure the emitting node declares `resource::blob::write` so spill operations have a backing store.
+
+## 7. Policy & Compliance
 - **Egress restrictions** — `EGRESS101` (RFC §15.1). Workflow requests a provider/egress domain outside policy allowlist.
 - **Data classification** — `DATA101` (RFC §5.4, §15.5). Nodes/ports missing data-class tags required for policy evaluation.
 - **Cache policy** — `CACHE001`, `CACHE002` (RFC §5.2, §8). Strict nodes without caches or stable nodes without pinned inputs.

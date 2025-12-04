@@ -1,0 +1,13 @@
+error: [EFFECT201] resource `resource::queue::publish` (from `queue_publish`) requires effects >= Effectful, but node declares Pure. Queue publishes are effectful; ensure effects = Effectful with dedupe keys.
+  --> tests/ui/node_queue_effect_conflict.rs:10:15
+   |
+10 |     resources(queue_publish(QueueClient))
+   |               ^^^^^^^^^^^^^
+
+warning: unused import: `dag_core::NodeResult`
+ --> tests/ui/node_queue_effect_conflict.rs:1:5
+  |
+1 | use dag_core::NodeResult;
+  |     ^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
