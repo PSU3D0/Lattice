@@ -637,13 +637,24 @@ impl QueueDepthTracker {
     }
 
     fn increment(&self) {
-        let depth = self.depth.fetch_add(1, Ordering::AcqRel) + 1;
-        self.publish(depth.min(self.capacity));
+        let prev = self
+            .depth
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                Some(current.saturating_add(1).min(self.capacity))
+            })
+            .expect("queue depth update should succeed");
+        let depth = prev.saturating_add(1).min(self.capacity);
+        self.publish(depth);
     }
 
     fn decrement(&self) {
-        let prev = self.depth.fetch_sub(1, Ordering::AcqRel);
-        let depth = prev.saturating_sub(1).min(self.capacity);
+        let prev = self
+            .depth
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                Some(current.saturating_sub(1))
+            })
+            .expect("queue depth update should succeed");
+        let depth = prev.saturating_sub(1);
         self.publish(depth);
     }
 
