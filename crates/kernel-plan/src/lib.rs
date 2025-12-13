@@ -398,14 +398,13 @@ mod tests {
     }
 
     fn ensure_dedupe_hint(flow: &mut FlowIR, alias: &str) {
-        if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == alias) {
-            if !node
+        if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == alias)
+            && !node
                 .effect_hints
                 .iter()
                 .any(|hint| hint == DEDUPE_HINT_WRITE)
-            {
-                node.effect_hints.push(DEDUPE_HINT_WRITE.to_string());
-            }
+        {
+            node.effect_hints.push(DEDUPE_HINT_WRITE.to_string());
         }
     }
 
@@ -427,7 +426,7 @@ mod tests {
         }
         set_idempotency(&mut flow, "consumer");
 
-        let diagnostics = validate(&flow).err().expect("expected validation errors");
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
         assert!(diagnostics.iter().any(|d| d.code.code == "EXACT001"));
     }
 
@@ -443,7 +442,7 @@ mod tests {
             node.idempotency.key = None;
         }
 
-        let diagnostics = validate(&flow).err().expect("expected validation errors");
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
         assert!(diagnostics.iter().any(|d| d.code.code == "EXACT002"));
         // Without a key TTL is irrelevant; ensure no panic when missing.
     }
@@ -460,7 +459,7 @@ mod tests {
             node.idempotency.ttl_ms = None;
         }
 
-        let diagnostics = validate(&flow).err().expect("expected validation errors");
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
         assert!(diagnostics.iter().any(|d| d.code.code == "EXACT003"));
     }
 
@@ -476,7 +475,7 @@ mod tests {
             node.idempotency.ttl_ms = Some(MIN_EXACTLY_ONCE_TTL_MS - 1);
         }
 
-        let diagnostics = validate(&flow).err().expect("expected validation errors");
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
         assert!(diagnostics.iter().any(|d| d.code.code == "EXACT003"));
     }
 
@@ -533,7 +532,7 @@ mod tests {
             to: "producer".to_string(),
             ..dag_core::EdgeIR::default()
         });
-        let diagnostics = validate(&flow).err().expect("expected cycle diagnostic");
+        let diagnostics = validate(&flow).expect_err("expected cycle diagnostic");
         assert!(diagnostics.iter().any(|d| d.code.code == "DAG200"));
     }
 
@@ -550,7 +549,7 @@ mod tests {
             to: "absent".to_string(),
             ..dag_core::EdgeIR::default()
         });
-        let diagnostics = validate(&flow).err().expect("expected alias diagnostics");
+        let diagnostics = validate(&flow).expect_err("expected alias diagnostics");
         let mut seen_source = false;
         let mut seen_target = false;
         for diag in diagnostics {
@@ -682,7 +681,7 @@ mod tests {
                         .unwrap_or(false);
 
                     if violates_effect || violates_det {
-                        let diagnostics = result.err().expect("expected validation errors");
+                        let diagnostics = result.expect_err("expected validation errors");
                         if violates_effect {
                             prop_assert!(
                                 diagnostics.iter().any(|d| d.code.code == "EFFECT201"),
@@ -743,7 +742,7 @@ mod tests {
         builder.connect(&writer, &sink);
         let flow = builder.build();
 
-        let diagnostics = validate(&flow).err().expect("expected effect diagnostic");
+        let diagnostics = validate(&flow).expect_err("expected effect diagnostic");
         assert!(diagnostics.iter().any(|d| d.code.code == "EFFECT201"));
     }
 
@@ -754,9 +753,7 @@ mod tests {
             node.effects = Effects::Effectful;
             node.idempotency.key = None;
         }
-        let diagnostics = validate(&flow)
-            .err()
-            .expect("expected idempotency diagnostic");
+        let diagnostics = validate(&flow).expect_err("expected idempotency diagnostic");
         assert!(diagnostics.iter().any(|d| d.code.code == "DAG004"));
     }
 
@@ -799,7 +796,7 @@ mod tests {
             edge.buffer.max_items = None;
         }
 
-        let diagnostics = validate(&flow).err().expect("expected spill diagnostic");
+        let diagnostics = validate(&flow).expect_err("expected spill diagnostic");
         assert!(diagnostics.iter().any(|d| d.code.code == "SPILL001"));
     }
 
@@ -843,9 +840,7 @@ mod tests {
             edge.buffer.max_items = Some(1);
         }
 
-        let diagnostics = validate(&flow)
-            .err()
-            .expect("expected blob hint diagnostic");
+        let diagnostics = validate(&flow).expect_err("expected blob hint diagnostic");
         assert!(diagnostics.iter().any(|d| d.code.code == "SPILL002"));
     }
 
@@ -933,9 +928,7 @@ mod tests {
         builder.connect(&clock, &sink);
         let flow = builder.build();
 
-        let diagnostics = validate(&flow)
-            .err()
-            .expect("expected determinism diagnostic");
+        let diagnostics = validate(&flow).expect_err("expected determinism diagnostic");
         assert!(diagnostics.iter().any(|d| d.code.code == "DET302"));
     }
 
@@ -984,9 +977,7 @@ mod tests {
         builder.connect(&source, &sink);
         let flow = builder.build();
 
-        let diagnostics = validate(&flow)
-            .err()
-            .expect("expected determinism diagnostic");
+        let diagnostics = validate(&flow).expect_err("expected determinism diagnostic");
         assert!(diagnostics.iter().any(|d| d.code.code == "DET302"));
     }
 
@@ -994,11 +985,16 @@ mod tests {
         use super::*;
         use dag_core::IdempotencyScope;
 
+        #[allow(dead_code)]
         struct HttpWrite;
+        #[allow(dead_code)]
         struct TestClock;
+        #[allow(dead_code)]
         struct DbHandle;
+        #[allow(dead_code)]
         struct Noop;
 
+        #[allow(dead_code)]
         #[node(
             name = "HttpWriter",
             effects = "Effectful",
@@ -1009,6 +1005,7 @@ mod tests {
             Ok(())
         }
 
+        #[allow(dead_code)]
         #[node(
             name = "ClockBestEffort",
             effects = "ReadOnly",
@@ -1019,6 +1016,7 @@ mod tests {
             Ok(())
         }
 
+        #[allow(dead_code)]
         #[node(
             name = "DbWriter",
             effects = "Effectful",
@@ -1029,6 +1027,7 @@ mod tests {
             Ok(())
         }
 
+        #[allow(dead_code)]
         #[node(name = "NoResources", effects = "Pure", determinism = "Strict")]
         async fn no_resources(_: ()) -> NodeResult<()> {
             Ok(())
@@ -1055,9 +1054,7 @@ mod tests {
             if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "writer") {
                 node.effects = Effects::Pure;
             }
-            let diagnostics = validate(&flow)
-                .err()
-                .expect("expected effect mismatch diagnostic");
+            let diagnostics = validate(&flow).expect_err("expected effect mismatch diagnostic");
             assert!(
                 diagnostics.iter().any(|d| d.code.code == "EFFECT201"),
                 "expected EFFECT201, got: {:?}",
@@ -1085,9 +1082,8 @@ mod tests {
             if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "clock") {
                 node.determinism = Determinism::Strict;
             }
-            let diagnostics = validate(&flow)
-                .err()
-                .expect("expected determinism mismatch diagnostic");
+            let diagnostics =
+                validate(&flow).expect_err("expected determinism mismatch diagnostic");
             assert!(
                 diagnostics.iter().any(|d| d.code.code == "DET302"),
                 "expected DET302, got: {:?}",
@@ -1102,9 +1098,8 @@ mod tests {
             if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "db_writer") {
                 node.effects = Effects::Pure;
             }
-            let diagnostics = validate(&flow)
-                .err()
-                .expect("expected effect conflict from fallback hints");
+            let diagnostics =
+                validate(&flow).expect_err("expected effect conflict from fallback hints");
             assert!(
                 diagnostics.iter().any(|d| d.code.code == "EFFECT201"),
                 "expected EFFECT201 from fallback hints, got: {:?}",

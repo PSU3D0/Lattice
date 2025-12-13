@@ -111,7 +111,7 @@ mod tests {
         assert!(matches!(mapped, OpendalError::NotFound));
     }
 
-    #[cfg(all(feature = "services-memory", feature = "layers-logging"))]
+    #[cfg(all(feature = "services-memory", feature = "layers-tracing"))]
     #[tokio::test]
     async fn builds_memory_operator() {
         let factory = SchemeOperatorFactory::new(Scheme::Memory, [("root", "/tmp")]);

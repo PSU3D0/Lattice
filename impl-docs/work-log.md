@@ -278,3 +278,10 @@ Maintaining this log alongside implementation ensures every phase has traceable 
 - Landed `cap-blob-opendal` with `OpendalBlobStore`, builder hooks (`with_layer`, `map_operator`), and memory-backend tests; docs updated so Phase 2 of the OpenDAL plan now points at the implementation.
 - Added `cap-kv-opendal`, exposing `OpendalKvStore` with capability metadata (`KvCapabilityInfo`), Tokio-friendly blocking adapters, and namespace TTL validation; updated plan/docs to mark Phase 3 complete and broaden host runtime references to cover both blob and KV providers.
 - Converted the shared `KeyValue` capability trait to async (`capabilities/src/lib.rs`), updated `MemoryKv`, the idempotency harness, kernel resource tests, and the OpenDAL-backed store to await operations, and introduced `context::with_current_async` so node implementations can use async capability calls without manual plumbing.
+
+## 2025-12-12 — Docs consolidation & encrypted private docs
+
+- Consolidated doc layout: canonical specs in `impl-docs/spec/`, ADRs in `impl-docs/adrs/`, and roadmap/epics in `impl-docs/roadmap/`. Older longform + MCP notes live under `impl-docs/archive/` (including `impl-docs/archive/mcp/`).
+- Cloudflare adapter notes remain under `impl-docs/cloudflare/` for implementation context but are not treated as canonical contract docs.
+- Private docs workflow: plaintext stays gitignored under `private/impl-docs/`; commit only ciphertext under `impl-docs/_encrypted/` (`mise run encrypt`, `mise run decrypt`, `python scripts/crypto.py status`).
+- Added repo-local pre-commit guardrails for `private/` + encrypted-doc checks; install via `mise run hooks-install` (remove via `mise run hooks-uninstall`, verify via `mise run hooks-status`).

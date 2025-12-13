@@ -474,18 +474,17 @@ fn populate_http_metadata(parts: &axum::http::request::Parts, metadata: &mut Inv
         metadata.insert_extension("http.headers", &header_map);
     }
 
-    if let Some(host) = parts.headers.get(axum::http::header::HOST) {
-        if let Ok(host_str) = host.to_str() {
-            metadata.insert_label("http.host", host_str.to_string());
-        }
+    if let Some(host) = parts.headers.get(axum::http::header::HOST)
+        && let Ok(host_str) = host.to_str()
+    {
+        metadata.insert_label("http.host", host_str.to_string());
     }
 
-    if let Some(user_header) = parts.headers.get("x-auth-user") {
-        if let Ok(raw) = user_header.to_str() {
-            if let Ok(value) = serde_json::from_str::<JsonValue>(raw) {
-                metadata.insert_extension("auth.user", value);
-            }
-        }
+    if let Some(user_header) = parts.headers.get("x-auth-user")
+        && let Ok(raw) = user_header.to_str()
+        && let Ok(value) = serde_json::from_str::<JsonValue>(raw)
+    {
+        metadata.insert_extension("auth.user", value);
     }
 }
 

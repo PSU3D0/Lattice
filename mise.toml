@@ -24,6 +24,18 @@ run = "uv run scripts/crypto.py encrypt --dir all"
 description = "Decrypt impl-docs/_encrypted/ -> private/"
 run = "uv run scripts/crypto.py decrypt --dir all"
 
+[tasks.hooks-install]
+description = "Install repo pre-commit hook into .git/hooks/"
+run = 'hooks_dir="$(git rev-parse --git-path hooks)"; repo_hook="$(pwd)/.githooks/pre-commit"; mkdir -p "$hooks_dir"; (ln -sf "$repo_hook" "$hooks_dir/pre-commit" 2>/dev/null || cp "$repo_hook" "$hooks_dir/pre-commit"); chmod +x "$repo_hook" "$hooks_dir/pre-commit"'
+
+[tasks.hooks-uninstall]
+description = "Uninstall repo pre-commit hook from .git/hooks/"
+run = 'hooks_dir="$(git rev-parse --git-path hooks)"; hook="$hooks_dir/pre-commit"; repo_hook="$(pwd)/.githooks/pre-commit"; if [ -L "$hook" ] && [ "$(readlink "$hook")" = "$repo_hook" ]; then rm -f "$hook"; elif [ -f "$hook" ] && grep -q "refusing to commit plaintext under private/" "$hook"; then rm -f "$hook"; else echo "no repo hook installed"; fi'
+
+[tasks.hooks-status]
+description = "Show hook install status + encrypted-docs status"
+run = 'hooks_dir="$(git rev-parse --git-path hooks)"; hook="$hooks_dir/pre-commit"; repo_hook="$(pwd)/.githooks/pre-commit"; if [ -L "$hook" ] && [ "$(readlink "$hook")" = "$repo_hook" ]; then echo "pre-commit hook: installed (symlink)"; elif [ -f "$hook" ] && grep -q "refusing to commit plaintext under private/" "$hook"; then echo "pre-commit hook: installed (copy)"; else echo "pre-commit hook: not installed"; fi; uv run scripts/crypto.py status; if [ -d private/impl-docs ]; then if [ -z "${AGE_SECRET_KEY-}" ] && command -v fnox >/dev/null 2>&1; then fnox export >/dev/null 2>&1 || exit 1; fi; if [ -z "${AGE_SECRET_KEY-}" ] && ! command -v fnox >/dev/null 2>&1; then echo "encrypted docs: cannot check (AGE_SECRET_KEY/fnox missing)"; exit 1; fi; uv run scripts/crypto.py encrypt --dir all; if git diff --name-only -- impl-docs/_encrypted | grep -q .; then echo "encrypted docs: stale (see git diff -- impl-docs/_encrypted)"; exit 1; else echo "encrypted docs: up to date"; fi; else echo "encrypted docs: skipped (no private/impl-docs)"; fi'
+
 [tasks.check]
 description = "Fast type-check across the Rust workspace"
 run = "cargo check {{vars.cargo_workspace}}"
@@ -34,7 +46,7 @@ run = "cargo fmt -- --check"
 
 [tasks.clippy]
 description = "Run clippy with warnings elevated to errors"
-run = "cargo clippy --all-targets --all-features -D warnings"
+run = "cargo clippy --all-targets --all-features -- -D warnings"
 
 [tasks.test]
 description = "Execute the full Rust test suite"

@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+fail() {
+  echo "pre-commit: $*" >&2
+  exit 1
+}
+
+if git diff --cached --name-only --diff-filter=ACMR | grep -q '^private/'; then
+  fail "refusing to commit plaintext under private/ (encrypt into impl-docs/_encrypted/)"
+fi
+
+if [[ -d "private/impl-docs" ]]; then
+  if [[ -z "${AGE_SECRET_KEY-}" ]]; then
+    if command -v fnox >/dev/null 2>&1; then
+      fnox export >/dev/null 2>&1 || fail "unable to fetch AGE_SECRET_KEY from fnox"
+    else
+      fail "AGE_SECRET_KEY not set and fnox not found (cannot verify encrypted docs)"
+    fi
+  fi
+
+  python scripts/crypto.py encrypt --dir all
+
+  if git diff --name-only -- "impl-docs/_encrypted" | grep -q .; then
+    fail "encrypted docs out of date; stage impl-docs/_encrypted changes (run: python scripts/crypto.py encrypt --dir all)"
+  fi
+fi
+
+cargo fmt --check

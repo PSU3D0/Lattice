@@ -134,12 +134,10 @@ fn main() -> Result<()> {
 }
 
 fn run_graph_check(args: GraphCheckArgs) -> Result<()> {
-    if args.json {
-        if args.emit_dot || args.dot.is_some() || args.pretty_json {
-            return Err(anyhow!(
-                "--json cannot be combined with --emit-dot, --dot, or --pretty-json"
-            ));
-        }
+    if args.json && (args.emit_dot || args.dot.is_some() || args.pretty_json) {
+        return Err(anyhow!(
+            "--json cannot be combined with --emit-dot, --dot, or --pretty-json"
+        ));
     }
 
     let payload = match args.input {

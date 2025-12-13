@@ -192,12 +192,13 @@ mod tests {
             .await
             .expect("retrieve redis port");
 
-        let mut config = RedisConfig::default();
-        config.url = format!("redis://127.0.0.1:{port}/");
-        config.namespace = Some(format!("lf:dedupe:{}:", Uuid::new_v4()));
-        config.max_connections = NonZeroUsize::new(4).expect("non-zero connections");
+        let config = RedisConfig {
+            url: format!("redis://127.0.0.1:{port}/"),
+            namespace: Some(format!("lf:dedupe:{}:", Uuid::new_v4())),
+            max_connections: NonZeroUsize::new(4).expect("non-zero connections"),
+        };
 
-        let factory = RedisConnectionFactory::new(config.clone()).expect("redis factory");
+        let factory = RedisConnectionFactory::new(config).expect("redis factory");
         {
             let mut conn = factory.connection().await.expect("redis connection");
             redis::cmd("FLUSHALL")

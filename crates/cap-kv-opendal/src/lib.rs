@@ -215,14 +215,14 @@ impl KeyValue for OpendalKvStore {
         }
 
         let ttl = ttl.or(self.default_ttl);
-        if let (Some(floor), Some(ttl_value)) = (self.ttl_floor, ttl) {
-            if ttl_value < floor {
-                return Err(KvError::Other(format!(
-                    "ttl {}s below floor {}s",
-                    ttl_value.as_secs(),
-                    floor.as_secs()
-                )));
-            }
+        if let (Some(floor), Some(ttl_value)) = (self.ttl_floor, ttl)
+            && ttl_value < floor
+        {
+            return Err(KvError::Other(format!(
+                "ttl {}s below floor {}s",
+                ttl_value.as_secs(),
+                floor.as_secs()
+            )));
         }
 
         self.operator
