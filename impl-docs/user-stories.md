@@ -3,81 +3,103 @@ Purpose: scenario
 Owner: Product
 Last reviewed: 2025-12-12
 
-# Addendum — User Stories & Execution Patterns (v1.0)
+# User Stories & Execution Patterns
 
-**Assumptions**
+This file contains two layers:
 
-* Effects/Determinism lattices, capability typestates, idempotency spec, Temporal lowering, windowing/watermarks, SSE streaming, cache/Continue‑As‑New defaults are implemented per the RFC.
-* Profiles: `Web`, `Queue`, `Temporal`, `Dev`, `WASM`.
-* Registry certification and policy engine are active.
+- **0.1 Scenario Pack (Acceptance Targets)**: release-relevant and expected to be backed by tests/fixtures.
+- **Backlog Scenarios (Vision / Non-0.1)**: future intent; not assumed implemented.
 
-**Format per story**
+0.1 contract surfaces used by scenarios:
 
-* Context & constraints
-* Macro surface (abridged)
-* Flow IR highlights
-* Execution plan (per host)
-* Idempotency, Effects, Determinism, Policy
-* Failure modes & mitigations
-* Tests & acceptance criteria
-* Agent loop (PM → Builder → Policy → Test → Deploy)
+- **Flow IR** (Rust serde output; schema emitted).
+- **Invocation ABI** (`InvocationParts` -> `ExecutionResult::{Value|Stream}`) with stable metadata conventions.
+- **Diagnostics contract**: stable diagnostic codes + stable host error envelopes; reserved surfaces must fail deterministically (`CTRL901`).
 
----
+Story format (used below for 0.1 pack; recommended for backlog too):
 
-## S1. Webhook → Inline Map → Respond (low‑latency API)
-
-**Context**: ping endpoint that normalizes payload and echoes typed JSON within 50ms p95.
-
-**Macros**
-
-```rust
-inline_node! {
-  name:"Normalize", in: InReq, out: OutRes,
-  effects: Pure, determinism: Strict,
-  |_, r| { Ok(OutRes { v: r.v.trim().to_lowercase() }) }
-}
-
-workflow! {
-  name: echo_norm, profile: Web, version: 1_0_0;
-  let hook = HttpTrigger::post("/echo").respond(on_last).deadline(ms=250);
-  let map  = Normalize;
-  let rsp  = Respond; // streaming=false default
-  connect!(hook -> map);
-  connect!(map -> rsp);
-  rate_limit!(workflow, qps=1000, burst=2000);
-}
-```
-
-**IR highlights**
-
-* Nodes: Normalize(Pure, Strict) → Respond(Effectful=Write only to adapter, BestEffort).
-* Edge: Ordered, small buffer, timeout 250ms.
-
-**Execution plan**
-
-* Web profile: inline Normalize in process; Respond via adapter oneshot. No queue/Temporal.
-
-**Idempotency/Policy**
-
-* No effectful external writes; no dedupe needed.
-* Policy: require `deadline` and `qps` caps for Web profile routes.
-
-**Failure modes**
-
-* Backpressure stall → 503; cancel propagation from client; compile‑time: none.
-
-**Tests**
-
-* p95 latency < 50ms at 500 rps.
-* Cancellation: client abort → node sees `ctx.is_cancelled() == true` and drops work.
-
-**Agent loop**
-
-* PM defines route and SLO; Builder compiles; Policy checks no capabilities; Test measures latency; Deploy maps route.
+- Status: Implemented | 0.1 Target | Future
+- Epic: `impl-docs/roadmap/*`
+- Preconditions: host profile(s), required capability domains, required bindings/secrets
+- Inputs/Outputs: schemas or `opaque`, required `lf.*` metadata
+- Acceptance gates: concrete commands/tests/artifacts
+- Failure modes: expected diagnostics + envelope guarantees
 
 ---
 
-## S2. Marketing Website (15 routes), **SSE streaming**, contact form
+# 0.1 Scenario Pack (Acceptance Targets)
+
+## S1. Webhook → Normalize → Respond (Web, non-streaming)
+
+- Status: Implemented
+- Epic: `impl-docs/roadmap/epic-01-contract-0.1.md`
+
+Context
+- A minimal HTTP JSON endpoint that normalizes input and returns a JSON response.
+- Reference implementation lives in `examples/s1_echo`.
+
+Contract surfaces exercised
+- Flow IR emission for `Web` profile.
+- Invocation ABI: trigger/capture/payload/deadline/metadata.
+- Host error envelope: `{ "error": "..." }` required; `code` recommended when classification exists.
+
+Preconditions
+- Host profile: `Web`.
+- Capabilities: none required.
+
+Inputs/Outputs
+- Input schema: `EchoRequest { value: String }`.
+- Output schema: `EchoResponse { value: String, user?: AuthUser }`.
+- Required metadata: none; host SHOULD populate `lf.run_id` and `lf.flow_id` when known.
+
+Acceptance gates
+- `cargo test -p example-s1-echo`
+- `cargo test -p flows-cli serve_echo_route_round_trips_json`
+
+Failure modes
+- Unknown alias / handler not registered -> stable host error envelope.
+- Client disconnect -> cancellation is propagated (streaming is not exercised in S1).
+
+---
+
+## S2a. SSE streaming (Web, streaming core)
+
+- Status: Implemented
+- Epic: `impl-docs/roadmap/epic-01-contract-0.1.md`
+
+Context
+- Minimal streaming capture surfaced over SSE, with cancellation/backpressure correctness.
+- Reference implementation lives in `examples/s2_site`.
+
+Contract surfaces exercised
+- `ExecutionResult::Stream` semantics.
+- SSE mapping for streams, including deterministic error event shape.
+
+Preconditions
+- Host profile: `Web`.
+- Capabilities: none required (example is synthetic).
+
+Inputs/Outputs
+- Input: `SiteRequest { site: String }`.
+- Output: SSE stream of `SiteEvent` JSON values.
+
+Acceptance gates
+- `cargo test -p example-s2-site`
+- `cargo test -p flows-cli serve_streaming_route_emits_sse`
+- `cargo test -p kernel-exec dropping_stream_cancels_run`
+
+Failure modes
+- Client disconnect -> cancels run and releases backpressure permits.
+- Runtime errors -> SSE `error` event with payload matching host error envelope.
+
+---
+
+# Backlog Scenarios (Vision / Non-0.1)
+
+## S2b. Marketing Website (15 routes), SSE streaming, contact form
+
+- Status: Future
+- Epic: (TBD; depends on capability binding + policy + richer routing surfaces)
 
 **Context**: GET pages + POST forms; stream changelog as SSE; sessions external to kernel.
 
@@ -141,7 +163,10 @@ workflow! {
 
 ---
 
-## S3. **Batch ETL** with **windowing & watermarks** (S3 → Transform → Warehouse)
+## S3. Batch ETL with windowing & watermarks (Future)
+
+- Status: Future
+- Epic: `impl-docs/roadmap/epic-02-workers-host-minimal.md` + later epics (windowing is reserved; not 0.1 runtime)
 
 **Context**: Ingest S3 logs, 5‑minute tumbling windows by event‑time, lateness 2 minutes. Exactly‑once upsert to Warehouse.
 
@@ -210,7 +235,10 @@ workflow! {
 
 ---
 
-## S4. Payments with **HITL** & **SAGA compensation** (Temporal)
+## S4. Payments with HITL & SAGA compensation (Temporal, Future)
+
+- Status: Future
+- Epic: (Temporal + HITL are non-0.1)
 
 **Context**: Charge cards; if downstream fails, refund; require human approval > \$5k.
 
@@ -278,7 +306,10 @@ workflow! {
 
 ---
 
-## S5. High‑throughput ingestion (50k msg/s), hot shards
+## S5. High-throughput ingestion (50k msg/s), hot shards (Future)
+
+- Status: Future
+- Epic: (later; performance + partition semantics beyond 0.1)
 
 **Context**: Clickstream; shard by `user_id`; fairness; spill.
 
@@ -326,7 +357,10 @@ workflow! {
 
 ---
 
-## S6. Long‑running onboarding (weeks), reminders, documents (Temporal)
+## S6. Long-running onboarding (Temporal, Future)
+
+- Status: Future
+- Epic: (Temporal + timers/signals; non-0.1)
 
 **Context**: KYC onboarding with periodic reminders, document review, final approval.
 
@@ -367,7 +401,10 @@ workflow! {
 
 ---
 
-## S7. DS pipeline with Python plugin, sandboxed
+## S7. DS pipeline with Python plugin, sandboxed (Future)
+
+- Status: Future
+- Epic: (plugin runtimes; non-0.1)
 
 **Context**: Data clean with Pandas; no outbound network; budget 2 CPU‑min.
 
@@ -403,7 +440,10 @@ workflow! {
 
 ---
 
-## S8. Edge/WASM offline → later reconcile
+## S8. Edge/WASM offline -> later reconcile (Future)
+
+- Status: Future
+- Epic: (WASM/offline product semantics; non-0.1)
 
 **Context**: Field device processes jobs offline; later pushes results to cloud.
 
@@ -439,7 +479,10 @@ workflow! {
 
 ---
 
-## S9. LLM summarizer with budgets & determinism (Stable)
+## S9. LLM summarizer with budgets & determinism (Future)
+
+- Status: Future
+- Epic: (budgets + model pinning + evidence; non-0.1)
 
 **Context**: Summarize text with pinned model/version/seed; budget \$X/day; stream tokens to client.
 
@@ -478,7 +521,10 @@ workflow! {
 
 ---
 
-## S10. Exactly‑once DB sink via **Outbox pattern**
+## S10. Exactly-once DB sink via outbox pattern (Future)
+
+- Status: Future
+- Epic: (queue + connectors + certification; likely 0.1.x+)
 
 **Context**: Write order events exactly once into DB; also publish to Kafka.
 

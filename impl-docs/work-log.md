@@ -7,6 +7,23 @@ Last reviewed: 2025-12-12
 
 > Detailed record of repository setup and implementation progress. Use this to orient new contributors and agents; each entry references the relevant design documents for context.
 
+## Latest State (Authoritative Snapshot) — 2025-12-12
+
+Implemented (high-level):
+- Flow IR core types + diagnostics registry (`dag-core`) and macro authoring surface (`dag-macros`).
+- Validator (`kernel-plan`) enforcing baseline topology + effects/determinism/idempotency rules.
+- Executor (`kernel-exec`) with capture backpressure + streaming support; Axum host bridge (`host-web-axum`).
+- CLI for graph checking + local run/serve flows; S1 echo and S2 SSE examples.
+- Capability hint registry + multiple capability providers (HTTP, KV/blob via OpenDAL, Redis queue/dedupe/cache), plus queue bridge.
+- Metrics catalog + runtime/host/CLI instrumentation; property/fuzz coverage for key invariants.
+
+Roadmap-of-record:
+- `impl-docs/roadmap/epics.md`.
+- Older “phase plan” references in this log are historical pointers only (the monolithic plan is superseded).
+
+Deferred / mostly-stubbed:
+- Registry/certification system, policy engine, importer (n8n), Temporal host, marketplace surfaces.
+
 ## Week 0 — Workspace Scaffolding & Documentation
 
 - Created the Cargo workspace (`Cargo.toml`) with MSRV 1.90, shared dependency table, and member list matching the layout defined in `impl-docs/surface-and-buildout.md` (§A).
@@ -100,7 +117,7 @@ Last reviewed: 2025-12-12
 
 ## Current Status
 
-Completed scope aligns with Phase 0 and most of Phase 1 in `impl-docs/impl-plan.md`:
+Completed scope aligns with early contract/runtime milestones; references to `impl-docs/impl-plan.md` below are historical (roadmap-of-record is `impl-docs/roadmap/epics.md`):
 
 - ✅ Workspace scaffold, shared dependency management, MSRV pin (`Phase 0`).
 - ✅ Diagnostic registry & sync checks (`Phase 0`).
@@ -121,7 +138,7 @@ Outstanding items for Phase 1 (per `impl-docs/impl-plan.md`):
 
 ## Next Steps (Phase 2 & Beyond)
 
-Refer to `impl-docs/impl-plan.md` for full detail; immediate priorities:
+Refer to `impl-docs/roadmap/epics.md` for full detail; the phase framing below is historical context:
 
 1. **Phase 2 — Kernel runtime & Web host (RFC §6, §4.7–§4.9):**
    - Implement `kernel-exec` scheduler, bounded channel/backpressure logic, cancellation propagation, and inline cache stubs.

@@ -87,7 +87,11 @@ Targets:
 
 ## 0.1 Spec-Only / Lint-Only Surfaces (Reserved)
 
-These are reserved shapes. In 0.1 they MAY be validated structurally and MAY be rejected at runtime with a deterministic "unsupported control surface" error until implemented.
+These are reserved shapes. In 0.1 they MAY be validated structurally.
+
+Runtime handling (0.1):
+- If a reserved surface is present and the selected host/runtime does not implement it for the active `profile`, execution MUST fail deterministically.
+- Hosts SHOULD surface diagnostic code `CTRL901` and include the surface `id`/`kind` in error details when available.
 
 ### Error Handling (ControlSurfaceKind::ErrorHandler)
 

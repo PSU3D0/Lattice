@@ -9,11 +9,17 @@ This folder is the canonical home for LatticeFlow implementation documentation.
 
 Doc hygiene rules (lightweight, so we can iterate fast):
 
-- "Spec" docs are normative: tooling/tests should be able to rely on them.
-- "ADR" docs capture decisions we don't want to relitigate.
-- "Roadmap" docs are living planning artifacts (epics/tickets), expected to change.
-- "Scenarios" are long-lived acceptance specs (what must work; backed by fixtures/tests).
+- **Spec** docs are normative (0.1 contract): tooling/tests/hosts/importers can rely on them.
+- **ADRs** capture decisions we don't want to relitigate; ADRs constrain/override specs when they conflict.
+- **Roadmap** docs are planning artifacts (epics/phases); they do not define contract semantics.
+- **Scenarios** are acceptance targets (what must work; backed by fixtures/tests).
 - Older/superseded material moves under `archive/` (never deleted, just marked).
+
+Source-of-truth rule (Flow IR shape):
+
+- **Rust is authoritative** for the emitted Flow IR JSON shape (`crates/dag-core/src/ir.rs` serde output).
+- The JSON Schema (`schemas/flow_ir.schema.json`) is **emitted** and must match Rust output; drift is a bug.
+- Example JSON under `schemas/examples/` is illustrative and must match Rust+schema; legacy shapes must be explicitly marked/archived.
 
 ## Start Here
 
@@ -28,12 +34,15 @@ Doc hygiene rules (lightweight, so we can iterate fast):
 
 ## Current Canonical Docs
 
-- Architecture + crate map: `surface-and-buildout.md`
+- Workspace layout + layering rules (canonical subset): `surface-and-buildout.md`
 - RFC umbrella: `rust-workflow-tdd-rfc.md`
 - Roadmap: `roadmap/epics.md`
 
 Superseded:
 - Monolithic plan: `impl-plan.md` (use `roadmap/` instead)
+
+Notes:
+- `schemas/examples/etl_logs.flow_ir.json` is a legacy/alternate IR shape; do not treat it as 0.1 contract until explicitly migrated.
 
 ## Stable / Mostly-Append-Only
 

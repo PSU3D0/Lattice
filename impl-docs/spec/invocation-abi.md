@@ -14,7 +14,9 @@ Source of truth:
 
 ## Invocation
 
-An invocation identifies:
+In 0.1.x, **flow selection** (which `FlowIR`) is a host/deployment concern and is out-of-band.
+
+An invocation identifies (within the selected flow):
 - which trigger node to run (`trigger_alias`)
 - which node output to capture (`capture_alias`)
 - the input payload (`payload`)
@@ -75,18 +77,23 @@ The executor returns `kernel_exec::ExecutionError` (examples):
 - node failed
 - handler not registered
 
-Host mapping (0.1 guidance):
+Host mapping (0.1 contract):
 - Non-streaming errors MUST serialize as JSON with at least:
-  - `{ "error": <string> }`
-- Hosts MAY add additional fields over time (error codes, node alias, etc).
+  - `error` (string): human-readable summary.
+- Hosts SHOULD include when classification exists:
+  - `code` (string): stable diagnostic code (see `impl-docs/error-codes.md`).
+- Hosts MAY add additional fields over time:
+  - `details` (object): structured context (e.g. `node_alias`, `trigger_alias`, `capture_alias`, `retryable`, `timeout_ms`).
+  - `diagnostics` (array): structured diagnostics payloads for agent tooling.
+- Consumers MUST ignore unknown fields.
 
-HTTP status mapping (as implemented in Axum host today):
+HTTP status mapping (non-normative guidance; as implemented in Axum host today):
 - `DeadlineExceeded` -> 504
 - `Cancelled` -> 503
 - most other execution failures -> 500
 
-Streaming error mapping (0.1 guidance):
-- SSE event type `error` with JSON payload `{ "error": <string> }`.
+Streaming error mapping (0.1 contract):
+- SSE event type `error` with JSON payload matching the same error object (at minimum `{ "error": "..." }`).
 
 ## Cancellation
 

@@ -8,19 +8,30 @@ Last reviewed: 2025-12-12
 This document defines the semantics of the LatticeFlow Flow IR for the 0.1.x line.
 
 Source of truth:
-- JSON Schema: `schemas/flow_ir.schema.json`
-- Rust types: `crates/dag-core/src/ir.rs`
+
+- **Rust types are authoritative** for the emitted Flow IR JSON shape: `crates/dag-core/src/ir.rs` (serde output).
+- The JSON Schema (`schemas/flow_ir.schema.json`) is **emitted** from Rust and must match Rust output; drift is a bug.
+- This spec defines **semantics** for 0.1.x (what fields mean; what validators/hosts must enforce).
 
 ## Compatibility Rules (0.1.x)
 
 0.1.x is intended to be "stable-ish" for toolchains (hosts, importers, exporters, UI).
 
 - Producers MUST emit JSON that validates against `schemas/flow_ir.schema.json`.
+  - Since the schema is emitted from Rust, Rust-emitted IR MUST validate; any mismatch is a release-blocking bug.
 - Consumers SHOULD ignore unknown object fields (forward-compatible).
 - Within 0.1.x:
   - Additive changes MUST be optional fields with defaults.
   - Removing/renaming fields is breaking (requires 0.2.0).
   - Adding enum variants is breaking unless explicitly documented as tolerated.
+
+## JSON Field Naming (0.1.x)
+
+Field names in Flow IR JSON are **exactly** the names emitted by Rust serde (see `crates/dag-core/src/ir.rs`).
+
+- Do not rename JSON keys within 0.1.x.
+- Some keys may be mixed-style (e.g. `control_surfaces` vs `effectHints`/`determinismHints`, `ttlMs`); treat this as part of the 0.1 contract.
+- The emitted schema and shipped examples MUST match these names.
 
 ## Core Concepts
 
@@ -118,8 +129,15 @@ Checkpoints become runtime-semantic once "Await/Resume" is implemented (later ep
 Idempotency metadata is attached to nodes.
 
 Key fields:
-- `key`: opaque string expression (canonical key derivation rule).
+- `key`: opaque string.
 - `scope`: `node|edge|partition`.
 - `ttlMs`: optional TTL for dedupe reservations.
 
-In 0.1, `kernel-plan` enforces that Effectful nodes provide `idempotency.key` and that ExactlyOnce edges are backed by a dedupe capability + TTL.
+Key semantics (0.1.x):
+- `key` is treated as opaque by portable tooling and importers.
+- Some producers (Rust macros, specialized importers) MAY impose a stricter internal format and may emit diagnostics such as `IDEM025` when they can prove the key uses non-deterministic fields.
+- Do not standardize or require a key expression language within 0.1.x.
+
+Validator requirements (implemented / enforced by policy):
+- Effectful nodes MUST provide `idempotency.key` (and `ttlMs` when required by delivery semantics).
+- ExactlyOnce edges require a dedupe capability binding and sufficient TTL.

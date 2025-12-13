@@ -5,7 +5,7 @@ Last reviewed: 2025-12-12
 
 # Error & Policy Violation Taxonomy
 
-This note groups the diagnostic codes and policy checks we plan to surface across the platform. Use it as the bridge between the RFC (`impl-docs/rust-workflow-tdd-rfc.md`), the implementation plan (`impl-docs/impl-plan.md`), and the error-code registry (`impl-docs/error-codes.md`). Each section summarises why an error exists, where it is raised (macro, validator, runtime, certification), and the kinds of Rust code patterns that can trigger it.
+This note groups the diagnostic codes and policy checks we plan to surface across the platform. Use it as the bridge between the RFC (`impl-docs/rust-workflow-tdd-rfc.md`), the roadmap (`impl-docs/roadmap/epics.md`), and the error-code registry (`impl-docs/error-codes.md`). Each section summarises why an error exists, where it is raised (macro, validator, runtime, certification), and the kinds of Rust code patterns that can trigger it.
 
 ## 1. Graph & Topology Safety
 - **Duplicates & cycles** — `DAG200`, `DAG205` (RFC §5.4 items 1 & 4). Validator ensures acyclic DAG and unique aliases. Macro catches most duplicates, but IR imported via CLI/importer must be rechecked.

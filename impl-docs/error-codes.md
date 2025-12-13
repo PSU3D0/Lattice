@@ -39,6 +39,7 @@ ensure the registry stays in sync with the implementation.
 | DET301    | Validation     | Error   | Determinism claim conflicts with resource usage. |
 | DET302    | Validation     | Error   | Declared determinism conflicts with registered resource hints. |
 | CTRL001   | Lint           | Warn    | Control-flow surface hint recommended for branching/loop. |
+| CTRL901   | Runtime        | Error   | Reserved control surface not supported by this host/profile. |
 | IDEM020   | Validation     | Error   | Effectful sink missing partition key and idempotency key. |
 | IDEM025   | Validation     | Error   | Idempotency key references non-deterministic fields. |
 | IDEM099   | Runtime        | Fatal   | Possible idempotency key collision detected. |
