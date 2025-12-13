@@ -1,3 +1,8 @@
+Status: Canonical
+Purpose: spec
+Owner: Core
+Last reviewed: 2025-12-12
+
 # Error Code Registry
 
 This registry tracks the diagnostic identifiers emitted across LatticeFlow crates. Each

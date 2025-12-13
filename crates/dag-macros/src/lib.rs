@@ -657,20 +657,19 @@ fn validate_effect_hints(hints: &[HintSpec], effects: &ParsedEffects) -> Result<
     for hint in hints {
         if let Some(constraint) =
             dag_core::effects_registry::constraint_for_hint(hint.value.as_str())
+            && !effects.level.to_runtime().is_at_least(constraint.minimum)
         {
-            if !effects.level.to_runtime().is_at_least(constraint.minimum) {
-                return Err(syn::Error::new(
-                    hint.span,
-                    format!(
-                        "[EFFECT201] resource `{}` (from `{}`) requires effects >= {}, but node declares {}. {}",
-                        hint.value,
-                        hint.origin,
-                        constraint.minimum.as_str(),
-                        effects.level.as_str(),
-                        constraint.guidance,
-                    ),
-                ));
-            }
+            return Err(syn::Error::new(
+                hint.span,
+                format!(
+                    "[EFFECT201] resource `{}` (from `{}`) requires effects >= {}, but node declares {}. {}",
+                    hint.value,
+                    hint.origin,
+                    constraint.minimum.as_str(),
+                    effects.level.as_str(),
+                    constraint.guidance,
+                ),
+            ));
         }
     }
     Ok(())
@@ -678,24 +677,23 @@ fn validate_effect_hints(hints: &[HintSpec], effects: &ParsedEffects) -> Result<
 
 fn validate_determinism_hints(hints: &[HintSpec], determinism: &ParsedDeterminism) -> Result<()> {
     for hint in hints {
-        if let Some(constraint) = dag_core::determinism::constraint_for_hint(hint.value.as_str()) {
-            if !determinism
+        if let Some(constraint) = dag_core::determinism::constraint_for_hint(hint.value.as_str())
+            && !determinism
                 .level
                 .to_runtime()
                 .is_at_least(constraint.minimum)
-            {
-                return Err(syn::Error::new(
-                    hint.span,
-                    format!(
-                        "[DET302] resource `{}` (from `{}`) requires determinism >= {}, but node declares {}. {}",
-                        hint.value,
-                        hint.origin,
-                        constraint.minimum.as_str(),
-                        determinism.level.as_str(),
-                        constraint.guidance,
-                    ),
-                ));
-            }
+        {
+            return Err(syn::Error::new(
+                hint.span,
+                format!(
+                    "[DET302] resource `{}` (from `{}`) requires determinism >= {}, but node declares {}. {}",
+                    hint.value,
+                    hint.origin,
+                    constraint.minimum.as_str(),
+                    determinism.level.as_str(),
+                    constraint.guidance,
+                ),
+            ));
         }
     }
     Ok(())
@@ -752,17 +750,15 @@ fn schema_from_type(ty: &syn::Type) -> TokenStream2 {
 }
 
 fn schema_from_return(ty: &syn::Type) -> Result<TokenStream2> {
-    if let syn::Type::Path(path) = ty {
-        if let Some(last) = path.path.segments.last() {
-            if last.ident == "NodeResult" {
-                if let syn::PathArguments::AngleBracketed(args) = &last.arguments {
-                    if let Some(syn::GenericArgument::Type(inner)) = args.args.first() {
-                        return Ok(schema_from_type(inner));
-                    }
-                }
-            }
-        }
+    if let syn::Type::Path(path) = ty
+        && let Some(last) = path.path.segments.last()
+        && last.ident == "NodeResult"
+        && let syn::PathArguments::AngleBracketed(args) = &last.arguments
+        && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
+    {
+        return Ok(schema_from_type(inner));
     }
+
     Err(syn::Error::new(
         ty.span(),
         "[DAG001] return type must be dag_core::NodeResult<Output>",
@@ -831,18 +827,15 @@ fn ensure_flow_enum_tag(item: &mut ItemEnum) {
 
         if let Ok(meta) = attr.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated) {
             for entry in meta {
-                if let Meta::NameValue(name_value) = entry {
-                    if name_value.path.is_ident("tag") {
-                        if let Expr::Lit(ExprLit {
-                            lit: Lit::Str(value),
-                            ..
-                        }) = name_value.value
-                        {
-                            if value.value() == "type" {
-                                has_tag = true;
-                            }
-                        }
-                    }
+                if let Meta::NameValue(name_value) = entry
+                    && name_value.path.is_ident("tag")
+                    && let Expr::Lit(ExprLit {
+                        lit: Lit::Str(value),
+                        ..
+                    }) = name_value.value
+                    && value.value() == "type"
+                {
+                    has_tag = true;
                 }
             }
         }

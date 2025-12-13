@@ -1,3 +1,8 @@
+Status: Draft
+Purpose: notes
+Owner: Core
+Last reviewed: 2025-12-12
+
 # Work Log — LatticeFlow Foundations
 
 > Detailed record of repository setup and implementation progress. Use this to orient new contributors and agents; each entry references the relevant design documents for context.

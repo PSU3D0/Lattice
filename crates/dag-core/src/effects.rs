@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Effect lattice describing resource access.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Effects {
     /// No observable side-effects.
@@ -11,13 +11,8 @@ pub enum Effects {
     /// Read-only side-effects (e.g. cache lookups).
     ReadOnly,
     /// External side-effects (e.g. network, writes).
+    #[default]
     Effectful,
-}
-
-impl Default for Effects {
-    fn default() -> Self {
-        Effects::Effectful
-    }
 }
 
 impl Effects {
@@ -46,7 +41,7 @@ impl Effects {
 }
 
 /// Determinism lattice describing replay guarantees.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Determinism {
     /// Fully deterministic, no time or randomness.
@@ -54,15 +49,10 @@ pub enum Determinism {
     /// Stable under pinned resources.
     Stable,
     /// Best-effort determinism, may vary on retries.
+    #[default]
     BestEffort,
     /// Explicitly non-deterministic.
     Nondeterministic,
-}
-
-impl Default for Determinism {
-    fn default() -> Self {
-        Determinism::BestEffort
-    }
 }
 
 impl Determinism {

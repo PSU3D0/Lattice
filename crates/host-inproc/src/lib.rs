@@ -351,7 +351,7 @@ mod tests {
                     .get("test.label")
                     .cloned()
                     .unwrap_or_default();
-                summary.push_str(":");
+                summary.push(':');
                 summary.push_str(match outcome {
                     Ok(_) => "ok",
                     Err(_) => "err",

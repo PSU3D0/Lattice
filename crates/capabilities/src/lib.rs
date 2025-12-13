@@ -174,17 +174,13 @@ pub mod context {
         F: FnOnce(Arc<dyn ResourceAccess>) -> Fut,
         Fut: Future<Output = R>,
     {
-        let resources = CURRENT_RESOURCES
-            .try_with(|resources| Arc::clone(resources))
-            .ok()?;
+        let resources = CURRENT_RESOURCES.try_with(Arc::clone).ok()?;
         Some(callback(resources).await)
     }
 
     /// Clone the currently scoped resource access handle, if any.
     pub fn current_handle() -> Option<Arc<dyn ResourceAccess>> {
-        CURRENT_RESOURCES
-            .try_with(|resources| Arc::clone(resources))
-            .ok()
+        CURRENT_RESOURCES.try_with(Arc::clone).ok()
     }
 }
 
@@ -466,7 +462,7 @@ pub mod clock {
         #[test]
         fn system_clock_produces_time() {
             ensure_registered();
-            let clock = SystemClock::default();
+            let clock = SystemClock;
             let now = clock.now();
             assert!(now.elapsed().is_ok());
         }
@@ -990,7 +986,10 @@ pub mod blob {
         #[tokio::test]
         async fn memory_blob_delete_missing() {
             let store = MemoryBlobStore::new();
-            assert!(matches!(store.delete("missing").await, Err(BlobError::NotFound)));
+            assert!(matches!(
+                store.delete("missing").await,
+                Err(BlobError::NotFound)
+            ));
         }
     }
 }
@@ -1175,7 +1174,7 @@ mod bag_tests {
         let bag = ResourceBag::new()
             .with_http_read(Arc::new(NullHttp))
             .with_http_write(Arc::new(NullHttp))
-            .with_clock(Arc::new(clock::SystemClock::default()))
+            .with_clock(Arc::new(clock::SystemClock))
             .with_cache(Arc::new(cache::MemoryCache::default()))
             .with_kv(Arc::new(kv::MemoryKv::new()))
             .with_blob(Arc::new(blob::MemoryBlobStore::new()))

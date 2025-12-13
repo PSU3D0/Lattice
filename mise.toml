@@ -1,7 +1,10 @@
 min_version = { soft = "2024.9.0", hard = "2024.11.1" }
 
 [tools]
-rust = "1.90.0"
+rust = "1.91.1"
+age = "latest"
+fnox = "latest"
+uv = "latest"
 
 [env]
 CARGO_TERM_COLOR = "always"
@@ -12,6 +15,14 @@ cargo_workspace = "--workspace"
 [tasks.bootstrap]
 description = "Install all toolchains declared in mise.toml"
 run = "mise install"
+
+[tasks.encrypt]
+description = "Encrypt private docs -> impl-docs/_encrypted/"
+run = "uv run scripts/crypto.py encrypt --dir all"
+
+[tasks.decrypt]
+description = "Decrypt impl-docs/_encrypted/ -> private/"
+run = "uv run scripts/crypto.py decrypt --dir all"
 
 [tasks.check]
 description = "Fast type-check across the Rust workspace"

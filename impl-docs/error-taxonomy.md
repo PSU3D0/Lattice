@@ -1,3 +1,8 @@
+Status: Canonical
+Purpose: spec
+Owner: Core
+Last reviewed: 2025-12-12
+
 # Error & Policy Violation Taxonomy
 
 This note groups the diagnostic codes and policy checks we plan to surface across the platform. Use it as the bridge between the RFC (`impl-docs/rust-workflow-tdd-rfc.md`), the implementation plan (`impl-docs/impl-plan.md`), and the error-code registry (`impl-docs/error-codes.md`). Each section summarises why an error exists, where it is raised (macro, validator, runtime, certification), and the kinds of Rust code patterns that can trigger it.

@@ -3,10 +3,9 @@ use std::sync::Arc;
 
 use host_inproc::{EnvironmentPlugin, InvocationMetadata};
 use serde::{Deserialize, Serialize};
-use serde_json;
 
 thread_local! {
-    static AUTH_CONTEXT: RefCell<Option<AuthUser>> = RefCell::new(None);
+    static AUTH_CONTEXT: RefCell<Option<AuthUser>> = const { RefCell::new(None) };
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -45,5 +44,5 @@ impl EnvironmentPlugin for AuthEnvironmentPlugin {
 }
 
 pub fn environment_plugins() -> Vec<Arc<dyn EnvironmentPlugin>> {
-    vec![Arc::new(AuthEnvironmentPlugin::default())]
+    vec![Arc::new(AuthEnvironmentPlugin)]
 }

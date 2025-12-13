@@ -1,4 +1,6 @@
 use dag_core::NodeResult;
+#![allow(dead_code)]
+
 use dag_macros::node;
 
 struct HttpRead;

@@ -41,7 +41,7 @@ impl SiteEvent {
     }
 
     fn update(site: &str, idx: usize, latency_ms: u64) -> Self {
-        let status = if idx % 2 == 0 {
+        let status = if idx.is_multiple_of(2) {
             "degraded"
         } else {
             "operational"

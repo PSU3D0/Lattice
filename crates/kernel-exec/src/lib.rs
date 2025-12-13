@@ -536,11 +536,11 @@ impl SpillManager {
         let mut storages = HashMap::new();
         let flow_id = flow.id.as_str().to_string();
         for edge in &flow.edges {
-            if let Some(tier) = &edge.buffer.spill_tier {
-                if !storages.contains_key(tier) {
-                    let storage = Arc::new(BlobSpill::new(&flow_id, tier)?);
-                    storages.insert(tier.clone(), storage);
-                }
+            if let Some(tier) = &edge.buffer.spill_tier
+                && !storages.contains_key(tier)
+            {
+                let storage = Arc::new(BlobSpill::new(&flow_id, tier)?);
+                storages.insert(tier.clone(), storage);
             }
         }
         Ok(Self { storages })
@@ -1162,6 +1162,7 @@ enum FlowMessage {
     },
 }
 
+#[allow(clippy::too_many_arguments)]
 #[instrument(
     level = "trace",
     skip_all,
@@ -1423,7 +1424,10 @@ pub enum ExecutionError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use capabilities::{ResourceBag, context, kv::MemoryKv};
+    use capabilities::{
+        ResourceBag, context,
+        kv::{KeyValue, MemoryKv},
+    };
     use dag_core::prelude::*;
     use futures::StreamExt;
     use kernel_plan::validate;
@@ -1826,7 +1830,10 @@ mod tests {
         builder.connect(&trigger, &worker);
         builder.connect(&worker, &capture);
 
-        let flow = builder.build();
+        let mut flow = builder.build();
+        if let Some(node) = flow.nodes.iter_mut().find(|node| node.alias == "worker") {
+            node.idempotency.key = Some("resource-test".to_string());
+        }
         let validated = validate(&flow).expect("flow validates");
 
         let executor = FlowExecutor::new(Arc::new(registry))
@@ -1841,6 +1848,7 @@ mod tests {
         assert_eq!(
             kv_store
                 .get("resource-test")
+                .await
                 .expect("kv read after execution"),
             Some(b"value".to_vec())
         );
@@ -1859,14 +1867,17 @@ mod tests {
             Determinism::Strict,
             None,
         );
-        const WORKER_SPEC: NodeSpec = NodeSpec::inline(
+        const WORKER_EFFECT_HINTS: &[&str] = &["resource::blob::write"];
+        const WORKER_SPEC: NodeSpec = NodeSpec::inline_with_hints(
             "tests::slow_worker",
             "SlowWorker",
             SchemaSpec::Opaque,
             SchemaSpec::Opaque,
-            Effects::Pure,
-            Determinism::Strict,
+            Effects::Effectful,
+            Determinism::BestEffort,
             None,
+            &[],
+            WORKER_EFFECT_HINTS,
         );
         const CAPTURE_SPEC: NodeSpec = NodeSpec::inline(
             "tests::capture_spill",
@@ -1891,6 +1902,9 @@ mod tests {
                 edge.buffer.max_items = Some(1);
                 edge.buffer.spill_tier = Some("local".to_string());
             }
+        }
+        if let Some(node) = flow_ir.nodes.iter_mut().find(|node| node.alias == "worker") {
+            node.idempotency.key = Some("spill-test".to_string());
         }
         let validated = validate(&flow_ir).expect("flow should validate");
 
@@ -2087,13 +2101,7 @@ mod tests {
 
         let executor = FlowExecutor::new(Arc::new(registry));
         let result = executor
-            .run_once(
-                &validated,
-                "trigger",
-                JsonValue::from(serde_json::json!({"seed": 1})),
-                "stream",
-                None,
-            )
+            .run_once(&validated, "trigger", json!({"seed": 1}), "stream", None)
             .await
             .expect("run once succeeds");
 

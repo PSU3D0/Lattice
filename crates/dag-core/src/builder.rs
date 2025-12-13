@@ -34,6 +34,16 @@ pub struct EdgeHandle {
     pub(crate) to: String,
 }
 
+impl EdgeHandle {
+    pub fn from(&self) -> &str {
+        &self.from
+    }
+
+    pub fn to(&self) -> &str {
+        &self.to
+    }
+}
+
 /// Builder used by macros to construct Flow IR instances.
 pub struct FlowBuilder {
     flow: FlowIR,

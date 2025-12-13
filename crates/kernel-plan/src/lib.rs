@@ -241,20 +241,20 @@ fn check_effectful_idempotency(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>)
 fn check_effect_conflicts(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
     for node in &flow.nodes {
         for hint in &node.effect_hints {
-            if let Some(conflict) = dag_core::effects_registry::constraint_for_hint(hint) {
-                if !node.effects.is_at_least(conflict.minimum) {
-                    diagnostics.push(diagnostic(
-                        "EFFECT201",
-                        format!(
-                            "node `{}` declares effects {} but resource `{}` requires at least {}: {}",
-                            node.alias,
-                            node.effects.as_str(),
-                            hint,
-                            conflict.minimum.as_str(),
-                            conflict.guidance
-                        ),
-                    ));
-                }
+            if let Some(conflict) = dag_core::effects_registry::constraint_for_hint(hint)
+                && !node.effects.is_at_least(conflict.minimum)
+            {
+                diagnostics.push(diagnostic(
+                    "EFFECT201",
+                    format!(
+                        "node `{}` declares effects {} but resource `{}` requires at least {}: {}",
+                        node.alias,
+                        node.effects.as_str(),
+                        hint,
+                        conflict.minimum.as_str(),
+                        conflict.guidance
+                    ),
+                ));
             }
         }
     }
@@ -263,20 +263,20 @@ fn check_effect_conflicts(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
 fn check_determinism_conflicts(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
     for node in &flow.nodes {
         for hint in &node.determinism_hints {
-            if let Some(conflict) = dag_core::determinism::constraint_for_hint(hint) {
-                if !node.determinism.is_at_least(conflict.minimum) {
-                    diagnostics.push(diagnostic(
-                        "DET302",
-                        format!(
-                            "node `{}` declares determinism {} but resource `{}` requires at least {}: {}",
-                            node.alias,
-                            node.determinism.as_str(),
-                            hint,
-                            conflict.minimum.as_str(),
-                            conflict.guidance
-                        ),
-                    ));
-                }
+            if let Some(conflict) = dag_core::determinism::constraint_for_hint(hint)
+                && !node.determinism.is_at_least(conflict.minimum)
+            {
+                diagnostics.push(diagnostic(
+                    "DET302",
+                    format!(
+                        "node `{}` declares determinism {} but resource `{}` requires at least {}: {}",
+                        node.alias,
+                        node.determinism.as_str(),
+                        hint,
+                        conflict.minimum.as_str(),
+                        conflict.guidance
+                    ),
+                ));
             }
         }
     }

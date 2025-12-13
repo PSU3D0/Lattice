@@ -63,7 +63,7 @@ impl NodeId {
 }
 
 /// Workflow execution profile.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Profile {
     /// HTTP/Axum host.
@@ -75,13 +75,8 @@ pub enum Profile {
     /// WASM/Edge runtime.
     Wasm,
     /// Local developer profile.
+    #[default]
     Dev,
-}
-
-impl Default for Profile {
-    fn default() -> Self {
-        Profile::Dev
-    }
 }
 
 /// High-level node categories.
@@ -184,6 +179,7 @@ impl NodeSpec {
     }
 
     /// Helper for inline nodes with explicit determinism hints.
+    #[allow(clippy::too_many_arguments)]
     pub const fn inline_with_hints(
         identifier: &'static str,
         name: &'static str,
@@ -327,10 +323,11 @@ impl Default for EdgeIR {
 }
 
 /// Delivery semantics enumeration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Delivery {
     /// At least once delivery (default).
+    #[default]
     AtLeastOnce,
     /// At most once delivery.
     AtMostOnce,
@@ -338,30 +335,19 @@ pub enum Delivery {
     ExactlyOnce,
 }
 
-impl Default for Delivery {
-    fn default() -> Self {
-        Delivery::AtLeastOnce
-    }
-}
-
 /// Edge ordering semantics.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Ordering {
     /// FIFO semantics per partition.
+    #[default]
     Ordered,
     /// No ordering guarantees.
     Unordered,
 }
 
-impl Default for Ordering {
-    fn default() -> Self {
-        Ordering::Ordered
-    }
-}
-
 /// Buffering behaviour metadata.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 pub struct BufferPolicy {
     /// Optional max items held in memory.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -375,17 +361,6 @@ pub struct BufferPolicy {
     /// Drop behaviour description.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub on_drop: Option<String>,
-}
-
-impl Default for BufferPolicy {
-    fn default() -> Self {
-        Self {
-            max_items: None,
-            spill_threshold_bytes: None,
-            spill_tier: None,
-            on_drop: None,
-        }
-    }
 }
 
 /// Control surface metadata for branching/looping constructs.
@@ -414,10 +389,11 @@ impl Default for ControlSurfaceIR {
 }
 
 /// Supported control surface variants.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ControlSurfaceKind {
     /// Switch/multi-branch control flow.
+    #[default]
     Switch,
     /// Binary branching (if).
     If,
@@ -435,12 +411,6 @@ pub enum ControlSurfaceKind {
     RateLimit,
     /// Error-handling surface.
     ErrorHandler,
-}
-
-impl Default for ControlSurfaceKind {
-    fn default() -> Self {
-        ControlSurfaceKind::Switch
-    }
 }
 
 /// Checkpoint definition.

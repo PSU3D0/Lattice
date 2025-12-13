@@ -1,2 +1,5 @@
 target/
 .target/
+
+# Decrypted private docs (never commit plaintext)
+private/

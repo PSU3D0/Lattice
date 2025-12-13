@@ -1,3 +1,8 @@
+Status: Canonical
+Purpose: scenario
+Owner: Product
+Last reviewed: 2025-12-12
+
 # Addendum — User Stories & Execution Patterns (v1.0)
 
 **Assumptions**

@@ -709,24 +709,30 @@ mod tests {
         ir: Arc<ValidatedIR>,
         config: RouteConfig,
     ) -> SharedState {
-        let runtime = if config.environment_plugins.is_empty() {
+        let RouteConfig {
+            path,
+            method: _,
+            trigger_alias,
+            capture_alias,
+            deadline,
+            resources,
+            environment_plugins,
+        } = config;
+
+        let runtime = if environment_plugins.is_empty() {
             HostRuntime::new(executor, Arc::clone(&ir))
         } else {
-            HostRuntime::with_plugins(
-                executor,
-                Arc::clone(&ir),
-                config.environment_plugins.clone(),
-            )
-        };
+            HostRuntime::with_plugins(executor, Arc::clone(&ir), environment_plugins)
+        }
+        .with_resource_bag(resources);
 
         let flow_name = ir.flow().name.clone();
-        let metrics = Arc::new(HostMetrics::new("web_axum", config.path.clone(), flow_name));
+        let metrics = Arc::new(HostMetrics::new("web_axum", path.clone(), flow_name));
         SharedState {
             runtime,
-            trigger_alias: config.trigger_alias,
-            capture_alias: config.capture_alias,
-            deadline: config.deadline,
-            resources: config.resources,
+            trigger_alias,
+            capture_alias,
+            deadline,
             metrics,
         }
     }
