@@ -602,4 +602,457 @@ mod tests {
             ExecutionResult::Stream(_) => panic!("expected value result"),
         }
     }
+
+    #[tokio::test]
+    async fn preflight_fails_when_required_http_write_missing() {
+        const HTTP_WRITE_EFFECT_HINTS: [&str; 1] = [capabilities::http::HINT_HTTP_WRITE];
+
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn(
+                "tests::trigger",
+                |value: JsonValue| async move { Ok(value) },
+            )
+            .unwrap();
+        registry
+            .register_fn("tests::http_node", |value: JsonValue| async move { Ok(value) })
+            .unwrap();
+
+        let mut builder = FlowBuilder::new("preflight_http", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let http_node = builder
+            .add_node(
+                "http",
+                &NodeSpec::inline_with_hints(
+                    "tests::http_node",
+                    "HttpNode",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Effectful,
+                    Determinism::BestEffort,
+                    None,
+                    &[],
+                    &HTTP_WRITE_EFFECT_HINTS,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &http_node);
+
+        let mut flow = builder.build();
+        flow.nodes
+            .iter_mut()
+            .find(|node| node.alias == "http")
+            .expect("http node")
+            .idempotency
+            .key = Some("idempotency".to_string());
+
+        let ir = Arc::new(validate(&flow).expect("flow validates"));
+
+        let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), ir)
+            .with_resource_bag(ResourceBag::new());
+        let invocation = Invocation::new("trigger", "http", serde_json::json!({"ok": true}));
+
+        match runtime.execute(invocation).await {
+            Ok(_) => panic!("expected preflight failure"),
+            Err(ExecutionError::MissingCapabilities { hints }) => {
+                assert_eq!(hints, vec![capabilities::http::HINT_HTTP_WRITE.to_string()]);
+            }
+            Err(err) => panic!("unexpected error: {err}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn preflight_passes_when_required_http_write_present() {
+        const HTTP_WRITE_EFFECT_HINTS: [&str; 1] = [capabilities::http::HINT_HTTP_WRITE];
+
+        struct NullHttp;
+
+        #[async_trait::async_trait]
+        impl capabilities::http::HttpWrite for NullHttp {
+            async fn send(
+                &self,
+                _request: capabilities::http::HttpRequest,
+            ) -> capabilities::http::HttpResult<capabilities::http::HttpResponse> {
+                Ok(capabilities::http::HttpResponse {
+                    status: 200,
+                    headers: capabilities::http::HttpHeaders::default(),
+                    body: Vec::new(),
+                })
+            }
+        }
+
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn(
+                "tests::trigger",
+                |value: JsonValue| async move { Ok(value) },
+            )
+            .unwrap();
+        registry
+            .register_fn("tests::http_node", |value: JsonValue| async move { Ok(value) })
+            .unwrap();
+
+        let mut builder = FlowBuilder::new("preflight_http", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let http_node = builder
+            .add_node(
+                "http",
+                &NodeSpec::inline_with_hints(
+                    "tests::http_node",
+                    "HttpNode",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Effectful,
+                    Determinism::BestEffort,
+                    None,
+                    &[],
+                    &HTTP_WRITE_EFFECT_HINTS,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &http_node);
+
+        let mut flow = builder.build();
+        flow.nodes
+            .iter_mut()
+            .find(|node| node.alias == "http")
+            .expect("http node")
+            .idempotency
+            .key = Some("idempotency".to_string());
+
+        let ir = Arc::new(validate(&flow).expect("flow validates"));
+
+        let resources = ResourceBag::new().with_http_write(Arc::new(NullHttp));
+        let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), ir)
+            .with_resource_bag(resources);
+        let invocation = Invocation::new("trigger", "http", serde_json::json!({"ok": true}));
+
+        let result = runtime.execute(invocation).await.expect("execution succeeds");
+        if let ExecutionResult::Stream(_) = result {
+            panic!("expected value result");
+        }
+    }
+
+    #[tokio::test]
+    async fn preflight_fails_when_required_dedupe_missing() {
+        const DEDUPE_EFFECT_HINTS: [&str; 1] = [capabilities::dedupe::HINT_DEDUPE_WRITE];
+
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn(
+                "tests::trigger",
+                |value: JsonValue| async move { Ok(value) },
+            )
+            .unwrap();
+        registry
+            .register_fn("tests::dedupe_node", |value: JsonValue| async move { Ok(value) })
+            .unwrap();
+
+        let mut builder = FlowBuilder::new("preflight_dedupe", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let dedupe_node = builder
+            .add_node(
+                "dedupe",
+                &NodeSpec::inline_with_hints(
+                    "tests::dedupe_node",
+                    "DedupeNode",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Effectful,
+                    Determinism::BestEffort,
+                    None,
+                    &[],
+                    &DEDUPE_EFFECT_HINTS,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &dedupe_node);
+
+        let mut flow = builder.build();
+        flow.nodes
+            .iter_mut()
+            .find(|node| node.alias == "dedupe")
+            .expect("dedupe node")
+            .idempotency
+            .key = Some("idempotency".to_string());
+
+        let ir = Arc::new(validate(&flow).expect("flow validates"));
+
+        let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), ir)
+            .with_resource_bag(ResourceBag::new());
+        let invocation = Invocation::new("trigger", "dedupe", serde_json::json!({"ok": true}));
+
+        match runtime.execute(invocation).await {
+            Ok(_) => panic!("expected preflight failure"),
+            Err(ExecutionError::MissingCapabilities { hints }) => {
+                assert_eq!(hints, vec![capabilities::dedupe::HINT_DEDUPE_WRITE.to_string()]);
+            }
+            Err(err) => panic!("unexpected error: {err}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn preflight_fails_when_unknown_resource_hint_missing() {
+        const UNKNOWN_EFFECT_HINTS: [&str; 1] = ["resource::mystery::read"];
+
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn(
+                "tests::trigger",
+                |value: JsonValue| async move { Ok(value) },
+            )
+            .unwrap();
+        registry
+            .register_fn("tests::unknown_node", |value: JsonValue| async move { Ok(value) })
+            .unwrap();
+
+        let mut builder = FlowBuilder::new("preflight_unknown", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let unknown = builder
+            .add_node(
+                "unknown",
+                &NodeSpec::inline_with_hints(
+                    "tests::unknown_node",
+                    "Unknown",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                    &[],
+                    &UNKNOWN_EFFECT_HINTS,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &unknown);
+
+        let ir = Arc::new(validate(&builder.build()).expect("flow validates"));
+
+        let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), ir)
+            .with_resource_bag(ResourceBag::new());
+        let invocation = Invocation::new("trigger", "unknown", serde_json::json!({"ok": true}));
+
+        match runtime.execute(invocation).await {
+            Ok(_) => panic!("expected preflight failure"),
+            Err(ExecutionError::MissingCapabilities { hints }) => {
+                assert_eq!(hints, vec!["resource::mystery::read".to_string()]);
+            }
+            Err(err) => panic!("unexpected error: {err}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn preflight_ignores_determinism_hints() {
+        const CLOCK_DET_HINTS: [&str; 1] = [capabilities::clock::HINT_CLOCK];
+
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn(
+                "tests::trigger",
+                |value: JsonValue| async move { Ok(value) },
+            )
+            .unwrap();
+        registry
+            .register_fn("tests::clocky", |value: JsonValue| async move { Ok(value) })
+            .unwrap();
+
+        let mut builder = FlowBuilder::new("preflight_det", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let clocky = builder
+            .add_node(
+                "clocky",
+                &NodeSpec::inline_with_hints(
+                    "tests::clocky",
+                    "Clocky",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::BestEffort,
+                    None,
+                    &CLOCK_DET_HINTS,
+                    &[],
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &clocky);
+
+        let ir = Arc::new(validate(&builder.build()).expect("flow validates"));
+
+        let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), ir)
+            .with_resource_bag(ResourceBag::new());
+        let invocation = Invocation::new("trigger", "clocky", serde_json::json!({"ok": true}));
+
+        let result = runtime.execute(invocation).await.expect("execution succeeds");
+        if let ExecutionResult::Stream(_) = result {
+            panic!("expected value result");
+        }
+    }
+
+    #[tokio::test]
+    async fn preflight_missing_hints_sorted_and_deduped() {
+        const MULTI_EFFECT_HINTS: [&str; 3] = [
+            "resource::mystery::read",
+            capabilities::kv::HINT_KV_READ,
+            capabilities::kv::HINT_KV_READ,
+        ];
+        const HTTP_WRITE_EFFECT_HINTS: [&str; 1] = [capabilities::http::HINT_HTTP_WRITE];
+
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn(
+                "tests::trigger",
+                |value: JsonValue| async move { Ok(value) },
+            )
+            .unwrap();
+        registry
+            .register_fn("tests::kv_node", |value: JsonValue| async move { Ok(value) })
+            .unwrap();
+        registry
+            .register_fn("tests::http_node", |value: JsonValue| async move { Ok(value) })
+            .unwrap();
+
+        let mut builder = FlowBuilder::new("preflight_multi", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let kv_node = builder
+            .add_node(
+                "kv",
+                &NodeSpec::inline_with_hints(
+                    "tests::kv_node",
+                    "KvNode",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::ReadOnly,
+                    Determinism::BestEffort,
+                    None,
+                    &[],
+                    &MULTI_EFFECT_HINTS,
+                ),
+            )
+            .unwrap();
+        let http_node = builder
+            .add_node(
+                "http",
+                &NodeSpec::inline_with_hints(
+                    "tests::http_node",
+                    "HttpNode",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Effectful,
+                    Determinism::BestEffort,
+                    None,
+                    &[],
+                    &HTTP_WRITE_EFFECT_HINTS,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &kv_node);
+        builder.connect(&kv_node, &http_node);
+
+        let mut flow = builder.build();
+        flow.nodes
+            .iter_mut()
+            .find(|node| node.alias == "http")
+            .expect("http node")
+            .idempotency
+            .key = Some("idempotency".to_string());
+
+        let ir = Arc::new(validate(&flow).expect("flow validates"));
+
+        let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), ir)
+            .with_resource_bag(ResourceBag::new());
+        let invocation = Invocation::new("trigger", "http", serde_json::json!({"ok": true}));
+
+        match runtime.execute(invocation).await {
+            Ok(_) => panic!("expected preflight failure"),
+            Err(ExecutionError::MissingCapabilities { hints }) => {
+                assert_eq!(
+                    hints,
+                    vec![
+                        capabilities::http::HINT_HTTP_WRITE.to_string(),
+                        capabilities::kv::HINT_KV_READ.to_string(),
+                        "resource::mystery::read".to_string(),
+                    ]
+                );
+            }
+            Err(err) => panic!("unexpected error: {err}"),
+        }
+    }
 }

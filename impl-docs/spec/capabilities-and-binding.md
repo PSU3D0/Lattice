@@ -55,9 +55,13 @@ In 0.1, the concrete infra/provisioning is considered out-of-band.
 ## Preflight Checks
 
 Hosts SHOULD perform preflight checks before serving traffic:
-- Derive required domains from Flow IR `effectHints[]`.
+- Derive required domains from Flow IR `effectHints[]` (not `determinismHints[]`).
 - Ensure the configured `ResourceBag` provides compatible providers.
 - If required capability bindings are missing, hosts SHOULD fail fast with `CAP101`.
+
+Preflight invariants (0.1.x):
+- Unknown `resource::*` effect hints MUST be treated as missing (fail-fast), so new domains cannot silently ship without bindings.
+- Hosts SHOULD surface `details.hints[]` as a deterministic list (sorted, unique) for stable conformance and agent tooling.
 
 Preflight is intentionally domain-level in 0.1:
 - "This flow needs HTTP write" rather than "this flow needs kv.consistency=Strong".

@@ -308,7 +308,7 @@ Maintaining this log alongside implementation ensures every phase has traceable 
 - Implemented host-level capability preflight in `host-inproc`: required capability domains are derived from Flow IR `effectHints[]` and checked against the configured `ResourceBag` before execution.
 - Standardized runtime diagnostic code `CAP101` (missing capability binding) and surfaced it through the Axum host error envelope (`{ error, code, details.hints[] }`).
 - Added conformance tests:
-  - `host-inproc`: preflight fails without KV binding; succeeds once a KV provider is present.
+  - `host-inproc`: preflight fails for missing KV/HTTP-write/dedupe bindings and succeeds once the provider is present.
   - `host-web-axum`: HTTP response body includes `code = CAP101` and the missing hint list.
 - Commands exercised:
   - `cargo test -p host-inproc`

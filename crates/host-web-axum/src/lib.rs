@@ -1228,4 +1228,112 @@ mod tests {
             .expect("details.hints array");
         assert!(hints.contains(&json!(capabilities::kv::HINT_KV_READ)));
     }
+
+    #[tokio::test]
+    async fn preflight_multiple_missing_capabilities_returns_code_and_list() {
+        const KV_EFFECT_HINTS: [&str; 1] = [capabilities::kv::HINT_KV_READ];
+        const HTTP_WRITE_EFFECT_HINTS: [&str; 1] = [capabilities::http::HINT_HTTP_WRITE];
+
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn(
+                "tests::trigger",
+                |value: JsonValue| async move { Ok(value) },
+            )
+            .unwrap();
+        registry
+            .register_fn("tests::kv_node", |value: JsonValue| async move { Ok(value) })
+            .unwrap();
+        registry
+            .register_fn("tests::http_node", |value: JsonValue| async move { Ok(value) })
+            .unwrap();
+
+        let executor = FlowExecutor::new(Arc::new(registry));
+        let mut builder = FlowBuilder::new("preflight_multi", Version::new(1, 0, 0), Profile::Web);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let kv_node = builder
+            .add_node(
+                "kv",
+                &NodeSpec::inline_with_hints(
+                    "tests::kv_node",
+                    "KvNode",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::ReadOnly,
+                    Determinism::BestEffort,
+                    None,
+                    &[],
+                    &KV_EFFECT_HINTS,
+                ),
+            )
+            .unwrap();
+        let http_node = builder
+            .add_node(
+                "respond",
+                &NodeSpec::inline_with_hints(
+                    "tests::http_node",
+                    "HttpNode",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Effectful,
+                    Determinism::BestEffort,
+                    None,
+                    &[],
+                    &HTTP_WRITE_EFFECT_HINTS,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &kv_node);
+        builder.connect(&kv_node, &http_node);
+
+        let mut flow = builder.build();
+        flow.nodes
+            .iter_mut()
+            .find(|node| node.alias == "respond")
+            .expect("respond node")
+            .idempotency
+            .key = Some("idempotency".to_string());
+
+        let validated = validate(&flow).expect("validated");
+
+        let config = RouteConfig::new("/preflight_multi")
+            .with_method(Method::POST)
+            .with_trigger_alias("trigger")
+            .with_capture_alias("respond");
+        let state = make_state(executor, Arc::new(validated), config);
+
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/preflight_multi")
+            .header("content-type", "application/json")
+            .body(Body::from(json!({"ok": true}).to_string()))
+            .unwrap();
+
+        let response = super::dispatch_request(State(state), request).await;
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let body: JsonValue = serde_json::from_slice(&bytes).expect("parse json body");
+        assert_eq!(body["code"], json!("CAP101"));
+        let hints = body["details"]["hints"]
+            .as_array()
+            .expect("details.hints array");
+        assert!(hints.contains(&json!(capabilities::kv::HINT_KV_READ)));
+        assert!(hints.contains(&json!(capabilities::http::HINT_HTTP_WRITE)));
+    }
 }
