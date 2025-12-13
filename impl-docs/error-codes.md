@@ -62,6 +62,7 @@ ensure the registry stays in sync with the implementation.
 | EGRESS101 | Validation     | Error   | No allow-listed egress domains for connector. |
 | SECR201   | Validation     | Error   | Credential binding grants scopes outside requested set. |
 | SAGA201   | Validation     | Error   | Compensation node incompatible with effect node output. |
+| CAP101    | Runtime        | Error   | Required capability binding missing from ResourceBag during preflight. |
 
 > **Note:** The default severity column indicates how diagnostics are surfaced in the
 > absence of policy overrides. Individual organisations may escalate or demote specific

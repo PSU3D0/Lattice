@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -122,6 +122,32 @@ impl InvocationMetadata {
     }
 }
 
+fn collect_required_effect_hints(ir: &ValidatedIR) -> Vec<String> {
+    let mut set = BTreeSet::new();
+    for node in &ir.flow().nodes {
+        for hint in &node.effect_hints {
+            if hint.starts_with("resource::") {
+                set.insert(hint.clone());
+            }
+        }
+    }
+    set.into_iter().collect()
+}
+
+fn is_hint_satisfied_by_resources(hint: &str, resources: &dyn ResourceAccess) -> bool {
+    match hint {
+        capabilities::http::HINT_HTTP_READ => resources.http_read().is_some(),
+        capabilities::http::HINT_HTTP_WRITE => resources.http_write().is_some(),
+        capabilities::kv::HINT_KV_READ | capabilities::kv::HINT_KV_WRITE => resources.kv().is_some(),
+        capabilities::blob::HINT_BLOB_READ | capabilities::blob::HINT_BLOB_WRITE => resources.blob().is_some(),
+        capabilities::queue::HINT_QUEUE_PUBLISH | capabilities::queue::HINT_QUEUE_CONSUME => {
+            resources.queue().is_some()
+        }
+        capabilities::dedupe::HINT_DEDUPE_WRITE => resources.dedupe_store().is_some(),
+        _ => false,
+    }
+}
+
 /// Shared in-process runtime that owns the executor and validated IR.
 #[derive(Clone)]
 pub struct HostRuntime {
@@ -129,6 +155,7 @@ pub struct HostRuntime {
     ir: Arc<ValidatedIR>,
     plugins: Arc<Vec<Arc<dyn EnvironmentPlugin>>>,
     resources: Arc<dyn ResourceAccess>,
+    required_effect_hints: Arc<Vec<String>>,
 }
 
 impl HostRuntime {
@@ -137,11 +164,13 @@ impl HostRuntime {
         let resource_bag: Arc<ResourceBag> = Arc::new(ResourceBag::new());
         executor = executor.with_resource_access(resource_bag.clone());
         let resources: Arc<dyn ResourceAccess> = resource_bag;
+        let required_effect_hints = Arc::new(collect_required_effect_hints(ir.as_ref()));
         Self {
             executor,
             ir,
             plugins: Arc::new(Vec::new()),
             resources,
+            required_effect_hints,
         }
     }
 
@@ -154,11 +183,13 @@ impl HostRuntime {
         let resource_bag: Arc<ResourceBag> = Arc::new(ResourceBag::new());
         executor = executor.with_resource_access(resource_bag.clone());
         let resources: Arc<dyn ResourceAccess> = resource_bag;
+        let required_effect_hints = Arc::new(collect_required_effect_hints(ir.as_ref()));
         Self {
             executor,
             ir,
             plugins: Arc::new(plugins),
             resources,
+            required_effect_hints,
         }
     }
 
@@ -196,8 +227,28 @@ impl HostRuntime {
         self.resources.clone()
     }
 
+    /// Fail fast if the runtime is missing required capability domains.
+    ///
+    /// Derivation rule (0.1): required domains are inferred from `NodeIR.effect_hints`.
+    pub fn preflight(&self) -> Result<(), ExecutionError> {
+        let mut missing: Vec<String> = self
+            .required_effect_hints
+            .iter()
+            .filter(|hint| !is_hint_satisfied_by_resources(hint.as_str(), self.resources.as_ref()))
+            .cloned()
+            .collect();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        missing.sort();
+        missing.dedup();
+        Err(ExecutionError::MissingCapabilities { hints: missing })
+    }
+
     /// Execute a single invocation, returning the captured result or error.
     pub async fn execute(&self, invocation: Invocation) -> Result<ExecutionResult, ExecutionError> {
+        self.preflight()?;
+
         let InvocationParts {
             trigger_alias,
             capture_alias,
@@ -430,5 +481,125 @@ mod tests {
 
         assert_eq!(before.lock().unwrap().as_slice(), &["case1".to_string()]);
         assert_eq!(after.lock().unwrap().as_slice(), &["case1:ok".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn preflight_fails_when_required_kv_missing() {
+        const KV_EFFECT_HINTS: [&str; 1] = [capabilities::kv::HINT_KV_READ];
+
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn(
+                "tests::trigger",
+                |value: JsonValue| async move { Ok(value) },
+            )
+            .unwrap();
+        registry
+            .register_fn("tests::kv_node", |value: JsonValue| async move { Ok(value) })
+            .unwrap();
+
+        let mut builder = FlowBuilder::new("preflight_kv", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let kv_node = builder
+            .add_node(
+                "kv",
+                &NodeSpec::inline_with_hints(
+                    "tests::kv_node",
+                    "KvNode",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::ReadOnly,
+                    Determinism::BestEffort,
+                    None,
+                    &[],
+                    &KV_EFFECT_HINTS,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &kv_node);
+        let ir = Arc::new(validate(&builder.build()).expect("flow validates"));
+
+        let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), ir)
+            .with_resource_bag(ResourceBag::new());
+        let invocation = Invocation::new("trigger", "kv", serde_json::json!({"ok": true}));
+
+        match runtime.execute(invocation).await {
+            Ok(_) => panic!("expected preflight failure"),
+            Err(err) => assert!(matches!(err, ExecutionError::MissingCapabilities { .. })),
+        }
+    }
+
+    #[tokio::test]
+    async fn preflight_passes_when_required_kv_present() {
+        const KV_EFFECT_HINTS: [&str; 1] = [capabilities::kv::HINT_KV_READ];
+
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn(
+                "tests::trigger",
+                |value: JsonValue| async move { Ok(value) },
+            )
+            .unwrap();
+        registry
+            .register_fn("tests::kv_node", |value: JsonValue| async move { Ok(value) })
+            .unwrap();
+
+        let mut builder = FlowBuilder::new("preflight_kv", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let kv_node = builder
+            .add_node(
+                "kv",
+                &NodeSpec::inline_with_hints(
+                    "tests::kv_node",
+                    "KvNode",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::ReadOnly,
+                    Determinism::BestEffort,
+                    None,
+                    &[],
+                    &KV_EFFECT_HINTS,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &kv_node);
+        let ir = Arc::new(validate(&builder.build()).expect("flow validates"));
+
+        let resources = ResourceBag::new().with_kv(Arc::new(capabilities::kv::MemoryKv::new()));
+        let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), ir)
+            .with_resource_bag(resources);
+        let invocation = Invocation::new("trigger", "kv", serde_json::json!({"ok": true}));
+
+        let result = runtime.execute(invocation).await.expect("execution succeeds");
+        match result {
+            ExecutionResult::Value(value) => assert_eq!(value, serde_json::json!({"ok": true})),
+            ExecutionResult::Stream(_) => panic!("expected value result"),
+        }
     }
 }

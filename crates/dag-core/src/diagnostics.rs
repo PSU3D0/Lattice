@@ -196,6 +196,18 @@ pub static DIAGNOSTIC_CODES: Lazy<Vec<DiagnosticCode>> = Lazy::new(|| {
             summary: "Control-flow surface hint recommended for branching or loop",
         },
         DiagnosticCode {
+            code: "CTRL901",
+            subsystem: "runtime",
+            default_severity: Severity::Error,
+            summary: "Reserved control surface not supported by this host or profile",
+        },
+        DiagnosticCode {
+            code: "CAP101",
+            subsystem: "runtime",
+            default_severity: Severity::Error,
+            summary: "Required capability binding missing from ResourceBag during preflight",
+        },
+        DiagnosticCode {
             code: "IDEM020",
             subsystem: "validation",
             default_severity: Severity::Error,

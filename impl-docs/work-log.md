@@ -302,3 +302,20 @@ Maintaining this log alongside implementation ensures every phase has traceable 
 - Cloudflare adapter notes remain under `impl-docs/cloudflare/` for implementation context but are not treated as canonical contract docs.
 - Private docs workflow: plaintext stays gitignored under `private/impl-docs/`; commit only ciphertext under `impl-docs/_encrypted/` (`mise run encrypt`, `mise run decrypt`, `python scripts/crypto.py status`).
 - Added repo-local pre-commit guardrails for `private/` + encrypted-doc checks; install via `mise run hooks-install` (remove via `mise run hooks-uninstall`, verify via `mise run hooks-status`).
+
+## 2025-12-13 — Capability preflight (Epic 01.2)
+
+- Implemented host-level capability preflight in `host-inproc`: required capability domains are derived from Flow IR `effectHints[]` and checked against the configured `ResourceBag` before execution.
+- Standardized runtime diagnostic code `CAP101` (missing capability binding) and surfaced it through the Axum host error envelope (`{ error, code, details.hints[] }`).
+- Added conformance tests:
+  - `host-inproc`: preflight fails without KV binding; succeeds once a KV provider is present.
+  - `host-web-axum`: HTTP response body includes `code = CAP101` and the missing hint list.
+- Commands exercised:
+  - `cargo test -p host-inproc`
+  - `cargo test -p host-web-axum`
+  - `cargo test --workspace`
+
+Learnings
+- Preflight should derive requirements from `effectHints[]` only (not `determinismHints[]`) to avoid nondeterminism-only domains like clock/RNG.
+- Treat unknown `resource::*` effect hints as missing (fail-fast) so new domains cannot silently ship without bindings.
+- Host-level preflight can run per-request for correctness; hosts MAY also preflight once at startup to fail before serving traffic.

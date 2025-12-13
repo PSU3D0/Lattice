@@ -1416,6 +1416,9 @@ pub enum ExecutionError {
     /// Handler not registered for node identifier.
     #[error("no handler registered for node `{identifier}`")]
     UnregisteredNode { identifier: String },
+    /// Required capability bindings are missing from the host resource bag.
+    #[error("missing required capabilities: {hints:?}")]
+    MissingCapabilities { hints: Vec<String> },
     /// Spill storage could not be initialised.
     #[error("failed to configure spill storage: {0}")]
     SpillSetup(anyhow::Error),

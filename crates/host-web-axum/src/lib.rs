@@ -553,6 +553,14 @@ fn map_execution_error(err: ExecutionError) -> (StatusCode, JsonValue) {
             StatusCode::INTERNAL_SERVER_ERROR,
             json!({ "error": format!("no handler registered for node `{identifier}`") }),
         ),
+        ExecutionError::MissingCapabilities { hints } => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({
+                "error": "missing required capabilities",
+                "code": "CAP101",
+                "details": { "hints": hints }
+            }),
+        ),
         ExecutionError::Cancelled => (
             StatusCode::SERVICE_UNAVAILABLE,
             json!({ "error": "execution cancelled" }),
@@ -1142,5 +1150,82 @@ mod tests {
         let response = super::dispatch_request(State(state), request).await;
 
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn preflight_missing_capability_returns_code() {
+        const KV_EFFECT_HINTS: [&str; 1] = [capabilities::kv::HINT_KV_READ];
+
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn(
+                "tests::trigger",
+                |value: JsonValue| async move { Ok(value) },
+            )
+            .unwrap();
+        registry
+            .register_fn("tests::kv_node", |value: JsonValue| async move { Ok(value) })
+            .unwrap();
+
+        let executor = FlowExecutor::new(Arc::new(registry));
+        let mut builder = FlowBuilder::new("preflight", Version::new(1, 0, 0), Profile::Web);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let sink = builder
+            .add_node(
+                "respond",
+                &NodeSpec::inline_with_hints(
+                    "tests::kv_node",
+                    "KvNode",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::ReadOnly,
+                    Determinism::BestEffort,
+                    None,
+                    &[],
+                    &KV_EFFECT_HINTS,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &sink);
+        let validated = validate(&builder.build()).expect("validated");
+
+        let config = RouteConfig::new("/preflight")
+            .with_method(Method::POST)
+            .with_trigger_alias("trigger")
+            .with_capture_alias("respond");
+        let state = make_state(executor, Arc::new(validated), config);
+
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/preflight")
+            .header("content-type", "application/json")
+            .body(Body::from(json!({"ok": true}).to_string()))
+            .unwrap();
+
+        let response = super::dispatch_request(State(state), request).await;
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let body: JsonValue = serde_json::from_slice(&bytes).expect("parse json body");
+        assert_eq!(body["code"], json!("CAP101"));
+        let hints = body["details"]["hints"]
+            .as_array()
+            .expect("details.hints array");
+        assert!(hints.contains(&json!(capabilities::kv::HINT_KV_READ)));
     }
 }

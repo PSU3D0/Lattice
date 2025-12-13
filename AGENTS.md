@@ -45,6 +45,25 @@ Rules:
 - Update `work-log.md` when an epic meaningfully advances or a contract changes.
 - Never commit plaintext under `private/`.
 
+## Work-log Pattern (Required)
+
+When you complete a meaningful subphase (e.g., an epic phase acceptance gate), append a dated entry to `impl-docs/work-log.md` with:
+- Header: `## YYYY-MM-DD — <milestone name> (Epic NN.N)`
+- 3–8 bullets: what changed (facts), where (crates/files), and why.
+- Acceptance gates: name the tests/commands that prove it.
+- Any compatibility/contract notes (new codes, envelope changes, IR field semantics).
+
+Avoid:
+- Re-stating the entire roadmap.
+- Writing speculative future intent in the work-log; put that in `impl-docs/roadmap/*`.
+
+## Roadmap Learnings (Required)
+
+When you learn something that will affect future implementation choices:
+- Add it under the corresponding epic phase in `impl-docs/roadmap/<epic>.md` as a `Learnings / notes (<phase>)` block colocated with that phase.
+- Keep it prescriptive and stable: 2–6 bullets about boundaries, invariants, and “don’t do X”.
+- If a learning implies a contract change (IR/ABI/envelope/diagnostic codes), update `impl-docs/spec/*` and/or `impl-docs/error-codes.md` and call it out in the work-log.
+
 ## Project Structure & Module Organization
 
 - Core crates live under `crates/` (e.g., `dag-core`, `dag-macros`, `kernel-plan`, `kernel-exec`).
