@@ -13,4 +13,16 @@ fn ui_failures() {
     t.compile_fail("tests/ui/workflow_unknown_alias.rs");
     t.compile_fail("tests/ui/workflow_timeout_missing_edge.rs");
     t.compile_fail("tests/ui/workflow_timeout_invalid_key.rs");
+    t.compile_fail("tests/ui/workflow_delivery_missing_edge.rs");
+    t.compile_fail("tests/ui/workflow_delivery_invalid_mode.rs");
+    t.compile_fail("tests/ui/workflow_delivery_duplicate.rs");
+    t.compile_fail("tests/ui/workflow_buffer_missing_edge.rs");
+    t.compile_fail("tests/ui/workflow_buffer_invalid_key.rs");
+    t.compile_fail("tests/ui/workflow_buffer_duplicate.rs");
+    t.compile_fail("tests/ui/workflow_spill_missing_edge.rs");
+    t.compile_fail("tests/ui/workflow_spill_invalid_key.rs");
+    t.compile_fail("tests/ui/workflow_spill_duplicate.rs");
+    t.compile_fail("tests/ui/workflow_delivery_mode_string.rs");
+    t.compile_fail("tests/ui/workflow_buffer_max_items_string.rs");
+    t.compile_fail("tests/ui/workflow_spill_tier_ident.rs");
 }

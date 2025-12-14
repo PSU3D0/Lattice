@@ -142,6 +142,18 @@ pub static DIAGNOSTIC_CODES: Lazy<Vec<DiagnosticCode>> = Lazy::new(|| {
             summary: "Duplicate node alias encountered in workflow",
         },
         DiagnosticCode {
+            code: "DAG206",
+            subsystem: "macros",
+            default_severity: Severity::Error,
+            summary: "Edge control statement references a missing edge",
+        },
+        DiagnosticCode {
+            code: "DAG207",
+            subsystem: "macros",
+            default_severity: Severity::Error,
+            summary: "Duplicate edge control statement for the same edge",
+        },
+        DiagnosticCode {
             code: "EXACT001",
             subsystem: "validation",
             default_severity: Severity::Error,
@@ -200,6 +212,12 @@ pub static DIAGNOSTIC_CODES: Lazy<Vec<DiagnosticCode>> = Lazy::new(|| {
             subsystem: "validation",
             default_severity: Severity::Error,
             summary: "Edge timeout budget must be positive",
+        },
+        DiagnosticCode {
+            code: "CTRL102",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Edge buffer max_items must be positive",
         },
         DiagnosticCode {
             code: "CTRL901",

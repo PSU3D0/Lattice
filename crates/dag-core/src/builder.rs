@@ -164,6 +164,103 @@ impl FlowBuilder {
         }
     }
 
+    /// Update the delivery policy for an existing edge.
+    pub fn set_edge_delivery(
+        &mut self,
+        from: &NodeHandle,
+        to: &NodeHandle,
+        delivery: Delivery,
+    ) -> Result<(), FlowBuilderError> {
+        let mut updated = false;
+        for edge in &mut self.flow.edges {
+            if edge.from == from.alias && edge.to == to.alias {
+                edge.delivery = delivery;
+                updated = true;
+            }
+        }
+        if updated {
+            Ok(())
+        } else {
+            Err(FlowBuilderError::UnknownEdge {
+                from: from.alias.clone(),
+                to: to.alias.clone(),
+            })
+        }
+    }
+
+    /// Update the in-memory buffer bound for an existing edge.
+    pub fn set_edge_buffer_max_items(
+        &mut self,
+        from: &NodeHandle,
+        to: &NodeHandle,
+        max_items: u32,
+    ) -> Result<(), FlowBuilderError> {
+        let mut updated = false;
+        for edge in &mut self.flow.edges {
+            if edge.from == from.alias && edge.to == to.alias {
+                edge.buffer.max_items = Some(max_items);
+                updated = true;
+            }
+        }
+        if updated {
+            Ok(())
+        } else {
+            Err(FlowBuilderError::UnknownEdge {
+                from: from.alias.clone(),
+                to: to.alias.clone(),
+            })
+        }
+    }
+
+    /// Update spill settings for an existing edge.
+    pub fn set_edge_spill_tier(
+        &mut self,
+        from: &NodeHandle,
+        to: &NodeHandle,
+        tier: impl Into<String>,
+    ) -> Result<(), FlowBuilderError> {
+        let tier = tier.into();
+        let mut updated = false;
+        for edge in &mut self.flow.edges {
+            if edge.from == from.alias && edge.to == to.alias {
+                edge.buffer.spill_tier = Some(tier.clone());
+                updated = true;
+            }
+        }
+        if updated {
+            Ok(())
+        } else {
+            Err(FlowBuilderError::UnknownEdge {
+                from: from.alias.clone(),
+                to: to.alias.clone(),
+            })
+        }
+    }
+
+    /// Update spill threshold for an existing edge.
+    pub fn set_edge_spill_threshold_bytes(
+        &mut self,
+        from: &NodeHandle,
+        to: &NodeHandle,
+        threshold_bytes: u64,
+    ) -> Result<(), FlowBuilderError> {
+        let mut updated = false;
+        for edge in &mut self.flow.edges {
+            if edge.from == from.alias && edge.to == to.alias {
+                edge.buffer.spill_threshold_bytes = Some(threshold_bytes);
+                updated = true;
+            }
+        }
+        if updated {
+            Ok(())
+        } else {
+            Err(FlowBuilderError::UnknownEdge {
+                from: from.alias.clone(),
+                to: to.alias.clone(),
+            })
+        }
+    }
+
     /// Finalise and return the constructed Flow IR.
     pub fn build(self) -> FlowIR {
         self.flow

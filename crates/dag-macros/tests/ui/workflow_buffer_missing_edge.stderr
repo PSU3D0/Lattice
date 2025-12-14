@@ -1,0 +1,5 @@
+error: [DAG206] buffer! references missing edge `trigger` -> `sink`
+  --> tests/ui/workflow_buffer_missing_edge.rs:35:5
+   |
+35 |     buffer!(trigger -> sink, max_items = 10);
+   |     ^^^^^^

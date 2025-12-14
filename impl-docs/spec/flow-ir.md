@@ -95,7 +95,7 @@ Key fields:
 - `buffer`: `BufferPolicy`.
 
 `BufferPolicy` fields:
-- `max_items`: optional in-memory queue bound.
+- `max_items`: optional in-memory queue bound (must be positive when present).
 - `spill_threshold_bytes`: optional spill threshold.
 - `spill_tier`: optional spill tier identifier.
 - `on_drop`: optional description of drop behavior.

@@ -9,7 +9,8 @@ This note groups the diagnostic codes and policy checks we plan to surface acros
 
 ## 1. Graph & Topology Safety
 - **Duplicates & cycles** — `DAG200`, `DAG205` (RFC §5.4 items 1 & 4). Validator ensures acyclic DAG and unique aliases. Macro catches most duplicates, but IR imported via CLI/importer must be rechecked.
-- **Unbound references** — `DAG201`, `DAG202`, `DAG206` (RFC §4.3, §5.4 item 2). Connectors/export blocks referencing aliases, `vars!`, or exporters not declared. Authors writing custom macros or importer-generated flows can trigger this by misspelling aliases or omitting `vars!` initialisation.
+- **Unbound references** — `DAG201`, `DAG202` (RFC §4.3, §5.4 item 2). Edges/control surfaces referencing aliases that don't exist. Importer-generated IR or hand-edited flows can trigger this by misspelling aliases or omitting bindings.
+- **Edge control misuse** — `DAG206`, `DAG207`. Macro edge-control statements (`timeout!`, `delivery!`, `buffer!`, `spill!`) referencing a missing `connect!` edge (`DAG206`) or repeating a control for the same edge (`DAG207`).
 
 ### Example: Unbound alias (`DAG202`)
 

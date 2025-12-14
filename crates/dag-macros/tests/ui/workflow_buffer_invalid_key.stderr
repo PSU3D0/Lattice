@@ -1,0 +1,5 @@
+error: buffer! requires `max_items = <integer>`
+  --> tests/ui/workflow_buffer_invalid_key.rs:36:30
+   |
+36 |     buffer!(trigger -> sink, items = 10);
+   |                              ^^^^^

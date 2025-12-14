@@ -27,7 +27,8 @@ ensure the registry stays in sync with the implementation.
 | DAG203    | Validation     | Error   | Credential binding missing for capability requirements. |
 | DAG204    | Validation     | Error   | Workflow terminates without a responder for trigger. |
 | DAG205    | Validation     | Error   | Duplicate node alias encountered in workflow. |
-| DAG206    | Validation     | Error   | Requested exporter unavailable for the workflow. |
+| DAG206    | Macros         | Error   | Edge control statement references a missing edge. |
+| DAG207    | Macros         | Error   | Duplicate edge control statement for the same edge. |
 | DAG300    | Validation     | Error   | Human-in-the-loop surface attached to non node/edge scope. |
 | DAG301    | Validation     | Error   | View/export binding cannot be serialised. |
 | DAG320    | Validation     | Error   | Invalid or non-positive rate limit configuration. |
@@ -40,6 +41,7 @@ ensure the registry stays in sync with the implementation.
 | DET302    | Validation     | Error   | Declared determinism conflicts with registered resource hints. |
 | CTRL001   | Lint           | Warn    | Control-flow surface hint recommended for branching/loop. |
 | CTRL101   | Validation     | Error   | Edge timeout budget must be positive. |
+| CTRL102   | Validation     | Error   | Edge buffer max_items must be positive. |
 | CTRL901   | Runtime        | Error   | Reserved control surface not supported by this host/profile. |
 | IDEM020   | Validation     | Error   | Effectful sink missing partition key and idempotency key. |
 | IDEM025   | Validation     | Error   | Idempotency key references non-deterministic fields. |

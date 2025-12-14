@@ -900,6 +900,9 @@ struct WorkflowInput {
     bindings: Vec<Binding>,
     connects: Vec<ConnectEntry>,
     timeouts: Vec<TimeoutEntry>,
+    deliveries: Vec<DeliveryEntry>,
+    buffers: Vec<BufferEntry>,
+    spills: Vec<SpillEntry>,
 }
 
 struct Binding {
@@ -919,6 +922,59 @@ struct TimeoutEntry {
     span: Span,
 }
 
+#[derive(Copy, Clone, Debug)]
+enum DeliveryMode {
+    AtLeast,
+    AtMost,
+    Exactly,
+}
+
+impl DeliveryMode {
+    fn parse(value: &str, span: Span) -> Result<Self> {
+        match value {
+            "at_least_once" => Ok(DeliveryMode::AtLeast),
+            "at_most_once" => Ok(DeliveryMode::AtMost),
+            "exactly_once" => Ok(DeliveryMode::Exactly),
+            other => Err(syn::Error::new(
+                span,
+                format!(
+                    "unknown delivery mode `{other}` (expected `at_least_once|at_most_once|exactly_once`)"
+                ),
+            )),
+        }
+    }
+
+    fn to_tokens(self, span: Span) -> TokenStream2 {
+        match self {
+            DeliveryMode::AtLeast => enum_expr("Delivery", "AtLeastOnce", span),
+            DeliveryMode::AtMost => enum_expr("Delivery", "AtMostOnce", span),
+            DeliveryMode::Exactly => enum_expr("Delivery", "ExactlyOnce", span),
+        }
+    }
+}
+
+struct DeliveryEntry {
+    from: Ident,
+    to: Ident,
+    mode: DeliveryMode,
+    span: Span,
+}
+
+struct BufferEntry {
+    from: Ident,
+    to: Ident,
+    max_items: u32,
+    span: Span,
+}
+
+struct SpillEntry {
+    from: Ident,
+    to: Ident,
+    tier: LitStr,
+    threshold_bytes: Option<u64>,
+    span: Span,
+}
+
 struct ConnectArgs {
     from: Ident,
     to: Ident,
@@ -928,6 +984,25 @@ struct TimeoutArgs {
     from: Ident,
     to: Ident,
     ms: u64,
+}
+
+struct DeliveryArgs {
+    from: Ident,
+    to: Ident,
+    mode: DeliveryMode,
+}
+
+struct BufferArgs {
+    from: Ident,
+    to: Ident,
+    max_items: u32,
+}
+
+struct SpillArgs {
+    from: Ident,
+    to: Ident,
+    tier: LitStr,
+    threshold_bytes: Option<u64>,
 }
 
 impl Parse for ConnectArgs {
@@ -976,6 +1051,180 @@ impl Parse for TimeoutArgs {
     }
 }
 
+impl Parse for DeliveryArgs {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let from: Ident = input.parse()?;
+        input.parse::<Token![->]>()?;
+        let to: Ident = input.parse()?;
+
+        input.parse::<Token![,]>()?;
+        let key: Ident = input.parse()?;
+        if key != "mode" {
+            return Err(syn::Error::new(
+                key.span(),
+                "delivery! requires `mode = at_least_once|at_most_once|exactly_once`",
+            ));
+        }
+        input.parse::<Token![=]>()?;
+        let mode_expr: Expr = input.parse()?;
+        let mode_ident = match &mode_expr {
+            Expr::Path(path) if path.path.is_ident("at_least_once") => {
+                Ident::new("at_least_once", path.span())
+            }
+            Expr::Path(path) if path.path.is_ident("at_most_once") => {
+                Ident::new("at_most_once", path.span())
+            }
+            Expr::Path(path) if path.path.is_ident("exactly_once") => {
+                Ident::new("exactly_once", path.span())
+            }
+            Expr::Path(path) if path.path.segments.len() == 1 => {
+                path.path.segments[0].ident.clone()
+            }
+            _ => {
+                return Err(syn::Error::new_spanned(
+                    mode_expr,
+                    "delivery! requires `mode = at_least_once|at_most_once|exactly_once`",
+                ));
+            }
+        };
+        let mode = DeliveryMode::parse(&mode_ident.to_string(), mode_ident.span())?;
+
+        if !input.is_empty() {
+            return Err(syn::Error::new(
+                input.span(),
+                "delivery! supports only `from -> to, mode = <...>` syntax",
+            ));
+        }
+
+        Ok(Self { from, to, mode })
+    }
+}
+
+impl Parse for BufferArgs {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let from: Ident = input.parse()?;
+        input.parse::<Token![->]>()?;
+        let to: Ident = input.parse()?;
+
+        input.parse::<Token![,]>()?;
+        let key: Ident = input.parse()?;
+        if key != "max_items" {
+            return Err(syn::Error::new(
+                key.span(),
+                "buffer! requires `max_items = <integer>`",
+            ));
+        }
+        input.parse::<Token![=]>()?;
+        let max_items_expr: Expr = input.parse()?;
+        let max_items_lit = match &max_items_expr {
+            Expr::Lit(ExprLit {
+                lit: Lit::Int(lit), ..
+            }) => lit,
+            _ => {
+                return Err(syn::Error::new_spanned(
+                    max_items_expr,
+                    "buffer! requires `max_items = <integer>`",
+                ));
+            }
+        };
+        let max_items = max_items_lit.base10_parse::<u32>().map_err(|err| {
+            syn::Error::new(
+                max_items_lit.span(),
+                format!("invalid max_items literal: {err}"),
+            )
+        })?;
+
+        if !input.is_empty() {
+            return Err(syn::Error::new(
+                input.span(),
+                "buffer! supports only `from -> to, max_items = <integer>` syntax",
+            ));
+        }
+
+        Ok(Self {
+            from,
+            to,
+            max_items,
+        })
+    }
+}
+
+impl Parse for SpillArgs {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let from: Ident = input.parse()?;
+        input.parse::<Token![->]>()?;
+        let to: Ident = input.parse()?;
+
+        input.parse::<Token![,]>()?;
+        let key: Ident = input.parse()?;
+        if key != "tier" {
+            return Err(syn::Error::new(
+                key.span(),
+                "spill! requires `tier = \"...\"`",
+            ));
+        }
+        input.parse::<Token![=]>()?;
+        let tier_expr: Expr = input.parse()?;
+        let tier = match &tier_expr {
+            Expr::Lit(ExprLit {
+                lit: Lit::Str(lit), ..
+            }) => lit.clone(),
+            _ => {
+                return Err(syn::Error::new_spanned(
+                    tier_expr,
+                    "spill! requires `tier = \"...\"`",
+                ));
+            }
+        };
+
+        let mut threshold_bytes = None;
+        if input.peek(Token![,]) {
+            input.parse::<Token![,]>()?;
+            let key: Ident = input.parse()?;
+            if key != "threshold_bytes" {
+                return Err(syn::Error::new(
+                    key.span(),
+                    "spill! supports only `tier = \"...\"[, threshold_bytes = <integer>]`",
+                ));
+            }
+            input.parse::<Token![=]>()?;
+            let threshold_expr: Expr = input.parse()?;
+            let threshold_lit = match &threshold_expr {
+                Expr::Lit(ExprLit {
+                    lit: Lit::Int(lit), ..
+                }) => lit,
+                _ => {
+                    return Err(syn::Error::new_spanned(
+                        threshold_expr,
+                        "spill! supports only `tier = \"...\"[, threshold_bytes = <integer>]`",
+                    ));
+                }
+            };
+            let threshold = threshold_lit.base10_parse::<u64>().map_err(|err| {
+                syn::Error::new(
+                    threshold_lit.span(),
+                    format!("invalid threshold_bytes literal: {err}"),
+                )
+            })?;
+            threshold_bytes = Some(threshold);
+        }
+
+        if !input.is_empty() {
+            return Err(syn::Error::new(
+                input.span(),
+                "spill! supports only `from -> to, tier = \"...\"[, threshold_bytes = <integer>]` syntax",
+            ));
+        }
+
+        Ok(Self {
+            from,
+            to,
+            tier,
+            threshold_bytes,
+        })
+    }
+}
+
 impl Parse for WorkflowInput {
     fn parse(input: ParseStream) -> Result<Self> {
         let mut name = None;
@@ -985,6 +1234,9 @@ impl Parse for WorkflowInput {
         let mut bindings = Vec::new();
         let mut connects = Vec::new();
         let mut timeouts = Vec::new();
+        let mut deliveries = Vec::new();
+        let mut buffers = Vec::new();
+        let mut spills = Vec::new();
 
         while !input.is_empty() {
             let key: Ident = input.parse()?;
@@ -1093,9 +1345,70 @@ impl Parse for WorkflowInput {
                 continue;
             }
 
+            if mac.path.is_ident("delivery") {
+                let span = mac.span();
+                let args = syn::parse2::<DeliveryArgs>(mac.tokens)?;
+                if input.peek(Token![;]) {
+                    input.parse::<Token![;]>()?;
+                } else {
+                    return Err(syn::Error::new(
+                        input.span(),
+                        "expected `;` after delivery! statement",
+                    ));
+                }
+                deliveries.push(DeliveryEntry {
+                    from: args.from,
+                    to: args.to,
+                    mode: args.mode,
+                    span,
+                });
+                continue;
+            }
+
+            if mac.path.is_ident("buffer") {
+                let span = mac.span();
+                let args = syn::parse2::<BufferArgs>(mac.tokens)?;
+                if input.peek(Token![;]) {
+                    input.parse::<Token![;]>()?;
+                } else {
+                    return Err(syn::Error::new(
+                        input.span(),
+                        "expected `;` after buffer! statement",
+                    ));
+                }
+                buffers.push(BufferEntry {
+                    from: args.from,
+                    to: args.to,
+                    max_items: args.max_items,
+                    span,
+                });
+                continue;
+            }
+
+            if mac.path.is_ident("spill") {
+                let span = mac.span();
+                let args = syn::parse2::<SpillArgs>(mac.tokens)?;
+                if input.peek(Token![;]) {
+                    input.parse::<Token![;]>()?;
+                } else {
+                    return Err(syn::Error::new(
+                        input.span(),
+                        "expected `;` after spill! statement",
+                    ));
+                }
+                spills.push(SpillEntry {
+                    from: args.from,
+                    to: args.to,
+                    tier: args.tier,
+                    threshold_bytes: args.threshold_bytes,
+                    span,
+                });
+                continue;
+            }
+
             return Err(syn::Error::new(
                 mac.span(),
-                "workflow! body currently supports only `let` bindings, `connect!`, and `timeout!` statements",
+                "workflow! body currently supports only `let` bindings, `connect!`, `timeout!`, `delivery!`, `buffer!`, and `spill!` statements",
             ));
         }
 
@@ -1112,6 +1425,9 @@ impl Parse for WorkflowInput {
             bindings,
             connects,
             timeouts,
+            deliveries,
+            buffers,
+            spills,
         })
     }
 }
@@ -1197,6 +1513,105 @@ impl WorkflowInput {
             }
         }
 
+        let mut delivery_edges = HashSet::new();
+        for delivery in &self.deliveries {
+            let from = delivery.from.to_string();
+            let to = delivery.to.to_string();
+
+            if !alias_set.contains(&from) {
+                return Err(syn::Error::new(
+                    delivery.from.span(),
+                    format!("[DAG202] unknown node alias `{}`", delivery.from),
+                ));
+            }
+            if !alias_set.contains(&to) {
+                return Err(syn::Error::new(
+                    delivery.to.span(),
+                    format!("[DAG202] unknown node alias `{}`", delivery.to),
+                ));
+            }
+
+            if !connected_edges.contains(&(from.clone(), to.clone())) {
+                return Err(syn::Error::new(
+                    delivery.span,
+                    format!("[DAG206] delivery! references missing edge `{from}` -> `{to}`"),
+                ));
+            }
+
+            if !delivery_edges.insert((from.clone(), to.clone())) {
+                return Err(syn::Error::new(
+                    delivery.span,
+                    format!("[DAG207] duplicate delivery! for edge `{from}` -> `{to}`"),
+                ));
+            }
+        }
+
+        let mut buffer_edges = HashSet::new();
+        for buffer in &self.buffers {
+            let from = buffer.from.to_string();
+            let to = buffer.to.to_string();
+
+            if !alias_set.contains(&from) {
+                return Err(syn::Error::new(
+                    buffer.from.span(),
+                    format!("[DAG202] unknown node alias `{}`", buffer.from),
+                ));
+            }
+            if !alias_set.contains(&to) {
+                return Err(syn::Error::new(
+                    buffer.to.span(),
+                    format!("[DAG202] unknown node alias `{}`", buffer.to),
+                ));
+            }
+
+            if !connected_edges.contains(&(from.clone(), to.clone())) {
+                return Err(syn::Error::new(
+                    buffer.span,
+                    format!("[DAG206] buffer! references missing edge `{from}` -> `{to}`"),
+                ));
+            }
+
+            if !buffer_edges.insert((from.clone(), to.clone())) {
+                return Err(syn::Error::new(
+                    buffer.span,
+                    format!("[DAG207] duplicate buffer! for edge `{from}` -> `{to}`"),
+                ));
+            }
+        }
+
+        let mut spill_edges = HashSet::new();
+        for spill in &self.spills {
+            let from = spill.from.to_string();
+            let to = spill.to.to_string();
+
+            if !alias_set.contains(&from) {
+                return Err(syn::Error::new(
+                    spill.from.span(),
+                    format!("[DAG202] unknown node alias `{}`", spill.from),
+                ));
+            }
+            if !alias_set.contains(&to) {
+                return Err(syn::Error::new(
+                    spill.to.span(),
+                    format!("[DAG202] unknown node alias `{}`", spill.to),
+                ));
+            }
+
+            if !connected_edges.contains(&(from.clone(), to.clone())) {
+                return Err(syn::Error::new(
+                    spill.span,
+                    format!("[DAG206] spill! references missing edge `{from}` -> `{to}`"),
+                ));
+            }
+
+            if !spill_edges.insert((from.clone(), to.clone())) {
+                return Err(syn::Error::new(
+                    spill.span,
+                    format!("[DAG207] duplicate spill! for edge `{from}` -> `{to}`"),
+                ));
+            }
+        }
+
         let summary_stmt = if let Some(summary) = &self.summary {
             quote!(builder.summary(Some(#summary));)
         } else {
@@ -1237,6 +1652,47 @@ impl WorkflowInput {
             }
         });
 
+        let delivery_statements = self.deliveries.iter().map(|delivery| {
+            let from = &delivery.from;
+            let to = &delivery.to;
+            let mode = delivery.mode.to_tokens(delivery.span);
+            quote! {
+                builder
+                    .set_edge_delivery(&#from, &#to, #mode)
+                    .expect("delivery! references existing edge");
+            }
+        });
+
+        let buffer_statements = self.buffers.iter().map(|buffer| {
+            let from = &buffer.from;
+            let to = &buffer.to;
+            let max_items = buffer.max_items;
+            quote! {
+                builder
+                    .set_edge_buffer_max_items(&#from, &#to, #max_items)
+                    .expect("buffer! references existing edge");
+            }
+        });
+
+        let spill_statements = self.spills.iter().map(|spill| {
+            let from = &spill.from;
+            let to = &spill.to;
+            let tier = &spill.tier;
+            let threshold_stmt = spill.threshold_bytes.map(|threshold_bytes| {
+                quote! {
+                    builder
+                        .set_edge_spill_threshold_bytes(&#from, &#to, #threshold_bytes)
+                        .expect("spill! references existing edge");
+                }
+            });
+            quote! {
+                builder
+                    .set_edge_spill_tier(&#from, &#to, #tier)
+                    .expect("spill! references existing edge");
+                #threshold_stmt
+            }
+        });
+
         Ok(quote! {
             pub fn #fn_name() -> ::dag_core::FlowIR {
                 let version = ::dag_core::prelude::Version::parse(#version_literal)
@@ -1250,6 +1706,9 @@ impl WorkflowInput {
                 #summary_stmt
                 #(#binding_statements)*
                 #(#connect_statements)*
+                #(#delivery_statements)*
+                #(#buffer_statements)*
+                #(#spill_statements)*
                 #(#timeout_statements)*
 
                 builder.build()

@@ -1,0 +1,5 @@
+error: [DAG207] duplicate delivery! for edge `trigger` -> `sink`
+  --> tests/ui/workflow_delivery_duplicate.rs:37:5
+   |
+37 |     delivery!(trigger -> sink, mode = at_most_once);
+   |     ^^^^^^^^

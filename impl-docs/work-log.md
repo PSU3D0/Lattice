@@ -332,3 +332,20 @@ Learnings
   - `cargo test -p dag-macros`
   - `cargo test -p kernel-plan`
   - `cargo test --workspace`
+
+## 2025-12-14 — Edge delivery/buffer/spill macro primitives (Epic 01.3)
+
+- Extended `workflow!` to support `delivery!`, `buffer!`, and `spill!`, emitting edge controls (`EdgeIR.delivery`, `EdgeIR.buffer`).
+- Added FlowBuilder edge mutators:
+  - `set_edge_delivery`
+  - `set_edge_buffer_max_items`
+  - `set_edge_spill_tier`
+  - `set_edge_spill_threshold_bytes`
+- Added validation gate: `kernel-plan` rejects `buffer.max_items = 0` with diagnostic `CTRL102`.
+- Added tests:
+  - `dag-macros`: unit tests for emitted `delivery/buffer/spill` values, validator regression for `EXACT00*`/`SPILL001`, and trybuild fixtures locking invalid syntax, missing edges (`DAG206`), duplicates (`DAG207`), and wrong literal kinds.
+  - `kernel-plan`: `edge_buffer_requires_positive_max_items` asserts `CTRL102`.
+- Commands exercised:
+  - `cargo test -p dag-macros`
+  - `cargo test -p kernel-plan`
+  - `cargo test --workspace`

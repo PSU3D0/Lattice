@@ -1,0 +1,5 @@
+error: [DAG206] spill! references missing edge `trigger` -> `sink`
+  --> tests/ui/workflow_spill_missing_edge.rs:35:5
+   |
+35 |     spill!(trigger -> sink, tier = "local");
+   |     ^^^^^

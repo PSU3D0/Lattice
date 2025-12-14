@@ -1,0 +1,5 @@
+error: unknown delivery mode `maybe_once` (expected `at_least_once|at_most_once|exactly_once`)
+  --> tests/ui/workflow_delivery_invalid_mode.rs:36:39
+   |
+36 |     delivery!(trigger -> sink, mode = maybe_once);
+   |                                       ^^^^^^^^^^

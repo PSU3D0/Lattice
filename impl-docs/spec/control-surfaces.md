@@ -34,7 +34,7 @@ Validator requirements (implemented):
 Field: `EdgeIR.buffer` (`BufferPolicy`).
 
 Semantics:
-- `max_items`: max in-memory queued items.
+- `max_items`: max in-memory queued items (must be positive when present: `CTRL102`).
 - `spill_threshold_bytes` + `spill_tier`: if configured, executor may spill payloads exceeding threshold.
 
 Notes:

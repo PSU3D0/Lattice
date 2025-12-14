@@ -1,0 +1,5 @@
+error: delivery! requires `mode = at_least_once|at_most_once|exactly_once`
+  --> tests/ui/workflow_delivery_mode_string.rs:36:39
+   |
+36 |     delivery!(trigger -> sink, mode = "exactly_once");
+   |                                       ^^^^^^^^^^^^^^

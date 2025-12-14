@@ -1508,24 +1508,42 @@ mod tests {
             ExecutionResult::Stream(_) => panic!("expected non-streaming result"),
         }
 
-        let snapshot = metrics_snapshotter().snapshot().into_vec();
         let mut saw_latency = false;
+        let mut saw_latency_samples = false;
         let mut saw_queue = false;
-        for (key, _unit, _desc, value) in snapshot.into_iter() {
-            let name = key.key().name();
-            match (name, value) {
-                ("latticeflow.executor.node_latency_ms", DebugValue::Histogram(vals)) => {
-                    assert!(!vals.is_empty(), "latency histogram recorded no samples");
-                    saw_latency = true;
+
+        for _ in 0..10 {
+            saw_latency = false;
+            saw_latency_samples = false;
+            saw_queue = false;
+
+            let snapshot = metrics_snapshotter().snapshot().into_vec();
+            for (key, _unit, _desc, value) in snapshot.into_iter() {
+                let name = key.key().name();
+                match (name, value) {
+                    ("latticeflow.executor.node_latency_ms", DebugValue::Histogram(vals)) => {
+                        saw_latency = true;
+                        saw_latency_samples = !vals.is_empty();
+                    }
+                    ("latticeflow.executor.queue_depth", DebugValue::Gauge(_)) => {
+                        saw_queue = true;
+                    }
+                    _ => {}
                 }
-                ("latticeflow.executor.queue_depth", DebugValue::Gauge(_)) => {
-                    saw_queue = true;
-                }
-                _ => {}
             }
+
+            if saw_latency && saw_latency_samples && saw_queue {
+                break;
+            }
+
+            sleep(Duration::from_millis(10)).await;
         }
 
         assert!(saw_latency, "expected node latency histogram to be emitted");
+        assert!(
+            saw_latency_samples,
+            "node latency histogram recorded no samples"
+        );
         assert!(saw_queue, "expected queue depth gauge to be emitted");
     }
 

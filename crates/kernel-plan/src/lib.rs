@@ -36,6 +36,7 @@ pub fn validate(flow: &FlowIR) -> Result<ValidatedIR, Vec<Diagnostic>> {
     check_determinism_conflicts(flow, &mut diagnostics);
     check_exactly_once_requirements(flow, &mut diagnostics);
     check_edge_timeout_requirements(flow, &mut diagnostics);
+    check_edge_buffer_requirements(flow, &mut diagnostics);
     check_spill_requirements(flow, &mut diagnostics);
 
     if diagnostics.is_empty() {
@@ -297,6 +298,20 @@ fn check_edge_timeout_requirements(flow: &FlowIR, diagnostics: &mut Vec<Diagnost
     }
 }
 
+fn check_edge_buffer_requirements(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    for edge in &flow.edges {
+        if edge.buffer.max_items == Some(0) {
+            diagnostics.push(diagnostic(
+                "CTRL102",
+                format!(
+                    "edge `{}` -> `{}` configures `buffer.max_items = 0`; buffer budgets must be positive",
+                    edge.from, edge.to
+                ),
+            ));
+        }
+    }
+}
+
 fn check_spill_requirements(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
     let has_blob_hint = flow.nodes.iter().any(|node| {
         node.effect_hints
@@ -503,6 +518,17 @@ mod tests {
 
         let diagnostics = validate(&flow).expect_err("expected validation errors");
         assert!(diagnostics.iter().any(|d| d.code.code == "CTRL101"));
+    }
+
+    #[test]
+    fn edge_buffer_requires_positive_max_items() {
+        let mut flow = build_sample_flow();
+        if let Some(edge) = flow.edges.first_mut() {
+            edge.buffer.max_items = Some(0);
+        }
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL102"));
     }
 
     #[test]

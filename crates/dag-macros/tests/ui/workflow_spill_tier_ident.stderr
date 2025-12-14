@@ -1,0 +1,5 @@
+error: spill! requires `tier = "..."`
+  --> tests/ui/workflow_spill_tier_ident.rs:36:36
+   |
+36 |     spill!(trigger -> sink, tier = local);
+   |                                    ^^^^^

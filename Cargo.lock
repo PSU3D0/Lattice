@@ -1335,6 +1335,7 @@ version = "0.1.0"
 dependencies = [
  "capabilities",
  "dag-core",
+ "kernel-plan",
  "proc-macro2",
  "quote",
  "schemars 0.8.22",
