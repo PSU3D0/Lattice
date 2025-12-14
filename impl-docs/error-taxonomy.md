@@ -314,6 +314,7 @@ Runtime should emit `TIME015` when execution exceeds configured timeout; mitigat
 
 ## 7. Control Surfaces & Lints
 - **Missing hints** — `CTRL001` (RFC §4.9). When policies require explicit control-surface macros (`switch!`, `for_each!`), raw branching/loops generate warnings. Code pattern: using bare `match`/`for` without `#[flow::switch]`/`#[flow::for_each]` wrappers in lint-enforced contexts.
+- **Invalid switch config** — `CTRL110`/`CTRL111`/`CTRL112`. Malformed `switch` surfaces, missing required `source -> target` edges, or multiple switch surfaces for the same `source` alias.
 - **Human-in-the-loop misuse** — `DAG300` (RFC §4.6). Attaching `hitl!` to invalid scope.
 
 ### Example: Missing control hint (`CTRL001`)

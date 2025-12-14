@@ -42,6 +42,9 @@ ensure the registry stays in sync with the implementation.
 | CTRL001   | Lint           | Warn    | Control-flow surface hint recommended for branching/loop. |
 | CTRL101   | Validation     | Error   | Edge timeout budget must be positive. |
 | CTRL102   | Validation     | Error   | Edge buffer max_items must be positive. |
+| CTRL110   | Validation     | Error   | Switch control surface config is invalid. |
+| CTRL111   | Validation     | Error   | Switch control surface references a missing edge. |
+| CTRL112   | Validation     | Error   | Multiple switch control surfaces reference the same source node. |
 | CTRL901   | Runtime        | Error   | Reserved control surface not supported by this host/profile. |
 | IDEM020   | Validation     | Error   | Effectful sink missing partition key and idempotency key. |
 | IDEM025   | Validation     | Error   | Idempotency key references non-deterministic fields. |

@@ -1,0 +1,5 @@
+error: [DAG206] switch! references missing edge `route` -> `b`
+  --> tests/ui/workflow_switch_missing_edge.rs:35:5
+   |
+35 |     switch!(
+   |     ^^^^^^

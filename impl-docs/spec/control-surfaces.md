@@ -83,8 +83,17 @@ Selector:
 - The value at `selector_pointer` MUST be a JSON string.
 - Matching is exact string equality.
 
-Targets:
-- `ControlSurfaceIR.targets` MUST include `source`, every case target, and `default` when present.
+Routing semantics:
+- After `source` produces a value, the runtime selects exactly one target:
+  - if `cases[selector_value]` exists: schedule that target
+  - else if `default` exists: schedule `default`
+  - else: schedule no targets
+
+Structural requirements (implemented by validator/runtime):
+- `selector_pointer` MUST be a valid JSON Pointer string (empty or starting with `/`) (`CTRL110`).
+- For every case target (and `default` when present), an edge `source -> target` MUST exist (`CTRL111`).
+- `ControlSurfaceIR.targets` MUST include `source`, every case target, and `default` when present (`CTRL110`).
+- A flow MUST NOT define multiple switch surfaces for the same `source` (`CTRL112`).
 
 ## 0.1 Spec-Only / Lint-Only Surfaces (Reserved)
 

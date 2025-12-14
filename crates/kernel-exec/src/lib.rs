@@ -5,7 +5,7 @@
 //! propagates cancellation on failures or deadlines, and exposes a thin
 //! interface for hosts to drive requests (e.g. HTTP triggers).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::future::Future;
 use std::marker::PhantomData;
@@ -565,6 +565,214 @@ struct InstrumentedSender {
     spill: Option<Arc<SpillContext>>,
 }
 
+#[derive(Clone)]
+struct OutgoingSender {
+    to: String,
+    sender: InstrumentedSender,
+}
+
+#[derive(Clone, Debug)]
+struct SwitchRouting {
+    surface_id: String,
+    selector_pointer: String,
+    cases: HashMap<String, String>,
+    default: Option<String>,
+    controlled_targets: HashSet<String>,
+}
+
+impl SwitchRouting {
+    fn select_target<'a>(&'a self, value: &JsonValue) -> Result<Option<&'a str>, NodeError> {
+        let selected = value
+            .pointer(self.selector_pointer.as_str())
+            .ok_or_else(|| {
+                NodeError::new(format!(
+                    "switch `{}` selector_pointer `{}` did not resolve",
+                    self.surface_id, self.selector_pointer
+                ))
+            })?;
+
+        let selector = selected.as_str().ok_or_else(|| {
+            NodeError::new(format!(
+                "switch `{}` selector_pointer `{}` must resolve to a string",
+                self.surface_id, self.selector_pointer
+            ))
+        })?;
+
+        if let Some(target) = self.cases.get(selector) {
+            Ok(Some(target.as_str()))
+        } else if let Some(default) = &self.default {
+            Ok(Some(default.as_str()))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn controls_edge_to(&self, target: &str) -> bool {
+        self.controlled_targets.contains(target)
+    }
+}
+
+#[derive(Clone, Default)]
+struct RoutingTable {
+    switches: HashMap<String, SwitchRouting>,
+}
+
+impl RoutingTable {
+    fn from_flow(flow: &dag_core::FlowIR) -> Result<Self, ExecutionError> {
+        let mut switches = HashMap::new();
+        for surface in &flow.control_surfaces {
+            match surface.kind {
+                dag_core::ControlSurfaceKind::Switch => {
+                    let source = routing_source(flow, surface)?;
+                    if switches.contains_key(source.as_str()) {
+                        return Err(ExecutionError::InvalidControlSurface {
+                            id: surface.id.clone(),
+                            kind: "switch".to_string(),
+                            reason: "multiple switch control surfaces for same source".to_string(),
+                        });
+                    }
+                    let routing = parse_switch_surface(flow, surface)?;
+                    switches.insert(source, routing);
+                }
+                _ => {
+                    return Err(ExecutionError::UnsupportedControlSurface {
+                        id: surface.id.clone(),
+                        kind: format!("{:?}", surface.kind),
+                    });
+                }
+            }
+        }
+        Ok(Self { switches })
+    }
+
+    fn switch_for(&self, alias: &str) -> Option<&SwitchRouting> {
+        self.switches.get(alias)
+    }
+}
+
+fn routing_source(
+    flow: &dag_core::FlowIR,
+    surface: &dag_core::ControlSurfaceIR,
+) -> Result<String, ExecutionError> {
+    let config =
+        surface
+            .config
+            .as_object()
+            .ok_or_else(|| ExecutionError::InvalidControlSurface {
+                id: surface.id.clone(),
+                kind: "switch".to_string(),
+                reason: "config must be object".to_string(),
+            })?;
+    let source = config
+        .get("source")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ExecutionError::InvalidControlSurface {
+            id: surface.id.clone(),
+            kind: "switch".to_string(),
+            reason: "missing config.source".to_string(),
+        })?;
+    if flow.nodes.iter().any(|n| n.alias == source) {
+        Ok(source.to_string())
+    } else {
+        Err(ExecutionError::InvalidControlSurface {
+            id: surface.id.clone(),
+            kind: "switch".to_string(),
+            reason: format!("unknown source node `{source}`"),
+        })
+    }
+}
+
+fn parse_switch_surface(
+    flow: &dag_core::FlowIR,
+    surface: &dag_core::ControlSurfaceIR,
+) -> Result<SwitchRouting, ExecutionError> {
+    let config =
+        surface
+            .config
+            .as_object()
+            .ok_or_else(|| ExecutionError::InvalidControlSurface {
+                id: surface.id.clone(),
+                kind: "switch".to_string(),
+                reason: "config must be object".to_string(),
+            })?;
+
+    let v_ok = config
+        .get("v")
+        .and_then(|v| v.as_u64())
+        .map(|v| v == 1)
+        .unwrap_or(false);
+    if !v_ok {
+        return Err(ExecutionError::InvalidControlSurface {
+            id: surface.id.clone(),
+            kind: "switch".to_string(),
+            reason: "config.v must be 1".to_string(),
+        });
+    }
+
+    let selector_pointer = config
+        .get("selector_pointer")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ExecutionError::InvalidControlSurface {
+            id: surface.id.clone(),
+            kind: "switch".to_string(),
+            reason: "missing config.selector_pointer".to_string(),
+        })?
+        .to_string();
+
+    let cases_obj = config
+        .get("cases")
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| ExecutionError::InvalidControlSurface {
+            id: surface.id.clone(),
+            kind: "switch".to_string(),
+            reason: "missing config.cases".to_string(),
+        })?;
+
+    let mut cases = HashMap::new();
+    let mut controlled_targets = HashSet::new();
+    for (k, v) in cases_obj {
+        let target = v
+            .as_str()
+            .ok_or_else(|| ExecutionError::InvalidControlSurface {
+                id: surface.id.clone(),
+                kind: "switch".to_string(),
+                reason: "case targets must be strings".to_string(),
+            })?;
+        if !flow.nodes.iter().any(|n| n.alias == target) {
+            return Err(ExecutionError::InvalidControlSurface {
+                id: surface.id.clone(),
+                kind: "switch".to_string(),
+                reason: format!("unknown case target `{target}`"),
+            });
+        }
+        cases.insert(k.clone(), target.to_string());
+        controlled_targets.insert(target.to_string());
+    }
+
+    let default = match config.get("default") {
+        Some(v) => {
+            let target = v
+                .as_str()
+                .ok_or_else(|| ExecutionError::InvalidControlSurface {
+                    id: surface.id.clone(),
+                    kind: "switch".to_string(),
+                    reason: "default must be string".to_string(),
+                })?;
+            controlled_targets.insert(target.to_string());
+            Some(target.to_string())
+        }
+        None => None,
+    };
+
+    Ok(SwitchRouting {
+        surface_id: surface.id.clone(),
+        selector_pointer,
+        cases,
+        default,
+        controlled_targets,
+    })
+}
+
 impl InstrumentedSender {
     fn new(
         sender: mpsc::Sender<FlowMessage>,
@@ -791,6 +999,7 @@ impl FlowExecutor {
         let capture_alias = capture_alias.into();
         let flow = ir.flow().clone();
         let metrics = Arc::new(ExecutorMetrics::new(flow.name.clone(), flow.profile));
+        let routing = Arc::new(RoutingTable::from_flow(&flow)?);
 
         let mut handlers: HashMap<String, Arc<dyn NodeHandler>> = HashMap::new();
         for node in &flow.nodes {
@@ -803,7 +1012,7 @@ impl FlowExecutor {
         }
 
         let mut inbound: HashMap<String, Vec<mpsc::Receiver<FlowMessage>>> = HashMap::new();
-        let mut outbound: HashMap<String, Vec<InstrumentedSender>> = HashMap::new();
+        let mut outbound: HashMap<String, Vec<OutgoingSender>> = HashMap::new();
 
         for node in &flow.nodes {
             inbound.insert(node.alias.clone(), Vec::new());
@@ -827,7 +1036,10 @@ impl FlowExecutor {
             outbound
                 .get_mut(&edge.from)
                 .expect("source node exists")
-                .push(InstrumentedSender::new(tx, tracker, spill_context));
+                .push(OutgoingSender {
+                    to: edge.to.clone(),
+                    sender: InstrumentedSender::new(tx, tracker, spill_context),
+                });
             inbound
                 .get_mut(&edge.to)
                 .expect("target node exists")
@@ -884,6 +1096,7 @@ impl FlowExecutor {
                 metrics.clone(),
                 capture_tracker.clone(),
                 NodeContext::new(token, resource_handle),
+                routing.clone(),
             )));
         }
 
@@ -1184,11 +1397,12 @@ async fn run_node(
     capture_alias: String,
     handler: Arc<dyn NodeHandler>,
     mut inputs: Vec<mpsc::Receiver<FlowMessage>>,
-    outputs: Vec<InstrumentedSender>,
+    outputs: Vec<OutgoingSender>,
     capture: mpsc::Sender<CapturedOutput>,
     metrics: Arc<ExecutorMetrics>,
     capture_tracker: Arc<QueueDepthTracker>,
     ctx: NodeContext,
+    routing: Arc<RoutingTable>,
 ) {
     if inputs.is_empty() {
         warn!("node `{alias}` has no inputs; dropping without execution");
@@ -1302,9 +1516,92 @@ async fn run_node(
                 if outputs.is_empty() {
                     // Leaf node; any outstanding permit will be released below.
                 } else {
-                    for (idx, sender) in outputs.iter().enumerate() {
-                        let downstream_permit = if idx == 0 { permit.take() } else { None };
-                        if let Err(err) = sender.send(value.clone(), downstream_permit).await {
+                    let switch = routing.switch_for(alias.as_str()).cloned();
+                    let mut selected_target: Option<String> = None;
+
+                    if let Some(switch) = &switch {
+                        match switch.select_target(&value) {
+                            Ok(Some(target)) => {
+                                selected_target = Some(target.to_string());
+                            }
+                            Ok(None) => {
+                                selected_target = None;
+                            }
+                            Err(err) => {
+                                error!("node `{alias}` switch routing failed: {err}");
+                                metrics.record_node_error(alias.as_str(), "switch_routing_failed");
+                                let captured_permit = permit.take();
+                                let send_result = capture
+                                    .send(CapturedOutput {
+                                        alias: alias.clone(),
+                                        result: Err(err),
+                                        permit: captured_permit,
+                                        queue_tracker: Some(capture_tracker.clone()),
+                                    })
+                                    .await;
+                                if send_result.is_ok() {
+                                    capture_tracker.increment();
+                                    metrics.observe_capture_backpressure(
+                                        capture_alias.as_str(),
+                                        Duration::ZERO,
+                                    );
+                                }
+                                metrics
+                                    .record_cancellation(alias.as_str(), "switch_routing_failed");
+                                ctx.token().cancel();
+                                break;
+                            }
+                        }
+
+                        if let Some(target) = selected_target.as_deref()
+                            && !outputs.iter().any(|o| o.to == target)
+                        {
+                            let err = NodeError::new(format!(
+                                "switch `{}` selected target `{}` but no such edge exists",
+                                switch.surface_id, target
+                            ));
+                            error!("node `{alias}` switch routing failed: {err}");
+                            metrics.record_node_error(alias.as_str(), "switch_routing_failed");
+                            let captured_permit = permit.take();
+                            let send_result = capture
+                                .send(CapturedOutput {
+                                    alias: alias.clone(),
+                                    result: Err(err),
+                                    permit: captured_permit,
+                                    queue_tracker: Some(capture_tracker.clone()),
+                                })
+                                .await;
+                            if send_result.is_ok() {
+                                capture_tracker.increment();
+                                metrics.observe_capture_backpressure(
+                                    capture_alias.as_str(),
+                                    Duration::ZERO,
+                                );
+                            }
+                            metrics.record_cancellation(alias.as_str(), "switch_routing_failed");
+                            ctx.token().cancel();
+                            break;
+                        }
+                    }
+
+                    let mut first_send = true;
+                    for output in outputs.iter() {
+                        if let Some(switch) = &switch
+                            && switch.controls_edge_to(output.to.as_str())
+                            && selected_target.as_deref() != Some(output.to.as_str())
+                        {
+                            continue;
+                        }
+
+                        let downstream_permit = if first_send {
+                            first_send = false;
+                            permit.take()
+                        } else {
+                            None
+                        };
+
+                        if let Err(err) = output.sender.send(value.clone(), downstream_permit).await
+                        {
                             debug!("downstream receiver for node `{alias}` dropped: {err}");
                         }
                     }
@@ -1430,6 +1727,16 @@ pub enum ExecutionError {
     /// Required capability bindings are missing from the host resource bag.
     #[error("missing required capabilities: {hints:?}")]
     MissingCapabilities { hints: Vec<String> },
+    /// Control surface is present but not supported by this runtime.
+    #[error("control surface `{id}` ({kind}) is not supported by this runtime")]
+    UnsupportedControlSurface { id: String, kind: String },
+    /// Control surface config is malformed.
+    #[error("invalid control surface `{id}` ({kind}): {reason}")]
+    InvalidControlSurface {
+        id: String,
+        kind: String,
+        reason: String,
+    },
     /// Spill storage could not be initialised.
     #[error("failed to configure spill storage: {0}")]
     SpillSetup(anyhow::Error),
@@ -1448,6 +1755,7 @@ mod tests {
     use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
     use proptest::prelude::*;
     use serde_json::json;
+    use std::sync::atomic::AtomicUsize;
     use std::sync::{Arc, OnceLock};
     use std::time::Duration;
     use tokio::runtime::Builder as RuntimeBuilder;
@@ -2078,6 +2386,218 @@ mod tests {
         }
 
         instance.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn switch_routes_only_selected_branch() {
+        let branch_a_count = Arc::new(AtomicUsize::new(0));
+        let branch_b_count = Arc::new(AtomicUsize::new(0));
+
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn("tests::trigger", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+        registry
+            .register_fn("tests::route", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+
+        {
+            let branch_a_count = Arc::clone(&branch_a_count);
+            registry
+                .register_fn("tests::branch_a", move |val: JsonValue| {
+                    let branch_a_count = Arc::clone(&branch_a_count);
+                    async move {
+                        branch_a_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Ok(val)
+                    }
+                })
+                .unwrap();
+        }
+
+        {
+            let branch_b_count = Arc::clone(&branch_b_count);
+            registry
+                .register_fn("tests::branch_b", move |val: JsonValue| {
+                    let branch_b_count = Arc::clone(&branch_b_count);
+                    async move {
+                        branch_b_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Ok(val)
+                    }
+                })
+                .unwrap();
+        }
+
+        registry
+            .register_fn("tests::capture", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+
+        let mut builder = FlowBuilder::new("switch_exec", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let route = builder
+            .add_node(
+                "route",
+                &NodeSpec::inline(
+                    "tests::route",
+                    "Route",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let a = builder
+            .add_node(
+                "a",
+                &NodeSpec::inline(
+                    "tests::branch_a",
+                    "A",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let b = builder
+            .add_node(
+                "b",
+                &NodeSpec::inline(
+                    "tests::branch_b",
+                    "B",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let capture = builder
+            .add_node(
+                "capture",
+                &NodeSpec::inline(
+                    "tests::capture",
+                    "Capture",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+
+        builder.connect(&trigger, &route);
+        builder.connect(&route, &a);
+        builder.connect(&route, &b);
+        builder.connect(&a, &capture);
+        builder.connect(&b, &capture);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "switch:route:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::Switch,
+            targets: vec!["route".into(), "a".into(), "b".into()],
+            config: json!({
+                "v": 1,
+                "source": "route",
+                "selector_pointer": "/type",
+                "cases": { "a": "a", "b": "b" },
+            }),
+        });
+
+        let validated = validate(&flow).expect("flow should validate");
+        let executor = FlowExecutor::new(Arc::new(registry));
+
+        let payload = json!({"type": "a", "value": 123});
+        let result = executor
+            .run_once(&validated, "trigger", payload.clone(), "capture", None)
+            .await
+            .expect("execution succeeds");
+
+        match result {
+            ExecutionResult::Value(value) => assert_eq!(value, payload),
+            ExecutionResult::Stream(_) => panic!("unexpected stream"),
+        }
+
+        assert_eq!(branch_a_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(branch_b_count.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn unsupported_control_surface_fails_instantiation() {
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn("tests::trigger", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+
+        let mut builder =
+            FlowBuilder::new("unsupported_surface", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let capture = builder
+            .add_node(
+                "capture",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Capture",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &capture);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "rate_limit:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::RateLimit,
+            targets: vec!["trigger".into()],
+            config: json!({"v": 1, "target": "trigger", "qps": 1, "burst": 1}),
+        });
+
+        let validated = validate(&flow).expect("flow should validate");
+        let executor = FlowExecutor::new(Arc::new(registry));
+
+        let err = executor
+            .instantiate(&validated, "capture")
+            .err()
+            .expect("expected error");
+        assert!(matches!(
+            err,
+            ExecutionError::UnsupportedControlSurface { .. }
+        ));
     }
 
     #[tokio::test]

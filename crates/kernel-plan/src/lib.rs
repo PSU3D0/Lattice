@@ -38,6 +38,7 @@ pub fn validate(flow: &FlowIR) -> Result<ValidatedIR, Vec<Diagnostic>> {
     check_edge_timeout_requirements(flow, &mut diagnostics);
     check_edge_buffer_requirements(flow, &mut diagnostics);
     check_spill_requirements(flow, &mut diagnostics);
+    check_switch_control_surfaces(flow, &mut diagnostics);
 
     if diagnostics.is_empty() {
         Ok(ValidatedIR { flow: flow.clone() })
@@ -347,6 +348,199 @@ fn check_spill_requirements(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
     }
 }
 
+fn check_switch_control_surfaces(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    let node_aliases: HashSet<&str> = flow.nodes.iter().map(|n| n.alias.as_str()).collect();
+    let mut seen_sources = HashSet::new();
+
+    for surface in &flow.control_surfaces {
+        if surface.kind != dag_core::ControlSurfaceKind::Switch {
+            continue;
+        }
+
+        let config = match surface.config.as_object() {
+            Some(config) => config,
+            None => {
+                diagnostics.push(diagnostic(
+                    "CTRL110",
+                    format!(
+                        "control surface `{}` (switch) config must be an object",
+                        surface.id
+                    ),
+                ));
+                continue;
+            }
+        };
+
+        let v_ok = config
+            .get("v")
+            .and_then(|v| v.as_u64())
+            .map(|v| v == 1)
+            .unwrap_or(false);
+        if !v_ok {
+            diagnostics.push(diagnostic(
+                "CTRL110",
+                format!(
+                    "control surface `{}` (switch) requires config.v = 1",
+                    surface.id
+                ),
+            ));
+            continue;
+        }
+
+        let Some(source) = config.get("source").and_then(|v| v.as_str()) else {
+            diagnostics.push(diagnostic(
+                "CTRL110",
+                format!(
+                    "control surface `{}` (switch) requires config.source string",
+                    surface.id
+                ),
+            ));
+            continue;
+        };
+
+        if !node_aliases.contains(source) {
+            diagnostics.push(diagnostic(
+                "CTRL110",
+                format!(
+                    "control surface `{}` (switch) references unknown source node `{source}`",
+                    surface.id
+                ),
+            ));
+            continue;
+        }
+
+        if !seen_sources.insert(source.to_string()) {
+            diagnostics.push(diagnostic(
+                "CTRL112",
+                format!(
+                    "control surface `{}` (switch): multiple switch surfaces reference source node `{source}`",
+                    surface.id
+                ),
+            ));
+        }
+
+        let Some(pointer) = config.get("selector_pointer").and_then(|v| v.as_str()) else {
+            diagnostics.push(diagnostic(
+                "CTRL110",
+                format!(
+                    "control surface `{}` (switch) requires config.selector_pointer string",
+                    surface.id
+                ),
+            ));
+            continue;
+        };
+
+        if !(pointer.is_empty() || pointer.starts_with('/')) {
+            diagnostics.push(diagnostic(
+                "CTRL110",
+                format!(
+                    "control surface `{}` (switch) has invalid selector_pointer `{pointer}`",
+                    surface.id
+                ),
+            ));
+        }
+
+        let cases = match config.get("cases").and_then(|v| v.as_object()) {
+            Some(cases) => cases,
+            None => {
+                diagnostics.push(diagnostic(
+                    "CTRL110",
+                    format!(
+                        "control surface `{}` (switch) requires config.cases object",
+                        surface.id
+                    ),
+                ));
+                continue;
+            }
+        };
+
+        if cases.is_empty() {
+            diagnostics.push(diagnostic(
+                "CTRL110",
+                format!(
+                    "control surface `{}` (switch) requires at least one case",
+                    surface.id
+                ),
+            ));
+        }
+
+        let mut required_targets = Vec::new();
+        for (_key, target) in cases {
+            let Some(target) = target.as_str() else {
+                diagnostics.push(diagnostic(
+                    "CTRL110",
+                    format!(
+                        "control surface `{}` (switch) case targets must be strings",
+                        surface.id
+                    ),
+                ));
+                continue;
+            };
+            required_targets.push(target);
+        }
+
+        if let Some(default) = config.get("default") {
+            match default.as_str() {
+                Some(default) => required_targets.push(default),
+                None => diagnostics.push(diagnostic(
+                    "CTRL110",
+                    format!(
+                        "control surface `{}` (switch) default target must be a string when present",
+                        surface.id
+                    ),
+                )),
+            }
+        }
+
+        for target in required_targets {
+            if !node_aliases.contains(target) {
+                diagnostics.push(diagnostic(
+                    "CTRL110",
+                    format!(
+                        "control surface `{}` (switch) references unknown target node `{target}`",
+                        surface.id
+                    ),
+                ));
+                continue;
+            }
+
+            if !flow
+                .edges
+                .iter()
+                .any(|edge| edge.from == source && edge.to == target)
+            {
+                diagnostics.push(diagnostic(
+                    "CTRL111",
+                    format!(
+                        "control surface `{}` (switch) references `{source}` -> `{target}` but the edge is missing",
+                        surface.id
+                    ),
+                ));
+            }
+
+            if !surface.targets.iter().any(|t| t == target) {
+                diagnostics.push(diagnostic(
+                    "CTRL110",
+                    format!(
+                        "control surface `{}` (switch) must include target `{target}` in targets[]",
+                        surface.id
+                    ),
+                ));
+            }
+        }
+
+        if !surface.targets.iter().any(|t| t == source) {
+            diagnostics.push(diagnostic(
+                "CTRL110",
+                format!(
+                    "control surface `{}` (switch) must include source `{source}` in targets[]",
+                    surface.id
+                ),
+            ));
+        }
+    }
+}
+
 fn diagnostic(code: &str, message: impl Into<String>) -> Diagnostic {
     let entry = diagnostic_codes()
         .iter()
@@ -529,6 +723,95 @@ mod tests {
 
         let diagnostics = validate(&flow).expect_err("expected validation errors");
         assert!(diagnostics.iter().any(|d| d.code.code == "CTRL102"));
+    }
+
+    #[test]
+    fn switch_requires_edges_for_all_targets() {
+        let mut builder = FlowBuilder::new("switch", Version::new(1, 0, 0), Profile::Dev);
+        let route_spec = NodeSpec::inline(
+            "tests::route",
+            "Route",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+        let branch_spec = NodeSpec::inline(
+            "tests::branch",
+            "Branch",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+
+        let route = builder.add_node("route", &route_spec).unwrap();
+        let a = builder.add_node("a", &branch_spec).unwrap();
+        let _b = builder.add_node("b", &branch_spec).unwrap();
+        builder.connect(&route, &a);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "switch:route:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::Switch,
+            targets: vec!["route".into(), "a".into(), "b".into()],
+            config: serde_json::json!({
+                "v": 1,
+                "source": "route",
+                "selector_pointer": "/type",
+                "cases": { "a": "a", "b": "b" }
+            }),
+        });
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL111"));
+    }
+
+    #[test]
+    fn switch_duplicate_sources_rejected() {
+        let mut builder = FlowBuilder::new("switch_dupe", Version::new(1, 0, 0), Profile::Dev);
+        let route_spec = NodeSpec::inline(
+            "tests::route",
+            "Route",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+        let a_spec = NodeSpec::inline(
+            "tests::branch",
+            "Branch",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+
+        let route = builder.add_node("route", &route_spec).unwrap();
+        let a = builder.add_node("a", &a_spec).unwrap();
+        builder.connect(&route, &a);
+
+        let mut flow = builder.build();
+        for idx in 0..2 {
+            flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+                id: format!("switch:route:{idx}"),
+                kind: dag_core::ControlSurfaceKind::Switch,
+                targets: vec!["route".into(), "a".into()],
+                config: serde_json::json!({
+                    "v": 1,
+                    "source": "route",
+                    "selector_pointer": "/type",
+                    "cases": { "a": "a" }
+                }),
+            });
+        }
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL112"));
     }
 
     #[test]

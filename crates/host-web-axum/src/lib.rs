@@ -594,6 +594,22 @@ fn map_execution_error(err: ExecutionError) -> (StatusCode, JsonValue) {
             StatusCode::SERVICE_UNAVAILABLE,
             json!({ "error": "execution cancelled" }),
         ),
+        ExecutionError::UnsupportedControlSurface { id, kind } => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({
+                "error": format!("unsupported control surface `{id}` ({kind})"),
+                "code": "CTRL901",
+                "details": { "id": id, "kind": kind }
+            }),
+        ),
+        ExecutionError::InvalidControlSurface { id, kind, reason } => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({
+                "error": format!("invalid control surface `{id}` ({kind}): {reason}"),
+                "code": "CTRL110",
+                "details": { "id": id, "kind": kind }
+            }),
+        ),
         ExecutionError::SpillSetup(err) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             json!({ "error": format!("failed to configure spill storage: {err}") }),

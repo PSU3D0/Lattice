@@ -25,4 +25,8 @@ fn ui_failures() {
     t.compile_fail("tests/ui/workflow_delivery_mode_string.rs");
     t.compile_fail("tests/ui/workflow_buffer_max_items_string.rs");
     t.compile_fail("tests/ui/workflow_spill_tier_ident.rs");
+    t.compile_fail("tests/ui/workflow_switch_missing_edge.rs");
+    t.compile_fail("tests/ui/workflow_switch_duplicate_source.rs");
+    t.compile_fail("tests/ui/workflow_switch_invalid_key.rs");
+    t.compile_fail("tests/ui/workflow_switch_duplicate_case_key.rs");
 }

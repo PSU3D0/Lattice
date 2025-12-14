@@ -5,6 +5,7 @@ use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{ToTokens, format_ident, quote};
 use semver::Version;
 use std::collections::HashSet;
+use syn::braced;
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::{
@@ -903,6 +904,7 @@ struct WorkflowInput {
     deliveries: Vec<DeliveryEntry>,
     buffers: Vec<BufferEntry>,
     spills: Vec<SpillEntry>,
+    switches: Vec<SwitchEntry>,
 }
 
 struct Binding {
@@ -975,6 +977,14 @@ struct SpillEntry {
     span: Span,
 }
 
+struct SwitchEntry {
+    source: Ident,
+    selector_pointer: LitStr,
+    cases: Vec<(LitStr, Ident)>,
+    default: Option<Ident>,
+    span: Span,
+}
+
 struct ConnectArgs {
     from: Ident,
     to: Ident,
@@ -1003,6 +1013,13 @@ struct SpillArgs {
     to: Ident,
     tier: LitStr,
     threshold_bytes: Option<u64>,
+}
+
+struct SwitchArgs {
+    source: Ident,
+    selector_pointer: LitStr,
+    cases: Vec<(LitStr, Ident)>,
+    default: Option<Ident>,
 }
 
 impl Parse for ConnectArgs {
@@ -1225,6 +1242,141 @@ impl Parse for SpillArgs {
     }
 }
 
+impl Parse for SwitchArgs {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let key: Ident = input.parse()?;
+        if key != "source" {
+            return Err(syn::Error::new(
+                key.span(),
+                "switch! requires `source = <node_alias>`",
+            ));
+        }
+        input.parse::<Token![=]>()?;
+        let source_expr: Expr = input.parse()?;
+        let source = match &source_expr {
+            Expr::Path(path) if path.path.segments.len() == 1 => {
+                path.path.segments[0].ident.clone()
+            }
+            _ => {
+                return Err(syn::Error::new_spanned(
+                    source_expr,
+                    "switch! requires `source = <node_alias>`",
+                ));
+            }
+        };
+
+        input.parse::<Token![,]>()?;
+        let key: Ident = input.parse()?;
+        if key != "selector_pointer" {
+            return Err(syn::Error::new(
+                key.span(),
+                "switch! requires `selector_pointer = \"/json/pointer\"`",
+            ));
+        }
+        input.parse::<Token![=]>()?;
+        let selector_expr: Expr = input.parse()?;
+        let selector_pointer = match &selector_expr {
+            Expr::Lit(ExprLit {
+                lit: Lit::Str(lit), ..
+            }) => lit.clone(),
+            _ => {
+                return Err(syn::Error::new_spanned(
+                    selector_expr,
+                    "switch! requires `selector_pointer = \"/json/pointer\"`",
+                ));
+            }
+        };
+
+        input.parse::<Token![,]>()?;
+        let key: Ident = input.parse()?;
+        if key != "cases" {
+            return Err(syn::Error::new(
+                key.span(),
+                "switch! requires `cases = { ... }`",
+            ));
+        }
+        input.parse::<Token![=]>()?;
+
+        let content;
+        braced!(content in input);
+        let mut cases = Vec::new();
+        let mut seen = HashSet::new();
+        while !content.is_empty() {
+            let key: LitStr = content.parse()?;
+            content.parse::<Token![=>]>()?;
+            let value_expr: Expr = content.parse()?;
+            let value = match &value_expr {
+                Expr::Path(path) if path.path.segments.len() == 1 => {
+                    path.path.segments[0].ident.clone()
+                }
+                _ => {
+                    return Err(syn::Error::new_spanned(
+                        value_expr,
+                        "switch! cases must map to node aliases (e.g. `\"k\" => target`)",
+                    ));
+                }
+            };
+
+            if !seen.insert(key.value()) {
+                return Err(syn::Error::new(
+                    key.span(),
+                    format!("duplicate switch case key `{}`", key.value()),
+                ));
+            }
+            cases.push((key, value));
+
+            if content.peek(Token![,]) {
+                content.parse::<Token![,]>()?;
+                if content.is_empty() {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        let mut default = None;
+        if input.peek(Token![,]) {
+            input.parse::<Token![,]>()?;
+            let key: Ident = input.parse()?;
+            if key != "default" {
+                return Err(syn::Error::new(
+                    key.span(),
+                    "switch! supports only `default = <node_alias>` as an optional final argument",
+                ));
+            }
+            input.parse::<Token![=]>()?;
+            let default_expr: Expr = input.parse()?;
+            let default_ident = match &default_expr {
+                Expr::Path(path) if path.path.segments.len() == 1 => {
+                    path.path.segments[0].ident.clone()
+                }
+                _ => {
+                    return Err(syn::Error::new_spanned(
+                        default_expr,
+                        "switch! requires `default = <node_alias>`",
+                    ));
+                }
+            };
+            default = Some(default_ident);
+        }
+
+        if !input.is_empty() {
+            return Err(syn::Error::new(
+                input.span(),
+                "switch! supports only `source = ..., selector_pointer = \"...\", cases = { ... }[, default = ...]` syntax",
+            ));
+        }
+
+        Ok(Self {
+            source,
+            selector_pointer,
+            cases,
+            default,
+        })
+    }
+}
+
 impl Parse for WorkflowInput {
     fn parse(input: ParseStream) -> Result<Self> {
         let mut name = None;
@@ -1237,6 +1389,7 @@ impl Parse for WorkflowInput {
         let mut deliveries = Vec::new();
         let mut buffers = Vec::new();
         let mut spills = Vec::new();
+        let mut switches = Vec::new();
 
         while !input.is_empty() {
             let key: Ident = input.parse()?;
@@ -1406,9 +1559,30 @@ impl Parse for WorkflowInput {
                 continue;
             }
 
+            if mac.path.is_ident("switch") {
+                let span = mac.span();
+                let args = syn::parse2::<SwitchArgs>(mac.tokens)?;
+                if input.peek(Token![;]) {
+                    input.parse::<Token![;]>()?;
+                } else {
+                    return Err(syn::Error::new(
+                        input.span(),
+                        "expected `;` after switch! statement",
+                    ));
+                }
+                switches.push(SwitchEntry {
+                    source: args.source,
+                    selector_pointer: args.selector_pointer,
+                    cases: args.cases,
+                    default: args.default,
+                    span,
+                });
+                continue;
+            }
+
             return Err(syn::Error::new(
                 mac.span(),
-                "workflow! body currently supports only `let` bindings, `connect!`, `timeout!`, `delivery!`, `buffer!`, and `spill!` statements",
+                "workflow! body currently supports only `let` bindings, `connect!`, `timeout!`, `delivery!`, `buffer!`, `spill!`, and `switch!` statements",
             ));
         }
 
@@ -1428,6 +1602,7 @@ impl Parse for WorkflowInput {
             deliveries,
             buffers,
             spills,
+            switches,
         })
     }
 }
@@ -1612,6 +1787,77 @@ impl WorkflowInput {
             }
         }
 
+        let mut switch_sources = HashSet::new();
+        for surface in &self.switches {
+            let source = surface.source.to_string();
+            if !alias_set.contains(&source) {
+                return Err(syn::Error::new(
+                    surface.source.span(),
+                    format!("[DAG202] unknown node alias `{}`", surface.source),
+                ));
+            }
+
+            if !switch_sources.insert(source.clone()) {
+                return Err(syn::Error::new(
+                    surface.span,
+                    format!("[DAG207] duplicate switch! for source `{source}`"),
+                ));
+            }
+
+            if surface.cases.is_empty() {
+                return Err(syn::Error::new(
+                    surface.span,
+                    "switch! requires at least one case",
+                ));
+            }
+
+            let pointer = surface.selector_pointer.value();
+            if !(pointer.is_empty() || pointer.starts_with('/')) {
+                return Err(syn::Error::new(
+                    surface.selector_pointer.span(),
+                    "switch! selector_pointer must be a JSON Pointer (empty string or starting with `/`)",
+                ));
+            }
+
+            for (_case_key, target) in &surface.cases {
+                let target_str = target.to_string();
+                if !alias_set.contains(&target_str) {
+                    return Err(syn::Error::new(
+                        target.span(),
+                        format!("[DAG202] unknown node alias `{}`", target),
+                    ));
+                }
+                if !connected_edges.contains(&(source.clone(), target_str.clone())) {
+                    return Err(syn::Error::new(
+                        surface.span,
+                        format!(
+                            "[DAG206] switch! references missing edge `{}` -> `{}`",
+                            source, target_str
+                        ),
+                    ));
+                }
+            }
+
+            if let Some(default) = &surface.default {
+                let target_str = default.to_string();
+                if !alias_set.contains(&target_str) {
+                    return Err(syn::Error::new(
+                        default.span(),
+                        format!("[DAG202] unknown node alias `{}`", default),
+                    ));
+                }
+                if !connected_edges.contains(&(source.clone(), target_str.clone())) {
+                    return Err(syn::Error::new(
+                        surface.span,
+                        format!(
+                            "[DAG206] switch! references missing edge `{}` -> `{}`",
+                            source, target_str
+                        ),
+                    ));
+                }
+            }
+        }
+
         let summary_stmt = if let Some(summary) = &self.summary {
             quote!(builder.summary(Some(#summary));)
         } else {
@@ -1693,6 +1939,90 @@ impl WorkflowInput {
             }
         });
 
+        let switch_statements = self.switches.iter().enumerate().map(|(idx, surface)| {
+            let source_alias = surface.source.to_string();
+            let source_alias_lit = LitStr::new(&source_alias, surface.source.span());
+            let selector_pointer = &surface.selector_pointer;
+
+            let mut target_aliases: Vec<String> = Vec::new();
+            for (_key, target) in &surface.cases {
+                let alias = target.to_string();
+                if !target_aliases.contains(&alias) {
+                    target_aliases.push(alias);
+                }
+            }
+            if let Some(default) = &surface.default {
+                let alias = default.to_string();
+                if !target_aliases.contains(&alias) {
+                    target_aliases.push(alias);
+                }
+            }
+
+            let mut target_lits: Vec<LitStr> = Vec::new();
+            for alias in &target_aliases {
+                target_lits.push(LitStr::new(alias, surface.span));
+            }
+
+            let surface_id = format!("switch:{source_alias}:{idx}");
+            let surface_id_lit = LitStr::new(&surface_id, surface.span);
+
+            let case_inserts = surface.cases.iter().map(|(case_key, target)| {
+                let target_alias = target.to_string();
+                let target_alias_lit = LitStr::new(&target_alias, target.span());
+                quote! {
+                    cases.insert(#case_key.to_string(), ::dag_core::serde_json::Value::String(#target_alias_lit.to_string()));
+                }
+            });
+
+            let default_insert = surface.default.as_ref().map(|default| {
+                let default_alias = default.to_string();
+                let default_alias_lit = LitStr::new(&default_alias, default.span());
+                quote! {
+                    config.insert(
+                        "default".to_string(),
+                        ::dag_core::serde_json::Value::String(#default_alias_lit.to_string()),
+                    );
+                }
+            });
+
+            quote! {
+                {
+                    let mut cases = ::dag_core::serde_json::Map::new();
+                    #(#case_inserts)*
+
+                    let mut targets = Vec::new();
+                    targets.push(#source_alias_lit.to_string());
+                    #(targets.push(#target_lits.to_string());)*
+
+                    let mut config = ::dag_core::serde_json::Map::new();
+                    config.insert(
+                        "v".to_string(),
+                        ::dag_core::serde_json::Value::Number(::dag_core::serde_json::Number::from(1)),
+                    );
+                    config.insert(
+                        "source".to_string(),
+                        ::dag_core::serde_json::Value::String(#source_alias_lit.to_string()),
+                    );
+                    config.insert(
+                        "selector_pointer".to_string(),
+                        ::dag_core::serde_json::Value::String(#selector_pointer.to_string()),
+                    );
+                    config.insert(
+                        "cases".to_string(),
+                        ::dag_core::serde_json::Value::Object(cases),
+                    );
+                    #default_insert
+
+                    flow.control_surfaces.push(::dag_core::ControlSurfaceIR {
+                        id: #surface_id_lit.to_string(),
+                        kind: ::dag_core::ControlSurfaceKind::Switch,
+                        targets,
+                        config: ::dag_core::serde_json::Value::Object(config),
+                    });
+                }
+            }
+        });
+
         Ok(quote! {
             pub fn #fn_name() -> ::dag_core::FlowIR {
                 let version = ::dag_core::prelude::Version::parse(#version_literal)
@@ -1711,7 +2041,9 @@ impl WorkflowInput {
                 #(#spill_statements)*
                 #(#timeout_statements)*
 
-                builder.build()
+                let mut flow = builder.build();
+                #(#switch_statements)*
+                flow
             }
         })
     }

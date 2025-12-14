@@ -11,6 +11,7 @@ pub use builder::{EdgeHandle, FlowBuilder, FlowBuilderError, NodeHandle};
 pub use diagnostics::{DIAGNOSTIC_CODES, Diagnostic, DiagnosticCode, Severity, diagnostic_codes};
 pub use effects::{Determinism, Effects, NodeError, NodeResult};
 pub use ir::*;
+pub use serde_json;
 
 /// Convenient prelude re-exporting the most commonly used items.
 pub mod prelude {

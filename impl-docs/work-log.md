@@ -349,3 +349,25 @@ Learnings
   - `cargo test -p dag-macros`
   - `cargo test -p kernel-plan`
   - `cargo test --workspace`
+
+## 2025-12-14 — Switch control surface (Epic 01.3)
+
+- Extended `workflow!` to support `switch!`, emitting a `ControlSurfaceIR` with `kind = "switch"` and config shape matching `impl-docs/spec/control-surfaces.md`.
+- Added validator enforcement for switch surfaces:
+  - `CTRL110`: invalid/malformed switch config shape (missing fields, invalid JSON Pointer, targets list mismatch).
+  - `CTRL111`: switch surface references a `source -> target` edge that is missing.
+  - `CTRL112`: multiple switch surfaces reference the same `source` alias.
+- Implemented runtime routing in `kernel-exec`: after the source node produces a JSON value, evaluate `selector_pointer`, pick case/default, and schedule only the selected branch.
+- Surfaced host mapping for switch-related failures in the Axum bridge:
+  - Unsupported surfaces -> `CTRL901`.
+  - Invalid switch config at runtime -> `CTRL110`.
+- Added tests:
+  - `dag-macros`: unit test for emitted control surface config/targets + trybuild fixtures for invalid `switch!` usage (missing edges, duplicate sources, duplicate case keys).
+  - `kernel-plan`: unit tests for missing-edge (`CTRL111`) and duplicate-source (`CTRL112`).
+  - `kernel-exec`: unit test that only the selected branch executes.
+- Commands exercised:
+  - `cargo test -p dag-macros`
+  - `cargo test -p kernel-plan`
+  - `cargo test -p kernel-exec`
+  - `cargo test -p host-web-axum`
+  - `cargo test --workspace`

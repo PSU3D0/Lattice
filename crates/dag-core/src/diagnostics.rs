@@ -220,6 +220,24 @@ pub static DIAGNOSTIC_CODES: Lazy<Vec<DiagnosticCode>> = Lazy::new(|| {
             summary: "Edge buffer max_items must be positive",
         },
         DiagnosticCode {
+            code: "CTRL110",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Switch control surface config is invalid",
+        },
+        DiagnosticCode {
+            code: "CTRL111",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Switch control surface references a missing edge",
+        },
+        DiagnosticCode {
+            code: "CTRL112",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Multiple switch control surfaces reference the same source node",
+        },
+        DiagnosticCode {
             code: "CTRL901",
             subsystem: "runtime",
             default_severity: Severity::Error,

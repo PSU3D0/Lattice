@@ -1,0 +1,5 @@
+error: switch! requires `selector_pointer = "/json/pointer"`
+  --> tests/ui/workflow_switch_invalid_key.rs:36:9
+   |
+36 |         pointer = "/type",
+   |         ^^^^^^^
