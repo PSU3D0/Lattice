@@ -309,7 +309,7 @@ Maintaining this log alongside implementation ensures every phase has traceable 
 - Standardized runtime diagnostic code `CAP101` (missing capability binding) and surfaced it through the Axum host error envelope (`{ error, code, details.hints[] }`).
 - Added conformance tests:
   - `host-inproc`: preflight fails for missing KV/HTTP-write/dedupe bindings and succeeds once the provider is present.
-  - `host-web-axum`: HTTP response body includes `code = CAP101` and the missing hint list.
+  - `host-web-axum`: HTTP error body includes `code = CAP101` and the missing hint list; SSE endpoints emit an `event: error` payload carrying the same `{ code, details.hints[] }`.
 - Commands exercised:
   - `cargo test -p host-inproc`
   - `cargo test -p host-web-axum`

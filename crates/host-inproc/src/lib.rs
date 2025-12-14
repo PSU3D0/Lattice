@@ -138,8 +138,12 @@ fn is_hint_satisfied_by_resources(hint: &str, resources: &dyn ResourceAccess) ->
     match hint {
         capabilities::http::HINT_HTTP_READ => resources.http_read().is_some(),
         capabilities::http::HINT_HTTP_WRITE => resources.http_write().is_some(),
-        capabilities::kv::HINT_KV_READ | capabilities::kv::HINT_KV_WRITE => resources.kv().is_some(),
-        capabilities::blob::HINT_BLOB_READ | capabilities::blob::HINT_BLOB_WRITE => resources.blob().is_some(),
+        capabilities::kv::HINT_KV_READ | capabilities::kv::HINT_KV_WRITE => {
+            resources.kv().is_some()
+        }
+        capabilities::blob::HINT_BLOB_READ | capabilities::blob::HINT_BLOB_WRITE => {
+            resources.blob().is_some()
+        }
         capabilities::queue::HINT_QUEUE_PUBLISH | capabilities::queue::HINT_QUEUE_CONSUME => {
             resources.queue().is_some()
         }
@@ -495,7 +499,10 @@ mod tests {
             )
             .unwrap();
         registry
-            .register_fn("tests::kv_node", |value: JsonValue| async move { Ok(value) })
+            .register_fn(
+                "tests::kv_node",
+                |value: JsonValue| async move { Ok(value) },
+            )
             .unwrap();
 
         let mut builder = FlowBuilder::new("preflight_kv", Version::new(1, 0, 0), Profile::Dev);
@@ -554,7 +561,10 @@ mod tests {
             )
             .unwrap();
         registry
-            .register_fn("tests::kv_node", |value: JsonValue| async move { Ok(value) })
+            .register_fn(
+                "tests::kv_node",
+                |value: JsonValue| async move { Ok(value) },
+            )
             .unwrap();
 
         let mut builder = FlowBuilder::new("preflight_kv", Version::new(1, 0, 0), Profile::Dev);
@@ -596,7 +606,10 @@ mod tests {
             .with_resource_bag(resources);
         let invocation = Invocation::new("trigger", "kv", serde_json::json!({"ok": true}));
 
-        let result = runtime.execute(invocation).await.expect("execution succeeds");
+        let result = runtime
+            .execute(invocation)
+            .await
+            .expect("execution succeeds");
         match result {
             ExecutionResult::Value(value) => assert_eq!(value, serde_json::json!({"ok": true})),
             ExecutionResult::Stream(_) => panic!("expected value result"),
@@ -615,7 +628,10 @@ mod tests {
             )
             .unwrap();
         registry
-            .register_fn("tests::http_node", |value: JsonValue| async move { Ok(value) })
+            .register_fn(
+                "tests::http_node",
+                |value: JsonValue| async move { Ok(value) },
+            )
             .unwrap();
 
         let mut builder = FlowBuilder::new("preflight_http", Version::new(1, 0, 0), Profile::Dev);
@@ -702,7 +718,10 @@ mod tests {
             )
             .unwrap();
         registry
-            .register_fn("tests::http_node", |value: JsonValue| async move { Ok(value) })
+            .register_fn(
+                "tests::http_node",
+                |value: JsonValue| async move { Ok(value) },
+            )
             .unwrap();
 
         let mut builder = FlowBuilder::new("preflight_http", Version::new(1, 0, 0), Profile::Dev);
@@ -753,7 +772,10 @@ mod tests {
             .with_resource_bag(resources);
         let invocation = Invocation::new("trigger", "http", serde_json::json!({"ok": true}));
 
-        let result = runtime.execute(invocation).await.expect("execution succeeds");
+        let result = runtime
+            .execute(invocation)
+            .await
+            .expect("execution succeeds");
         if let ExecutionResult::Stream(_) = result {
             panic!("expected value result");
         }
@@ -771,7 +793,10 @@ mod tests {
             )
             .unwrap();
         registry
-            .register_fn("tests::dedupe_node", |value: JsonValue| async move { Ok(value) })
+            .register_fn(
+                "tests::dedupe_node",
+                |value: JsonValue| async move { Ok(value) },
+            )
             .unwrap();
 
         let mut builder = FlowBuilder::new("preflight_dedupe", Version::new(1, 0, 0), Profile::Dev);
@@ -824,7 +849,10 @@ mod tests {
         match runtime.execute(invocation).await {
             Ok(_) => panic!("expected preflight failure"),
             Err(ExecutionError::MissingCapabilities { hints }) => {
-                assert_eq!(hints, vec![capabilities::dedupe::HINT_DEDUPE_WRITE.to_string()]);
+                assert_eq!(
+                    hints,
+                    vec![capabilities::dedupe::HINT_DEDUPE_WRITE.to_string()]
+                );
             }
             Err(err) => panic!("unexpected error: {err}"),
         }
@@ -842,10 +870,13 @@ mod tests {
             )
             .unwrap();
         registry
-            .register_fn("tests::unknown_node", |value: JsonValue| async move { Ok(value) })
+            .register_fn("tests::unknown_node", |value: JsonValue| async move {
+                Ok(value)
+            })
             .unwrap();
 
-        let mut builder = FlowBuilder::new("preflight_unknown", Version::new(1, 0, 0), Profile::Dev);
+        let mut builder =
+            FlowBuilder::new("preflight_unknown", Version::new(1, 0, 0), Profile::Dev);
         let trigger = builder
             .add_node(
                 "trigger",
@@ -947,7 +978,10 @@ mod tests {
             .with_resource_bag(ResourceBag::new());
         let invocation = Invocation::new("trigger", "clocky", serde_json::json!({"ok": true}));
 
-        let result = runtime.execute(invocation).await.expect("execution succeeds");
+        let result = runtime
+            .execute(invocation)
+            .await
+            .expect("execution succeeds");
         if let ExecutionResult::Stream(_) = result {
             panic!("expected value result");
         }
@@ -970,10 +1004,16 @@ mod tests {
             )
             .unwrap();
         registry
-            .register_fn("tests::kv_node", |value: JsonValue| async move { Ok(value) })
+            .register_fn(
+                "tests::kv_node",
+                |value: JsonValue| async move { Ok(value) },
+            )
             .unwrap();
         registry
-            .register_fn("tests::http_node", |value: JsonValue| async move { Ok(value) })
+            .register_fn(
+                "tests::http_node",
+                |value: JsonValue| async move { Ok(value) },
+            )
             .unwrap();
 
         let mut builder = FlowBuilder::new("preflight_multi", Version::new(1, 0, 0), Profile::Dev);

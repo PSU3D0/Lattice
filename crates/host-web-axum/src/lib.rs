@@ -408,6 +408,13 @@ async fn handle_request(state: SharedState, request: Request<Body>) -> HandlerRe
         payload,
     )
     .with_deadline(state.deadline);
+    let wants_sse = parts
+        .headers
+        .get(axum::http::header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.contains("text/event-stream"))
+        .unwrap_or(false);
+
     populate_http_metadata(&parts, invocation.metadata_mut());
 
     let exec_result = state.runtime.execute(invocation).await;
@@ -427,6 +434,13 @@ async fn handle_request(state: SharedState, request: Request<Body>) -> HandlerRe
         }
         Err(err) => {
             let deadline = matches!(err, ExecutionError::DeadlineExceeded { .. });
+
+            if wants_sse {
+                let (_, body) = map_execution_error(err);
+                let response = sse_error_response(body, state.metrics.clone());
+                return HandlerResult::error(response, deadline);
+            }
+
             let (status, body) = map_execution_error(err);
             let response = Response::builder()
                 .status(status)
@@ -486,6 +500,21 @@ fn populate_http_metadata(parts: &axum::http::request::Parts, metadata: &mut Inv
     {
         metadata.insert_extension("auth.user", value);
     }
+}
+
+fn sse_error_response(payload: JsonValue, metrics: Arc<HostMetrics>) -> Response {
+    let guard = metrics.track_sse_client();
+
+    let guarded = stream! {
+        yield Ok::<Event, Infallible>(Event::default().event("error").data(payload.to_string()));
+        drop(guard);
+    };
+
+    let keep_alive = KeepAlive::new()
+        .interval(Duration::from_secs(15))
+        .text("keepalive");
+
+    Sse::new(guarded).keep_alive(keep_alive).into_response()
 }
 
 fn streaming_response(stream: StreamHandle, metrics: Arc<HostMetrics>) -> Response {
@@ -1164,7 +1193,10 @@ mod tests {
             )
             .unwrap();
         registry
-            .register_fn("tests::kv_node", |value: JsonValue| async move { Ok(value) })
+            .register_fn(
+                "tests::kv_node",
+                |value: JsonValue| async move { Ok(value) },
+            )
             .unwrap();
 
         let executor = FlowExecutor::new(Arc::new(registry));
@@ -1242,10 +1274,16 @@ mod tests {
             )
             .unwrap();
         registry
-            .register_fn("tests::kv_node", |value: JsonValue| async move { Ok(value) })
+            .register_fn(
+                "tests::kv_node",
+                |value: JsonValue| async move { Ok(value) },
+            )
             .unwrap();
         registry
-            .register_fn("tests::http_node", |value: JsonValue| async move { Ok(value) })
+            .register_fn(
+                "tests::http_node",
+                |value: JsonValue| async move { Ok(value) },
+            )
             .unwrap();
 
         let executor = FlowExecutor::new(Arc::new(registry));
@@ -1335,5 +1373,107 @@ mod tests {
             .expect("details.hints array");
         assert!(hints.contains(&json!(capabilities::kv::HINT_KV_READ)));
         assert!(hints.contains(&json!(capabilities::http::HINT_HTTP_WRITE)));
+    }
+
+    #[tokio::test]
+    async fn sse_preflight_failure_emits_error_event_with_code() {
+        const KV_EFFECT_HINTS: [&str; 1] = [capabilities::kv::HINT_KV_READ];
+
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn(
+                "tests::trigger",
+                |value: JsonValue| async move { Ok(value) },
+            )
+            .unwrap();
+        registry
+            .register_stream_fn("tests::stream", |_value: JsonValue| async move {
+                Ok(stream::iter(vec![Ok(JsonValue::from(1))]))
+            })
+            .unwrap();
+
+        let executor = FlowExecutor::new(Arc::new(registry));
+
+        let mut builder = FlowBuilder::new("preflight_stream", Version::new(1, 0, 0), Profile::Web);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let stream_capture = builder
+            .add_node(
+                "stream",
+                &NodeSpec::inline_with_hints(
+                    "tests::stream",
+                    "StreamCapture",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::ReadOnly,
+                    Determinism::BestEffort,
+                    Some("Emits incremental updates"),
+                    &[],
+                    &KV_EFFECT_HINTS,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &stream_capture);
+        let flow = builder.build();
+        let validated = validate(&flow).expect("validated");
+
+        let config = RouteConfig::new("/preflight_stream")
+            .with_method(Method::GET)
+            .with_trigger_alias("trigger")
+            .with_capture_alias("stream");
+        let state = make_state(executor, Arc::new(validated), config);
+
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri("/preflight_stream")
+            .header(axum::http::header::ACCEPT, "text/event-stream")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = super::dispatch_request(State(state), request).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let content_type = response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .expect("content-type header present");
+        assert_eq!(content_type, "text/event-stream");
+
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let text = String::from_utf8(body.to_vec()).expect("utf-8");
+
+        let mut error_payload: Option<JsonValue> = None;
+        let mut saw_error_event = false;
+        for line in text.lines() {
+            if line.trim() == "event: error" {
+                saw_error_event = true;
+                continue;
+            }
+            if saw_error_event && line.starts_with("data:") {
+                let data = line.strip_prefix("data:").expect("data prefix").trim();
+                error_payload = Some(serde_json::from_str(data).expect("json payload"));
+                break;
+            }
+        }
+
+        let payload = error_payload.expect("error payload");
+        assert_eq!(payload["code"], json!("CAP101"));
+        let hints = payload["details"]["hints"]
+            .as_array()
+            .expect("details.hints array");
+        assert!(hints.contains(&json!(capabilities::kv::HINT_KV_READ)));
     }
 }

@@ -93,7 +93,8 @@ HTTP status mapping (non-normative guidance; as implemented in Axum host today):
 - most other execution failures -> 500
 
 Streaming error mapping (0.1 contract):
-- SSE event type `error` with JSON payload matching the same error object (at minimum `{ "error": "..." }`).
+- When a host is serving `text/event-stream`, it MUST emit SSE event type `error` with JSON payload matching the same error object (at minimum `{ "error": "..." }`).
+- If execution fails before the first data event (e.g. preflight `CAP101`), hosts SHOULD still return an SSE response and emit a single `error` event.
 
 ## Cancellation
 
