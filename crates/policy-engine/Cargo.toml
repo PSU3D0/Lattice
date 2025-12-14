@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "CEL-based policy evaluation and evidence generation for LatticeFlow deployments."
+description = "CEL-based policy evaluation and evidence generation for Lattice deployments."
 
 [dependencies]
 dag-core = { path = "../dag-core" }

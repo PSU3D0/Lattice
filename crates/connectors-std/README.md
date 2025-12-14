@@ -1,6 +1,6 @@
 # connectors-std
 
-`connectors-std` aggregates the first-party connectors that ship with LatticeFlow (Stripe, SendGrid, Slack, etc.). It re-exports connector crates and provides curated packs for common domains.
+`connectors-std` aggregates the first-party connectors that ship with Lattice (Stripe, SendGrid, Slack, etc.). It re-exports connector crates and provides curated packs for common domains.
 
 ## Surface
 - Feature-gated re-exports for each provider-specific connector crate.

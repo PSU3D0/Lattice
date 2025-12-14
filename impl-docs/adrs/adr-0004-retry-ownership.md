@@ -29,7 +29,7 @@ Default: orchestrator-owned retries.
 - Safe exception (bounded): read-only operations MAY retry on transient failures when it is semantically safe.
 
 Effectful write guidance:
-- Any retry of effectful writes must be gated by idempotency (either provider-level idempotency keys or LatticeFlow idempotency spec).
+- Any retry of effectful writes must be gated by idempotency (either provider-level idempotency keys or Lattice idempotency spec).
 
 Representation in 0.1:
 - Documented policy + future control surfaces (`on_error!`) and connector metadata.

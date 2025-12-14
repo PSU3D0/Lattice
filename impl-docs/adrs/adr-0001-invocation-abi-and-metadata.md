@@ -24,7 +24,7 @@ Without a stable ABI, bridges will drift (different payload envelopes, missing m
   - `extensions: BTreeMap<String, JsonValue>` (structured)
 
 Reserved key spaces:
-- `lf.*`: LatticeFlow cross-host stable keys.
+- `lf.*`: Lattice cross-host stable keys.
 - `http.*`: HTTP host adapters.
 
 0.1 target "core" keys (hosts SHOULD set when available):

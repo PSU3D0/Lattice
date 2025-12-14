@@ -1,6 +1,6 @@
 # registry-client
 
-`registry-client` provides the SDK for publishing, fetching, and verifying artifacts in the LatticeFlow registry. It abstracts storage backends, handles signing, and exposes friendly APIs for CLI and Studio consumers.
+`registry-client` provides the SDK for publishing, fetching, and verifying artifacts in the Lattice registry. It abstracts storage backends, handles signing, and exposes friendly APIs for CLI and Studio consumers.
 
 ## Surface
 - Upload/download operations for Flow/Node/Connector manifests.

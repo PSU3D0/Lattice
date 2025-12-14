@@ -1,6 +1,6 @@
 # dag-core
 
-`dag-core` defines the foundational types, traits, and Flow IR structures that every other LatticeFlow crate consumes. It covers effect/determinism enums, node/trigger contracts, capability references, and the serialisable IR that powers validation, planning, and registry export.
+`dag-core` defines the foundational types, traits, and Flow IR structures that every other Lattice crate consumes. It covers effect/determinism enums, node/trigger contracts, capability references, and the serialisable IR that powers validation, planning, and registry export.
 
 ## Surface
 - Core trait definitions for `Node`, `Trigger`, `Capability`, and execution contexts.

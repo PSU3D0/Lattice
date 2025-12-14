@@ -1,10 +1,10 @@
-# LatticeFlow
+# Lattice
 
-![LatticeFlow](https://raw.githubusercontent.com/PSU3D0/latticeflow/main/assets/banner.jpeg)
+![Lattice](https://raw.githubusercontent.com/PSU3D0/lattice/main/assets/banner.jpeg)
 
 ## Overview
 
-LatticeFlow is a Rust-first workflow automation platform designed to give human and AI authors a typed, policy-aware alternative to low-code orchestrators such as n8n or Temporal JSON definitions. Authors express flows through a macro DSL that expands to:
+Lattice is a Rust-first workflow automation platform designed to give human and AI authors a typed, policy-aware alternative to low-code orchestrators such as n8n or Temporal JSON definitions. Authors express flows through a macro DSL that expands to:
 
 - Native Rust execution units (`#[node]`, `#[trigger]`, `workflow!`)
 - A canonical Flow Intermediate Representation (Flow IR) captured as JSON
@@ -238,4 +238,4 @@ For large features, coordinate across phases to keep milestones achievable and t
 
 ---
 
-LatticeFlow is early in its implementation, but the scaffolding above lays the foundation for a robust, typed, policy-aware workflow engine that balances code-first ergonomics with the automation opportunities AI agents demand. Dive into the examples, run the CLI, and extend the crates to bring the next phases to life. Happy building!
+Lattice is early in its implementation, but the scaffolding above lays the foundation for a robust, typed, policy-aware workflow engine that balances code-first ergonomics with the automation opportunities AI agents demand. Dive into the examples, run the CLI, and extend the crates to bring the next phases to life. Happy building!

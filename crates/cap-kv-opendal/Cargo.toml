@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "OpenDAL-backed key-value capability for LatticeFlow."
+description = "OpenDAL-backed key-value capability for Lattice."
 
 [features]
 default = []

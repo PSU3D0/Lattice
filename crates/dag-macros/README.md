@@ -1,6 +1,6 @@
 # dag-macros
 
-`dag-macros` hosts the procedural macros and attribute helpers that make the LatticeFlow DSL ergonomic for humans and agents. It expands `#[node]`, `workflow!`, `switch!`, and the control-flow attribute wrappers so Flow IR metadata stays in sync with idiomatic Rust code.
+`dag-macros` hosts the procedural macros and attribute helpers that make the Lattice DSL ergonomic for humans and agents. It expands `#[node]`, `workflow!`, `switch!`, and the control-flow attribute wrappers so Flow IR metadata stays in sync with idiomatic Rust code.
 
 ## Surface
 - Proc-macro entry points for nodes, triggers, workflows, inline nodes, and attribute helpers like `#[flow::switch]`.

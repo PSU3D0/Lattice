@@ -330,7 +330,7 @@ impl ExecutorMetrics {
         let node_label = node.to_string();
         let profile_label = self.profile();
         metrics::gauge!(
-            "latticeflow.executor.active_nodes",
+            "lattice.executor.active_nodes",
             "flow" => flow_label,
             "node" => node_label,
             "profile" => profile_label
@@ -345,7 +345,7 @@ impl ExecutorMetrics {
         let error_label = error_kind.to_string();
         let profile_label = self.profile();
         metrics::counter!(
-            "latticeflow.executor.node_errors_total",
+            "lattice.executor.node_errors_total",
             "flow" => flow_label,
             "node" => node_label,
             "profile" => profile_label,
@@ -360,7 +360,7 @@ impl ExecutorMetrics {
         let reason_label = reason.to_string();
         let profile_label = self.profile();
         metrics::counter!(
-            "latticeflow.executor.cancellations_total",
+            "lattice.executor.cancellations_total",
             "flow" => flow_label,
             "node" => node_label,
             "profile" => profile_label,
@@ -375,7 +375,7 @@ impl ExecutorMetrics {
         let capture_label = capture.to_string();
         let profile_label = self.profile();
         metrics::histogram!(
-            "latticeflow.executor.capture_backpressure_ms",
+            "lattice.executor.capture_backpressure_ms",
             "flow" => flow_label,
             "capture" => capture_label,
             "profile" => profile_label
@@ -388,7 +388,7 @@ impl ExecutorMetrics {
         let node_label = node.to_string();
         let profile_label = self.profile();
         metrics::counter!(
-            "latticeflow.executor.stream_clients_total",
+            "lattice.executor.stream_clients_total",
             "flow" => flow_label,
             "node" => node_label,
             "profile" => profile_label
@@ -663,7 +663,7 @@ impl QueueDepthTracker {
         let edge_label = self.edge.to_string();
         let profile_label = self.metrics.profile();
         metrics::gauge!(
-            "latticeflow.executor.queue_depth",
+            "lattice.executor.queue_depth",
             "flow" => flow_label,
             "edge" => edge_label,
             "profile" => profile_label
@@ -705,14 +705,14 @@ impl Drop for NodeRunGuard {
         let node_label = self.node.to_string();
         let profile_label = self.metrics.profile();
         metrics::histogram!(
-            "latticeflow.executor.node_latency_ms",
+            "lattice.executor.node_latency_ms",
             "flow" => flow_label.clone(),
             "node" => node_label.clone(),
             "profile" => profile_label
         )
         .record(elapsed);
         metrics::gauge!(
-            "latticeflow.executor.active_nodes",
+            "lattice.executor.active_nodes",
             "flow" => flow_label,
             "node" => node_label,
             "profile" => profile_label
@@ -1521,11 +1521,11 @@ mod tests {
             for (key, _unit, _desc, value) in snapshot.into_iter() {
                 let name = key.key().name();
                 match (name, value) {
-                    ("latticeflow.executor.node_latency_ms", DebugValue::Histogram(vals)) => {
+                    ("lattice.executor.node_latency_ms", DebugValue::Histogram(vals)) => {
                         saw_latency = true;
                         saw_latency_samples = !vals.is_empty();
                     }
-                    ("latticeflow.executor.queue_depth", DebugValue::Gauge(_)) => {
+                    ("lattice.executor.queue_depth", DebugValue::Gauge(_)) => {
                         saw_queue = true;
                     }
                     _ => {}

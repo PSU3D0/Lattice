@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "OpenDAL-backed blob capability for LatticeFlow."
+description = "OpenDAL-backed blob capability for Lattice."
 
 [features]
 default = []

@@ -5,7 +5,7 @@ Last reviewed: 2025-12-12
 
 # Flow IR (0.1.x)
 
-This document defines the semantics of the LatticeFlow Flow IR for the 0.1.x line.
+This document defines the semantics of the Lattice Flow IR for the 0.1.x line.
 
 Source of truth:
 

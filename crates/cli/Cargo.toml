@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 publish = false
-description = "Command-line tools for authoring, validating, and running LatticeFlow workflows."
+description = "Command-line tools for authoring, validating, and running Lattice workflows."
 
 [[bin]]
 name = "flows"

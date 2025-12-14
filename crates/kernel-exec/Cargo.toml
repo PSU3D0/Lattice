@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "In-process runtime for executing LatticeFlow plans with scheduling, backpressure, and capability injection."
+description = "In-process runtime for executing Lattice plans with scheduling, backpressure, and capability injection."
 
 [dependencies]
 dag-core = { path = "../dag-core" }

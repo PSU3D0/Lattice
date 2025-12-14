@@ -3,7 +3,7 @@ Purpose: notes
 Owner: Core
 Last reviewed: 2025-12-12
 
-# Work Log — LatticeFlow Foundations
+# Work Log — Lattice Foundations
 
 > Detailed record of repository setup and implementation progress. Use this to orient new contributors and agents; each entry references the relevant design documents for context.
 
@@ -248,11 +248,11 @@ Maintaining this log alongside implementation ensures every phase has traceable 
 
 ## Week 6 — Runtime Metrics & CLI Summaries
 
-- Instrumented the executor with `HostMetrics` and friends: per-request guards increment/decrement `latticeflow.executor.*` gauges/counters, queue depth tracking now rides RAII permits, and new unit tests under `kernel-exec` verify histogram/counter updates via `metrics-util::DebuggingRecorder`.
-- Extended the Axum host to emit `latticeflow.host.*` telemetry (request latency, inflight gauges, SSE client counts, deadline breaches). Streaming responses wrap `StreamHandle` with an `async_stream` guard so gauges drop when clients disconnect, and fresh tests (`records_host_metrics_for_success`) assert the HTTP/SSE paths publish metrics.
+- Instrumented the executor with `HostMetrics` and friends: per-request guards increment/decrement `lattice.executor.*` gauges/counters, queue depth tracking now rides RAII permits, and new unit tests under `kernel-exec` verify histogram/counter updates via `metrics-util::DebuggingRecorder`.
+- Extended the Axum host to emit `lattice.host.*` telemetry (request latency, inflight gauges, SSE client counts, deadline breaches). Streaming responses wrap `StreamHandle` with an `async_stream` guard so gauges drop when clients disconnect, and fresh tests (`records_host_metrics_for_success`) assert the HTTP/SSE paths publish metrics.
 - Added `impl-docs/metrics.md` to catalogue every metric (`executor`, `host`, `cli`) with labels/units, and refreshed RFC §14 to point at the catalog.
 - CLI upgrades: `flows run local` now clears the recorder per invocation, captures a `RunSummary` (duration, per-node stats, stream counts), prints a human-readable summary to stderr, and exposes `--json` for structured `{ result, summary }` output. Integration coverage in `crates/cli/tests/run_local.rs` checks both pretty prints and JSON payloads. JSON mode is rejected when combined with `--stream` to keep output deterministic.
-- Recorded CLI-level metrics (`latticeflow.cli.*`) after each run (duration histogram, nodes succeeded/failed counters, capture-emitted totals) so future observability backends can ingest high-level run data without scraping stdout.
+- Recorded CLI-level metrics (`lattice.cli.*`) after each run (duration histogram, nodes succeeded/failed counters, capture-emitted totals) so future observability backends can ingest high-level run data without scraping stdout.
 - Next steps:
   1. Thread metrics export hooks into future deployment targets (e.g., Prometheus exporter behind a flag) once we stabilise control plane requirements.
   2. Fold the same summary/recorder pattern into `flows run serve --inspect` once interactive tooling lands.
@@ -280,7 +280,7 @@ Maintaining this log alongside implementation ensures every phase has traceable 
 
 ## Week 9 — Queue leases & KV idempotency harness
 
-- Upgraded `bridge-queue-redis` with visibility-timeout leasing, Redis processing lists, periodic lease extension, and a background reaper that returns expired messages to the ready queue. Queue bridges now emit metrics under the `latticeflow.queue.*` namespace (enqueue/dequeue, duplicates, requeues, lease events, inflight gauge).
+- Upgraded `bridge-queue-redis` with visibility-timeout leasing, Redis processing lists, periodic lease extension, and a background reaper that returns expired messages to the ready queue. Queue bridges now emit metrics under the `lattice.queue.*` namespace (enqueue/dequeue, duplicates, requeues, lease events, inflight gauge).
 - Added optional dedupe enforcement: queue messages carry optional dedupe metadata extracted from invocation labels/extensions, and bridges consult any registered `DedupeStore` before executing. The bridge records duplicate suppression metrics and releases dedupe keys on failure paths.
 - Extended the validator with `EXACT001`/`EXACT002`/`EXACT003` diagnostics: Exactly-once edges now require both a dedupe capability binding and idempotency metadata (key + TTL meeting the 300 s minimum). Flow IR’s `IdempotencySpec` gained an optional `ttl_ms`, schema/docs were updated, and new validation tests cover missing bindings, keys, and under-sized TTLs.
 - Implemented spill-to-blob buffering in the executor with a tempdir-backed spill store, `FlowMessage::Spilled` rehydration, and a queue integration test proving overflow messages persist while downstream workers catch up. Validator now emits `SPILL001`/`SPILL002` when flows enable spilling without a bounded buffer or blob capability hint, and the diagnostics/doc registry reflects the new codes.

@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Procedural macros and DSL surface for authoring LatticeFlow workflows."
+description = "Procedural macros and DSL surface for authoring Lattice workflows."
 
 [lib]
 proc-macro = true

@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Service APIs for agents to compile, run, certify, and publish LatticeFlow artifacts."
+description = "Service APIs for agents to compile, run, certify, and publish Lattice artifacts."
 
 [dependencies]
 dag-core = { path = "../dag-core" }

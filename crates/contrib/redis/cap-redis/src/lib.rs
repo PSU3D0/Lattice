@@ -1,4 +1,4 @@
-//! Shared Redis client utilities for LatticeFlow capability crates.
+//! Shared Redis client utilities for Lattice capability crates.
 //!
 //! This crate centralises configuration, connection management, and key
 //! namespacing so that higher-level Redis-backed capabilities (cache, dedupe,

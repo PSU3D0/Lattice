@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Axum-based web host for LatticeFlow workflows (HTTP triggers, SSE, deadlines)."
+description = "Axum-based web host for Lattice workflows (HTTP triggers, SSE, deadlines)."
 
 [dependencies]
 dag-core = { path = "../dag-core" }

@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Standard library of first-party LatticeFlow connectors."
+description = "Standard library of first-party Lattice connectors."
 
 [dependencies]
 dag-core = { path = "../dag-core" }

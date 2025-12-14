@@ -1,6 +1,6 @@
 # cap-kv-opendal
 
-OpenDAL-backed key-value capability for LatticeFlow.
+OpenDAL-backed key-value capability for Lattice.
 
 ## Surface
 - `OpendalKvStore` implementing `capabilities::kv::KeyValue` with optional capability metadata (`KvCapabilityInfo`).

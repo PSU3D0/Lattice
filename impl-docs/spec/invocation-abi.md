@@ -43,7 +43,7 @@ Shape:
 - `extensions: BTreeMap<String, JsonValue>` (structured data)
 
 Namespace conventions:
-- `lf.*`: reserved for LatticeFlow (cross-host stable keys)
+- `lf.*`: reserved for Lattice (cross-host stable keys)
 - `http.*`: reserved for HTTP host adapters
 
 0.1 target reserved keys (hosts SHOULD set when available):

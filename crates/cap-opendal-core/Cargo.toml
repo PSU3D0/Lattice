@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Shared OpenDAL helpers for LatticeFlow capability crates."
+description = "Shared OpenDAL helpers for Lattice capability crates."
 
 [features]
 default = []

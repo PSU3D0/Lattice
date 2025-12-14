@@ -1,6 +1,6 @@
 # host-temporal
 
-`host-temporal` bridges LatticeFlow plans into Temporal workflows and activities. It handles code generation, Rust activity workers, and orchestration semantics like signals, timers, and Continue-As-New thresholds.
+`host-temporal` bridges Lattice plans into Temporal workflows and activities. It handles code generation, Rust activity workers, and orchestration semantics like signals, timers, and Continue-As-New thresholds.
 
 ## Surface
 - Lowering utilities that translate Execution Plans into Temporal workflow/activity code.

@@ -1,6 +1,6 @@
 # cap-redis
 
-`cap-redis` provides the shared Redis plumbing used by LatticeFlow’s queue bridge and Redis-backed capabilities. It centralises configuration, connection pooling, and key namespacing so downstream crates can focus on higher-level semantics.
+`cap-redis` provides the shared Redis plumbing used by Lattice’s queue bridge and Redis-backed capabilities. It centralises configuration, connection pooling, and key namespacing so downstream crates can focus on higher-level semantics.
 
 ## Surface
 - `RedisConfig` with namespace-aware helper methods.

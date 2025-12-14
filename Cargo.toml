@@ -38,11 +38,11 @@ members = [
 ]
 
 [workspace.package]
-authors = ["LatticeFlow Authors <opensource@latticeflow.dev>"]
+authors = ["Lattice Authors <opensource@lattice.dev>"]
 edition = "2024"
-homepage = "https://github.com/psu3d0/LatticeFlow"
+homepage = "https://github.com/psu3d0/Lattice"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/psu3d0/LatticeFlow"
+repository = "https://github.com/psu3d0/Lattice"
 rust-version = "1.90"
 description = "Rust workflow platform workspace"
 

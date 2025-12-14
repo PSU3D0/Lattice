@@ -5,7 +5,7 @@ Last reviewed: 2025-12-12
 
 # Error Code Registry
 
-This registry tracks the diagnostic identifiers emitted across LatticeFlow crates. Each
+This registry tracks the diagnostic identifiers emitted across Lattice crates. Each
 entry lists the canonical short description, the primary subsystem, and the default
 severity. Diagnostic producers must reference these codes verbatim; tests in `dag-core`
 ensure the registry stays in sync with the implementation.

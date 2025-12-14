@@ -122,7 +122,7 @@ impl HostMetrics {
         let flow_label = self.flow_label();
         let route_label = self.route_label();
         metrics::gauge!(
-            "latticeflow.host.http_inflight_requests",
+            "lattice.host.http_inflight_requests",
             "host" => host_label,
             "flow" => flow_label,
             "route" => route_label
@@ -135,7 +135,7 @@ impl HostMetrics {
         let flow_label = self.flow_label();
         let route_label = self.route_label();
         metrics::gauge!(
-            "latticeflow.host.http_inflight_requests",
+            "lattice.host.http_inflight_requests",
             "host" => host_label,
             "flow" => flow_label,
             "route" => route_label
@@ -150,7 +150,7 @@ impl HostMetrics {
         let route_label = self.route_label();
         let latency_ms = start.elapsed().as_secs_f64() * 1_000.0;
         metrics::histogram!(
-            "latticeflow.host.http_request_latency_ms",
+            "lattice.host.http_request_latency_ms",
             "host" => host_label,
             "flow" => flow_label.clone(),
             "route" => route_label.clone()
@@ -159,7 +159,7 @@ impl HostMetrics {
 
         let status_class = format!("{}xx", status.as_u16() / 100);
         metrics::counter!(
-            "latticeflow.host.http_requests_total",
+            "lattice.host.http_requests_total",
             "host" => host_label,
             "flow" => flow_label.clone(),
             "route" => route_label.clone(),
@@ -169,7 +169,7 @@ impl HostMetrics {
 
         if deadline_exceeded {
             metrics::counter!(
-                "latticeflow.host.deadline_exceeded_total",
+                "lattice.host.deadline_exceeded_total",
                 "host" => host_label,
                 "flow" => flow_label,
                 "route" => route_label
@@ -183,7 +183,7 @@ impl HostMetrics {
         let flow_label = self.flow_label();
         let route_label = self.route_label();
         metrics::gauge!(
-            "latticeflow.host.sse_clients",
+            "lattice.host.sse_clients",
             "host" => host_label,
             "flow" => flow_label,
             "route" => route_label
@@ -200,7 +200,7 @@ impl HostMetrics {
         let flow_label = self.flow_label();
         let route_label = self.route_label();
         metrics::gauge!(
-            "latticeflow.host.sse_clients",
+            "lattice.host.sse_clients",
             "host" => host_label,
             "flow" => flow_label,
             "route" => route_label
@@ -942,11 +942,11 @@ mod tests {
         for (key, _unit, _desc, value) in snapshot.into_iter() {
             let name = key.key().name();
             match (name, value) {
-                ("latticeflow.host.http_request_latency_ms", DebugValue::Histogram(vals)) => {
+                ("lattice.host.http_request_latency_ms", DebugValue::Histogram(vals)) => {
                     assert!(!vals.is_empty(), "latency histogram should record samples");
                     saw_latency = true;
                 }
-                ("latticeflow.host.http_requests_total", DebugValue::Counter(count)) => {
+                ("lattice.host.http_requests_total", DebugValue::Counter(count)) => {
                     assert!(count > 0, "request counter should increment");
                     saw_requests = true;
                 }

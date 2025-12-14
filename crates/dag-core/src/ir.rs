@@ -36,7 +36,7 @@ pub struct FlowId(pub String);
 impl FlowId {
     /// Deterministically derive a flow id from the workflow name and semantic version.
     pub fn new(name: &str, version: &Version) -> Self {
-        let namespace = Uuid::new_v5(&Uuid::NAMESPACE_DNS, b"latticeflow.flow");
+        let namespace = Uuid::new_v5(&Uuid::NAMESPACE_DNS, b"lattice.flow");
         let key = format!("{name}:{version}");
         let uuid = Uuid::new_v5(&namespace, key.as_bytes());
         Self(uuid.to_string())

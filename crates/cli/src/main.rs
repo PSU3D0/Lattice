@@ -33,7 +33,7 @@ use example_s2_site as s2_site;
     name = "flows",
     version,
     author,
-    about = "LatticeFlow command-line interface"
+    about = "Lattice command-line interface"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -505,7 +505,7 @@ fn build_run_summary(
         let metric = key.key();
         let name = metric.name();
         match (name, value) {
-            ("latticeflow.executor.node_latency_ms", DebugValue::Histogram(values)) => {
+            ("lattice.executor.node_latency_ms", DebugValue::Histogram(values)) => {
                 let mut alias: Option<String> = None;
                 for label in metric.labels() {
                     if label.key() == "node" {
@@ -519,7 +519,7 @@ fn build_run_summary(
                     entry.total_ms += values.into_iter().map(|val| val.into_inner()).sum::<f64>();
                 }
             }
-            ("latticeflow.executor.node_errors_total", DebugValue::Counter(count)) => {
+            ("lattice.executor.node_errors_total", DebugValue::Counter(count)) => {
                 let mut alias: Option<String> = None;
                 let mut error_kind: Option<String> = None;
                 for label in metric.labels() {
@@ -585,7 +585,7 @@ fn record_cli_metrics(
     let flow_label = flow_name.to_string();
     let example_label = example_name.to_string();
     metrics::histogram!(
-        "latticeflow.cli.run_duration_ms",
+        "lattice.cli.run_duration_ms",
         "flow" => flow_label.clone(),
         "example" => example_label
     )
@@ -593,7 +593,7 @@ fn record_cli_metrics(
 
     for node in &summary.nodes {
         metrics::counter!(
-            "latticeflow.cli.nodes_succeeded_total",
+            "lattice.cli.nodes_succeeded_total",
             "flow" => flow_label.clone(),
             "node" => node.alias.clone()
         )
@@ -602,7 +602,7 @@ fn record_cli_metrics(
 
     for error in &summary.errors {
         metrics::counter!(
-            "latticeflow.cli.nodes_failed_total",
+            "lattice.cli.nodes_failed_total",
             "flow" => flow_label.clone(),
             "node" => error.alias.clone(),
             "error_kind" => error.error_kind.clone()
@@ -612,7 +612,7 @@ fn record_cli_metrics(
 
     if let Some(events) = summary.stream_events {
         metrics::counter!(
-            "latticeflow.cli.captures_emitted_total",
+            "lattice.cli.captures_emitted_total",
             "flow" => flow_label,
             "node" => capture_alias.to_string(),
             "capture" => capture_alias.to_string()

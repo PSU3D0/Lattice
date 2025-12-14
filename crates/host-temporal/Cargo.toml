@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Temporal adapter and activity worker integration for LatticeFlow."
+description = "Temporal adapter and activity worker integration for Lattice."
 
 [dependencies]
 dag-core = { path = "../dag-core" }

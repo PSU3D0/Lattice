@@ -1,6 +1,6 @@
 # cap-blob-opendal
 
-OpenDAL-backed blob store capability for LatticeFlow.
+OpenDAL-backed blob store capability for Lattice.
 
 ## Surface
 - `OpendalBlobStore` implementing `capabilities::blob::BlobStore`.

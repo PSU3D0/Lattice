@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Reqwest-backed HTTP capability implementations for LatticeFlow."
+description = "Reqwest-backed HTTP capability implementations for Lattice."
 
 [dependencies]
 capabilities = { path = "../capabilities" }

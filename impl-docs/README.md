@@ -5,7 +5,7 @@ Last reviewed: 2025-12-12
 
 # impl-docs index (DRAFT)
 
-This folder is the canonical home for LatticeFlow implementation documentation.
+This folder is the canonical home for Lattice implementation documentation.
 
 Doc hygiene rules (lightweight, so we can iterate fast):
 

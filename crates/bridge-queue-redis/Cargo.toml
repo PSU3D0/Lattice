@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Redis-backed queue bridge for LatticeFlow with visibility timeouts and dedupe."
+description = "Redis-backed queue bridge for Lattice with visibility timeouts and dedupe."
 
 [dependencies]
 host-inproc = { path = "../host-inproc" }

@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Shared domain types (email, money, identifiers) used across LatticeFlow crates."
+description = "Shared domain types (email, money, identifiers) used across Lattice crates."
 
 [dependencies]
 serde.workspace = true

@@ -433,47 +433,47 @@ impl QueueMetrics {
     }
 
     fn record_enqueue(&self) {
-        self.emit_counter("latticeflow.queue.enqueued_total", 1);
+        self.emit_counter("lattice.queue.enqueued_total", 1);
     }
 
     fn record_dequeue(&self) {
-        self.emit_counter("latticeflow.queue.dequeued_total", 1);
+        self.emit_counter("lattice.queue.dequeued_total", 1);
     }
 
     fn record_success(&self) {
-        self.emit_counter("latticeflow.queue.success_total", 1);
+        self.emit_counter("lattice.queue.success_total", 1);
     }
 
     fn record_failure(&self) {
-        self.emit_counter("latticeflow.queue.failure_total", 1);
+        self.emit_counter("lattice.queue.failure_total", 1);
     }
 
     fn record_requeue(&self) {
-        self.emit_counter("latticeflow.queue.requeued_total", 1);
+        self.emit_counter("lattice.queue.requeued_total", 1);
     }
 
     fn record_duplicate(&self) {
-        self.emit_counter("latticeflow.queue.duplicates_total", 1);
+        self.emit_counter("lattice.queue.duplicates_total", 1);
     }
 
     fn record_lease_extended(&self) {
-        self.emit_counter("latticeflow.queue.lease_extensions_total", 1);
+        self.emit_counter("lattice.queue.lease_extensions_total", 1);
     }
 
     fn record_lease_expired(&self, count: u64) {
-        self.emit_counter("latticeflow.queue.lease_expired_total", count);
+        self.emit_counter("lattice.queue.lease_expired_total", count);
     }
 
     fn increment_inflight(&self) {
         self.emit_gauge(
-            "latticeflow.queue.processing_inflight",
+            "lattice.queue.processing_inflight",
             GaugeValue::Increment(1.0),
         );
     }
 
     fn decrement_inflight(&self) {
         self.emit_gauge(
-            "latticeflow.queue.processing_inflight",
+            "lattice.queue.processing_inflight",
             GaugeValue::Decrement(1.0),
         );
     }

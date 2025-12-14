@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "S1 echo workflow example built with LatticeFlow macros."
+description = "S1 echo workflow example built with Lattice macros."
 
 [dependencies]
 dag-core = { path = "../../crates/dag-core" }

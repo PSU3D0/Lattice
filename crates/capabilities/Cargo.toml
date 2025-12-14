@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Shared capability traits and registries consumed across LatticeFlow hosts and nodes."
+description = "Shared capability traits and registries consumed across Lattice hosts and nodes."
 
 [dependencies]
 anyhow.workspace = true

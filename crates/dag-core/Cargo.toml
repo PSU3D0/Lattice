@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Core types, traits, and IR definitions for the LatticeFlow workflow platform."
+description = "Core types, traits, and IR definitions for the Lattice workflow platform."
 
 [dependencies]
 anyhow.workspace = true

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""LatticeFlow doc encryption utility.
+"""Lattice doc encryption utility.
 
 Uses age encryption for sharing private docs in-repo without committing plaintext.
 
@@ -408,7 +408,7 @@ def cmd_add_dir(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="LatticeFlow document encryption utility",
+        description="Lattice document encryption utility",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )

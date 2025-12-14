@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "n8n workflow importer that maps JSON graphs into LatticeFlow IR."
+description = "n8n workflow importer that maps JSON graphs into Lattice IR."
 
 [dependencies]
 dag-core = { path = "../dag-core" }

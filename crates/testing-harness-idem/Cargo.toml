@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Idempotency replay harness for validating effectful LatticeFlow nodes and flows."
+description = "Idempotency replay harness for validating effectful Lattice nodes and flows."
 
 [dependencies]
 dag-core = { path = "../dag-core" }

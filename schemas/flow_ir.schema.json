@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://latticeflow.dev/schemas/flow_ir.schema.json",
-  "title": "LatticeFlow IR",
-  "description": "Canonical, host-agnostic representation for workflows emitted by the LatticeFlow Rust macro DSL. This artifact is code-generated; authors only touch Rust macros.",
+  "$id": "https://lattice.dev/schemas/flow_ir.schema.json",
+  "title": "Lattice IR",
+  "description": "Canonical, host-agnostic representation for workflows emitted by the Lattice Rust macro DSL. This artifact is code-generated; authors only touch Rust macros.",
   "type": "object",
   "additionalProperties": false,
   "required": [

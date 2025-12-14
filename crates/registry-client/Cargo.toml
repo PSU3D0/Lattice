@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Client SDK for publishing and retrieving artifacts from the LatticeFlow registry."
+description = "Client SDK for publishing and retrieving artifacts from the Lattice registry."
 
 [dependencies]
 dag-core = { path = "../dag-core" }

@@ -1,6 +1,6 @@
 # importer-n8n
 
-`importer-n8n` ingests n8n JSON workflows, analyses their connectors/expressions, and emits equivalent LatticeFlow Rust flows plus lossiness reports. It underpins the connector farming roadmap.
+`importer-n8n` ingests n8n JSON workflows, analyses their connectors/expressions, and emits equivalent Lattice Rust flows plus lossiness reports. It underpins the connector farming roadmap.
 
 ## Surface
 - Parsers for n8n workflow JSON and expression ASTs.

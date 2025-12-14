@@ -1,4 +1,4 @@
-//! Core types, diagnostics, and Flow IR structures for LatticeFlow.
+//! Core types, diagnostics, and Flow IR structures for Lattice.
 
 mod builder;
 pub mod determinism;
