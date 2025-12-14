@@ -1,0 +1,5 @@
+error: if_! selector_pointer must be a JSON Pointer (empty string or starting with `/`)
+  --> tests/ui/workflow_if_selector_pointer_invalid.rs:38:28
+   |
+38 |         selector_pointer = "type",
+   |                            ^^^^^^

@@ -238,6 +238,24 @@ pub static DIAGNOSTIC_CODES: Lazy<Vec<DiagnosticCode>> = Lazy::new(|| {
             summary: "Multiple switch control surfaces reference the same source node",
         },
         DiagnosticCode {
+            code: "CTRL120",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "If control surface config is invalid",
+        },
+        DiagnosticCode {
+            code: "CTRL121",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "If control surface references a missing edge",
+        },
+        DiagnosticCode {
+            code: "CTRL122",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Multiple if control surfaces reference the same source node",
+        },
+        DiagnosticCode {
             code: "CTRL901",
             subsystem: "runtime",
             default_severity: Severity::Error,

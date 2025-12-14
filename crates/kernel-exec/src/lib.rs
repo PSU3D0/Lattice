@@ -612,27 +612,120 @@ impl SwitchRouting {
     }
 }
 
+#[derive(Clone, Debug)]
+struct IfRouting {
+    surface_id: String,
+    selector_pointer: String,
+    then_target: String,
+    else_target: String,
+}
+
+impl IfRouting {
+    fn select_target<'a>(&'a self, value: &JsonValue) -> Result<Option<&'a str>, NodeError> {
+        let selected = value
+            .pointer(self.selector_pointer.as_str())
+            .ok_or_else(|| {
+                NodeError::new(format!(
+                    "if `{}` selector_pointer `{}` did not resolve",
+                    self.surface_id, self.selector_pointer
+                ))
+            })?;
+
+        let predicate = selected.as_bool().ok_or_else(|| {
+            NodeError::new(format!(
+                "if `{}` selector_pointer `{}` must resolve to a boolean",
+                self.surface_id, self.selector_pointer
+            ))
+        })?;
+
+        if predicate {
+            Ok(Some(self.then_target.as_str()))
+        } else {
+            Ok(Some(self.else_target.as_str()))
+        }
+    }
+
+    fn controls_edge_to(&self, target: &str) -> bool {
+        self.then_target == target || self.else_target == target
+    }
+}
+
+#[derive(Clone, Debug)]
+enum RoutingControl {
+    Switch(SwitchRouting),
+    If(IfRouting),
+}
+
+impl RoutingControl {
+    fn kind_label(&self) -> &'static str {
+        match self {
+            Self::Switch(_) => "switch",
+            Self::If(_) => "if",
+        }
+    }
+
+    fn failure_label(&self) -> &'static str {
+        match self {
+            Self::Switch(_) => "switch_routing_failed",
+            Self::If(_) => "if_routing_failed",
+        }
+    }
+
+    fn surface_id(&self) -> &str {
+        match self {
+            Self::Switch(routing) => routing.surface_id.as_str(),
+            Self::If(routing) => routing.surface_id.as_str(),
+        }
+    }
+
+    fn select_target<'a>(&'a self, value: &JsonValue) -> Result<Option<&'a str>, NodeError> {
+        match self {
+            Self::Switch(routing) => routing.select_target(value),
+            Self::If(routing) => routing.select_target(value),
+        }
+    }
+
+    fn controls_edge_to(&self, target: &str) -> bool {
+        match self {
+            Self::Switch(routing) => routing.controls_edge_to(target),
+            Self::If(routing) => routing.controls_edge_to(target),
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 struct RoutingTable {
-    switches: HashMap<String, SwitchRouting>,
+    controls: HashMap<String, RoutingControl>,
 }
 
 impl RoutingTable {
     fn from_flow(flow: &dag_core::FlowIR) -> Result<Self, ExecutionError> {
-        let mut switches = HashMap::new();
+        let mut controls = HashMap::new();
         for surface in &flow.control_surfaces {
             match surface.kind {
                 dag_core::ControlSurfaceKind::Switch => {
-                    let source = routing_source(flow, surface)?;
-                    if switches.contains_key(source.as_str()) {
+                    let source = routing_source(flow, surface, "switch")?;
+                    if controls.contains_key(source.as_str()) {
                         return Err(ExecutionError::InvalidControlSurface {
                             id: surface.id.clone(),
                             kind: "switch".to_string(),
-                            reason: "multiple switch control surfaces for same source".to_string(),
+                            reason: "multiple routing control surfaces for same source".to_string(),
                         });
                     }
                     let routing = parse_switch_surface(flow, surface)?;
-                    switches.insert(source, routing);
+                    controls.insert(source, RoutingControl::Switch(routing));
+                }
+                dag_core::ControlSurfaceKind::If => {
+                    let source = routing_source(flow, surface, "if")?;
+                    if controls.contains_key(source.as_str()) {
+                        return Err(ExecutionError::InvalidControlSurface {
+                            id: surface.id.clone(),
+                            kind: "if".to_string(),
+                            reason: "multiple routing control surfaces for same source".to_string(),
+                        });
+                    }
+                    let routing = parse_if_surface(flow, surface)?;
+                    controls.insert(source, RoutingControl::If(routing));
                 }
                 _ => {
                     return Err(ExecutionError::UnsupportedControlSurface {
@@ -642,17 +735,18 @@ impl RoutingTable {
                 }
             }
         }
-        Ok(Self { switches })
+        Ok(Self { controls })
     }
 
-    fn switch_for(&self, alias: &str) -> Option<&SwitchRouting> {
-        self.switches.get(alias)
+    fn control_for(&self, alias: &str) -> Option<&RoutingControl> {
+        self.controls.get(alias)
     }
 }
 
 fn routing_source(
     flow: &dag_core::FlowIR,
     surface: &dag_core::ControlSurfaceIR,
+    kind_label: &str,
 ) -> Result<String, ExecutionError> {
     let config =
         surface
@@ -660,23 +754,25 @@ fn routing_source(
             .as_object()
             .ok_or_else(|| ExecutionError::InvalidControlSurface {
                 id: surface.id.clone(),
-                kind: "switch".to_string(),
+                kind: kind_label.to_string(),
                 reason: "config must be object".to_string(),
             })?;
+
     let source = config
         .get("source")
         .and_then(|v| v.as_str())
         .ok_or_else(|| ExecutionError::InvalidControlSurface {
             id: surface.id.clone(),
-            kind: "switch".to_string(),
+            kind: kind_label.to_string(),
             reason: "missing config.source".to_string(),
         })?;
+
     if flow.nodes.iter().any(|n| n.alias == source) {
         Ok(source.to_string())
     } else {
         Err(ExecutionError::InvalidControlSurface {
             id: surface.id.clone(),
-            kind: "switch".to_string(),
+            kind: kind_label.to_string(),
             reason: format!("unknown source node `{source}`"),
         })
     }
@@ -770,6 +866,83 @@ fn parse_switch_surface(
         cases,
         default,
         controlled_targets,
+    })
+}
+
+fn parse_if_surface(
+    flow: &dag_core::FlowIR,
+    surface: &dag_core::ControlSurfaceIR,
+) -> Result<IfRouting, ExecutionError> {
+    let config =
+        surface
+            .config
+            .as_object()
+            .ok_or_else(|| ExecutionError::InvalidControlSurface {
+                id: surface.id.clone(),
+                kind: "if".to_string(),
+                reason: "config must be object".to_string(),
+            })?;
+
+    let v_ok = config
+        .get("v")
+        .and_then(|v| v.as_u64())
+        .map(|v| v == 1)
+        .unwrap_or(false);
+    if !v_ok {
+        return Err(ExecutionError::InvalidControlSurface {
+            id: surface.id.clone(),
+            kind: "if".to_string(),
+            reason: "config.v must be 1".to_string(),
+        });
+    }
+
+    let selector_pointer = config
+        .get("selector_pointer")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ExecutionError::InvalidControlSurface {
+            id: surface.id.clone(),
+            kind: "if".to_string(),
+            reason: "missing config.selector_pointer".to_string(),
+        })?
+        .to_string();
+
+    let then_target = config.get("then").and_then(|v| v.as_str()).ok_or_else(|| {
+        ExecutionError::InvalidControlSurface {
+            id: surface.id.clone(),
+            kind: "if".to_string(),
+            reason: "missing config.then".to_string(),
+        }
+    })?;
+
+    let else_target = config.get("else").and_then(|v| v.as_str()).ok_or_else(|| {
+        ExecutionError::InvalidControlSurface {
+            id: surface.id.clone(),
+            kind: "if".to_string(),
+            reason: "missing config.else".to_string(),
+        }
+    })?;
+
+    if !flow.nodes.iter().any(|n| n.alias == then_target) {
+        return Err(ExecutionError::InvalidControlSurface {
+            id: surface.id.clone(),
+            kind: "if".to_string(),
+            reason: format!("unknown then target `{then_target}`"),
+        });
+    }
+
+    if !flow.nodes.iter().any(|n| n.alias == else_target) {
+        return Err(ExecutionError::InvalidControlSurface {
+            id: surface.id.clone(),
+            kind: "if".to_string(),
+            reason: format!("unknown else target `{else_target}`"),
+        });
+    }
+
+    Ok(IfRouting {
+        surface_id: surface.id.clone(),
+        selector_pointer,
+        then_target: then_target.to_string(),
+        else_target: else_target.to_string(),
     })
 }
 
@@ -1516,11 +1689,11 @@ async fn run_node(
                 if outputs.is_empty() {
                     // Leaf node; any outstanding permit will be released below.
                 } else {
-                    let switch = routing.switch_for(alias.as_str()).cloned();
+                    let control = routing.control_for(alias.as_str()).cloned();
                     let mut selected_target: Option<String> = None;
 
-                    if let Some(switch) = &switch {
-                        match switch.select_target(&value) {
+                    if let Some(control) = &control {
+                        match control.select_target(&value) {
                             Ok(Some(target)) => {
                                 selected_target = Some(target.to_string());
                             }
@@ -1528,8 +1701,11 @@ async fn run_node(
                                 selected_target = None;
                             }
                             Err(err) => {
-                                error!("node `{alias}` switch routing failed: {err}");
-                                metrics.record_node_error(alias.as_str(), "switch_routing_failed");
+                                error!(
+                                    "node `{alias}` {} routing failed: {err}",
+                                    control.kind_label()
+                                );
+                                metrics.record_node_error(alias.as_str(), control.failure_label());
                                 let captured_permit = permit.take();
                                 let send_result = capture
                                     .send(CapturedOutput {
@@ -1547,7 +1723,7 @@ async fn run_node(
                                     );
                                 }
                                 metrics
-                                    .record_cancellation(alias.as_str(), "switch_routing_failed");
+                                    .record_cancellation(alias.as_str(), control.failure_label());
                                 ctx.token().cancel();
                                 break;
                             }
@@ -1557,11 +1733,16 @@ async fn run_node(
                             && !outputs.iter().any(|o| o.to == target)
                         {
                             let err = NodeError::new(format!(
-                                "switch `{}` selected target `{}` but no such edge exists",
-                                switch.surface_id, target
+                                "{} `{}` selected target `{}` but no such edge exists",
+                                control.kind_label(),
+                                control.surface_id(),
+                                target
                             ));
-                            error!("node `{alias}` switch routing failed: {err}");
-                            metrics.record_node_error(alias.as_str(), "switch_routing_failed");
+                            error!(
+                                "node `{alias}` {} routing failed: {err}",
+                                control.kind_label()
+                            );
+                            metrics.record_node_error(alias.as_str(), control.failure_label());
                             let captured_permit = permit.take();
                             let send_result = capture
                                 .send(CapturedOutput {
@@ -1578,7 +1759,7 @@ async fn run_node(
                                     Duration::ZERO,
                                 );
                             }
-                            metrics.record_cancellation(alias.as_str(), "switch_routing_failed");
+                            metrics.record_cancellation(alias.as_str(), control.failure_label());
                             ctx.token().cancel();
                             break;
                         }
@@ -1586,8 +1767,8 @@ async fn run_node(
 
                     let mut first_send = true;
                     for output in outputs.iter() {
-                        if let Some(switch) = &switch
-                            && switch.controls_edge_to(output.to.as_str())
+                        if let Some(control) = &control
+                            && control.controls_edge_to(output.to.as_str())
                             && selected_target.as_deref() != Some(output.to.as_str())
                         {
                             continue;
@@ -1606,7 +1787,7 @@ async fn run_node(
                         }
                     }
 
-                    if switch.is_some() && selected_target.is_none() && first_send {
+                    if control.is_some() && selected_target.is_none() && first_send {
                         metrics.record_cancellation(alias.as_str(), "switch_no_target");
                         ctx.token().cancel();
                         break;
@@ -3252,6 +3433,755 @@ mod tests {
 
         assert_eq!(branch_a_count.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_eq!(branch_b_count.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(log_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn if_routes_then_branch_when_true() {
+        let then_count = Arc::new(AtomicUsize::new(0));
+        let else_count = Arc::new(AtomicUsize::new(0));
+
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn("tests::trigger", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+        registry
+            .register_fn("tests::route", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+
+        {
+            let then_count = Arc::clone(&then_count);
+            registry
+                .register_fn("tests::then", move |val: JsonValue| {
+                    let then_count = Arc::clone(&then_count);
+                    async move {
+                        then_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Ok(val)
+                    }
+                })
+                .unwrap();
+        }
+
+        {
+            let else_count = Arc::clone(&else_count);
+            registry
+                .register_fn("tests::else", move |val: JsonValue| {
+                    let else_count = Arc::clone(&else_count);
+                    async move {
+                        else_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Ok(val)
+                    }
+                })
+                .unwrap();
+        }
+
+        registry
+            .register_fn("tests::capture", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+
+        let mut builder = FlowBuilder::new("if_then", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let route = builder
+            .add_node(
+                "route",
+                &NodeSpec::inline(
+                    "tests::route",
+                    "Route",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let then_branch = builder
+            .add_node(
+                "then",
+                &NodeSpec::inline(
+                    "tests::then",
+                    "Then",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let else_branch = builder
+            .add_node(
+                "else",
+                &NodeSpec::inline(
+                    "tests::else",
+                    "Else",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let capture = builder
+            .add_node(
+                "capture",
+                &NodeSpec::inline(
+                    "tests::capture",
+                    "Capture",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+
+        builder.connect(&trigger, &route);
+        builder.connect(&route, &then_branch);
+        builder.connect(&route, &else_branch);
+        builder.connect(&then_branch, &capture);
+        builder.connect(&else_branch, &capture);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "if:route:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::If,
+            targets: vec!["route".into(), "then".into(), "else".into()],
+            config: json!({
+                "v": 1,
+                "source": "route",
+                "selector_pointer": "/ok",
+                "then": "then",
+                "else": "else",
+            }),
+        });
+
+        let validated = validate(&flow).expect("flow should validate");
+        let executor = FlowExecutor::new(Arc::new(registry));
+
+        let payload = json!({"ok": true, "value": 123});
+        let result = executor
+            .run_once(&validated, "trigger", payload.clone(), "capture", None)
+            .await
+            .expect("execution succeeds");
+
+        match result {
+            ExecutionResult::Value(value) => assert_eq!(value, payload),
+            ExecutionResult::Stream(_) => panic!("unexpected stream"),
+        }
+
+        assert_eq!(then_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(else_count.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn if_routes_else_branch_when_false() {
+        let then_count = Arc::new(AtomicUsize::new(0));
+        let else_count = Arc::new(AtomicUsize::new(0));
+
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn("tests::trigger", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+        registry
+            .register_fn("tests::route", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+
+        {
+            let then_count = Arc::clone(&then_count);
+            registry
+                .register_fn("tests::then", move |val: JsonValue| {
+                    let then_count = Arc::clone(&then_count);
+                    async move {
+                        then_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Ok(val)
+                    }
+                })
+                .unwrap();
+        }
+
+        {
+            let else_count = Arc::clone(&else_count);
+            registry
+                .register_fn("tests::else", move |val: JsonValue| {
+                    let else_count = Arc::clone(&else_count);
+                    async move {
+                        else_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Ok(val)
+                    }
+                })
+                .unwrap();
+        }
+
+        registry
+            .register_fn("tests::capture", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+
+        let mut builder = FlowBuilder::new("if_else", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let route = builder
+            .add_node(
+                "route",
+                &NodeSpec::inline(
+                    "tests::route",
+                    "Route",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let then_branch = builder
+            .add_node(
+                "then",
+                &NodeSpec::inline(
+                    "tests::then",
+                    "Then",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let else_branch = builder
+            .add_node(
+                "else",
+                &NodeSpec::inline(
+                    "tests::else",
+                    "Else",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let capture = builder
+            .add_node(
+                "capture",
+                &NodeSpec::inline(
+                    "tests::capture",
+                    "Capture",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+
+        builder.connect(&trigger, &route);
+        builder.connect(&route, &then_branch);
+        builder.connect(&route, &else_branch);
+        builder.connect(&then_branch, &capture);
+        builder.connect(&else_branch, &capture);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "if:route:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::If,
+            targets: vec!["route".into(), "then".into(), "else".into()],
+            config: json!({
+                "v": 1,
+                "source": "route",
+                "selector_pointer": "/ok",
+                "then": "then",
+                "else": "else",
+            }),
+        });
+
+        let validated = validate(&flow).expect("flow should validate");
+        let executor = FlowExecutor::new(Arc::new(registry));
+
+        let payload = json!({"ok": false, "value": 123});
+        let result = executor
+            .run_once(&validated, "trigger", payload.clone(), "capture", None)
+            .await
+            .expect("execution succeeds");
+
+        match result {
+            ExecutionResult::Value(value) => assert_eq!(value, payload),
+            ExecutionResult::Stream(_) => panic!("unexpected stream"),
+        }
+
+        assert_eq!(then_count.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(else_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn if_selector_pointer_missing_fails_source_node() {
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn("tests::trigger", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+        registry
+            .register_fn("tests::route", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+        registry
+            .register_fn("tests::then", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+        registry
+            .register_fn("tests::else", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+        registry
+            .register_fn("tests::capture", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+
+        let mut builder = FlowBuilder::new("if_ptr_missing", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let route = builder
+            .add_node(
+                "route",
+                &NodeSpec::inline(
+                    "tests::route",
+                    "Route",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let then_branch = builder
+            .add_node(
+                "then",
+                &NodeSpec::inline(
+                    "tests::then",
+                    "Then",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let else_branch = builder
+            .add_node(
+                "else",
+                &NodeSpec::inline(
+                    "tests::else",
+                    "Else",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let capture = builder
+            .add_node(
+                "capture",
+                &NodeSpec::inline(
+                    "tests::capture",
+                    "Capture",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+
+        builder.connect(&trigger, &route);
+        builder.connect(&route, &then_branch);
+        builder.connect(&route, &else_branch);
+        builder.connect(&then_branch, &capture);
+        builder.connect(&else_branch, &capture);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "if:route:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::If,
+            targets: vec!["route".into(), "then".into(), "else".into()],
+            config: json!({
+                "v": 1,
+                "source": "route",
+                "selector_pointer": "/ok",
+                "then": "then",
+                "else": "else",
+            }),
+        });
+
+        let validated = validate(&flow).expect("flow should validate");
+        let executor = FlowExecutor::new(Arc::new(registry));
+
+        let payload = json!({"value": 123});
+        let err = executor
+            .run_once(&validated, "trigger", payload, "capture", None)
+            .await
+            .err()
+            .expect("expected error");
+
+        assert!(matches!(err, ExecutionError::NodeFailed { alias, .. } if alias == "route"));
+    }
+
+    #[tokio::test]
+    async fn if_selector_pointer_wrong_type_fails_source_node() {
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn("tests::trigger", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+        registry
+            .register_fn("tests::route", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+        registry
+            .register_fn("tests::then", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+        registry
+            .register_fn("tests::else", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+        registry
+            .register_fn("tests::capture", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+
+        let mut builder =
+            FlowBuilder::new("if_ptr_wrong_type", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let route = builder
+            .add_node(
+                "route",
+                &NodeSpec::inline(
+                    "tests::route",
+                    "Route",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let then_branch = builder
+            .add_node(
+                "then",
+                &NodeSpec::inline(
+                    "tests::then",
+                    "Then",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let else_branch = builder
+            .add_node(
+                "else",
+                &NodeSpec::inline(
+                    "tests::else",
+                    "Else",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let capture = builder
+            .add_node(
+                "capture",
+                &NodeSpec::inline(
+                    "tests::capture",
+                    "Capture",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+
+        builder.connect(&trigger, &route);
+        builder.connect(&route, &then_branch);
+        builder.connect(&route, &else_branch);
+        builder.connect(&then_branch, &capture);
+        builder.connect(&else_branch, &capture);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "if:route:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::If,
+            targets: vec!["route".into(), "then".into(), "else".into()],
+            config: json!({
+                "v": 1,
+                "source": "route",
+                "selector_pointer": "/ok",
+                "then": "then",
+                "else": "else",
+            }),
+        });
+
+        let validated = validate(&flow).expect("flow should validate");
+        let executor = FlowExecutor::new(Arc::new(registry));
+
+        let payload = json!({"ok": "true", "value": 123});
+        let err = executor
+            .run_once(&validated, "trigger", payload, "capture", None)
+            .await
+            .err()
+            .expect("expected error");
+
+        assert!(matches!(err, ExecutionError::NodeFailed { alias, .. } if alias == "route"));
+    }
+
+    #[tokio::test]
+    async fn if_does_not_gate_edges_outside_targets() {
+        let then_count = Arc::new(AtomicUsize::new(0));
+        let else_count = Arc::new(AtomicUsize::new(0));
+        let log_count = Arc::new(AtomicUsize::new(0));
+
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn("tests::trigger", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+        registry
+            .register_fn("tests::route", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+
+        {
+            let then_count = Arc::clone(&then_count);
+            registry
+                .register_fn("tests::then", move |val: JsonValue| {
+                    let then_count = Arc::clone(&then_count);
+                    async move {
+                        then_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Ok(val)
+                    }
+                })
+                .unwrap();
+        }
+
+        {
+            let else_count = Arc::clone(&else_count);
+            registry
+                .register_fn("tests::else", move |val: JsonValue| {
+                    let else_count = Arc::clone(&else_count);
+                    async move {
+                        else_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Ok(val)
+                    }
+                })
+                .unwrap();
+        }
+
+        {
+            let log_count = Arc::clone(&log_count);
+            registry
+                .register_fn("tests::log", move |val: JsonValue| {
+                    let log_count = Arc::clone(&log_count);
+                    async move {
+                        log_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Ok(val)
+                    }
+                })
+                .unwrap();
+        }
+
+        registry
+            .register_fn("tests::capture", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+
+        let mut builder = FlowBuilder::new("if_extra_edge", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let route = builder
+            .add_node(
+                "route",
+                &NodeSpec::inline(
+                    "tests::route",
+                    "Route",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let then_branch = builder
+            .add_node(
+                "then",
+                &NodeSpec::inline(
+                    "tests::then",
+                    "Then",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let else_branch = builder
+            .add_node(
+                "else",
+                &NodeSpec::inline(
+                    "tests::else",
+                    "Else",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let log = builder
+            .add_node(
+                "log",
+                &NodeSpec::inline(
+                    "tests::log",
+                    "Log",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let capture = builder
+            .add_node(
+                "capture",
+                &NodeSpec::inline(
+                    "tests::capture",
+                    "Capture",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+
+        builder.connect(&trigger, &route);
+        builder.connect(&route, &then_branch);
+        builder.connect(&route, &else_branch);
+        builder.connect(&route, &log);
+        builder.connect(&then_branch, &capture);
+        builder.connect(&else_branch, &capture);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "if:route:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::If,
+            targets: vec!["route".into(), "then".into(), "else".into()],
+            config: json!({
+                "v": 1,
+                "source": "route",
+                "selector_pointer": "/ok",
+                "then": "then",
+                "else": "else",
+            }),
+        });
+
+        let validated = validate(&flow).expect("flow should validate");
+        let executor = FlowExecutor::new(Arc::new(registry));
+
+        let payload = json!({"ok": true, "value": 123});
+        let mut instance = executor.instantiate(&validated, "capture").unwrap();
+        instance
+            .send("trigger", payload.clone())
+            .await
+            .expect("send");
+
+        match instance.next().await {
+            Some(Ok(CaptureResult::Value(value))) => assert_eq!(value, payload),
+            _ => panic!("unexpected capture result"),
+        }
+
+        timeout(Duration::from_secs(1), async {
+            while log_count.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("log node should execute");
+
+        instance.shutdown().await.unwrap();
+
+        assert_eq!(then_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(else_count.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert_eq!(log_count.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 

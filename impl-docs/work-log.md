@@ -371,3 +371,21 @@ Learnings
   - `cargo test -p kernel-exec`
   - `cargo test -p host-web-axum`
   - `cargo test --workspace`
+
+## 2025-12-14 — If control surface (Epic 01.3)
+
+- Extended `workflow!` to support `if_!`, emitting a `ControlSurfaceIR` with `kind = "if"` and config shape matching `impl-docs/spec/control-surfaces.md`.
+- Added validator enforcement for if surfaces:
+  - `CTRL120`: invalid/malformed if config shape (missing fields, invalid JSON Pointer, targets list mismatch).
+  - `CTRL121`: if surface references a `source -> target` edge that is missing.
+  - `CTRL122`: multiple if surfaces reference the same `source` alias.
+- Implemented runtime routing in `kernel-exec`: after the source node produces a JSON value, evaluate `selector_pointer` as boolean and schedule `then` or `else`.
+- Updated diagnostics registry + docs (`dag-core`, `impl-docs/error-codes.md`, `impl-docs/spec/control-surfaces.md`) with the new `CTRL12*` codes.
+- Added tests:
+  - `dag-macros`: unit + trybuild fixtures for invalid `if_!` usage (missing edges, duplicate sources, invalid keys/pointer types).
+  - `kernel-plan`: unit tests for missing-edge (`CTRL121`), duplicate-source (`CTRL122`), and config shape (`CTRL120`).
+  - `kernel-exec`: unit tests for then/else routing and selector_pointer error cases.
+- Commands exercised:
+  - `cargo fmt --all`
+  - `cargo test -p dag-macros -p kernel-plan -p kernel-exec -p host-web-axum`
+  - `cargo clippy --workspace --all-targets --all-features -- -D warnings`

@@ -1,0 +1,5 @@
+error: if_! requires `selector_pointer = "/json/pointer"`
+  --> tests/ui/workflow_if_invalid_key.rs:38:9
+   |
+38 |         pointer = "/ok",
+   |         ^^^^^^^

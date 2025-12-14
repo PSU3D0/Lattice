@@ -45,6 +45,9 @@ ensure the registry stays in sync with the implementation.
 | CTRL110   | Validation     | Error   | Switch control surface config is invalid. |
 | CTRL111   | Validation     | Error   | Switch control surface references a missing edge. |
 | CTRL112   | Validation     | Error   | Multiple switch control surfaces reference the same source node. |
+| CTRL120   | Validation     | Error   | If control surface config is invalid. |
+| CTRL121   | Validation     | Error   | If control surface references a missing edge. |
+| CTRL122   | Validation     | Error   | Multiple if control surfaces reference the same source node. |
 | CTRL901   | Runtime        | Error   | Reserved control surface not supported by this host/profile. |
 | IDEM020   | Validation     | Error   | Effectful sink missing partition key and idempotency key. |
 | IDEM025   | Validation     | Error   | Idempotency key references non-deterministic fields. |

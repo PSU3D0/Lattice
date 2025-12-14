@@ -38,6 +38,7 @@ pub fn validate(flow: &FlowIR) -> Result<ValidatedIR, Vec<Diagnostic>> {
     check_edge_timeout_requirements(flow, &mut diagnostics);
     check_edge_buffer_requirements(flow, &mut diagnostics);
     check_spill_requirements(flow, &mut diagnostics);
+    check_if_control_surfaces(flow, &mut diagnostics);
     check_switch_control_surfaces(flow, &mut diagnostics);
 
     if diagnostics.is_empty() {
@@ -344,6 +345,169 @@ fn check_spill_requirements(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
                 ));
                 emitted_blob_diagnostic = true;
             }
+        }
+    }
+}
+
+fn check_if_control_surfaces(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    let node_aliases: HashSet<&str> = flow.nodes.iter().map(|n| n.alias.as_str()).collect();
+    let mut seen_sources = HashSet::new();
+
+    for surface in &flow.control_surfaces {
+        if surface.kind != dag_core::ControlSurfaceKind::If {
+            continue;
+        }
+
+        let config = match surface.config.as_object() {
+            Some(config) => config,
+            None => {
+                diagnostics.push(diagnostic(
+                    "CTRL120",
+                    format!(
+                        "control surface `{}` (if) config must be an object",
+                        surface.id
+                    ),
+                ));
+                continue;
+            }
+        };
+
+        let v_ok = config
+            .get("v")
+            .and_then(|v| v.as_u64())
+            .map(|v| v == 1)
+            .unwrap_or(false);
+        if !v_ok {
+            diagnostics.push(diagnostic(
+                "CTRL120",
+                format!(
+                    "control surface `{}` (if) requires config.v = 1",
+                    surface.id
+                ),
+            ));
+            continue;
+        }
+
+        let Some(source) = config.get("source").and_then(|v| v.as_str()) else {
+            diagnostics.push(diagnostic(
+                "CTRL120",
+                format!(
+                    "control surface `{}` (if) requires config.source string",
+                    surface.id
+                ),
+            ));
+            continue;
+        };
+
+        if !node_aliases.contains(source) {
+            diagnostics.push(diagnostic(
+                "CTRL120",
+                format!(
+                    "control surface `{}` (if) references unknown source node `{source}`",
+                    surface.id
+                ),
+            ));
+            continue;
+        }
+
+        if !seen_sources.insert(source.to_string()) {
+            diagnostics.push(diagnostic(
+                "CTRL122",
+                format!(
+                    "control surface `{}` (if): multiple if surfaces reference source node `{source}`",
+                    surface.id
+                ),
+            ));
+        }
+
+        let Some(pointer) = config.get("selector_pointer").and_then(|v| v.as_str()) else {
+            diagnostics.push(diagnostic(
+                "CTRL120",
+                format!(
+                    "control surface `{}` (if) requires config.selector_pointer string",
+                    surface.id
+                ),
+            ));
+            continue;
+        };
+
+        if !(pointer.is_empty() || pointer.starts_with('/')) {
+            diagnostics.push(diagnostic(
+                "CTRL120",
+                format!(
+                    "control surface `{}` (if) has invalid selector_pointer `{pointer}`",
+                    surface.id
+                ),
+            ));
+        }
+
+        let Some(then_target) = config.get("then").and_then(|v| v.as_str()) else {
+            diagnostics.push(diagnostic(
+                "CTRL120",
+                format!(
+                    "control surface `{}` (if) requires config.then string",
+                    surface.id
+                ),
+            ));
+            continue;
+        };
+
+        let Some(else_target) = config.get("else").and_then(|v| v.as_str()) else {
+            diagnostics.push(diagnostic(
+                "CTRL120",
+                format!(
+                    "control surface `{}` (if) requires config.else string",
+                    surface.id
+                ),
+            ));
+            continue;
+        };
+
+        for target in [then_target, else_target] {
+            if !node_aliases.contains(target) {
+                diagnostics.push(diagnostic(
+                    "CTRL120",
+                    format!(
+                        "control surface `{}` (if) references unknown target node `{target}`",
+                        surface.id
+                    ),
+                ));
+                continue;
+            }
+
+            if !flow
+                .edges
+                .iter()
+                .any(|edge| edge.from == source && edge.to == target)
+            {
+                diagnostics.push(diagnostic(
+                    "CTRL121",
+                    format!(
+                        "control surface `{}` (if) references `{source}` -> `{target}` but the edge is missing",
+                        surface.id
+                    ),
+                ));
+            }
+
+            if !surface.targets.iter().any(|t| t == target) {
+                diagnostics.push(diagnostic(
+                    "CTRL120",
+                    format!(
+                        "control surface `{}` (if) must include target `{target}` in targets[]",
+                        surface.id
+                    ),
+                ));
+            }
+        }
+
+        if !surface.targets.iter().any(|t| t == source) {
+            diagnostics.push(diagnostic(
+                "CTRL120",
+                format!(
+                    "control surface `{}` (if) must include source `{source}` in targets[]",
+                    surface.id
+                ),
+            ));
         }
     }
 }
@@ -1026,6 +1190,185 @@ mod tests {
 
         let diagnostics = validate(&flow).expect_err("expected validation errors");
         assert!(diagnostics.iter().any(|d| d.code.code == "CTRL110"));
+    }
+
+    #[test]
+    fn if_requires_edges_for_then_else() {
+        let mut builder = FlowBuilder::new("if_missing_edge", Version::new(1, 0, 0), Profile::Dev);
+        let route_spec = NodeSpec::inline(
+            "tests::route",
+            "Route",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+        let branch_spec = NodeSpec::inline(
+            "tests::branch",
+            "Branch",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+
+        let route = builder.add_node("route", &route_spec).unwrap();
+        let then_branch = builder.add_node("then", &branch_spec).unwrap();
+        let _else_branch = builder.add_node("else", &branch_spec).unwrap();
+        builder.connect(&route, &then_branch);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "if:route:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::If,
+            targets: vec!["route".into(), "then".into(), "else".into()],
+            config: serde_json::json!({
+                "v": 1,
+                "source": "route",
+                "selector_pointer": "/ok",
+                "then": "then",
+                "else": "else"
+            }),
+        });
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL121"));
+    }
+
+    #[test]
+    fn if_duplicate_sources_rejected() {
+        let mut builder = FlowBuilder::new("if_dupe", Version::new(1, 0, 0), Profile::Dev);
+        let route_spec = NodeSpec::inline(
+            "tests::route",
+            "Route",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+        let branch_spec = NodeSpec::inline(
+            "tests::branch",
+            "Branch",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+
+        let route = builder.add_node("route", &route_spec).unwrap();
+        let then_branch = builder.add_node("then", &branch_spec).unwrap();
+        let else_branch = builder.add_node("else", &branch_spec).unwrap();
+        builder.connect(&route, &then_branch);
+        builder.connect(&route, &else_branch);
+
+        let mut flow = builder.build();
+        for idx in 0..2 {
+            flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+                id: format!("if:route:{idx}"),
+                kind: dag_core::ControlSurfaceKind::If,
+                targets: vec!["route".into(), "then".into(), "else".into()],
+                config: serde_json::json!({
+                    "v": 1,
+                    "source": "route",
+                    "selector_pointer": "/ok",
+                    "then": "then",
+                    "else": "else"
+                }),
+            });
+        }
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL122"));
+    }
+
+    #[test]
+    fn if_config_must_be_object() {
+        let mut builder = FlowBuilder::new("if_config_obj", Version::new(1, 0, 0), Profile::Dev);
+        let route_spec = NodeSpec::inline(
+            "tests::route",
+            "Route",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+        let branch_spec = NodeSpec::inline(
+            "tests::branch",
+            "Branch",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+
+        let route = builder.add_node("route", &route_spec).unwrap();
+        let then_branch = builder.add_node("then", &branch_spec).unwrap();
+        let else_branch = builder.add_node("else", &branch_spec).unwrap();
+        builder.connect(&route, &then_branch);
+        builder.connect(&route, &else_branch);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "if:route:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::If,
+            targets: vec!["route".into(), "then".into(), "else".into()],
+            config: serde_json::Value::Null,
+        });
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL120"));
+    }
+
+    #[test]
+    fn if_requires_v1_config() {
+        let mut builder = FlowBuilder::new("if_bad_v", Version::new(1, 0, 0), Profile::Dev);
+        let route_spec = NodeSpec::inline(
+            "tests::route",
+            "Route",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+        let branch_spec = NodeSpec::inline(
+            "tests::branch",
+            "Branch",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+
+        let route = builder.add_node("route", &route_spec).unwrap();
+        let then_branch = builder.add_node("then", &branch_spec).unwrap();
+        let else_branch = builder.add_node("else", &branch_spec).unwrap();
+        builder.connect(&route, &then_branch);
+        builder.connect(&route, &else_branch);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "if:route:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::If,
+            targets: vec!["route".into(), "then".into(), "else".into()],
+            config: serde_json::json!({
+                "v": 2,
+                "source": "route",
+                "selector_pointer": "/ok",
+                "then": "then",
+                "else": "else"
+            }),
+        });
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL120"));
     }
 
     #[test]

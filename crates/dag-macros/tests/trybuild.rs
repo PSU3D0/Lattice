@@ -34,4 +34,13 @@ fn ui_failures() {
     t.compile_fail("tests/ui/workflow_switch_case_target_not_ident.rs");
     t.compile_fail("tests/ui/workflow_switch_default_not_ident.rs");
     t.pass("tests/ui/workflow_switch_trailing_comma.rs");
+
+    t.compile_fail("tests/ui/workflow_if_missing_edge.rs");
+    t.compile_fail("tests/ui/workflow_if_duplicate_source.rs");
+    t.compile_fail("tests/ui/workflow_if_invalid_key.rs");
+    t.compile_fail("tests/ui/workflow_if_selector_pointer_non_string.rs");
+    t.compile_fail("tests/ui/workflow_if_then_not_ident.rs");
+    t.compile_fail("tests/ui/workflow_if_else_not_ident.rs");
+    t.compile_fail("tests/ui/workflow_if_selector_pointer_invalid.rs");
+    t.pass("tests/ui/workflow_if_trailing_comma.rs");
 }

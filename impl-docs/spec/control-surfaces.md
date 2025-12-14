@@ -67,6 +67,12 @@ Predicate:
 Targets:
 - `ControlSurfaceIR.targets` MUST include at least: `source`, `then`, `else`.
 
+Structural requirements (implemented by validator/runtime):
+- `selector_pointer` MUST be a valid JSON Pointer string (empty or starting with `/`) (`CTRL120`).
+- For both `then` and `else`, an edge `source -> target` MUST exist (`CTRL121`).
+- `ControlSurfaceIR.targets` MUST include `source`, `then`, and `else` (`CTRL120`).
+- A flow MUST NOT define multiple if surfaces for the same `source` (`CTRL122`).
+
 ### Switch (ControlSurfaceKind::Switch)
 
 `ControlSurfaceIR.kind = "switch"`.

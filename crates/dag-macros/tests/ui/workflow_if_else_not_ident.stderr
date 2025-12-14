@@ -1,0 +1,5 @@
+error: if_! requires `else = <node_alias>`
+  --> tests/ui/workflow_if_else_not_ident.rs:40:16
+   |
+40 |         else = "b"
+   |                ^^^

@@ -314,7 +314,7 @@ Runtime should emit `TIME015` when execution exceeds configured timeout; mitigat
 
 ## 7. Control Surfaces & Lints
 - **Missing hints** — `CTRL001` (RFC §4.9). When policies require explicit control-surface macros (`switch!`, `for_each!`), raw branching/loops generate warnings. Code pattern: using bare `match`/`for` without `#[flow::switch]`/`#[flow::for_each]` wrappers in lint-enforced contexts.
-- **Invalid switch config** — `CTRL110`/`CTRL111`/`CTRL112`. Malformed `switch` surfaces, missing required `source -> target` edges, or multiple switch surfaces for the same `source` alias.
+- **Invalid routing config** — `CTRL110`/`CTRL111`/`CTRL112` (switch) and `CTRL120`/`CTRL121`/`CTRL122` (if). Malformed routing surfaces, missing required `source -> target` edges, or multiple routing surfaces for the same `source` alias.
 - **Human-in-the-loop misuse** — `DAG300` (RFC §4.6). Attaching `hitl!` to invalid scope.
 
 ### Example: Missing control hint (`CTRL001`)
@@ -330,9 +330,9 @@ async fn route(order: Order) -> NodeResult<RouteDecision> {
 }
 ```
 
-When `policies.lint.require_control_hints` is true, validator should emit `CTRL001` suggesting `#[flow::switch]` or `switch!` usage.
+When `policies.lint.require_control_hints` is true, validator should emit `CTRL001` suggesting `if_!`/`switch!` usage.
 
-**Mitigation:** wrap the branch with `switch!` or apply `#[flow::switch]` attribute to leverage control-surface metadata.
+**Mitigation:** wrap the branch with `if_!`/`switch!` to leverage control-surface metadata.
 
 ## 8. Importer & Tooling Specific
 - **Importer lossy semantics** — Warnings documented in importer output when n8n JSON can’t express required determinism/effects. This feeds into validator once IR is emitted.

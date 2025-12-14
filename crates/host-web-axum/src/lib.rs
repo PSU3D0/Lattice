@@ -602,14 +602,21 @@ fn map_execution_error(err: ExecutionError) -> (StatusCode, JsonValue) {
                 "details": { "id": id, "kind": kind }
             }),
         ),
-        ExecutionError::InvalidControlSurface { id, kind, reason } => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            json!({
-                "error": format!("invalid control surface `{id}` ({kind}): {reason}"),
-                "code": "CTRL110",
-                "details": { "id": id, "kind": kind }
-            }),
-        ),
+        ExecutionError::InvalidControlSurface { id, kind, reason } => {
+            let code = match kind.as_str() {
+                "if" => "CTRL120",
+                "switch" => "CTRL110",
+                _ => "CTRL110",
+            };
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({
+                    "error": format!("invalid control surface `{id}` ({kind}): {reason}"),
+                    "code": code,
+                    "details": { "id": id, "kind": kind }
+                }),
+            )
+        }
         ExecutionError::SpillSetup(err) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             json!({ "error": format!("failed to configure spill storage: {err}") }),
