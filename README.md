@@ -1,4 +1,6 @@
-# LatticeFlow Workspace
+# LatticeFlow
+
+![LatticeFlow](https://raw.githubusercontent.com/PSU3D0/latticeflow/main/assets/banner.jpeg)
 
 ## Overview
 
