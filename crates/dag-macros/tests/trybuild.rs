@@ -29,4 +29,9 @@ fn ui_failures() {
     t.compile_fail("tests/ui/workflow_switch_duplicate_source.rs");
     t.compile_fail("tests/ui/workflow_switch_invalid_key.rs");
     t.compile_fail("tests/ui/workflow_switch_duplicate_case_key.rs");
+    t.compile_fail("tests/ui/workflow_switch_empty_cases.rs");
+    t.compile_fail("tests/ui/workflow_switch_selector_pointer_non_string.rs");
+    t.compile_fail("tests/ui/workflow_switch_case_target_not_ident.rs");
+    t.compile_fail("tests/ui/workflow_switch_default_not_ident.rs");
+    t.pass("tests/ui/workflow_switch_trailing_comma.rs");
 }

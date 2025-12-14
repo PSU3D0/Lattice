@@ -815,6 +815,220 @@ mod tests {
     }
 
     #[test]
+    fn switch_config_must_be_object() {
+        let mut builder =
+            FlowBuilder::new("switch_config_obj", Version::new(1, 0, 0), Profile::Dev);
+        let route_spec = NodeSpec::inline(
+            "tests::route",
+            "Route",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+        let branch_spec = NodeSpec::inline(
+            "tests::branch",
+            "Branch",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+
+        let route = builder.add_node("route", &route_spec).unwrap();
+        let a = builder.add_node("a", &branch_spec).unwrap();
+        builder.connect(&route, &a);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "switch:route:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::Switch,
+            targets: vec!["route".into(), "a".into()],
+            config: serde_json::Value::Null,
+        });
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL110"));
+    }
+
+    #[test]
+    fn switch_requires_v1_config() {
+        let mut builder = FlowBuilder::new("switch_bad_v", Version::new(1, 0, 0), Profile::Dev);
+        let route_spec = NodeSpec::inline(
+            "tests::route",
+            "Route",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+        let branch_spec = NodeSpec::inline(
+            "tests::branch",
+            "Branch",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+
+        let route = builder.add_node("route", &route_spec).unwrap();
+        let a = builder.add_node("a", &branch_spec).unwrap();
+        builder.connect(&route, &a);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "switch:route:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::Switch,
+            targets: vec!["route".into(), "a".into()],
+            config: serde_json::json!({
+                "v": 2,
+                "source": "route",
+                "selector_pointer": "/type",
+                "cases": { "a": "a" }
+            }),
+        });
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL110"));
+    }
+
+    #[test]
+    fn switch_cases_must_be_object() {
+        let mut builder = FlowBuilder::new("switch_cases_obj", Version::new(1, 0, 0), Profile::Dev);
+        let route_spec = NodeSpec::inline(
+            "tests::route",
+            "Route",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+        let branch_spec = NodeSpec::inline(
+            "tests::branch",
+            "Branch",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+
+        let route = builder.add_node("route", &route_spec).unwrap();
+        let a = builder.add_node("a", &branch_spec).unwrap();
+        builder.connect(&route, &a);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "switch:route:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::Switch,
+            targets: vec!["route".into(), "a".into()],
+            config: serde_json::json!({
+                "v": 1,
+                "source": "route",
+                "selector_pointer": "/type",
+                "cases": "not-an-object"
+            }),
+        });
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL110"));
+    }
+
+    #[test]
+    fn switch_case_targets_must_be_strings() {
+        let mut builder =
+            FlowBuilder::new("switch_case_targets", Version::new(1, 0, 0), Profile::Dev);
+        let route_spec = NodeSpec::inline(
+            "tests::route",
+            "Route",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+        let branch_spec = NodeSpec::inline(
+            "tests::branch",
+            "Branch",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+
+        let route = builder.add_node("route", &route_spec).unwrap();
+        let a = builder.add_node("a", &branch_spec).unwrap();
+        builder.connect(&route, &a);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "switch:route:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::Switch,
+            targets: vec!["route".into(), "a".into()],
+            config: serde_json::json!({
+                "v": 1,
+                "source": "route",
+                "selector_pointer": "/type",
+                "cases": { "a": 1 }
+            }),
+        });
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL110"));
+    }
+
+    #[test]
+    fn switch_targets_must_include_source_and_case_targets() {
+        let mut builder = FlowBuilder::new("switch_targets", Version::new(1, 0, 0), Profile::Dev);
+        let route_spec = NodeSpec::inline(
+            "tests::route",
+            "Route",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+        let branch_spec = NodeSpec::inline(
+            "tests::branch",
+            "Branch",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+
+        let route = builder.add_node("route", &route_spec).unwrap();
+        let a = builder.add_node("a", &branch_spec).unwrap();
+        let b = builder.add_node("b", &branch_spec).unwrap();
+        builder.connect(&route, &a);
+        builder.connect(&route, &b);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "switch:route:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::Switch,
+            targets: vec!["route".into(), "a".into()],
+            config: serde_json::json!({
+                "v": 1,
+                "source": "route",
+                "selector_pointer": "/type",
+                "cases": { "a": "a", "b": "b" }
+            }),
+        });
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL110"));
+    }
+
+    #[test]
     fn exactly_once_succeeds_when_prerequisites_met() {
         let mut flow = build_sample_flow();
         if let Some(edge) = flow.edges.first_mut() {

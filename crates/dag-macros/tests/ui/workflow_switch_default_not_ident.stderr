@@ -1,0 +1,5 @@
+error: switch! requires `default = <node_alias>`
+  --> tests/ui/workflow_switch_default_not_ident.rs:38:19
+   |
+38 |         default = "a"
+   |                   ^^^

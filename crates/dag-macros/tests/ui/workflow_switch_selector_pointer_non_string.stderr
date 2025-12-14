@@ -1,0 +1,5 @@
+error: switch! requires `selector_pointer = "/json/pointer"`
+  --> tests/ui/workflow_switch_selector_pointer_non_string.rs:36:28
+   |
+36 |         selector_pointer = 123,
+   |                            ^^^

@@ -1083,7 +1083,7 @@ impl FlowExecutor {
             let outputs = outbound.remove(&node.alias).expect("outputs allocated");
             let capture_sender = capture_tx.clone();
             let capture_target = capture_alias.clone();
-            let token = cancellation.child_token();
+            let token = cancellation.clone();
             let alias = node.alias.clone();
             let resource_handle = self.resources.clone();
             tasks.push(tokio::spawn(run_node(
@@ -1604,6 +1604,12 @@ async fn run_node(
                         {
                             debug!("downstream receiver for node `{alias}` dropped: {err}");
                         }
+                    }
+
+                    if switch.is_some() && selected_target.is_none() && first_send {
+                        metrics.record_cancellation(alias.as_str(), "switch_no_target");
+                        ctx.token().cancel();
+                        break;
                     }
                 }
             }
@@ -2538,6 +2544,715 @@ mod tests {
 
         assert_eq!(branch_a_count.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_eq!(branch_b_count.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn switch_no_match_routes_to_default_branch() {
+        let branch_a_count = Arc::new(AtomicUsize::new(0));
+        let branch_b_count = Arc::new(AtomicUsize::new(0));
+
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn("tests::trigger", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+        registry
+            .register_fn("tests::route", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+
+        {
+            let branch_a_count = Arc::clone(&branch_a_count);
+            registry
+                .register_fn("tests::branch_a", move |val: JsonValue| {
+                    let branch_a_count = Arc::clone(&branch_a_count);
+                    async move {
+                        branch_a_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Ok(val)
+                    }
+                })
+                .unwrap();
+        }
+
+        {
+            let branch_b_count = Arc::clone(&branch_b_count);
+            registry
+                .register_fn("tests::branch_b", move |val: JsonValue| {
+                    let branch_b_count = Arc::clone(&branch_b_count);
+                    async move {
+                        branch_b_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Ok(val)
+                    }
+                })
+                .unwrap();
+        }
+
+        registry
+            .register_fn("tests::capture", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+
+        let mut builder = FlowBuilder::new("switch_default", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let route = builder
+            .add_node(
+                "route",
+                &NodeSpec::inline(
+                    "tests::route",
+                    "Route",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let a = builder
+            .add_node(
+                "a",
+                &NodeSpec::inline(
+                    "tests::branch_a",
+                    "A",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let b = builder
+            .add_node(
+                "b",
+                &NodeSpec::inline(
+                    "tests::branch_b",
+                    "B",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let capture = builder
+            .add_node(
+                "capture",
+                &NodeSpec::inline(
+                    "tests::capture",
+                    "Capture",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+
+        builder.connect(&trigger, &route);
+        builder.connect(&route, &a);
+        builder.connect(&route, &b);
+        builder.connect(&a, &capture);
+        builder.connect(&b, &capture);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "switch:route:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::Switch,
+            targets: vec!["route".into(), "a".into(), "b".into()],
+            config: json!({
+                "v": 1,
+                "source": "route",
+                "selector_pointer": "/type",
+                "cases": { "a": "a", "b": "b" },
+                "default": "a",
+            }),
+        });
+
+        let validated = validate(&flow).expect("flow should validate");
+        let executor = FlowExecutor::new(Arc::new(registry));
+
+        let payload = json!({"type": "nope", "value": 123});
+        let result = executor
+            .run_once(&validated, "trigger", payload.clone(), "capture", None)
+            .await
+            .expect("execution succeeds");
+
+        match result {
+            ExecutionResult::Value(value) => assert_eq!(value, payload),
+            ExecutionResult::Stream(_) => panic!("unexpected stream"),
+        }
+
+        assert_eq!(branch_a_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(branch_b_count.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn switch_no_match_without_default_yields_missing_output() {
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn("tests::trigger", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+        registry
+            .register_fn("tests::route", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+        registry
+            .register_fn("tests::branch", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+        registry
+            .register_fn("tests::capture", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+
+        let mut builder = FlowBuilder::new("switch_none", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let route = builder
+            .add_node(
+                "route",
+                &NodeSpec::inline(
+                    "tests::route",
+                    "Route",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let a = builder
+            .add_node(
+                "a",
+                &NodeSpec::inline(
+                    "tests::branch",
+                    "A",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let b = builder
+            .add_node(
+                "b",
+                &NodeSpec::inline(
+                    "tests::branch",
+                    "B",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let capture = builder
+            .add_node(
+                "capture",
+                &NodeSpec::inline(
+                    "tests::capture",
+                    "Capture",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+
+        builder.connect(&trigger, &route);
+        builder.connect(&route, &a);
+        builder.connect(&route, &b);
+        builder.connect(&a, &capture);
+        builder.connect(&b, &capture);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "switch:route:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::Switch,
+            targets: vec!["route".into(), "a".into(), "b".into()],
+            config: json!({
+                "v": 1,
+                "source": "route",
+                "selector_pointer": "/type",
+                "cases": { "a": "a", "b": "b" },
+            }),
+        });
+
+        let validated = validate(&flow).expect("flow should validate");
+        let executor = FlowExecutor::new(Arc::new(registry));
+
+        let payload = json!({"type": "nope", "value": 123});
+        let err = executor
+            .run_once(&validated, "trigger", payload, "capture", None)
+            .await
+            .err()
+            .expect("expected missing output");
+
+        assert!(matches!(err, ExecutionError::MissingOutput { .. }));
+    }
+
+    #[tokio::test]
+    async fn switch_selector_pointer_missing_fails_source_node() {
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn("tests::trigger", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+        registry
+            .register_fn("tests::route", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+        registry
+            .register_fn("tests::branch", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+        registry
+            .register_fn("tests::capture", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+
+        let mut builder =
+            FlowBuilder::new("switch_ptr_missing", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let route = builder
+            .add_node(
+                "route",
+                &NodeSpec::inline(
+                    "tests::route",
+                    "Route",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let a = builder
+            .add_node(
+                "a",
+                &NodeSpec::inline(
+                    "tests::branch",
+                    "A",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let b = builder
+            .add_node(
+                "b",
+                &NodeSpec::inline(
+                    "tests::branch",
+                    "B",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let capture = builder
+            .add_node(
+                "capture",
+                &NodeSpec::inline(
+                    "tests::capture",
+                    "Capture",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+
+        builder.connect(&trigger, &route);
+        builder.connect(&route, &a);
+        builder.connect(&route, &b);
+        builder.connect(&a, &capture);
+        builder.connect(&b, &capture);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "switch:route:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::Switch,
+            targets: vec!["route".into(), "a".into(), "b".into()],
+            config: json!({
+                "v": 1,
+                "source": "route",
+                "selector_pointer": "/type",
+                "cases": { "a": "a", "b": "b" },
+            }),
+        });
+
+        let validated = validate(&flow).expect("flow should validate");
+        let executor = FlowExecutor::new(Arc::new(registry));
+
+        let payload = json!({"value": 123});
+        let err = executor
+            .run_once(&validated, "trigger", payload, "capture", None)
+            .await
+            .err()
+            .expect("expected error");
+
+        assert!(matches!(err, ExecutionError::NodeFailed { alias, .. } if alias == "route"));
+    }
+
+    #[tokio::test]
+    async fn switch_selector_pointer_wrong_type_fails_source_node() {
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn("tests::trigger", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+        registry
+            .register_fn("tests::route", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+        registry
+            .register_fn("tests::branch", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+        registry
+            .register_fn("tests::capture", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+
+        let mut builder =
+            FlowBuilder::new("switch_ptr_wrong_type", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let route = builder
+            .add_node(
+                "route",
+                &NodeSpec::inline(
+                    "tests::route",
+                    "Route",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let a = builder
+            .add_node(
+                "a",
+                &NodeSpec::inline(
+                    "tests::branch",
+                    "A",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let b = builder
+            .add_node(
+                "b",
+                &NodeSpec::inline(
+                    "tests::branch",
+                    "B",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let capture = builder
+            .add_node(
+                "capture",
+                &NodeSpec::inline(
+                    "tests::capture",
+                    "Capture",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+
+        builder.connect(&trigger, &route);
+        builder.connect(&route, &a);
+        builder.connect(&route, &b);
+        builder.connect(&a, &capture);
+        builder.connect(&b, &capture);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "switch:route:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::Switch,
+            targets: vec!["route".into(), "a".into(), "b".into()],
+            config: json!({
+                "v": 1,
+                "source": "route",
+                "selector_pointer": "/type",
+                "cases": { "a": "a", "b": "b" },
+            }),
+        });
+
+        let validated = validate(&flow).expect("flow should validate");
+        let executor = FlowExecutor::new(Arc::new(registry));
+
+        let payload = json!({"type": true, "value": 123});
+        let err = executor
+            .run_once(&validated, "trigger", payload, "capture", None)
+            .await
+            .err()
+            .expect("expected error");
+
+        assert!(matches!(err, ExecutionError::NodeFailed { alias, .. } if alias == "route"));
+    }
+
+    #[tokio::test]
+    async fn switch_does_not_gate_edges_outside_targets() {
+        let branch_a_count = Arc::new(AtomicUsize::new(0));
+        let branch_b_count = Arc::new(AtomicUsize::new(0));
+        let log_count = Arc::new(AtomicUsize::new(0));
+
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn("tests::trigger", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+        registry
+            .register_fn("tests::route", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+
+        {
+            let branch_a_count = Arc::clone(&branch_a_count);
+            registry
+                .register_fn("tests::branch_a", move |val: JsonValue| {
+                    let branch_a_count = Arc::clone(&branch_a_count);
+                    async move {
+                        branch_a_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Ok(val)
+                    }
+                })
+                .unwrap();
+        }
+
+        {
+            let branch_b_count = Arc::clone(&branch_b_count);
+            registry
+                .register_fn("tests::branch_b", move |val: JsonValue| {
+                    let branch_b_count = Arc::clone(&branch_b_count);
+                    async move {
+                        branch_b_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Ok(val)
+                    }
+                })
+                .unwrap();
+        }
+
+        {
+            let log_count = Arc::clone(&log_count);
+            registry
+                .register_fn("tests::log", move |val: JsonValue| {
+                    let log_count = Arc::clone(&log_count);
+                    async move {
+                        log_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Ok(val)
+                    }
+                })
+                .unwrap();
+        }
+
+        registry
+            .register_fn("tests::capture", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+
+        let mut builder =
+            FlowBuilder::new("switch_extra_edge", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let route = builder
+            .add_node(
+                "route",
+                &NodeSpec::inline(
+                    "tests::route",
+                    "Route",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let a = builder
+            .add_node(
+                "a",
+                &NodeSpec::inline(
+                    "tests::branch_a",
+                    "A",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let b = builder
+            .add_node(
+                "b",
+                &NodeSpec::inline(
+                    "tests::branch_b",
+                    "B",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let log = builder
+            .add_node(
+                "log",
+                &NodeSpec::inline(
+                    "tests::log",
+                    "Log",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let capture = builder
+            .add_node(
+                "capture",
+                &NodeSpec::inline(
+                    "tests::capture",
+                    "Capture",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+
+        builder.connect(&trigger, &route);
+        builder.connect(&route, &a);
+        builder.connect(&route, &b);
+        builder.connect(&route, &log);
+        builder.connect(&a, &capture);
+        builder.connect(&b, &capture);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "switch:route:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::Switch,
+            targets: vec!["route".into(), "a".into(), "b".into()],
+            config: json!({
+                "v": 1,
+                "source": "route",
+                "selector_pointer": "/type",
+                "cases": { "a": "a", "b": "b" },
+            }),
+        });
+
+        let validated = validate(&flow).expect("flow should validate");
+        let executor = FlowExecutor::new(Arc::new(registry));
+
+        let payload = json!({"type": "a", "value": 123});
+        let mut instance = executor.instantiate(&validated, "capture").unwrap();
+        instance
+            .send("trigger", payload.clone())
+            .await
+            .expect("send");
+
+        match instance.next().await {
+            Some(Ok(CaptureResult::Value(value))) => assert_eq!(value, payload),
+            _ => panic!("unexpected capture result"),
+        }
+
+        timeout(Duration::from_secs(1), async {
+            while log_count.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("log node should execute");
+
+        instance.shutdown().await.unwrap();
+
+        assert_eq!(branch_a_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(branch_b_count.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(log_count.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

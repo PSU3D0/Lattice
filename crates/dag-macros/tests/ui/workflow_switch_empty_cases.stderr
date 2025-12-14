@@ -1,0 +1,5 @@
+error: switch! requires at least one case
+  --> tests/ui/workflow_switch_empty_cases.rs:34:5
+   |
+34 |     switch!(
+   |     ^^^^^^
