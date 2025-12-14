@@ -1,0 +1,5 @@
+error: [DAG206] timeout! references missing edge `trigger` -> `sink`
+  --> tests/ui/workflow_timeout_missing_edge.rs:35:5
+   |
+35 |     timeout!(trigger -> sink, ms = 250);
+   |     ^^^^^^^

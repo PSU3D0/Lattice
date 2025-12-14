@@ -35,6 +35,7 @@ pub fn validate(flow: &FlowIR) -> Result<ValidatedIR, Vec<Diagnostic>> {
     check_effect_conflicts(flow, &mut diagnostics);
     check_determinism_conflicts(flow, &mut diagnostics);
     check_exactly_once_requirements(flow, &mut diagnostics);
+    check_edge_timeout_requirements(flow, &mut diagnostics);
     check_spill_requirements(flow, &mut diagnostics);
 
     if diagnostics.is_empty() {
@@ -282,6 +283,20 @@ fn check_determinism_conflicts(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>)
     }
 }
 
+fn check_edge_timeout_requirements(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    for edge in &flow.edges {
+        if edge.timeout_ms == Some(0) {
+            diagnostics.push(diagnostic(
+                "CTRL101",
+                format!(
+                    "edge `{}` -> `{}` configures `timeout_ms = 0`; timeout budgets must be positive",
+                    edge.from, edge.to
+                ),
+            ));
+        }
+    }
+}
+
 fn check_spill_requirements(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
     let has_blob_hint = flow.nodes.iter().any(|node| {
         node.effect_hints
@@ -477,6 +492,17 @@ mod tests {
 
         let diagnostics = validate(&flow).expect_err("expected validation errors");
         assert!(diagnostics.iter().any(|d| d.code.code == "EXACT003"));
+    }
+
+    #[test]
+    fn edge_timeout_requires_positive_budget() {
+        let mut flow = build_sample_flow();
+        if let Some(edge) = flow.edges.first_mut() {
+            edge.timeout_ms = Some(0);
+        }
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL101"));
     }
 
     #[test]

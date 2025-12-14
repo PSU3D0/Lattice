@@ -196,6 +196,12 @@ pub static DIAGNOSTIC_CODES: Lazy<Vec<DiagnosticCode>> = Lazy::new(|| {
             summary: "Control-flow surface hint recommended for branching or loop",
         },
         DiagnosticCode {
+            code: "CTRL101",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Edge timeout budget must be positive",
+        },
+        DiagnosticCode {
             code: "CTRL901",
             subsystem: "runtime",
             default_severity: Severity::Error,

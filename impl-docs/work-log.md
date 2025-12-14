@@ -319,3 +319,16 @@ Learnings
 - Preflight should derive requirements from `effectHints[]` only (not `determinismHints[]`) to avoid nondeterminism-only domains like clock/RNG.
 - Treat unknown `resource::*` effect hints as missing (fail-fast) so new domains cannot silently ship without bindings.
 - Host-level preflight can run per-request for correctness; hosts MAY also preflight once at startup to fail before serving traffic.
+
+## 2025-12-14 — Edge timeout macro primitive (Epic 01.3)
+
+- Extended `workflow!` to support `timeout!(from -> to, ms = <int>)` and emit `EdgeIR.timeout_ms`.
+- Added `dag-core::FlowBuilder::set_edge_timeout_ms` so macro expansion can mutate existing edges.
+- Added validation gate: `kernel-plan` rejects `timeout_ms = 0` with diagnostic `CTRL101`.
+- Added tests:
+  - `dag-macros`: compile-fail UI coverage for invalid `timeout!` usage + unit test verifying `timeout_ms` emission.
+  - `kernel-plan`: `edge_timeout_requires_positive_budget` asserts `CTRL101`.
+- Commands exercised:
+  - `cargo test -p dag-macros`
+  - `cargo test -p kernel-plan`
+  - `cargo test --workspace`

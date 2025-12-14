@@ -1,0 +1,5 @@
+error: timeout! requires `ms = <integer>`
+  --> tests/ui/workflow_timeout_invalid_key.rs:36:31
+   |
+36 |     timeout!(trigger -> sink, secs = 1);
+   |                               ^^^^

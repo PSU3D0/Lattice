@@ -8,8 +8,8 @@ use std::collections::HashSet;
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::{
-    Attribute, Expr, ExprLit, Ident, ItemEnum, ItemFn, Lit, LitStr, Macro, Meta, MetaNameValue,
-    Path, Result, Token, parse_macro_input, parse_quote, spanned::Spanned,
+    Attribute, Expr, ExprLit, Ident, ItemEnum, ItemFn, Lit, LitInt, LitStr, Macro, Meta,
+    MetaNameValue, Path, Result, Token, parse_macro_input, parse_quote, spanned::Spanned,
 };
 
 /// Attribute macro for defining workflow nodes.
@@ -899,6 +899,7 @@ struct WorkflowInput {
     summary: Option<LitStr>,
     bindings: Vec<Binding>,
     connects: Vec<ConnectEntry>,
+    timeouts: Vec<TimeoutEntry>,
 }
 
 struct Binding {
@@ -911,9 +912,22 @@ struct ConnectEntry {
     to: Ident,
 }
 
+struct TimeoutEntry {
+    from: Ident,
+    to: Ident,
+    ms: u64,
+    span: Span,
+}
+
 struct ConnectArgs {
     from: Ident,
     to: Ident,
+}
+
+struct TimeoutArgs {
+    from: Ident,
+    to: Ident,
+    ms: u64,
 }
 
 impl Parse for ConnectArgs {
@@ -931,6 +945,37 @@ impl Parse for ConnectArgs {
     }
 }
 
+impl Parse for TimeoutArgs {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let from: Ident = input.parse()?;
+        input.parse::<Token![->]>()?;
+        let to: Ident = input.parse()?;
+
+        input.parse::<Token![,]>()?;
+        let key: Ident = input.parse()?;
+        if key != "ms" {
+            return Err(syn::Error::new(
+                key.span(),
+                "timeout! requires `ms = <integer>`",
+            ));
+        }
+        input.parse::<Token![=]>()?;
+        let ms_lit: LitInt = input.parse()?;
+        let ms = ms_lit.base10_parse::<u64>().map_err(|err| {
+            syn::Error::new(ms_lit.span(), format!("invalid timeout ms literal: {err}"))
+        })?;
+
+        if !input.is_empty() {
+            return Err(syn::Error::new(
+                input.span(),
+                "timeout! supports only `from -> to, ms = <integer>` syntax",
+            ));
+        }
+
+        Ok(Self { from, to, ms })
+    }
+}
+
 impl Parse for WorkflowInput {
     fn parse(input: ParseStream) -> Result<Self> {
         let mut name = None;
@@ -939,6 +984,7 @@ impl Parse for WorkflowInput {
         let mut summary = None;
         let mut bindings = Vec::new();
         let mut connects = Vec::new();
+        let mut timeouts = Vec::new();
 
         while !input.is_empty() {
             let key: Ident = input.parse()?;
@@ -1009,25 +1055,48 @@ impl Parse for WorkflowInput {
             }
 
             let mac: Macro = input.parse()?;
-            if !mac.path.is_ident("connect") {
-                return Err(syn::Error::new(
-                    mac.span(),
-                    "workflow! body currently supports only `let` bindings and `connect!` statements",
-                ));
+
+            if mac.path.is_ident("connect") {
+                let args = syn::parse2::<ConnectArgs>(mac.tokens)?;
+                if input.peek(Token![;]) {
+                    input.parse::<Token![;]>()?;
+                } else {
+                    return Err(syn::Error::new(
+                        input.span(),
+                        "expected `;` after connect! statement",
+                    ));
+                }
+                connects.push(ConnectEntry {
+                    from: args.from,
+                    to: args.to,
+                });
+                continue;
             }
-            let args = syn::parse2::<ConnectArgs>(mac.tokens)?;
-            if input.peek(Token![;]) {
-                input.parse::<Token![;]>()?;
-            } else {
-                return Err(syn::Error::new(
-                    input.span(),
-                    "expected `;` after connect! statement",
-                ));
+
+            if mac.path.is_ident("timeout") {
+                let span = mac.span();
+                let args = syn::parse2::<TimeoutArgs>(mac.tokens)?;
+                if input.peek(Token![;]) {
+                    input.parse::<Token![;]>()?;
+                } else {
+                    return Err(syn::Error::new(
+                        input.span(),
+                        "expected `;` after timeout! statement",
+                    ));
+                }
+                timeouts.push(TimeoutEntry {
+                    from: args.from,
+                    to: args.to,
+                    ms: args.ms,
+                    span,
+                });
+                continue;
             }
-            connects.push(ConnectEntry {
-                from: args.from,
-                to: args.to,
-            });
+
+            return Err(syn::Error::new(
+                mac.span(),
+                "workflow! body currently supports only `let` bindings, `connect!`, and `timeout!` statements",
+            ));
         }
 
         Ok(WorkflowInput {
@@ -1042,6 +1111,7 @@ impl Parse for WorkflowInput {
             summary,
             bindings,
             connects,
+            timeouts,
         })
     }
 }
@@ -1089,6 +1159,44 @@ impl WorkflowInput {
             }
         }
 
+        let mut connected_edges = HashSet::new();
+        for connect in &self.connects {
+            connected_edges.insert((connect.from.to_string(), connect.to.to_string()));
+        }
+
+        let mut timeout_edges = HashSet::new();
+        for timeout in &self.timeouts {
+            let from = timeout.from.to_string();
+            let to = timeout.to.to_string();
+
+            if !alias_set.contains(&from) {
+                return Err(syn::Error::new(
+                    timeout.from.span(),
+                    format!("[DAG202] unknown node alias `{}`", timeout.from),
+                ));
+            }
+            if !alias_set.contains(&to) {
+                return Err(syn::Error::new(
+                    timeout.to.span(),
+                    format!("[DAG202] unknown node alias `{}`", timeout.to),
+                ));
+            }
+
+            if !connected_edges.contains(&(from.clone(), to.clone())) {
+                return Err(syn::Error::new(
+                    timeout.span,
+                    format!("[DAG206] timeout! references missing edge `{from}` -> `{to}`"),
+                ));
+            }
+
+            if !timeout_edges.insert((from.clone(), to.clone())) {
+                return Err(syn::Error::new(
+                    timeout.span,
+                    format!("[DAG207] duplicate timeout! for edge `{from}` -> `{to}`"),
+                ));
+            }
+        }
+
         let summary_stmt = if let Some(summary) = &self.summary {
             quote!(builder.summary(Some(#summary));)
         } else {
@@ -1118,6 +1226,17 @@ impl WorkflowInput {
             }
         });
 
+        let timeout_statements = self.timeouts.iter().map(|timeout| {
+            let from = &timeout.from;
+            let to = &timeout.to;
+            let ms = timeout.ms;
+            quote! {
+                builder
+                    .set_edge_timeout_ms(&#from, &#to, #ms)
+                    .expect("timeout! references existing edge");
+            }
+        });
+
         Ok(quote! {
             pub fn #fn_name() -> ::dag_core::FlowIR {
                 let version = ::dag_core::prelude::Version::parse(#version_literal)
@@ -1131,6 +1250,7 @@ impl WorkflowInput {
                 #summary_stmt
                 #(#binding_statements)*
                 #(#connect_statements)*
+                #(#timeout_statements)*
 
                 builder.build()
             }

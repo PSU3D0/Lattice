@@ -46,6 +46,7 @@ Field: `EdgeIR.timeout_ms`.
 
 Semantics:
 - Optional budget for the edge hop.
+- Must be positive when present (`CTRL101`).
 - Hosts and/or executor may enforce it.
 
 ### If (ControlSurfaceKind::If)

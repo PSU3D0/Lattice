@@ -12,6 +12,9 @@ pub enum FlowBuilderError {
     /// Attempted to add a node with a duplicate alias.
     #[error("node alias `{0}` already exists in workflow")]
     DuplicateNode(String),
+    /// Attempted to mutate an edge that does not exist.
+    #[error("edge `{from}` -> `{to}` does not exist in workflow")]
+    UnknownEdge { from: String, to: String },
 }
 
 /// Handle referencing a node added to the builder.
@@ -134,6 +137,30 @@ impl FlowBuilder {
         EdgeHandle {
             from: from.alias.clone(),
             to: to.alias.clone(),
+        }
+    }
+
+    /// Update the timeout budget for an existing edge.
+    pub fn set_edge_timeout_ms(
+        &mut self,
+        from: &NodeHandle,
+        to: &NodeHandle,
+        timeout_ms: u64,
+    ) -> Result<(), FlowBuilderError> {
+        let mut updated = false;
+        for edge in &mut self.flow.edges {
+            if edge.from == from.alias && edge.to == to.alias {
+                edge.timeout_ms = Some(timeout_ms);
+                updated = true;
+            }
+        }
+        if updated {
+            Ok(())
+        } else {
+            Err(FlowBuilderError::UnknownEdge {
+                from: from.alias.clone(),
+                to: to.alias.clone(),
+            })
         }
     }
 
