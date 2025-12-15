@@ -727,10 +727,13 @@ impl RoutingTable {
                     let routing = parse_if_surface(flow, surface)?;
                     controls.insert(source, RoutingControl::If(routing));
                 }
+                dag_core::ControlSurfaceKind::Partition => {
+                    continue;
+                }
                 _ => {
                     return Err(ExecutionError::UnsupportedControlSurface {
                         id: surface.id.clone(),
-                        kind: format!("{:?}", surface.kind),
+                        kind: surface.kind.as_str().to_string(),
                     });
                 }
             }
@@ -4239,10 +4242,74 @@ mod tests {
             .instantiate(&validated, "capture")
             .err()
             .expect("expected error");
-        assert!(matches!(
-            err,
-            ExecutionError::UnsupportedControlSurface { .. }
-        ));
+
+        match err {
+            ExecutionError::UnsupportedControlSurface { id, kind } => {
+                assert_eq!(id, "rate_limit:0");
+                assert_eq!(kind, "rate_limit");
+            }
+            other => panic!("expected UnsupportedControlSurface, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn partition_control_surface_is_metadata_only() {
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn("tests::trigger", |val: JsonValue| async move { Ok(val) })
+            .unwrap();
+
+        let mut builder =
+            FlowBuilder::new("partition_metadata", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let capture = builder
+            .add_node(
+                "capture",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Capture",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &capture);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "partition:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::Partition,
+            targets: vec![],
+            config: json!({
+                "v": 1,
+                "edge": { "from": "trigger", "to": "capture" },
+                "key": "customer_id"
+            }),
+        });
+
+        let validated = validate(&flow).expect("flow should validate");
+        let executor = FlowExecutor::new(Arc::new(registry));
+
+        let instance = executor
+            .instantiate(&validated, "capture")
+            .expect("partition surface should not prevent instantiation");
+        instance.shutdown().await.unwrap();
     }
 
     #[tokio::test]

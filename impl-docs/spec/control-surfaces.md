@@ -106,7 +106,8 @@ Structural requirements (implemented by validator/runtime):
 These are reserved shapes. In 0.1 they MAY be validated structurally.
 
 Runtime handling (0.1):
-- If a reserved surface is present and the selected host/runtime does not implement it for the active `profile`, execution MUST fail deterministically.
+- If a reserved *runtime-semantic* surface is present and the selected host/runtime does not implement it for the active `profile`, execution MUST fail deterministically.
+- Metadata-only reserved surfaces (e.g. `Partition`, where `EdgeIR.partition_key` is canonical) MUST NOT change runtime behavior in 0.1 and MAY be ignored.
 - Hosts SHOULD surface diagnostic code `CTRL901` and include the surface `id`/`kind` in error details when available.
 
 ### Error Handling (ControlSurfaceKind::ErrorHandler)

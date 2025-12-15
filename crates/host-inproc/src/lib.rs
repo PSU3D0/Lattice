@@ -258,8 +258,21 @@ impl HostRuntime {
             capture_alias,
             payload,
             deadline,
-            metadata,
+            mut metadata,
         } = invocation.into_parts();
+
+        if !metadata.labels().contains_key("lf.run_id") {
+            metadata.insert_label("lf.run_id", uuid::Uuid::new_v4().to_string());
+        }
+        if !metadata.labels().contains_key("lf.flow_id") {
+            metadata.insert_label("lf.flow_id", self.ir.flow().id.0.clone());
+        }
+        if !metadata.labels().contains_key("lf.trigger_alias") {
+            metadata.insert_label("lf.trigger_alias", trigger_alias.clone());
+        }
+        if !metadata.labels().contains_key("lf.capture_alias") {
+            metadata.insert_label("lf.capture_alias", capture_alias.clone());
+        }
 
         for plugin in self.plugins.iter() {
             plugin.before_execute(&metadata);
@@ -374,6 +387,151 @@ mod tests {
             }
             ExecutionResult::Stream(_) => panic!("expected value result"),
         }
+    }
+
+    #[tokio::test]
+    async fn runtime_populates_lattice_metadata() {
+        let run_ids: StdArc<Mutex<Vec<String>>> = StdArc::new(Mutex::new(Vec::new()));
+        let flow_ids: StdArc<Mutex<Vec<String>>> = StdArc::new(Mutex::new(Vec::new()));
+        let trigger_aliases: StdArc<Mutex<Vec<String>>> = StdArc::new(Mutex::new(Vec::new()));
+        let capture_aliases: StdArc<Mutex<Vec<String>>> = StdArc::new(Mutex::new(Vec::new()));
+
+        struct RecordingPlugin {
+            run_ids: StdArc<Mutex<Vec<String>>>,
+            flow_ids: StdArc<Mutex<Vec<String>>>,
+            trigger_aliases: StdArc<Mutex<Vec<String>>>,
+            capture_aliases: StdArc<Mutex<Vec<String>>>,
+        }
+
+        impl EnvironmentPlugin for RecordingPlugin {
+            fn before_execute(&self, metadata: &InvocationMetadata) {
+                self.run_ids.lock().unwrap().push(
+                    metadata
+                        .labels()
+                        .get("lf.run_id")
+                        .cloned()
+                        .unwrap_or_default(),
+                );
+                self.flow_ids.lock().unwrap().push(
+                    metadata
+                        .labels()
+                        .get("lf.flow_id")
+                        .cloned()
+                        .unwrap_or_default(),
+                );
+                self.trigger_aliases.lock().unwrap().push(
+                    metadata
+                        .labels()
+                        .get("lf.trigger_alias")
+                        .cloned()
+                        .unwrap_or_default(),
+                );
+                self.capture_aliases.lock().unwrap().push(
+                    metadata
+                        .labels()
+                        .get("lf.capture_alias")
+                        .cloned()
+                        .unwrap_or_default(),
+                );
+            }
+        }
+
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn(
+                "tests::trigger",
+                |value: JsonValue| async move { Ok(value) },
+            )
+            .unwrap();
+        registry
+            .register_fn(
+                "tests::capture",
+                |value: JsonValue| async move { Ok(value) },
+            )
+            .unwrap();
+
+        let mut builder = FlowBuilder::new("runtime_meta", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let capture = builder
+            .add_node(
+                "capture",
+                &NodeSpec::inline(
+                    "tests::capture",
+                    "Capture",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &capture);
+        let ir = Arc::new(validate(&builder.build()).expect("flow validates"));
+        let expected_flow_id = ir.flow().id.0.clone();
+
+        let plugin = RecordingPlugin {
+            run_ids: StdArc::clone(&run_ids),
+            flow_ids: StdArc::clone(&flow_ids),
+            trigger_aliases: StdArc::clone(&trigger_aliases),
+            capture_aliases: StdArc::clone(&capture_aliases),
+        };
+
+        let runtime = HostRuntime::with_plugins(
+            FlowExecutor::new(Arc::new(registry)),
+            ir,
+            vec![Arc::new(plugin)],
+        );
+
+        runtime
+            .execute(Invocation::new(
+                "trigger",
+                "capture",
+                serde_json::json!({"ok": true}),
+            ))
+            .await
+            .expect("exec ok");
+        runtime
+            .execute(Invocation::new(
+                "trigger",
+                "capture",
+                serde_json::json!({"ok": true}),
+            ))
+            .await
+            .expect("exec ok");
+
+        let run_ids = run_ids.lock().unwrap().clone();
+        assert_eq!(run_ids.len(), 2);
+        assert!(!run_ids[0].is_empty());
+        assert_ne!(run_ids[0], run_ids[1]);
+
+        let flow_ids = flow_ids.lock().unwrap().clone();
+        assert_eq!(flow_ids, vec![expected_flow_id.clone(), expected_flow_id]);
+
+        let trigger_aliases = trigger_aliases.lock().unwrap().clone();
+        assert_eq!(
+            trigger_aliases,
+            vec!["trigger".to_string(), "trigger".to_string()]
+        );
+
+        let capture_aliases = capture_aliases.lock().unwrap().clone();
+        assert_eq!(
+            capture_aliases,
+            vec!["capture".to_string(), "capture".to_string()]
+        );
     }
 
     #[tokio::test]

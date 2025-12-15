@@ -389,3 +389,20 @@ Learnings
   - `cargo fmt --all`
   - `cargo test -p dag-macros -p kernel-plan -p kernel-exec -p host-web-axum`
   - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+
+## 2025-12-15 — Reserved surfaces: structural validation + deterministic reject (Epic 01.4)
+
+- Clarified reserved-surface runtime handling in `impl-docs/spec/control-surfaces.md`: reserved runtime-semantic surfaces must fail deterministically when unimplemented (`CTRL901`), while metadata-only surfaces (Partition) may be ignored in 0.1.
+- Added validator enforcement for reserved surface shapes in `kernel-plan`:
+  - `CTRL130`: malformed config (non-object, missing keys, invalid `v`, invalid pointer/strategy).
+  - `CTRL131`: unknown node alias referenced by reserved surface.
+  - `CTRL132`: missing edge referenced by reserved surface (e.g. `partition.edge`, `for_each` source->body).
+- Updated runtime behavior in `kernel-exec`: `Partition` surfaces are treated as metadata-only and no longer cause instantiation failure; other unsupported surfaces still fail deterministically (`CTRL901`).
+- Added tests:
+  - `kernel-plan`: reserved-surface structural checks for for-each/partition/rate_limit.
+  - `kernel-exec`: partition surface does not block instantiation; unsupported surfaces still do.
+- Updated diagnostics registry + docs (`dag-core`, `impl-docs/error-codes.md`, `impl-docs/error-taxonomy.md`) with new `CTRL13*` validation codes.
+- Commands exercised:
+  - `cargo fmt --all`
+  - `cargo test --workspace`
+  - `cargo clippy --workspace --all-targets --all-features -- -D warnings`

@@ -315,6 +315,8 @@ Runtime should emit `TIME015` when execution exceeds configured timeout; mitigat
 ## 7. Control Surfaces & Lints
 - **Missing hints** — `CTRL001` (RFC §4.9). When policies require explicit control-surface macros (`switch!`, `for_each!`), raw branching/loops generate warnings. Code pattern: using bare `match`/`for` without `#[flow::switch]`/`#[flow::for_each]` wrappers in lint-enforced contexts.
 - **Invalid routing config** — `CTRL110`/`CTRL111`/`CTRL112` (switch) and `CTRL120`/`CTRL121`/`CTRL122` (if). Malformed routing surfaces, missing required `source -> target` edges, or multiple routing surfaces for the same `source` alias.
+- **Invalid reserved-surface config** — `CTRL130`/`CTRL131`/`CTRL132`. Reserved control surfaces (e.g. rate limits, for-each, windowing) may be validated structurally; errors include malformed config, unknown aliases, and missing edges.
+- **Unsupported reserved-surface at runtime** — `CTRL901`. A reserved runtime-semantic control surface is present but not implemented by the active host/profile; execution must fail deterministically.
 - **Human-in-the-loop misuse** — `DAG300` (RFC §4.6). Attaching `hitl!` to invalid scope.
 
 ### Example: Missing control hint (`CTRL001`)

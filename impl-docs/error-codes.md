@@ -48,6 +48,9 @@ ensure the registry stays in sync with the implementation.
 | CTRL120   | Validation     | Error   | If control surface config is invalid. |
 | CTRL121   | Validation     | Error   | If control surface references a missing edge. |
 | CTRL122   | Validation     | Error   | Multiple if control surfaces reference the same source node. |
+| CTRL130   | Validation     | Error   | Reserved control surface config is invalid. |
+| CTRL131   | Validation     | Error   | Reserved control surface references an unknown node alias. |
+| CTRL132   | Validation     | Error   | Reserved control surface references a missing edge. |
 | CTRL901   | Runtime        | Error   | Reserved control surface not supported by this host/profile. |
 | IDEM020   | Validation     | Error   | Effectful sink missing partition key and idempotency key. |
 | IDEM025   | Validation     | Error   | Idempotency key references non-deterministic fields. |

@@ -40,6 +40,7 @@ pub fn validate(flow: &FlowIR) -> Result<ValidatedIR, Vec<Diagnostic>> {
     check_spill_requirements(flow, &mut diagnostics);
     check_if_control_surfaces(flow, &mut diagnostics);
     check_switch_control_surfaces(flow, &mut diagnostics);
+    check_reserved_control_surfaces(flow, &mut diagnostics);
 
     if diagnostics.is_empty() {
         Ok(ValidatedIR { flow: flow.clone() })
@@ -508,6 +509,541 @@ fn check_if_control_surfaces(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
                     surface.id
                 ),
             ));
+        }
+    }
+}
+
+fn check_reserved_control_surfaces(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    let node_aliases: HashSet<&str> = flow.nodes.iter().map(|n| n.alias.as_str()).collect();
+
+    for surface in &flow.control_surfaces {
+        match surface.kind {
+            dag_core::ControlSurfaceKind::ForEach => {
+                let config = match surface.config.as_object() {
+                    Some(config) => config,
+                    None => {
+                        diagnostics.push(diagnostic(
+                            "CTRL130",
+                            format!(
+                                "control surface `{}` (for_each) config must be an object",
+                                surface.id
+                            ),
+                        ));
+                        continue;
+                    }
+                };
+
+                let v_ok = config
+                    .get("v")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v == 1)
+                    .unwrap_or(false);
+                if !v_ok {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (for_each) requires config.v = 1",
+                            surface.id
+                        ),
+                    ));
+                    continue;
+                }
+
+                let Some(source) = config.get("source").and_then(|v| v.as_str()) else {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (for_each) requires config.source string",
+                            surface.id
+                        ),
+                    ));
+                    continue;
+                };
+
+                let Some(items_pointer) = config.get("items_pointer").and_then(|v| v.as_str())
+                else {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (for_each) requires config.items_pointer string",
+                            surface.id
+                        ),
+                    ));
+                    continue;
+                };
+
+                let Some(body_entry) = config.get("body_entry").and_then(|v| v.as_str()) else {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (for_each) requires config.body_entry string",
+                            surface.id
+                        ),
+                    ));
+                    continue;
+                };
+
+                for alias in [source, body_entry] {
+                    if !node_aliases.contains(alias) {
+                        diagnostics.push(diagnostic(
+                            "CTRL131",
+                            format!(
+                                "control surface `{}` (for_each) references unknown node `{alias}`",
+                                surface.id
+                            ),
+                        ));
+                    }
+                }
+
+                if !(items_pointer.is_empty() || items_pointer.starts_with('/')) {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (for_each) has invalid items_pointer `{items_pointer}`",
+                            surface.id
+                        ),
+                    ));
+                }
+
+                if node_aliases.contains(source)
+                    && node_aliases.contains(body_entry)
+                    && !flow
+                        .edges
+                        .iter()
+                        .any(|edge| edge.from == source && edge.to == body_entry)
+                {
+                    diagnostics.push(diagnostic(
+                        "CTRL132",
+                        format!(
+                            "control surface `{}` (for_each) references `{source}` -> `{body_entry}` but the edge is missing",
+                            surface.id
+                        ),
+                    ));
+                }
+            }
+            dag_core::ControlSurfaceKind::Partition => {
+                let config = match surface.config.as_object() {
+                    Some(config) => config,
+                    None => {
+                        diagnostics.push(diagnostic(
+                            "CTRL130",
+                            format!(
+                                "control surface `{}` (partition) config must be an object",
+                                surface.id
+                            ),
+                        ));
+                        continue;
+                    }
+                };
+
+                let v_ok = config
+                    .get("v")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v == 1)
+                    .unwrap_or(false);
+                if !v_ok {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (partition) requires config.v = 1",
+                            surface.id
+                        ),
+                    ));
+                    continue;
+                }
+
+                let Some(edge_obj) = config.get("edge").and_then(|v| v.as_object()) else {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (partition) requires config.edge object",
+                            surface.id
+                        ),
+                    ));
+                    continue;
+                };
+
+                let Some(from) = edge_obj.get("from").and_then(|v| v.as_str()) else {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (partition) requires config.edge.from string",
+                            surface.id
+                        ),
+                    ));
+                    continue;
+                };
+
+                let Some(to) = edge_obj.get("to").and_then(|v| v.as_str()) else {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (partition) requires config.edge.to string",
+                            surface.id
+                        ),
+                    ));
+                    continue;
+                };
+
+                let Some(key) = config.get("key").and_then(|v| v.as_str()) else {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (partition) requires config.key string",
+                            surface.id
+                        ),
+                    ));
+                    continue;
+                };
+
+                if key.is_empty() {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (partition) requires non-empty config.key",
+                            surface.id
+                        ),
+                    ));
+                }
+
+                for alias in [from, to] {
+                    if !node_aliases.contains(alias) {
+                        diagnostics.push(diagnostic(
+                            "CTRL131",
+                            format!(
+                                "control surface `{}` (partition) references unknown node `{alias}`",
+                                surface.id
+                            ),
+                        ));
+                    }
+                }
+
+                if node_aliases.contains(from)
+                    && node_aliases.contains(to)
+                    && !flow
+                        .edges
+                        .iter()
+                        .any(|edge| edge.from == from && edge.to == to)
+                {
+                    diagnostics.push(diagnostic(
+                        "CTRL132",
+                        format!(
+                            "control surface `{}` (partition) references `{from}` -> `{to}` but the edge is missing",
+                            surface.id
+                        ),
+                    ));
+                }
+            }
+            dag_core::ControlSurfaceKind::RateLimit => {
+                let config = match surface.config.as_object() {
+                    Some(config) => config,
+                    None => {
+                        diagnostics.push(diagnostic(
+                            "CTRL130",
+                            format!(
+                                "control surface `{}` (rate_limit) config must be an object",
+                                surface.id
+                            ),
+                        ));
+                        continue;
+                    }
+                };
+
+                let v_ok = config
+                    .get("v")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v == 1)
+                    .unwrap_or(false);
+                if !v_ok {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (rate_limit) requires config.v = 1",
+                            surface.id
+                        ),
+                    ));
+                    continue;
+                }
+
+                let Some(target) = config.get("target").and_then(|v| v.as_str()) else {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (rate_limit) requires config.target string",
+                            surface.id
+                        ),
+                    ));
+                    continue;
+                };
+
+                if !node_aliases.contains(target) {
+                    diagnostics.push(diagnostic(
+                        "CTRL131",
+                        format!(
+                            "control surface `{}` (rate_limit) references unknown node `{target}`",
+                            surface.id
+                        ),
+                    ));
+                }
+
+                let qps_ok = config
+                    .get("qps")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v > 0)
+                    .unwrap_or(false);
+                if !qps_ok {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (rate_limit) requires positive config.qps",
+                            surface.id
+                        ),
+                    ));
+                }
+
+                let burst_ok = config
+                    .get("burst")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v > 0)
+                    .unwrap_or(false);
+                if !burst_ok {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (rate_limit) requires positive config.burst",
+                            surface.id
+                        ),
+                    ));
+                }
+            }
+            dag_core::ControlSurfaceKind::ErrorHandler => {
+                let config = match surface.config.as_object() {
+                    Some(config) => config,
+                    None => {
+                        diagnostics.push(diagnostic(
+                            "CTRL130",
+                            format!(
+                                "control surface `{}` (error_handler) config must be an object",
+                                surface.id
+                            ),
+                        ));
+                        continue;
+                    }
+                };
+
+                let v_ok = config
+                    .get("v")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v == 1)
+                    .unwrap_or(false);
+                if !v_ok {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (error_handler) requires config.v = 1",
+                            surface.id
+                        ),
+                    ));
+                    continue;
+                }
+
+                let Some(scope) = config.get("scope").and_then(|v| v.as_object()) else {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (error_handler) requires config.scope object",
+                            surface.id
+                        ),
+                    ));
+                    continue;
+                };
+
+                let Some(nodes) = scope.get("nodes").and_then(|v| v.as_array()) else {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (error_handler) requires scope.nodes array",
+                            surface.id
+                        ),
+                    ));
+                    continue;
+                };
+
+                for node in nodes {
+                    let Some(alias) = node.as_str() else {
+                        diagnostics.push(diagnostic(
+                            "CTRL130",
+                            format!(
+                                "control surface `{}` (error_handler) scope.nodes must contain strings",
+                                surface.id
+                            ),
+                        ));
+                        continue;
+                    };
+
+                    if !node_aliases.contains(alias) {
+                        diagnostics.push(diagnostic(
+                            "CTRL131",
+                            format!(
+                                "control surface `{}` (error_handler) references unknown node `{alias}`",
+                                surface.id
+                            ),
+                        ));
+                    }
+                }
+
+                let Some(strategy) = config.get("strategy").and_then(|v| v.as_str()) else {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (error_handler) requires config.strategy string",
+                            surface.id
+                        ),
+                    ));
+                    continue;
+                };
+
+                if !matches!(strategy, "retry" | "fail" | "continue") {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (error_handler) has invalid strategy `{strategy}`",
+                            surface.id
+                        ),
+                    ));
+                }
+
+                if let Some(max_retries) = config.get("max_retries") {
+                    let ok = max_retries.as_u64().is_some();
+                    if !ok {
+                        diagnostics.push(diagnostic(
+                            "CTRL130",
+                            format!(
+                                "control surface `{}` (error_handler) requires numeric max_retries",
+                                surface.id
+                            ),
+                        ));
+                    }
+                }
+
+                if let Some(backoff_ms) = config.get("backoff_ms") {
+                    let ok = backoff_ms.as_u64().is_some();
+                    if !ok {
+                        diagnostics.push(diagnostic(
+                            "CTRL130",
+                            format!(
+                                "control surface `{}` (error_handler) requires numeric backoff_ms",
+                                surface.id
+                            ),
+                        ));
+                    }
+                }
+            }
+            dag_core::ControlSurfaceKind::Window => {
+                let config = match surface.config.as_object() {
+                    Some(config) => config,
+                    None => {
+                        diagnostics.push(diagnostic(
+                            "CTRL130",
+                            format!(
+                                "control surface `{}` (window) config must be an object",
+                                surface.id
+                            ),
+                        ));
+                        continue;
+                    }
+                };
+
+                let v_ok = config
+                    .get("v")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v == 1)
+                    .unwrap_or(false);
+                if !v_ok {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (window) requires config.v = 1",
+                            surface.id
+                        ),
+                    ));
+                    continue;
+                }
+
+                let Some(event_time_pointer) =
+                    config.get("event_time_pointer").and_then(|v| v.as_str())
+                else {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (window) requires config.event_time_pointer string",
+                            surface.id
+                        ),
+                    ));
+                    continue;
+                };
+
+                if !(event_time_pointer.is_empty() || event_time_pointer.starts_with('/')) {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (window) has invalid event_time_pointer `{event_time_pointer}`",
+                            surface.id
+                        ),
+                    ));
+                }
+
+                let size_ok = config
+                    .get("size_ms")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v > 0)
+                    .unwrap_or(false);
+                if !size_ok {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (window) requires positive config.size_ms",
+                            surface.id
+                        ),
+                    ));
+                }
+
+                let lateness_ok = config
+                    .get("allowed_lateness_ms")
+                    .and_then(|v| v.as_u64())
+                    .is_some();
+                if !lateness_ok {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (window) requires numeric config.allowed_lateness_ms",
+                            surface.id
+                        ),
+                    ));
+                }
+
+                let Some(watermark) = config.get("watermark").and_then(|v| v.as_str()) else {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (window) requires config.watermark string",
+                            surface.id
+                        ),
+                    ));
+                    continue;
+                };
+
+                if watermark.is_empty() {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (window) requires non-empty config.watermark",
+                            surface.id
+                        ),
+                    ));
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -1369,6 +1905,209 @@ mod tests {
 
         let diagnostics = validate(&flow).expect_err("expected validation errors");
         assert!(diagnostics.iter().any(|d| d.code.code == "CTRL120"));
+    }
+
+    #[test]
+    fn for_each_requires_edge_from_source_to_body_entry() {
+        let mut builder =
+            FlowBuilder::new("for_each_missing_edge", Version::new(1, 0, 0), Profile::Dev);
+        let node_spec = NodeSpec::inline(
+            "tests::node",
+            "Node",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+
+        let source = builder.add_node("source", &node_spec).unwrap();
+        let _body = builder.add_node("body", &node_spec).unwrap();
+        let capture = builder.add_node("capture", &node_spec).unwrap();
+        builder.connect(&source, &capture);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "for_each:source:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::ForEach,
+            targets: vec![],
+            config: serde_json::json!({
+                "v": 1,
+                "source": "source",
+                "items_pointer": "/items",
+                "body_entry": "body"
+            }),
+        });
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL132"));
+    }
+
+    #[test]
+    fn partition_requires_referenced_edge() {
+        let mut builder = FlowBuilder::new(
+            "partition_missing_edge",
+            Version::new(1, 0, 0),
+            Profile::Dev,
+        );
+        let node_spec = NodeSpec::inline(
+            "tests::node",
+            "Node",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+
+        let from = builder.add_node("from", &node_spec).unwrap();
+        let _to = builder.add_node("to", &node_spec).unwrap();
+        let capture = builder.add_node("capture", &node_spec).unwrap();
+        builder.connect(&from, &capture);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "partition:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::Partition,
+            targets: vec![],
+            config: serde_json::json!({
+                "v": 1,
+                "edge": { "from": "from", "to": "to" },
+                "key": "customer_id"
+            }),
+        });
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL132"));
+    }
+
+    #[test]
+    fn rate_limit_requires_positive_qps_and_burst() {
+        let mut flow = build_sample_flow();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "rate_limit:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::RateLimit,
+            targets: vec![],
+            config: serde_json::json!({
+                "v": 1,
+                "target": "producer",
+                "qps": 0,
+                "burst": 1
+            }),
+        });
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL130"));
+    }
+
+    #[test]
+    fn rate_limit_unknown_target_alias_rejected() {
+        let mut flow = build_sample_flow();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "rate_limit:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::RateLimit,
+            targets: vec![],
+            config: serde_json::json!({
+                "v": 1,
+                "target": "missing",
+                "qps": 1,
+                "burst": 1
+            }),
+        });
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL131"));
+    }
+
+    #[test]
+    fn for_each_rejects_invalid_items_pointer_format() {
+        let mut builder =
+            FlowBuilder::new("for_each_bad_pointer", Version::new(1, 0, 0), Profile::Dev);
+        let node_spec = NodeSpec::inline(
+            "tests::node",
+            "Node",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+
+        let source = builder.add_node("source", &node_spec).unwrap();
+        let body = builder.add_node("body", &node_spec).unwrap();
+        builder.connect(&source, &body);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "for_each:source:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::ForEach,
+            targets: vec![],
+            config: serde_json::json!({
+                "v": 1,
+                "source": "source",
+                "items_pointer": "items",
+                "body_entry": "body"
+            }),
+        });
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL130"));
+    }
+
+    #[test]
+    fn error_handler_rejects_invalid_strategy() {
+        let mut flow = build_sample_flow();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "on_error:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::ErrorHandler,
+            targets: vec![],
+            config: serde_json::json!({
+                "v": 1,
+                "scope": { "nodes": ["producer"] },
+                "strategy": "bogus"
+            }),
+        });
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL130"));
+    }
+
+    #[test]
+    fn error_handler_rejects_non_string_scope_nodes() {
+        let mut flow = build_sample_flow();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "on_error:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::ErrorHandler,
+            targets: vec![],
+            config: serde_json::json!({
+                "v": 1,
+                "scope": { "nodes": [1] },
+                "strategy": "retry"
+            }),
+        });
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL130"));
+    }
+
+    #[test]
+    fn window_rejects_non_positive_size_ms() {
+        let mut flow = build_sample_flow();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "window:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::Window,
+            targets: vec![],
+            config: serde_json::json!({
+                "v": 1,
+                "event_time_pointer": "/ts",
+                "size_ms": 0,
+                "allowed_lateness_ms": 1,
+                "watermark": "max(ts)"
+            }),
+        });
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL130"));
     }
 
     #[test]

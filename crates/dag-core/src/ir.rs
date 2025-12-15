@@ -413,6 +413,22 @@ pub enum ControlSurfaceKind {
     ErrorHandler,
 }
 
+impl ControlSurfaceKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Switch => "switch",
+            Self::If => "if",
+            Self::Loop => "loop",
+            Self::ForEach => "for_each",
+            Self::Window => "window",
+            Self::Partition => "partition",
+            Self::Timeout => "timeout",
+            Self::RateLimit => "rate_limit",
+            Self::ErrorHandler => "error_handler",
+        }
+    }
+}
+
 /// Checkpoint definition.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 pub struct CheckpointIR {

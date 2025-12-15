@@ -763,6 +763,63 @@ mod tests {
         (executor, Arc::new(validated))
     }
 
+    fn build_flow_with_unsupported_control_surface() -> (FlowExecutor, Arc<ValidatedIR>) {
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn(
+                "tests::trigger",
+                |value: JsonValue| async move { Ok(value) },
+            )
+            .unwrap();
+        registry
+            .register_fn("tests::sink", |value: JsonValue| async move { Ok(value) })
+            .unwrap();
+
+        let executor = FlowExecutor::new(Arc::new(registry));
+
+        let mut builder = FlowBuilder::new("web_host", Version::new(1, 0, 0), Profile::Web);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let sink = builder
+            .add_node(
+                "respond",
+                &NodeSpec::inline(
+                    "tests::sink",
+                    "Respond",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &sink);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "rate_limit:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::RateLimit,
+            targets: vec![],
+            config: json!({"v": 1, "target": "trigger", "qps": 1, "burst": 1}),
+        });
+
+        let validated = validate(&flow).expect("flow should validate");
+        (executor, Arc::new(validated))
+    }
+
     fn make_state(
         executor: FlowExecutor,
         ir: Arc<ValidatedIR>,
@@ -1006,6 +1063,85 @@ mod tests {
             .expect("body");
         let payload: JsonValue = serde_json::from_slice(&body).expect("json");
         assert_eq!(payload, json!({ "value": "ping" }));
+    }
+
+    #[tokio::test]
+    async fn unsupported_control_surface_maps_to_ctrl901_json() {
+        let (executor, ir) = build_flow_with_unsupported_control_surface();
+        let config = RouteConfig::new("/unsupported")
+            .with_method(Method::POST)
+            .with_trigger_alias("trigger")
+            .with_capture_alias("respond")
+            .with_deadline(Duration::from_millis(250));
+        let state = make_state(executor, ir, config);
+
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/unsupported")
+            .header("content-type", "application/json")
+            .body(Body::from(json!({ "value": "ping" }).to_string()))
+            .unwrap();
+
+        let response = super::dispatch_request(State(state), request).await;
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let payload: JsonValue = serde_json::from_slice(&body).expect("json");
+        assert_eq!(payload["code"], json!("CTRL901"));
+        assert_eq!(payload["details"]["id"], json!("rate_limit:0"));
+        assert_eq!(payload["details"]["kind"], json!("rate_limit"));
+    }
+
+    #[tokio::test]
+    async fn unsupported_control_surface_maps_to_ctrl901_sse() {
+        let (executor, ir) = build_flow_with_unsupported_control_surface();
+        let config = RouteConfig::new("/unsupported_sse")
+            .with_method(Method::GET)
+            .with_trigger_alias("trigger")
+            .with_capture_alias("respond")
+            .with_deadline(Duration::from_millis(250));
+        let state = make_state(executor, ir, config);
+
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri("/unsupported_sse")
+            .header(axum::http::header::ACCEPT, "text/event-stream")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = super::dispatch_request(State(state), request).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let content_type = response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .expect("content-type header present");
+        assert_eq!(content_type, "text/event-stream");
+
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let text = String::from_utf8(body.to_vec()).expect("utf-8");
+
+        let mut error_payload: Option<JsonValue> = None;
+        let mut saw_error_event = false;
+        for line in text.lines() {
+            if line.trim() == "event: error" {
+                saw_error_event = true;
+                continue;
+            }
+            if saw_error_event && line.starts_with("data:") {
+                let data = line.strip_prefix("data:").expect("data prefix").trim();
+                error_payload = Some(serde_json::from_str(data).expect("json payload"));
+                break;
+            }
+        }
+
+        let payload = error_payload.expect("error payload");
+        assert_eq!(payload["code"], json!("CTRL901"));
+        assert_eq!(payload["details"]["id"], json!("rate_limit:0"));
+        assert_eq!(payload["details"]["kind"], json!("rate_limit"));
     }
 
     #[tokio::test]

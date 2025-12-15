@@ -256,6 +256,24 @@ pub static DIAGNOSTIC_CODES: Lazy<Vec<DiagnosticCode>> = Lazy::new(|| {
             summary: "Multiple if control surfaces reference the same source node",
         },
         DiagnosticCode {
+            code: "CTRL130",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Reserved control surface config is invalid",
+        },
+        DiagnosticCode {
+            code: "CTRL131",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Reserved control surface references an unknown node alias",
+        },
+        DiagnosticCode {
+            code: "CTRL132",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Reserved control surface references a missing edge",
+        },
+        DiagnosticCode {
             code: "CTRL901",
             subsystem: "runtime",
             default_severity: Severity::Error,
