@@ -42,7 +42,7 @@ Superseded:
 - Monolithic plan: `impl-plan.md` (use `roadmap/` instead)
 
 Notes:
-- `schemas/examples/etl_logs.flow_ir.json` is a legacy/alternate IR shape; do not treat it as 0.1 contract until explicitly migrated.
+- `schemas/examples/etl_logs.flow_ir.json` is a representative example Flow IR fixture.
 
 ## Stable / Mostly-Append-Only
 

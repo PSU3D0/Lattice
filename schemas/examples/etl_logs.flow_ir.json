@@ -1,259 +1,136 @@
 {
-  "$schema": "../flow_ir.schema.json",
-  "id": "etl_logs",
-  "name": "ETL Logs",
+  "id": "02d0ded2-03f8-5d43-8d96-4831f3fa423e",
+  "name": "etl_logs",
   "version": "1.0.0",
-  "profile": "Queue",
-  "description": "Window S3 logs and write to warehouse with exactly-once semantics.",
+  "profile": "queue",
+  "summary": "Window log events and write to warehouse with exactly-once semantics.",
   "nodes": [
     {
-      "id": "s3_list",
-      "name": "S3List",
-      "kind": "Activity",
-      "in": {
-        "id": "unit",
-        "version": "1.0.0"
+      "id": "02d0ded2-03f8-5d43-8d96-4831f3fa423e::trigger",
+      "alias": "trigger",
+      "identifier": "example_etl::queue_trigger",
+      "name": "QueueTrigger",
+      "kind": "trigger",
+      "summary": "Ingress trigger for queued log batches",
+      "in_schema": {
+        "kind": "opaque"
       },
-      "out": {
-        "id": "object_ref",
-        "version": "1.0.0"
+      "out_schema": {
+        "kind": "named",
+        "name": "ObjectRef"
       },
-      "effects": "ReadOnly",
-      "determinism": "Stable",
-      "capabilities": [
-        {
-          "name": "blob.read",
-          "version": "1.0.0"
-        }
-      ]
+      "effects": "read_only",
+      "determinism": "strict",
+      "idempotency": {},
+      "determinismHints": [],
+      "effectHints": ["resource::queue::consume"]
     },
     {
-      "id": "parse",
-      "name": "Parse",
-      "kind": "Inline",
-      "in": {
-        "id": "object_bytes",
-        "version": "1.0.0"
+      "id": "02d0ded2-03f8-5d43-8d96-4831f3fa423e::parse",
+      "alias": "parse",
+      "identifier": "example_etl::parse_logs",
+      "name": "ParseLogs",
+      "kind": "inline",
+      "summary": "Parse log objects into structured events",
+      "in_schema": {
+        "kind": "named",
+        "name": "ObjectRef"
       },
-      "out": {
-        "id": "log_event",
-        "version": "1.0.0"
+      "out_schema": {
+        "kind": "named",
+        "name": "LogEvent"
       },
-      "effects": "Pure",
-      "determinism": "Strict"
+      "effects": "pure",
+      "determinism": "strict",
+      "idempotency": {},
+      "determinismHints": [],
+      "effectHints": ["resource::blob::read"]
     },
     {
-      "id": "window",
+      "id": "02d0ded2-03f8-5d43-8d96-4831f3fa423e::window",
+      "alias": "window",
+      "identifier": "example_etl::window_tumbling",
       "name": "WindowTumbling",
-      "kind": "Builtin",
-      "in": {
-        "id": "log_event",
-        "version": "1.0.0"
+      "kind": "inline",
+      "summary": "Group log events into tumbling windows",
+      "in_schema": {
+        "kind": "named",
+        "name": "LogEvent"
       },
-      "out": {
-        "id": "window_batch",
-        "version": "1.0.0"
+      "out_schema": {
+        "kind": "named",
+        "name": "WindowBatch"
       },
-      "effects": "ReadOnly",
-      "determinism": "Stable",
-      "schedule": {
-        "batch": {
-          "mode": "Fixed",
-          "size": 1000
-        },
-        "timeout": "PT5M"
-      },
-      "params": {
-        "window": {
-          "type": "tumbling",
-          "size": "PT5M",
-          "allowedLateness": "PT2M",
-          "watermark": "max(ts)-PT2M"
-        }
-      }
+      "effects": "read_only",
+      "determinism": "stable",
+      "idempotency": {},
+      "determinismHints": [],
+      "effectHints": []
     },
     {
-      "id": "write_wh",
+      "id": "02d0ded2-03f8-5d43-8d96-4831f3fa423e::write_wh",
+      "alias": "write_wh",
+      "identifier": "example_etl::write_warehouse",
       "name": "WriteWarehouse",
-      "kind": "Activity",
-      "in": {
-        "id": "agg_row",
-        "version": "1.0.0"
+      "kind": "activity",
+      "summary": "Write window aggregates to warehouse",
+      "in_schema": {
+        "kind": "named",
+        "name": "WindowBatch"
       },
-      "out": {
-        "id": "ack",
-        "version": "1.0.0"
+      "out_schema": {
+        "kind": "named",
+        "name": "Ack"
       },
-      "effects": "Effectful",
-      "determinism": "BestEffort",
-      "retryOwner": "Orchestrator",
-      "idem": {
-        "scope": "Partition",
-        "key": {
-          "encoding": "CborCanonical",
-          "hash": "Blake3",
-          "fields": [
-            {
-              "path": "customer_id",
-              "determinism": "Strict"
-            },
-            {
-              "path": "window.start",
-              "determinism": "Strict"
-            },
-            {
-              "path": "window.end",
-              "determinism": "Strict"
-            }
-          ],
-          "scope": "Partition"
-        },
-        "ttl": "P1D"
+      "effects": "effectful",
+      "determinism": "best_effort",
+      "idempotency": {
+        "key": "customer_id:window_start:window_end",
+        "scope": "partition",
+        "ttlMs": 86400000
       },
-      "capabilities": [
-        {
-          "name": "db.write",
-          "version": "1.0.0"
-        },
-        {
-          "name": "dedupe.store",
-          "version": "1.0.0"
-        }
-      ],
-      "compensate": {
-        "target": "refund_wh",
-        "timeout": "PT2M"
-      }
-    },
-    {
-      "id": "refund_wh",
-      "name": "RefundWarehouse",
-      "kind": "Activity",
-      "in": {
-        "id": "agg_row",
-        "version": "1.0.0"
-      },
-      "out": {
-        "id": "ack",
-        "version": "1.0.0"
-      },
-      "effects": "Effectful",
-      "determinism": "BestEffort",
-      "capabilities": [
-        {
-          "name": "db.write",
-          "version": "1.0.0"
-        }
-      ]
+      "determinismHints": [],
+      "effectHints": ["resource::db::write", "resource::dedupe::store"]
     }
   ],
   "edges": [
     {
-      "id": "e1",
-      "from": "s3_list",
+      "from": "trigger",
       "to": "parse",
-      "ordering": "Ordered",
-      "delivery": "AtLeastOnce"
+      "delivery": "at_least_once",
+      "ordering": "ordered",
+      "buffer": {}
     },
     {
-      "id": "e2",
       "from": "parse",
       "to": "window",
-      "ordering": "Ordered",
-      "delivery": "AtLeastOnce"
+      "delivery": "at_least_once",
+      "ordering": "ordered",
+      "buffer": {}
     },
     {
-      "id": "e3",
       "from": "window",
       "to": "write_wh",
-      "delivery": "ExactlyOnce",
-      "partition": {
-        "expression": "record.customer_id",
-        "determinism": "Strict"
-      },
+      "delivery": "exactly_once",
+      "ordering": "ordered",
+      "partition_key": "customer_id",
+      "timeout_ms": 300000,
       "buffer": {
-        "maxItems": 5000,
-        "spillThresholdBytes": 67108864,
-        "spillTier": "Disk",
-        "onOverflow": "Backpressure"
+        "max_items": 5000,
+        "spill_threshold_bytes": 67108864,
+        "spill_tier": "disk"
       }
     }
   ],
-  "controlSurfaces": [
-    {
-      "id": "partition_customers",
-      "type": "Partition",
-      "origin": {
-        "macro": "partition_by!"
-      },
-      "targets": [
-        "e3"
-      ],
-      "config": {
-        "hash": "Blake3",
-        "keyExpr": "record.customer_id"
-      }
-    },
-    {
-      "id": "window_control",
-      "type": "Window",
-      "origin": {
-        "macro": "window!"
-      },
-      "targets": [
-        "window"
-      ],
-      "config": {
-        "window": "tumbling",
-        "size": "PT5M",
-        "allowedLateness": "PT2M",
-        "watermark": "max(ts)-PT2M"
-      }
-    }
-  ],
+  "control_surfaces": [],
+  "checkpoints": [],
   "policies": {
-    "rateLimit": {
-      "qps": 2000,
-      "burst": 4000
-    },
     "lint": {
-      "requireControlHints": true
+      "require_control_hints": false
     }
   },
   "metadata": {
-    "effectsSummary": "Mixed",
-    "determinismSummary": "Stable",
-    "capabilities": [
-      {
-        "name": "blob.read",
-        "version": "1.0.0"
-      },
-      {
-        "name": "db.write",
-        "version": "1.0.0"
-      },
-      {
-        "name": "dedupe.store",
-        "version": "1.0.0"
-      }
-    ],
-    "idempotencyCoverage": {
-      "write_wh": "Partition"
-    },
-    "partitionTopology": {
-      "strategy": "Keyed",
-      "keys": [
-        {
-          "expression": "record.customer_id",
-          "determinism": "Strict"
-        }
-      ]
-    }
+    "tags": []
   },
-  "artifacts": [
-    {
-      "kind": "dot",
-      "path": "artifacts/etl_logs.dot"
-    }
-  ]
+  "artifacts": []
 }

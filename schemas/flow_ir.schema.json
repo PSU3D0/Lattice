@@ -1,1387 +1,777 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://lattice.dev/schemas/flow_ir.schema.json",
-  "title": "Lattice IR",
-  "description": "Canonical, host-agnostic representation for workflows emitted by the Lattice Rust macro DSL. This artifact is code-generated; authors only touch Rust macros.",
-  "type": "object",
-  "additionalProperties": false,
-  "required": [
-    "id",
-    "name",
-    "version",
-    "profile",
-    "nodes",
-    "edges"
-  ],
-  "properties": {
-    "id": {
-      "$ref": "#/$defs/Identifier",
-      "description": "Stable identifier for the Flow (lowercase, namespace scoped)."
-    },
-    "name": {
-      "type": "string",
-      "minLength": 1,
-      "description": "Human readable flow name."
-    },
-    "version": {
-      "$ref": "#/$defs/SemVer"
-    },
-    "profile": {
-      "$ref": "#/$defs/Profile"
-    },
-    "description": {
-      "type": "string",
-      "description": "Optional, non-authoritative description for tooling."
-    },
-    "tags": {
-      "type": "array",
-      "items": {
-        "type": "string",
-        "minLength": 1
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "definitions": {
+    "ArtifactRef": {
+      "description": "Artifact reference bundled alongside Flow IR.",
+      "properties": {
+        "format": {
+          "description": "Optional format identifier.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "description": "Artifact kind (dot, wit, json-schema, etc.).",
+          "type": "string"
+        },
+        "path": {
+          "description": "Relative path to the artifact.",
+          "type": "string"
+        }
       },
-      "uniqueItems": true,
-      "description": "Free-form labels (domain, environment, etc.)."
-    },
-    "nodes": {
-      "type": "array",
-      "items": {
-        "$ref": "#/$defs/Node"
-      },
-      "minItems": 1,
-      "description": "All flow nodes. Order does not imply execution ordering; edges encode topology."
-    },
-    "edges": {
-      "type": "array",
-      "items": {
-        "$ref": "#/$defs/Edge"
-      },
-      "minItems": 1,
-      "description": "Directed edges connecting nodes, encoding delivery semantics and flow control."
-    },
-    "checkpoints": {
-      "type": "array",
-      "items": {
-        "$ref": "#/$defs/Checkpoint"
-      },
-      "description": "HITL or programmatic checkpoints emitted by hitl! or checkpoint! macros."
-    },
-    "controlSurfaces": {
-      "type": "array",
-      "items": {
-        "$ref": "#/$defs/ControlSurface"
-      },
-      "description": "Explicit control-flow constructs (branching, loops, windows, partitions, error handling) inferred from macros. Tooling may lint for missing surfaces."
-    },
-    "policies": {
-      "$ref": "#/$defs/FlowPolicies",
-      "description": "Workflow-wide policy bindings and overrides."
-    },
-    "metadata": {
-      "$ref": "#/$defs/FlowMetadata",
-      "description": "Derived metadata used for certification, policy enforcement, and observability."
-    },
-    "artifacts": {
-      "type": "array",
-      "items": {
-        "$ref": "#/$defs/Artifact"
-      },
-      "description": "Optional additional artifacts exported alongside the IR (DOT, JSON schema snapshots, etc.)."
-    }
-  },
-  "$defs": {
-    "Identifier": {
-      "type": "string",
-      "pattern": "^[a-zA-Z][a-zA-Z0-9_:-]{0,63}$",
-      "description": "Identifier safe for codegen, telemetry, and registry keys."
-    },
-    "SemVer": {
-      "type": "string",
-      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$",
-      "description": "Semantic version string."
-    },
-    "Duration": {
-      "type": "string",
-      "pattern": "^P(?=.)",
-      "description": "ISO-8601 duration (e.g., PT30S, P1DT2H)."
-    },
-    "Profile": {
-      "type": "string",
-      "enum": [
-        "Web",
-        "Queue",
-        "Temporal",
-        "Dev",
-        "WASM"
+      "required": [
+        "kind",
+        "path"
       ],
-      "description": "Execution profile targeting specific host adapters."
+      "type": "object"
     },
-    "Effects": {
-      "type": "string",
-      "enum": [
-        "Pure",
-        "ReadOnly",
-        "Effectful"
-      ]
+    "BufferPolicy": {
+      "description": "Buffering behaviour metadata.",
+      "properties": {
+        "max_items": {
+          "description": "Optional max items held in memory.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "on_drop": {
+          "description": "Drop behaviour description.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "spill_threshold_bytes": {
+          "description": "Optional spill threshold in bytes.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "spill_tier": {
+          "description": "Optional spill tier identifier.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
     },
-    "Determinism": {
-      "type": "string",
-      "enum": [
-        "Strict",
-        "Stable",
-        "BestEffort",
-        "Nondeterministic"
-      ]
+    "CheckpointIR": {
+      "description": "Checkpoint definition.",
+      "properties": {
+        "id": {
+          "description": "Checkpoint identifier.",
+          "type": "string"
+        },
+        "summary": {
+          "description": "Optional summary.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
     },
-    "Ordering": {
-      "type": "string",
-      "enum": [
-        "Ordered",
-        "Unordered"
+    "ControlSurfaceIR": {
+      "description": "Control surface metadata for branching/looping constructs.",
+      "properties": {
+        "config": {
+          "description": "JSON payload describing surface-specific configuration."
+        },
+        "id": {
+          "description": "Stable identifier for the control surface.",
+          "type": "string"
+        },
+        "kind": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ControlSurfaceKind"
+            }
+          ],
+          "description": "Control surface type."
+        },
+        "targets": {
+          "description": "Target node/edge aliases.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "targets"
+      ],
+      "type": "object"
+    },
+    "ControlSurfaceKind": {
+      "description": "Supported control surface variants.",
+      "oneOf": [
+        {
+          "description": "Switch/multi-branch control flow.",
+          "enum": [
+            "switch"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Binary branching (if).",
+          "enum": [
+            "if"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Loop construct.",
+          "enum": [
+            "loop"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "For-each iteration construct.",
+          "enum": [
+            "for_each"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Windowing configuration.",
+          "enum": [
+            "window"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Partition description.",
+          "enum": [
+            "partition"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Timeout/latency guard.",
+          "enum": [
+            "timeout"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Rate limit guard.",
+          "enum": [
+            "rate_limit"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Error-handling surface.",
+          "enum": [
+            "error_handler"
+          ],
+          "type": "string"
+        }
       ]
     },
     "Delivery": {
-      "type": "string",
-      "enum": [
-        "AtLeastOnce",
-        "AtMostOnce",
-        "ExactlyOnce"
-      ]
-    },
-    "RetryOwner": {
-      "type": "string",
-      "enum": [
-        "Connector",
-        "Orchestrator",
-        "None"
-      ]
-    },
-    "StateModel": {
+      "description": "Delivery semantics enumeration.",
       "oneOf": [
         {
-          "type": "string",
+          "description": "At least once delivery (default).",
           "enum": [
-            "None"
-          ]
+            "at_least_once"
+          ],
+          "type": "string"
         },
         {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "consistency"
+          "description": "At most once delivery.",
+          "enum": [
+            "at_most_once"
           ],
-          "properties": {
-            "consistency": {
-              "type": "string",
-              "enum": [
-                "Local",
-                "Global"
-              ]
-            },
-            "ttl": {
-              "$ref": "#/$defs/Duration"
-            },
-            "schemaVersion": {
-              "$ref": "#/$defs/SemVer"
-            }
-          },
-          "description": "Durable state declaration."
+          "type": "string"
+        },
+        {
+          "description": "Exactly once delivery (requires dedupe).",
+          "enum": [
+            "exactly_once"
+          ],
+          "type": "string"
         }
       ]
     },
-    "CacheTier": {
-      "type": "string",
-      "enum": [
-        "Memory",
-        "Disk",
-        "Remote"
+    "Determinism": {
+      "description": "Determinism lattice describing replay guarantees.",
+      "oneOf": [
+        {
+          "description": "Fully deterministic, no time or randomness.",
+          "enum": [
+            "strict"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Stable under pinned resources.",
+          "enum": [
+            "stable"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Best-effort determinism, may vary on retries.",
+          "enum": [
+            "best_effort"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Explicitly non-deterministic.",
+          "enum": [
+            "nondeterministic"
+          ],
+          "type": "string"
+        }
       ]
     },
-    "HashAlgorithm": {
-      "type": "string",
-      "enum": [
-        "Blake3",
-        "Sha256",
-        "Other"
+    "EdgeIR": {
+      "description": "Edge entry within the Flow IR.",
+      "properties": {
+        "buffer": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/BufferPolicy"
+            }
+          ],
+          "description": "Buffer policy."
+        },
+        "delivery": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/Delivery"
+            }
+          ],
+          "description": "Delivery semantics."
+        },
+        "from": {
+          "description": "Source node alias.",
+          "type": "string"
+        },
+        "ordering": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/Ordering"
+            }
+          ],
+          "description": "Ordering semantics."
+        },
+        "partition_key": {
+          "description": "Optional partition key expression.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timeout_ms": {
+          "description": "Optional timeout in milliseconds.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "to": {
+          "description": "Destination node alias.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "buffer",
+        "delivery",
+        "from",
+        "ordering",
+        "to"
       ],
-      "description": "Hash algorithm used for idempotency or cache keys. Blake3 is default."
+      "type": "object"
     },
-    "KeyEncoding": {
-      "type": "string",
-      "enum": [
-        "CborCanonical",
-        "JsonCanonical",
-        "Other"
+    "Effects": {
+      "description": "Effect lattice describing resource access.",
+      "oneOf": [
+        {
+          "description": "No observable side-effects.",
+          "enum": [
+            "pure"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Read-only side-effects (e.g. cache lookups).",
+          "enum": [
+            "read_only"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "External side-effects (e.g. network, writes).",
+          "enum": [
+            "effectful"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "FlowMetadata": {
+      "description": "Arbitrary metadata describing the workflow.",
+      "properties": {
+        "tags": {
+          "default": [],
+          "description": "Optional tags associated with the workflow.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "FlowPolicies": {
+      "description": "Policy lint configuration.",
+      "properties": {
+        "lint": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/PolicyLintSettings"
+            }
+          ],
+          "default": {
+            "require_control_hints": false
+          },
+          "description": "Lint configuration."
+        }
+      },
+      "type": "object"
+    },
+    "IdempotencyScope": {
+      "description": "Supported idempotency scopes.",
+      "oneOf": [
+        {
+          "description": "Key applies to a specific node.",
+          "enum": [
+            "node"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Key applies to a specific edge.",
+          "enum": [
+            "edge"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Key applies to a partition.",
+          "enum": [
+            "partition"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "IdempotencySpec": {
+      "description": "Idempotency metadata for a node.",
+      "properties": {
+        "key": {
+          "description": "Canonical idempotency key expression.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/IdempotencyScope"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Scope for the idempotency key."
+        },
+        "ttlMs": {
+          "description": "Optional TTL (in milliseconds) for dedupe reservations.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "NodeIR": {
+      "description": "Node entry within the Flow IR.",
+      "properties": {
+        "alias": {
+          "description": "Alias used within the workflow definition.",
+          "type": "string"
+        },
+        "determinism": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/Determinism"
+            }
+          ],
+          "description": "Declared determinism metadata."
+        },
+        "determinismHints": {
+          "default": [],
+          "description": "Determinism hints recorded during macro expansion.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "effectHints": {
+          "default": [],
+          "description": "Effect hints recorded during macro expansion.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "effects": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/Effects"
+            }
+          ],
+          "description": "Declared effects metadata."
+        },
+        "id": {
+          "description": "Stable identifier derived from the spec.",
+          "type": "string"
+        },
+        "idempotency": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/IdempotencySpec"
+            }
+          ],
+          "default": {},
+          "description": "Optional idempotency configuration."
+        },
+        "identifier": {
+          "description": "Fully-qualified implementation identifier used for runtime lookup.",
+          "type": "string"
+        },
+        "in_schema": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/SchemaRef"
+            }
+          ],
+          "description": "Input schema reference."
+        },
+        "kind": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/NodeKind"
+            }
+          ],
+          "description": "Node kind."
+        },
+        "name": {
+          "description": "Human readable name.",
+          "type": "string"
+        },
+        "out_schema": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/SchemaRef"
+            }
+          ],
+          "description": "Output schema reference."
+        },
+        "summary": {
+          "description": "Optional summary/description.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "alias",
+        "determinism",
+        "effects",
+        "id",
+        "identifier",
+        "in_schema",
+        "kind",
+        "name",
+        "out_schema"
+      ],
+      "type": "object"
+    },
+    "NodeKind": {
+      "description": "High-level node categories.",
+      "oneOf": [
+        {
+          "description": "Trigger originating the workflow.",
+          "enum": [
+            "trigger"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Inline rust node.",
+          "enum": [
+            "inline"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Activity/connector node.",
+          "enum": [
+            "activity"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Subflow invocation.",
+          "enum": [
+            "subflow"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "Ordering": {
+      "description": "Edge ordering semantics.",
+      "oneOf": [
+        {
+          "description": "FIFO semantics per partition.",
+          "enum": [
+            "ordered"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "No ordering guarantees.",
+          "enum": [
+            "unordered"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "PolicyLintSettings": {
+      "description": "Lint-specific policy settings.",
+      "properties": {
+        "require_control_hints": {
+          "description": "Whether control surface hints are required.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "require_control_hints"
+      ],
+      "type": "object"
+    },
+    "Profile": {
+      "description": "Workflow execution profile.",
+      "oneOf": [
+        {
+          "description": "HTTP/Axum host.",
+          "enum": [
+            "web"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Queue/Redis-backed workers.",
+          "enum": [
+            "queue"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Temporal orchestration.",
+          "enum": [
+            "temporal"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "WASM/Edge runtime.",
+          "enum": [
+            "wasm"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Local developer profile.",
+          "enum": [
+            "dev"
+          ],
+          "type": "string"
+        }
       ]
     },
     "SchemaRef": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "id",
-        "version"
-      ],
-      "properties": {
-        "id": {
-          "$ref": "#/$defs/Identifier",
-          "description": "Schema identifier (namespace-qualified)."
-        },
-        "version": {
-          "$ref": "#/$defs/SemVer"
-        }
-      }
-    },
-    "Artifact": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "kind",
-        "path"
-      ],
-      "properties": {
-        "kind": {
-          "type": "string",
-          "description": "Type of artifact (dot, wit, json-schema, etc.)."
-        },
-        "path": {
-          "type": "string",
-          "description": "Relative path to the artifact in the build output."
-        },
-        "format": {
-          "type": "string",
-          "description": "Optional serialization format hint."
-        }
-      }
-    },
-    "CapabilityBinding": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "name"
-      ],
-      "properties": {
-        "name": {
-          "type": "string",
-          "description": "Capability trait identifier (e.g., http.read, kv.write)."
-        },
-        "version": {
-          "$ref": "#/$defs/SemVer",
-          "description": "Required capability version range lower bound."
-        },
-        "maxVersion": {
-          "$ref": "#/$defs/SemVer",
-          "description": "Optional upper bound (inclusive) for capability compatibility."
-        },
-        "scopes": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "uniqueItems": true,
-          "description": "Provider-specific scopes (OAuth, API scopes, etc.)."
-        },
-        "modes": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "Optional mode flags (pinned, streaming, sandbox, etc.)."
-        }
-      }
-    },
-    "NodeDocs": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "summary": {
-          "type": "string"
-        },
-        "details": {
-          "type": "string"
-        },
-        "examples": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "links": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "format": "uri"
-          }
-        }
-      }
-    },
-    "BatchPolicy": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "mode"
-      ],
-      "properties": {
-        "mode": {
-          "type": "string",
-          "enum": [
-            "None",
-            "Fixed",
-            "Adaptive"
-          ]
-        },
-        "size": {
-          "type": "integer",
-          "minimum": 1,
-          "description": "Batch size when mode = Fixed."
-        },
-        "maxLatency": {
-          "$ref": "#/$defs/Duration",
-          "description": "Maximum latency tolerated before flushing (Adaptive)."
-        }
-      }
-    },
-    "ScheduleHints": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "concurrency": {
-          "type": "integer",
-          "minimum": 1,
-          "description": "Max parallel executions for this node (per partition)."
-        },
-        "batch": {
-          "$ref": "#/$defs/BatchPolicy"
-        },
-        "timeout": {
-          "$ref": "#/$defs/Duration"
-        },
-        "priority": {
-          "type": "string",
-          "enum": [
-            "Low",
-            "Normal",
-            "High"
-          ],
-          "default": "Normal"
-        },
-        "retryBackoff": {
-          "type": "object",
-          "additionalProperties": false,
+      "description": "Schema reference used within Flow IR.",
+      "oneOf": [
+        {
+          "description": "Schema is opaque/unknown.",
           "properties": {
-            "strategy": {
-              "type": "string",
+            "kind": {
               "enum": [
-                "None",
-                "Linear",
-                "Exponential",
-                "Fixed"
-              ]
-            },
-            "base": {
-              "$ref": "#/$defs/Duration"
-            },
-            "max": {
-              "$ref": "#/$defs/Duration"
-            },
-            "jitter": {
-              "type": "number",
-              "minimum": 0.0,
-              "maximum": 1.0
-            }
-          }
-        }
-      }
-    },
-    "BufferPolicy": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "maxItems": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "maxBytes": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "spillThresholdBytes": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "spillTier": {
-          "$ref": "#/$defs/CacheTier"
-        },
-        "onOverflow": {
-          "type": "string",
-          "enum": [
-            "Backpressure",
-            "DropOldest",
-            "DropNewest",
-            "DeadLetter"
-          ]
-        }
-      }
-    },
-    "PartitionKey": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "expression",
-        "determinism"
-      ],
-      "properties": {
-        "expression": {
-          "type": "string",
-          "description": "Deterministic expression referencing input payload fields."
-        },
-        "determinism": {
-          "$ref": "#/$defs/Determinism"
-        },
-        "determinismHints": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "Aggregated determinism hints (resources like clock, rng)."
-        },
-        "effectHints": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "Aggregated effect hints (resources requiring Effectful)."
-        },
-        "docs": {
-          "type": "string",
-          "description": "Optional explanation for tooling."
-        }
-      }
-    },
-    "IdempotencyKeySpec": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "encoding",
-        "hash",
-        "fields"
-      ],
-      "properties": {
-        "encoding": {
-          "$ref": "#/$defs/KeyEncoding"
-        },
-        "hash": {
-          "$ref": "#/$defs/HashAlgorithm"
-        },
-        "fields": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "$ref": "#/$defs/KeyField"
-          }
-        },
-        "scope": {
-          "type": "string",
-          "enum": [
-            "Node",
-            "Edge",
-            "Partition"
-          ],
-          "description": "Scope of the idempotency key."
-        }
-      }
-    },
-    "KeyField": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "path"
-      ],
-      "properties": {
-        "path": {
-          "type": "string",
-          "description": "Dot-notated path into the input payload."
-        },
-        "description": {
-          "type": "string"
-        },
-        "determinism": {
-          "$ref": "#/$defs/Determinism",
-          "description": "Determinism classification of the source field."
-        },
-        "optional": {
-          "type": "boolean",
-          "default": false
-        }
-      }
-    },
-    "IdempotencySpec": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "scope",
-        "key"
-      ],
-      "properties": {
-        "scope": {
-          "type": "string",
-          "enum": [
-            "Node",
-            "Edge",
-            "Partition",
-            "None"
-          ]
-        },
-        "key": {
-          "$ref": "#/$defs/IdempotencyKeySpec"
-        },
-        "ttlMs": {
-          "type": "integer",
-          "minimum": 1,
-          "description": "TTL for dedupe reservations in milliseconds."
-        }
-      }
-    },
-    "CacheSpec": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "key",
-        "tier"
-      ],
-      "properties": {
-        "key": {
-          "$ref": "#/$defs/IdempotencyKeySpec",
-          "description": "Cache key structure (same canonical encoding)."
-        },
-        "tier": {
-          "$ref": "#/$defs/CacheTier"
-        },
-        "ttl": {
-          "$ref": "#/$defs/Duration"
-        },
-        "invalidateOn": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "Triggers that invalidate cached entries (schema bump, capability upgrade, etc.)."
-        }
-      }
-    },
-    "CompensationSpec": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "target"
-      ],
-      "properties": {
-        "target": {
-          "$ref": "#/$defs/Identifier",
-          "description": "Node id of compensator."
-        },
-        "timeout": {
-          "$ref": "#/$defs/Duration"
-        },
-        "policy": {
-          "type": "string",
-          "enum": [
-            "OnFailure",
-            "Always",
-            "ManualOnly"
-          ],
-          "default": "OnFailure"
-        }
-      }
-    },
-    "CostEstimate": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "cpuMs": {
-          "type": "number",
-          "minimum": 0
-        },
-        "memMb": {
-          "type": "number",
-          "minimum": 0
-        },
-        "storageBytes": {
-          "type": "number",
-          "minimum": 0
-        },
-        "tokens": {
-          "type": "number",
-          "minimum": 0,
-          "description": "LLM token budget estimate."
-        },
-        "currency": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "amount": {
-              "type": "number"
-            },
-            "unit": {
-              "type": "string",
-              "default": "USD"
-            },
-            "basis": {
-              "type": "string",
-              "enum": [
-                "PerItem",
-                "PerBatch",
-                "PerRun"
+                "opaque"
               ],
-              "default": "PerItem"
+              "type": "string"
             }
-          }
-        },
-        "confidence": {
-          "type": "number",
-          "minimum": 0,
-          "maximum": 1,
-          "description": "Confidence score for the estimate (0-1)."
-        }
-      }
-    },
-    "Node": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "id",
-        "name",
-        "kind",
-        "in",
-        "out",
-        "effects",
-        "determinism"
-      ],
-      "properties": {
-        "id": {
-          "$ref": "#/$defs/Identifier"
-        },
-        "name": {
-          "type": "string",
-          "description": "Node symbol (same as generated Rust identifier)."
-        },
-        "kind": {
-          "type": "string",
-          "enum": [
-            "Trigger",
-            "Inline",
-            "Activity",
-            "Subflow",
-            "Builtin",
-            "Plugin"
+          },
+          "required": [
+            "kind"
           ],
-          "description": "Execution kind. Control surfaces appear in controlSurfaces."
+          "type": "object"
         },
-        "origin": {
-          "type": "object",
-          "additionalProperties": false,
+        {
+          "description": "Strongly named schema reference.",
           "properties": {
-            "module": {
+            "kind": {
+              "enum": [
+                "named"
+              ],
               "type": "string"
             },
-            "span": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "file": {
-                  "type": "string"
-                },
-                "line": {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                "column": {
-                  "type": "integer",
-                  "minimum": 1
-                }
-              }
-            }
-          },
-          "description": "Source location emitted by the macro expansion."
-        },
-        "in": {
-          "$ref": "#/$defs/SchemaRef"
-        },
-        "out": {
-          "$ref": "#/$defs/SchemaRef"
-        },
-        "effects": {
-          "$ref": "#/$defs/Effects"
-        },
-        "determinism": {
-          "$ref": "#/$defs/Determinism"
-        },
-        "schedule": {
-          "$ref": "#/$defs/ScheduleHints"
-        },
-        "retryOwner": {
-          "$ref": "#/$defs/RetryOwner"
-        },
-        "idem": {
-          "$ref": "#/$defs/IdempotencySpec"
-        },
-        "state": {
-          "$ref": "#/$defs/StateModel"
-        },
-        "cost": {
-          "$ref": "#/$defs/CostEstimate"
-        },
-        "cache": {
-          "$ref": "#/$defs/CacheSpec"
-        },
-        "compensate": {
-          "$ref": "#/$defs/CompensationSpec"
-        },
-        "params": {
-          "type": "object",
-          "description": "Static configuration emitted by macros (serde_json::Value)."
-        },
-        "capabilities": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/CapabilityBinding"
-          }
-        },
-        "docs": {
-          "$ref": "#/$defs/NodeDocs"
-        },
-        "labels": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "Optional tags (fanout, reducer, etc.)"
-        }
-      }
-    },
-    "Edge": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "id",
-        "from",
-        "to"
-      ],
-      "properties": {
-        "id": {
-          "$ref": "#/$defs/Identifier"
-        },
-        "from": {
-          "$ref": "#/$defs/Identifier",
-          "description": "Source node id."
-        },
-        "to": {
-          "$ref": "#/$defs/Identifier",
-          "description": "Destination node id."
-        },
-        "ordering": {
-          "$ref": "#/$defs/Ordering",
-          "default": "Ordered"
-        },
-        "delivery": {
-          "$ref": "#/$defs/Delivery",
-          "default": "AtLeastOnce"
-        },
-        "buffer": {
-          "$ref": "#/$defs/BufferPolicy"
-        },
-        "partition": {
-          "$ref": "#/$defs/PartitionKey"
-        },
-        "timeout": {
-          "$ref": "#/$defs/Duration",
-          "description": "Optional per-edge timeout override."
-        },
-        "condition": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "type": {
-              "type": "string",
-              "enum": [
-                "Case",
-                "Predicate",
-                "Error",
-                "Loop"
-              ]
-            },
-            "label": {
-              "type": "string",
-              "description": "Display label for UI (e.g., true, false, default)."
-            },
-            "expression": {
-              "type": "string",
-              "description": "Boolean expression applied to upstream payload."
-            },
-            "on": {
-              "$ref": "#/$defs/Identifier",
-              "description": "Optional control surface id this condition belongs to."
-            }
-          },
-          "description": "Branch predicate associated with Switch/If/on_error constructs."
-        },
-        "metrics": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "id": {
-              "type": "string",
-              "description": "Logical metric identifier for edge throughput/backpressure."
-            }
-          }
-        }
-      }
-    },
-    "Checkpoint": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "id",
-        "node",
-        "label"
-      ],
-      "properties": {
-        "id": {
-          "$ref": "#/$defs/Identifier"
-        },
-        "node": {
-          "$ref": "#/$defs/Identifier",
-          "description": "Node id where checkpoint occurs."
-        },
-        "label": {
-          "type": "string",
-          "description": "Human readable label."
-        },
-        "kind": {
-          "type": "string",
-          "enum": [
-            "Hitl",
-            "Timer",
-            "Signal"
-          ],
-          "default": "Hitl"
-        },
-        "ttl": {
-          "$ref": "#/$defs/Duration"
-        },
-        "payload": {
-          "$ref": "#/$defs/SchemaRef",
-          "description": "Schema for checkpoint resume payload."
-        },
-        "view": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "component": {
+            "name": {
               "type": "string"
-            },
-            "params": {
-              "type": "object"
             }
-          }
-        },
-        "escalation": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "after": {
-              "$ref": "#/$defs/Duration"
-            },
-            "policy": {
-              "type": "string",
-              "enum": [
-                "AutoReject",
-                "Notify",
-                "Fallback"
-              ]
-            }
-          }
-        }
-      }
-    },
-    "FlowPolicies": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "rateLimit": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "qps": {
-              "type": "integer",
-              "minimum": 0
-            },
-            "burst": {
-              "type": "integer",
-              "minimum": 0
-            }
-          }
-        },
-        "budget": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "currency": {
-              "type": "string",
-              "default": "USD"
-            },
-            "amount": {
-              "type": "number",
-              "minimum": 0
-            },
-            "period": {
-              "type": "string",
-              "enum": [
-                "PerRun",
-                "PerHour",
-                "PerDay",
-                "PerMonth"
-              ]
-            }
-          }
-        },
-        "egress": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "format": "hostname"
           },
-          "description": "Allow-listed egress domains."
-        },
-        "capabilityGuards": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "Capability policies applied at compile/deploy time."
-        },
-        "lint": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "requireControlHints": {
-              "type": "boolean",
-              "description": "If true, lint when loops/switches lack explicit control surfaces."
-            }
-          }
+          "required": [
+            "kind",
+            "name"
+          ],
+          "type": "object"
         }
-      }
-    },
-    "FlowMetadata": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "effectsSummary": {
-          "type": "string",
-          "enum": [
-            "Pure",
-            "ReadOnly",
-            "Mixed",
-            "Effectful"
-          ]
-        },
-        "determinismSummary": {
-          "type": "string",
-          "enum": [
-            "Strict",
-            "Stable",
-            "BestEffort",
-            "Mixed"
-          ]
-        },
-        "capabilities": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/CapabilityBinding"
-          }
-        },
-        "secrets": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "idempotencyCoverage": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          },
-          "description": "Map of node ids to idempotency scope summary."
-        },
-        "partitionTopology": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "strategy": {
-              "type": "string",
-              "enum": [
-                "None",
-                "Keyed",
-                "Sharded"
-              ]
-            },
-            "keys": {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/PartitionKey"
-              }
-            }
-          }
-        },
-        "derivedArtifacts": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/Artifact"
-          }
-        }
-      }
-    },
-    "ControlSurface": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "id",
-        "type",
-        "targets"
-      ],
-      "properties": {
-        "id": {
-          "$ref": "#/$defs/Identifier"
-        },
-        "type": {
-          "type": "string",
-          "enum": [
-            "Switch",
-            "If",
-            "Loop",
-            "ForEach",
-            "Window",
-            "Partition",
-            "Merge",
-            "Join",
-            "Zip",
-            "ErrorHandler",
-            "Timeout",
-            "RateLimit"
-          ]
-        },
-        "origin": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "macro": {
-              "type": "string",
-              "description": "Source macro (switch!, partition_by!, on_error!, etc.)."
-            },
-            "span": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "file": {
-                  "type": "string"
-                },
-                "line": {
-                  "type": "integer",
-                  "minimum": 1
-                }
-              }
-            }
-          }
-        },
-        "targets": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "Node or edge identifiers the control surface applies to."
-        },
-        "config": {
-          "type": "object",
-          "description": "Type-specific configuration (e.g., case labels, loop bounds, watermark strategy)."
-        },
-        "lint": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "requiredFor": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "description": "Optional policies that require this surface."
-            },
-            "suggestion": {
-              "type": "string",
-              "description": "Compiler lint message when surface missing but advisable."
-            }
-          }
-        }
-      }
+      ]
     }
   },
-  "examples": [
-    {
-      "id": "etl_logs",
-      "name": "ETL Logs",
-      "version": "1.0.0",
-      "profile": "Queue",
-      "description": "Window S3 logs and write to warehouse with exactly-once semantics.",
-      "nodes": [
+  "description": "Canonical, host-agnostic representation for workflows emitted by the Lattice Rust macro DSL.",
+  "properties": {
+    "artifacts": {
+      "default": [],
+      "description": "Associated artifact references (DOT, WIT, etc.).",
+      "items": {
+        "$ref": "#/definitions/ArtifactRef"
+      },
+      "type": "array"
+    },
+    "checkpoints": {
+      "default": [],
+      "description": "Declared checkpoints.",
+      "items": {
+        "$ref": "#/definitions/CheckpointIR"
+      },
+      "type": "array"
+    },
+    "control_surfaces": {
+      "default": [],
+      "description": "Control surface metadata (branching/loops/etc).",
+      "items": {
+        "$ref": "#/definitions/ControlSurfaceIR"
+      },
+      "type": "array"
+    },
+    "edges": {
+      "default": [],
+      "description": "Edges describing the DAG.",
+      "items": {
+        "$ref": "#/definitions/EdgeIR"
+      },
+      "type": "array"
+    },
+    "id": {
+      "description": "Unique workflow identifier.",
+      "type": "string"
+    },
+    "metadata": {
+      "allOf": [
         {
-          "id": "s3_list",
-          "name": "S3List",
-          "kind": "Activity",
-          "in": {
-            "id": "unit",
-            "version": "1.0.0"
-          },
-          "out": {
-            "id": "object_ref",
-            "version": "1.0.0"
-          },
-          "effects": "ReadOnly",
-          "determinism": "Stable",
-          "capabilities": [
-            {
-              "name": "blob.read",
-              "version": "1.0.0"
-            }
-          ]
-        },
-        {
-          "id": "parse",
-          "name": "Parse",
-          "kind": "Inline",
-          "in": {
-            "id": "object_bytes",
-            "version": "1.0.0"
-          },
-          "out": {
-            "id": "log_event",
-            "version": "1.0.0"
-          },
-          "effects": "Pure",
-          "determinism": "Strict"
-        },
-        {
-          "id": "window",
-          "name": "WindowTumbling",
-          "kind": "Builtin",
-          "in": {
-            "id": "log_event",
-            "version": "1.0.0"
-          },
-          "out": {
-            "id": "window_batch",
-            "version": "1.0.0"
-          },
-          "effects": "ReadOnly",
-          "determinism": "Stable",
-          "schedule": {
-            "batch": {
-              "mode": "Fixed",
-              "size": 1000
-            },
-            "timeout": "PT5M"
-          },
-          "params": {
-            "window": {
-              "type": "tumbling",
-              "size": "PT5M",
-              "allowedLateness": "PT2M",
-              "watermark": "max(ts)-PT2M"
-            }
-          }
-        },
-        {
-          "id": "write_wh",
-          "name": "WriteWarehouse",
-          "kind": "Activity",
-          "in": {
-            "id": "agg_row",
-            "version": "1.0.0"
-          },
-          "out": {
-            "id": "ack",
-            "version": "1.0.0"
-          },
-          "effects": "Effectful",
-          "determinism": "BestEffort",
-          "retryOwner": "Orchestrator",
-          "idem": {
-            "scope": "Partition",
-            "key": {
-              "encoding": "CborCanonical",
-              "hash": "Blake3",
-              "fields": [
-                {
-                  "path": "customer_id",
-                  "determinism": "Strict"
-                },
-                {
-                  "path": "window.start",
-                  "determinism": "Strict"
-                },
-                {
-                  "path": "window.end",
-                  "determinism": "Strict"
-                }
-              ],
-              "scope": "Partition"
-            },
-            "ttl": "P1D"
-          },
-          "capabilities": [
-            {
-              "name": "db.write",
-              "version": "1.0.0"
-            },
-            {
-              "name": "dedupe.store",
-              "version": "1.0.0"
-            }
-          ],
-          "compensate": {
-            "target": "refund_wh",
-            "timeout": "PT2M"
-          }
-        },
-        {
-          "id": "refund_wh",
-          "name": "RefundWarehouse",
-          "kind": "Activity",
-          "in": {
-            "id": "agg_row",
-            "version": "1.0.0"
-          },
-          "out": {
-            "id": "ack",
-            "version": "1.0.0"
-          },
-          "effects": "Effectful",
-          "determinism": "BestEffort",
-          "capabilities": [
-            {
-              "name": "db.write",
-              "version": "1.0.0"
-            }
-          ]
+          "$ref": "#/definitions/FlowMetadata"
         }
       ],
-      "edges": [
+      "default": {
+        "tags": []
+      },
+      "description": "Documentation and tag metadata."
+    },
+    "name": {
+      "description": "Workflow display name.",
+      "type": "string"
+    },
+    "nodes": {
+      "default": [],
+      "description": "Nodes contained in the workflow.",
+      "items": {
+        "$ref": "#/definitions/NodeIR"
+      },
+      "type": "array"
+    },
+    "policies": {
+      "allOf": [
         {
-          "id": "e1",
-          "from": "s3_list",
-          "to": "parse",
-          "ordering": "Ordered",
-          "delivery": "AtLeastOnce"
-        },
-        {
-          "id": "e2",
-          "from": "parse",
-          "to": "window",
-          "ordering": "Ordered",
-          "delivery": "AtLeastOnce"
-        },
-        {
-          "id": "e3",
-          "from": "window",
-          "to": "write_wh",
-          "delivery": "ExactlyOnce",
-          "partition": {
-            "expression": "record.customer_id",
-            "determinism": "Strict"
-          },
-          "buffer": {
-            "maxItems": 5000,
-            "spillThresholdBytes": 67108864,
-            "spillTier": "Disk",
-            "onOverflow": "Backpressure"
-          }
+          "$ref": "#/definitions/FlowPolicies"
         }
       ],
-      "controlSurfaces": [
-        {
-          "id": "partition_customers",
-          "type": "Partition",
-          "origin": {
-            "macro": "partition_by!",
-            "span": {
-              "file": "src/flows/etl.rs",
-              "line": 42
-            }
-          },
-          "targets": [
-            "e3"
-          ],
-          "config": {
-            "hash": "Blake3",
-            "keyExpr": "record.customer_id"
-          }
-        },
-        {
-          "id": "window_control",
-          "type": "Window",
-          "origin": {
-            "macro": "window!",
-            "span": {
-              "file": "src/flows/etl.rs",
-              "line": 33
-            }
-          },
-          "targets": [
-            "window"
-          ],
-          "config": {
-            "window": "tumbling",
-            "size": "PT5M",
-            "allowedLateness": "PT2M",
-            "watermark": "max(ts)-PT2M"
-          }
-        }
-      ],
-      "policies": {
-        "rateLimit": {
-          "qps": 2000,
-          "burst": 4000
-        },
+      "default": {
         "lint": {
-          "requireControlHints": true
+          "require_control_hints": false
         }
       },
-      "metadata": {
-        "effectsSummary": "Mixed",
-        "determinismSummary": "Stable",
-        "capabilities": [
-          {
-            "name": "blob.read",
-            "version": "1.0.0"
-          },
-          {
-            "name": "db.write",
-            "version": "1.0.0"
-          },
-          {
-            "name": "dedupe.store",
-            "version": "1.0.0"
-          }
-        ],
-        "idempotencyCoverage": {
-          "write_wh": "Partition"
-        },
-        "partitionTopology": {
-          "strategy": "Keyed",
-          "keys": [
-            {
-              "expression": "record.customer_id",
-              "determinism": "Strict"
-            }
-          ]
+      "description": "Policy metadata."
+    },
+    "profile": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/Profile"
         }
-      }
+      ],
+      "description": "Target profile."
+    },
+    "summary": {
+      "description": "Optional human readable summary.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "version": {
+      "description": "Semantic version.",
+      "type": "string"
     }
-  ]
+  },
+  "required": [
+    "id",
+    "name",
+    "profile",
+    "version"
+  ],
+  "title": "Lattice Flow IR",
+  "type": "object"
 }
