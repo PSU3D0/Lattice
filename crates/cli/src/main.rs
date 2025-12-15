@@ -49,6 +49,9 @@ enum Command {
     /// Graph inspection and validation commands.
     #[command(subcommand)]
     Graph(GraphCommand),
+    /// Entrypoint/trigger wiring validation.
+    #[command(subcommand)]
+    Entrypoints(EntrypointsCommand),
     /// Execute or serve workflows locally.
     #[command(subcommand)]
     Run(RunCommand),
@@ -58,6 +61,12 @@ enum Command {
 enum GraphCommand {
     /// Validate a Flow IR document and optionally emit artifacts.
     Check(GraphCheckArgs),
+}
+
+#[derive(Subcommand, Debug)]
+enum EntrypointsCommand {
+    /// Validate trigger/capture wiring for an entrypoint.
+    Check(EntrypointsCheckArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -127,6 +136,19 @@ struct GraphCheckArgs {
     json: bool,
 }
 
+#[derive(Args, Debug)]
+struct EntrypointsCheckArgs {
+    /// Path to a Flow IR JSON document. Reads stdin when omitted.
+    #[arg(long)]
+    flow: PathBuf,
+    /// Trigger alias used to start execution.
+    #[arg(long)]
+    trigger_alias: String,
+    /// Node alias whose output is captured as the result.
+    #[arg(long)]
+    capture_alias: String,
+}
+
 fn cli_metrics_snapshotter() -> &'static Snapshotter {
     static SNAPSHOTTER: OnceLock<Snapshotter> = OnceLock::new();
     SNAPSHOTTER.get_or_init(|| {
@@ -143,9 +165,52 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Graph(GraphCommand::Check(args)) => run_graph_check(args),
+        Command::Entrypoints(EntrypointsCommand::Check(args)) => run_entrypoints_check(args),
         Command::Run(RunCommand::Local(args)) => run_local(args),
         Command::Run(RunCommand::Serve(args)) => run_serve(args),
     }
+}
+
+fn run_entrypoints_check(args: EntrypointsCheckArgs) -> Result<()> {
+    let payload =
+        fs::read(&args.flow).with_context(|| format!("failed to read {}", args.flow.display()))?;
+    let flow: dag_core::FlowIR =
+        serde_json::from_slice(&payload).context("input is not valid Flow IR JSON")?;
+
+    let validated = match kernel_plan::validate(&flow) {
+        Ok(validated) => validated,
+        Err(diags) => {
+            eprintln!(
+                "✗ graph validation failed with {} diagnostic(s):",
+                diags.len()
+            );
+            for diag in &diags {
+                eprintln!("{}", format_text_diagnostic(diag));
+            }
+            return Err(anyhow!("graph validation failed"));
+        }
+    };
+
+    let trigger = validated
+        .flow()
+        .node(args.trigger_alias.as_str())
+        .ok_or_else(|| anyhow!("unknown trigger_alias `{}`", args.trigger_alias))?;
+
+    if trigger.kind != dag_core::NodeKind::Trigger {
+        return Err(anyhow!(
+            "trigger_alias `{}` refers to non-trigger node kind {:?}",
+            args.trigger_alias,
+            trigger.kind
+        ));
+    }
+
+    validated
+        .flow()
+        .node(args.capture_alias.as_str())
+        .ok_or_else(|| anyhow!("unknown capture_alias `{}`", args.capture_alias))?;
+
+    println!("OK");
+    Ok(())
 }
 
 fn run_graph_check(args: GraphCheckArgs) -> Result<()> {
@@ -501,7 +566,7 @@ fn run_serve(args: ServeArgs) -> Result<()> {
             config = config.with_environment_plugin(plugin);
         }
 
-        let host = HostHandle::new(executor, ir, config);
+        let host = HostHandle::try_new(executor, ir, config).map_err(anyhow::Error::new)?;
         let local_addr = listener
             .local_addr()
             .context("failed to determine bound address")?;

@@ -28,6 +28,7 @@ pub fn validate(flow: &FlowIR) -> Result<ValidatedIR, Vec<Diagnostic>> {
     let mut diagnostics = Vec::new();
 
     check_duplicate_aliases(flow, &mut diagnostics);
+    check_trigger_policy(flow, &mut diagnostics);
     check_edge_references(flow, &mut diagnostics);
     check_cycles(flow, &mut diagnostics);
     check_port_compatibility(flow, &mut diagnostics);
@@ -46,6 +47,23 @@ pub fn validate(flow: &FlowIR) -> Result<ValidatedIR, Vec<Diagnostic>> {
         Ok(ValidatedIR { flow: flow.clone() })
     } else {
         Err(diagnostics)
+    }
+}
+
+fn check_trigger_policy(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    let trigger_count = flow
+        .nodes
+        .iter()
+        .filter(|node| node.kind == dag_core::NodeKind::Trigger)
+        .count();
+
+    if trigger_count > 1 && !flow.policies.lint.allow_multiple_triggers.unwrap_or(false) {
+        diagnostics.push(diagnostic(
+            "DAG104",
+            format!(
+                "flow declares {trigger_count} trigger nodes; set policies.lint.allow_multiple_triggers=true to opt in"
+            ),
+        ));
     }
 }
 
@@ -2386,6 +2404,64 @@ mod tests {
         }
         let diagnostics = validate(&flow).expect_err("expected idempotency diagnostic");
         assert!(diagnostics.iter().any(|d| d.code.code == "DAG004"));
+    }
+
+    #[test]
+    fn multiple_triggers_rejected_without_policy_opt_in() {
+        let mut builder = FlowBuilder::new("multi_trigger", Version::new(1, 0, 0), Profile::Web);
+        let node_spec = NodeSpec::inline(
+            "tests::noop",
+            "Noop",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+
+        let trigger_a = builder.add_node("trigger_a", &node_spec).unwrap();
+        let trigger_b = builder.add_node("trigger_b", &node_spec).unwrap();
+        builder.connect(&trigger_a, &trigger_b);
+
+        let mut flow = builder.build();
+        if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "trigger_a") {
+            node.kind = dag_core::NodeKind::Trigger;
+        }
+        if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "trigger_b") {
+            node.kind = dag_core::NodeKind::Trigger;
+        }
+
+        let diagnostics = validate(&flow).expect_err("expected trigger policy error");
+        assert!(diagnostics.iter().any(|d| d.code.code == "DAG104"));
+    }
+
+    #[test]
+    fn multiple_triggers_allowed_with_policy_opt_in() {
+        let mut builder = FlowBuilder::new("multi_trigger_ok", Version::new(1, 0, 0), Profile::Web);
+        let node_spec = NodeSpec::inline(
+            "tests::noop",
+            "Noop",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+
+        let trigger_a = builder.add_node("trigger_a", &node_spec).unwrap();
+        let trigger_b = builder.add_node("trigger_b", &node_spec).unwrap();
+        builder.connect(&trigger_a, &trigger_b);
+
+        let mut flow = builder.build();
+        flow.policies.lint.allow_multiple_triggers = Some(true);
+        if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "trigger_a") {
+            node.kind = dag_core::NodeKind::Trigger;
+        }
+        if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "trigger_b") {
+            node.kind = dag_core::NodeKind::Trigger;
+        }
+
+        validate(&flow).expect("expected validation success");
     }
 
     #[test]

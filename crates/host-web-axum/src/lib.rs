@@ -14,6 +14,7 @@ use axum::response::{
 };
 use axum::routing::{MethodRouter, delete, get, patch, post, put};
 use capabilities::ResourceBag;
+use dag_core::NodeKind;
 use futures::StreamExt;
 use host_inproc::{EnvironmentPlugin, HostRuntime, Invocation, InvocationMetadata};
 use kernel_exec::{ExecutionError, ExecutionResult, FlowExecutor, StreamHandle};
@@ -252,9 +253,20 @@ pub struct HostHandle {
 
 impl HostHandle {
     /// Build a new host handle with the supplied executor and validated Flow IR.
+    ///
+    /// Panics if the entrypoint trigger/capture aliases are invalid.
     pub fn new(executor: FlowExecutor, ir: Arc<ValidatedIR>, config: RouteConfig) -> Self {
-        let router = build_router(executor, ir, config);
-        Self { router }
+        Self::try_new(executor, ir, config).expect("invalid trigger/capture alias")
+    }
+
+    /// Fallible constructor that validates trigger/capture wiring before serving.
+    pub fn try_new(
+        executor: FlowExecutor,
+        ir: Arc<ValidatedIR>,
+        config: RouteConfig,
+    ) -> Result<Self, ExecutionError> {
+        let router = try_build_router(executor, ir, config)?;
+        Ok(Self { router })
     }
 
     /// Obtain a clone of the underlying router for further composition.
@@ -297,7 +309,38 @@ pub fn into_service(
     HostHandle::new(executor, ir, config).into_service()
 }
 
-fn build_router(executor: FlowExecutor, ir: Arc<ValidatedIR>, config: RouteConfig) -> Router<()> {
+fn validate_entrypoint(
+    ir: &ValidatedIR,
+    trigger_alias: &str,
+    capture_alias: &str,
+) -> Result<(), ExecutionError> {
+    let trigger = ir
+        .flow()
+        .node(trigger_alias)
+        .ok_or_else(|| ExecutionError::UnknownTrigger {
+            alias: trigger_alias.to_string(),
+        })?;
+
+    if trigger.kind != NodeKind::Trigger {
+        return Err(ExecutionError::UnknownTrigger {
+            alias: trigger_alias.to_string(),
+        });
+    }
+
+    ir.flow()
+        .node(capture_alias)
+        .ok_or_else(|| ExecutionError::UnknownCapture {
+            alias: capture_alias.to_string(),
+        })?;
+
+    Ok(())
+}
+
+fn try_build_router(
+    executor: FlowExecutor,
+    ir: Arc<ValidatedIR>,
+    config: RouteConfig,
+) -> Result<Router<()>, ExecutionError> {
     let RouteConfig {
         path,
         method,
@@ -307,6 +350,8 @@ fn build_router(executor: FlowExecutor, ir: Arc<ValidatedIR>, config: RouteConfi
         resources,
         environment_plugins,
     } = config;
+
+    validate_entrypoint(&ir, &trigger_alias, &capture_alias)?;
 
     let runtime = if environment_plugins.is_empty() {
         HostRuntime::new(executor, Arc::clone(&ir))
@@ -326,9 +371,9 @@ fn build_router(executor: FlowExecutor, ir: Arc<ValidatedIR>, config: RouteConfi
     };
 
     let route = method_router(&method);
-    Router::<SharedState>::new()
+    Ok(Router::<SharedState>::new()
         .route(&path, route)
-        .with_state::<()>(state)
+        .with_state::<()>(state))
 }
 
 fn method_router(method: &Method) -> MethodRouter<SharedState> {

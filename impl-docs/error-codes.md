@@ -21,6 +21,7 @@ ensure the registry stays in sync with the implementation.
 | DAG101    | Validation     | Error   | Trigger definition does not expose an output port. |
 | DAG102    | Validation     | Error   | Trigger respond configuration incompatible with profile. |
 | DAG103    | Validation     | Error   | Trigger route/method conflicts with an existing trigger. |
+| DAG104    | Validation     | Error   | Multiple trigger nodes declared without policy opt-in. |
 | DAG200    | Validation     | Error   | Cycle detected in workflow graph. |
 | DAG201    | Validation     | Error   | Port type mismatch between connected nodes. |
 | DAG202    | Validation     | Error   | Referenced workflow variable is undefined. |

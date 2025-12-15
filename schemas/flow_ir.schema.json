@@ -582,14 +582,19 @@
     "PolicyLintSettings": {
       "description": "Lint-specific policy settings.",
       "properties": {
+        "allow_multiple_triggers": {
+          "description": "Allow multiple trigger nodes in a single flow.\n\nDefault is false when omitted.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "require_control_hints": {
+          "default": false,
           "description": "Whether control surface hints are required.",
           "type": "boolean"
         }
       },
-      "required": [
-        "require_control_hints"
-      ],
       "type": "object"
     },
     "Profile": {

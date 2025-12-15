@@ -118,6 +118,12 @@ pub static DIAGNOSTIC_CODES: Lazy<Vec<DiagnosticCode>> = Lazy::new(|| {
             summary: "Trigger route or method conflicts with an existing trigger",
         },
         DiagnosticCode {
+            code: "DAG104",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Multiple trigger nodes declared without policy opt-in",
+        },
+        DiagnosticCode {
             code: "DAG200",
             subsystem: "validation",
             default_severity: Severity::Error,

@@ -451,7 +451,13 @@ pub struct FlowPolicies {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 pub struct PolicyLintSettings {
     /// Whether control surface hints are required.
+    #[serde(default)]
     pub require_control_hints: bool,
+    /// Allow multiple trigger nodes in a single flow.
+    ///
+    /// Default is false when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_multiple_triggers: Option<bool>,
 }
 
 /// Arbitrary metadata describing the workflow.

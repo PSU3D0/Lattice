@@ -406,3 +406,15 @@ Learnings
   - `cargo fmt --all`
   - `cargo test --workspace`
   - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+
+## 2025-12-15 — Triggers & entrypoints wiring rules (Epic 01.5)
+
+- Added `policies.lint.allow_multiple_triggers` (default false) to keep agent-authored flows rigid by default (single canonical input), while allowing explicit opt-in for multi-ingress flows.
+- Updated `kernel-plan` validation to reject flows with multiple `NodeKind::Trigger` unless policy opt-in is set (`DAG104`).
+- Tightened host entrypoint wiring:
+  - Axum host validates trigger/capture aliases at startup and refuses to serve on invalid wiring (errors as `UnknownTrigger`/`UnknownCapture`).
+- Extended CLI local/serve execution to bind `resource::*` providers and run through the host runtime so preflight (`CAP101`) and `lf.*` metadata behave consistently.
+- Commands exercised:
+  - `cargo fmt --all`
+  - `cargo test --workspace`
+  - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
