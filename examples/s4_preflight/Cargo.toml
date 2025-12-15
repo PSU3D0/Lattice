@@ -1,0 +1,19 @@
+[package]
+name = "example-s4-preflight"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "S4 preflight example demonstrating CAP101 missing capabilities."
+
+[dependencies]
+dag-core = { path = "../../crates/dag-core" }
+dag-macros = { path = "../../crates/dag-macros" }
+kernel-exec = { path = "../../crates/kernel-exec" }
+kernel-plan = { path = "../../crates/kernel-plan" }
+capabilities = { path = "../../crates/capabilities" }
+serde.workspace = true
+serde_json.workspace = true

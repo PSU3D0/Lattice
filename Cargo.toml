@@ -34,7 +34,10 @@ members = [
   "crates/testing-harness-idem",
   "crates/types-common",
   "examples/s1_echo",
-  "examples/s2_site"
+  "examples/s2_site",
+  "examples/s3_branching",
+  "examples/s4_preflight",
+  "examples/s5_unsupported_surface"
 ]
 
 [workspace.package]

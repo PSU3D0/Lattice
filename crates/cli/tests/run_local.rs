@@ -88,6 +88,45 @@ fn run_local_handles_property_inputs() {
 }
 
 #[test]
+fn run_local_preflight_fails_without_required_bindings() -> Result<(), Box<dyn std::error::Error>> {
+    let output = Command::cargo_bin("flows")?
+        .args(["run", "local", "--example", "s4_preflight"])
+        .output()?;
+
+    assert!(!output.status.success(), "expected failure: {output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("CAP101"), "stderr missing CAP101: {stderr}");
+    assert!(
+        stderr.contains("resource::kv::read"),
+        "stderr missing required hint: {stderr}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn run_local_preflight_succeeds_with_kv_binding() -> Result<(), Box<dyn std::error::Error>> {
+    let output = Command::cargo_bin("flows")?
+        .args([
+            "run",
+            "local",
+            "--example",
+            "s4_preflight",
+            "--bind",
+            "resource::kv=memory",
+        ])
+        .output()?;
+
+    assert!(output.status.success(), "expected success: {output:?}");
+
+    let stdout = String::from_utf8(output.stdout)?;
+    let payload: Value = serde_json::from_str(stdout.trim())?;
+    assert_eq!(payload, json!({}));
+
+    Ok(())
+}
+
+#[test]
 fn run_local_streams_events() -> Result<(), Box<dyn std::error::Error>> {
     let output = Command::cargo_bin("flows")?
         .args([
@@ -187,6 +226,36 @@ fn run_local_emits_json_summary() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(Value::as_array)
         .expect("nodes array missing in summary");
     assert!(!nodes.is_empty(), "expected node metrics in summary");
+
+    Ok(())
+}
+
+#[test]
+fn run_local_branching_routes_then_branch() -> Result<(), Box<dyn std::error::Error>> {
+    let output = Command::cargo_bin("flows")?
+        .args([
+            "run",
+            "local",
+            "--example",
+            "s3_branching",
+            "--payload",
+            r#"{"flag": true, "mode": "a"}"#,
+        ])
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "flows run local s3_branching failed: {:?}",
+        output
+    );
+
+    let stdout = String::from_utf8(output.stdout)?;
+    let payload: Value = serde_json::from_str(stdout.trim())?;
+    assert_eq!(payload.get("branch").and_then(Value::as_str), Some("then"));
+    assert_eq!(
+        payload.get("mode_selected").and_then(Value::as_str),
+        Some("a")
+    );
 
     Ok(())
 }

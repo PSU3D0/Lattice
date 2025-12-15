@@ -21,12 +21,16 @@ use tokio::net::TcpListener;
 use tokio::runtime::Builder as RuntimeBuilder;
 use tokio::signal;
 
-use host_inproc::EnvironmentPlugin;
+use capabilities::ResourceBag;
+use host_inproc::{EnvironmentPlugin, HostRuntime, Invocation};
 
 use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
 
 use example_s1_echo as s1_echo;
 use example_s2_site as s2_site;
+use example_s3_branching as s3_branching;
+use example_s4_preflight as s4_preflight;
+use example_s5_unsupported_surface as s5_unsupported_surface;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -69,6 +73,14 @@ struct LocalArgs {
     /// Built-in example to execute (e.g. `s1_echo`).
     #[arg(long, default_value = "s1_echo")]
     example: String,
+    /// Bind capability providers for required `resource::*` domains.
+    ///
+    /// Examples:
+    /// - `--bind resource::kv=memory`
+    /// - `--bind kv=memory` (sugar)
+    /// - `--bind resource::http::write=reqwest`
+    #[arg(long = "bind")]
+    bindings: Vec<String>,
     /// Inline JSON payload to feed the trigger input.
     #[arg(long)]
     payload: Option<String>,
@@ -88,6 +100,9 @@ struct ServeArgs {
     /// Built-in example to serve (e.g. `s1_echo`).
     #[arg(long, default_value = "s1_echo")]
     example: String,
+    /// Bind capability providers for required `resource::*` domains.
+    #[arg(long = "bind")]
+    bindings: Vec<String>,
     /// Address to bind (host:port).
     #[arg(long, default_value = "127.0.0.1:8080")]
     addr: SocketAddr,
@@ -339,6 +354,7 @@ fn run_local(args: LocalArgs) -> Result<()> {
         return Err(anyhow!("--json cannot be combined with --stream"));
     }
     let payload = parse_payload(&args)?;
+    let resources = resource_bag_from_bindings(&args.bindings)?;
     let handle = load_example(&args.example)?;
 
     if handle.is_streaming && !stream_mode {
@@ -354,7 +370,7 @@ fn run_local(args: LocalArgs) -> Result<()> {
         trigger_alias,
         capture_alias,
         deadline,
-        environment_plugins: _,
+        environment_plugins,
         ..
     } = handle;
 
@@ -371,10 +387,23 @@ fn run_local(args: LocalArgs) -> Result<()> {
     let start = Instant::now();
 
     let outcome: RunOutcome = runtime.block_on(async move {
-        let result: Result<RunOutcome> = match executor
-            .run_once(ir.as_ref(), trigger_alias, payload, capture_alias, deadline)
-            .await?
-        {
+        let host_runtime = HostRuntime::with_plugins(executor, ir.clone(), environment_plugins)
+            .with_resource_bag(resources);
+
+        let invocation =
+            Invocation::new(trigger_alias, capture_alias, payload).with_deadline(deadline);
+
+        let execution = host_runtime
+            .execute(invocation)
+            .await
+            .map_err(|err| match &err {
+                kernel_exec::ExecutionError::MissingCapabilities { hints } => {
+                    anyhow!("[CAP101] missing required capabilities: {hints:?}")
+                }
+                _ => anyhow::Error::new(err),
+            })?;
+
+        let result: Result<RunOutcome> = match execution {
             ExecutionResult::Value(value) => Ok(RunOutcome {
                 result: Some(value),
                 stream_events: Vec::new(),
@@ -431,7 +460,11 @@ fn run_local(args: LocalArgs) -> Result<()> {
 }
 
 fn run_serve(args: ServeArgs) -> Result<()> {
-    let ServeArgs { example, addr } = args;
+    let ServeArgs {
+        example,
+        addr,
+        bindings,
+    } = args;
     let ExampleHandle {
         executor,
         ir,
@@ -443,6 +476,8 @@ fn run_serve(args: ServeArgs) -> Result<()> {
         environment_plugins,
         ..
     } = load_example(&example)?;
+
+    let resources = resource_bag_from_bindings(&bindings)?;
 
     let runtime = RuntimeBuilder::new_multi_thread()
         .enable_all()
@@ -456,7 +491,8 @@ fn run_serve(args: ServeArgs) -> Result<()> {
 
         let mut config = RouteConfig::new(route_path)
             .with_trigger_alias(trigger_alias)
-            .with_capture_alias(capture_alias);
+            .with_capture_alias(capture_alias)
+            .with_resources(resources);
         config = config.with_method(method);
         if let Some(deadline) = deadline {
             config = config.with_deadline(deadline);
@@ -649,6 +685,70 @@ fn print_text_summary(summary: &RunSummary) {
     }
 }
 
+fn normalize_binding_key(raw: &str) -> String {
+    if raw.starts_with("resource::") {
+        return raw.to_string();
+    }
+
+    match raw {
+        "http" => "resource::http",
+        "http_read" => "resource::http::read",
+        "http_write" => "resource::http::write",
+        "kv" => "resource::kv",
+        "kv_read" => "resource::kv::read",
+        "kv_write" => "resource::kv::write",
+        "blob" => "resource::blob",
+        "blob_read" => "resource::blob::read",
+        "blob_write" => "resource::blob::write",
+        "queue" => "resource::queue",
+        "queue_publish" => "resource::queue::publish",
+        "queue_consume" => "resource::queue::consume",
+        "dedupe" => "resource::dedupe",
+        "dedupe_write" => "resource::dedupe::write",
+        "db" => "resource::db",
+        "db_read" => "resource::db::read",
+        "db_write" => "resource::db::write",
+        other => other,
+    }
+    .to_string()
+}
+
+fn resource_bag_from_bindings(bindings: &[String]) -> Result<ResourceBag> {
+    let mut bag = ResourceBag::new();
+
+    for binding in bindings {
+        let (raw_key, raw_value) = binding.split_once('=').ok_or_else(|| {
+            anyhow!("invalid --bind `{binding}`; expected `<resource::hint>=<provider>`")
+        })?;
+        let key = normalize_binding_key(raw_key.trim());
+        let value = raw_value.trim();
+
+        match (key.as_str(), value) {
+            ("resource::kv" | "resource::kv::read" | "resource::kv::write", "memory") => {
+                bag = bag.with_kv(Arc::new(capabilities::kv::MemoryKv::new()));
+            }
+            ("resource::http", "reqwest") => {
+                let client = Arc::new(cap_http_reqwest::ReqwestHttpClient::default());
+                bag = bag.with_http_read(Arc::clone(&client));
+                bag = bag.with_http_write(client);
+            }
+            ("resource::http::read", "reqwest") => {
+                bag = bag.with_http_read(Arc::new(cap_http_reqwest::ReqwestHttpClient::default()));
+            }
+            ("resource::http::write", "reqwest") => {
+                bag = bag.with_http_write(Arc::new(cap_http_reqwest::ReqwestHttpClient::default()));
+            }
+            _ => {
+                return Err(anyhow!(
+                    "unsupported binding `{binding}`; supported: resource::kv=memory, resource::http::read=reqwest, resource::http::write=reqwest"
+                ));
+            }
+        }
+    }
+
+    Ok(bag)
+}
+
 fn parse_payload(args: &LocalArgs) -> Result<JsonValue> {
     if args.payload.is_some() && args.payload_file.is_some() {
         return Err(anyhow!(
@@ -694,6 +794,39 @@ fn load_example(name: &str) -> Result<ExampleHandle> {
             route_path: s2_site::ROUTE_PATH,
             method: Method::POST,
             is_streaming: true,
+            environment_plugins: Vec::new(),
+        }),
+        "s3_branching" => Ok(ExampleHandle {
+            executor: s3_branching::executor(),
+            ir: Arc::new(s3_branching::validated_ir()),
+            trigger_alias: s3_branching::TRIGGER_ALIAS,
+            capture_alias: s3_branching::CAPTURE_ALIAS,
+            deadline: Some(s3_branching::DEADLINE),
+            route_path: s3_branching::ROUTE_PATH,
+            method: Method::POST,
+            is_streaming: false,
+            environment_plugins: Vec::new(),
+        }),
+        "s4_preflight" => Ok(ExampleHandle {
+            executor: s4_preflight::executor(),
+            ir: Arc::new(s4_preflight::validated_ir()),
+            trigger_alias: s4_preflight::TRIGGER_ALIAS,
+            capture_alias: s4_preflight::CAPTURE_ALIAS,
+            deadline: Some(s4_preflight::DEADLINE),
+            route_path: s4_preflight::ROUTE_PATH,
+            method: Method::POST,
+            is_streaming: false,
+            environment_plugins: Vec::new(),
+        }),
+        "s5_unsupported_surface" => Ok(ExampleHandle {
+            executor: s5_unsupported_surface::executor(),
+            ir: Arc::new(s5_unsupported_surface::validated_ir()),
+            trigger_alias: s5_unsupported_surface::TRIGGER_ALIAS,
+            capture_alias: s5_unsupported_surface::CAPTURE_ALIAS,
+            deadline: Some(s5_unsupported_surface::DEADLINE),
+            route_path: s5_unsupported_surface::ROUTE_PATH,
+            method: Method::POST,
+            is_streaming: false,
             environment_plugins: Vec::new(),
         }),
         other => Err(anyhow!("unknown example `{other}`")),

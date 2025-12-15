@@ -1749,6 +1749,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-s3-branching"
+version = "0.1.0"
+dependencies = [
+ "dag-core",
+ "dag-macros",
+ "kernel-exec",
+ "kernel-plan",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "example-s4-preflight"
+version = "0.1.0"
+dependencies = [
+ "capabilities",
+ "dag-core",
+ "dag-macros",
+ "kernel-exec",
+ "kernel-plan",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "example-s5-unsupported-surface"
+version = "0.1.0"
+dependencies = [
+ "dag-core",
+ "dag-macros",
+ "kernel-exec",
+ "kernel-plan",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "exporters"
 version = "0.1.0"
 dependencies = [
@@ -1859,12 +1896,16 @@ dependencies = [
  "anyhow",
  "assert_cmd",
  "axum 0.7.9",
+ "cap-http-reqwest",
  "capabilities",
  "clap",
  "connector-spec",
  "dag-core",
  "example-s1-echo",
  "example-s2-site",
+ "example-s3-branching",
+ "example-s4-preflight",
+ "example-s5-unsupported-surface",
  "exporters",
  "futures",
  "host-inproc",

@@ -1,0 +1,18 @@
+[package]
+name = "example-s3-branching"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "S3 branching example demonstrating if_! and switch!."
+
+[dependencies]
+dag-core = { path = "../../crates/dag-core" }
+dag-macros = { path = "../../crates/dag-macros" }
+kernel-exec = { path = "../../crates/kernel-exec" }
+kernel-plan = { path = "../../crates/kernel-plan" }
+serde.workspace = true
+serde_json.workspace = true

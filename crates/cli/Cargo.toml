@@ -20,6 +20,7 @@ dag-core = { path = "../dag-core" }
 kernel-plan = { path = "../kernel-plan" }
 kernel-exec = { path = "../kernel-exec" }
 capabilities = { path = "../capabilities" }
+cap-http-reqwest = { path = "../cap-http-reqwest" }
 host-web-axum = { path = "../host-web-axum" }
 registry-client = { path = "../registry-client" }
 registry-cert = { path = "../registry-cert" }
@@ -27,6 +28,9 @@ connector-spec = { path = "../connector-spec" }
 exporters = { path = "../exporters" }
 example-s1-echo = { path = "../../examples/s1_echo" }
 example-s2-site = { path = "../../examples/s2_site" }
+example-s3-branching = { path = "../../examples/s3_branching" }
+example-s4-preflight = { path = "../../examples/s4_preflight" }
+example-s5-unsupported-surface = { path = "../../examples/s5_unsupported_surface" }
 host-inproc = { path = "../host-inproc" }
 anyhow.workspace = true
 clap.workspace = true
