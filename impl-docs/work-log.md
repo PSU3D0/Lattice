@@ -387,8 +387,16 @@ Learnings
   - `kernel-exec`: unit tests for then/else routing and selector_pointer error cases.
 - Commands exercised:
   - `cargo fmt --all`
-  - `cargo test -p dag-macros -p kernel-plan -p kernel-exec -p host-web-axum`
+  - `cargo test --workspace`
   - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+
+## 2025-12-15 — Resource catalog + bindings plan spec
+
+- Added a deployment-side resource catalog + bindings lock format to support shared instances, provider selection, and environment-specific realization without embedding secrets.
+- Defined provider-kind and wrapper-kind registry boundaries so plugins can validate `provides`, `connect`, and isolation config via JSON schema.
+- Documented `bindings.lock.json` as machine-generated output with a deterministic `content_hash` to discourage manual edits.
+- Linked the catalog spec from `impl-docs/spec/capabilities-and-binding.md` and captured the intent/realization split (catalog vs lock).
+
 
 ## 2025-12-15 — Reserved surfaces: structural validation + deterministic reject (Epic 01.4)
 

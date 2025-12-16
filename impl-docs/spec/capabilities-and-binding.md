@@ -183,7 +183,8 @@ To avoid locking in the wrong abstraction too early, these remain deferred:
 - Terraform-driven infra generation.
 
 Toward local + infra automation:
-- Introduce a bindings-plan artifact that maps required `resource::*` domains to provider types + configs (secrets referenced by name only).
+- Introduce a resource catalog + bindings-plan artifact that maps required `resource::*` domains to provider kinds + configs (secrets referenced by name only).
 - Provisioners can materialize those bindings per environment (docker-compose for local, Terraform modules for cloud) and output a resolved bindings file consumed by hosts.
+- Spec: `impl-docs/spec/resource-catalog.md`
 
 These can land after the 0.1 contract is stable, without changing Flow IR core fields.
