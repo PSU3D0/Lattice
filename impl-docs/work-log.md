@@ -426,3 +426,18 @@ Learnings
   - `cargo fmt --all`
   - `cargo test --workspace`
   - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+
+## 2025-12-16 — CLI consumes bindings.lock.json (Epic 01.2)
+
+- Added `--bindings-lock <path>` to `flows run local` and `flows run serve` (mutually exclusive with `--bind`).
+- Implemented deterministic lock validation: `content_hash` = sha256 of canonical JSON excluding `content_hash` (sorted object keys, preserved array order).
+- Built a `ResourceBag` from lock instances per `flow_id`; validates `provides` coverage and rejects unknown instances/flow IDs.
+- Implemented minimal provider allowlist: `kv.memory` -> `capabilities::kv::MemoryKv`, `http.reqwest` -> `cap_http_reqwest::ReqwestHttpClient` (read+write).
+- Added strict parsing guards: `version == 1`, `generated_at` required, `connect`/`config` must be objects, isolation wrappers rejected (not supported yet).
+- Added `flows bindings lock generate` to emit valid lockfiles (incl. `content_hash`).
+- Added CLI integration tests covering lock success + failure modes.
+- Added an example lock + regen script under `examples/s4_preflight/`.
+- Commands exercised:
+  - `cargo fmt --all`
+  - `cargo test --workspace`
+  - `cargo clippy --workspace --all-targets --all-features -- -D warnings`

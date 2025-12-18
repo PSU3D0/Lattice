@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "generated_at": "1970-01-01T00:00:00Z",
+  "content_hash": "ca207c206ef6f16ddf11ce59125755b2f09308fc7602af98dc05d9d4cad053af",
+  "instances": {
+    "kv_memory": {
+      "provider_kind": "kv.memory",
+      "provides": [
+        "resource::kv"
+      ],
+      "connect": {},
+      "config": {},
+      "isolation": []
+    }
+  },
+  "flows": {
+    "2d25af79-7d05-5ede-b8e3-b3698f01adf5": {
+      "use": {
+        "resource::kv::read": "kv_memory"
+      }
+    }
+  }
+}

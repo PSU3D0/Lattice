@@ -1,8 +1,9 @@
 use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, Read};
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -15,8 +16,9 @@ use futures::StreamExt;
 use host_web_axum::{HostHandle, RouteConfig};
 use kernel_exec::{ExecutionResult, FlowExecutor};
 use kernel_plan::{ValidatedIR, validate};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
+use sha2::{Digest, Sha256};
 use tokio::net::TcpListener;
 use tokio::runtime::Builder as RuntimeBuilder;
 use tokio::signal;
@@ -55,6 +57,9 @@ enum Command {
     /// Execute or serve workflows locally.
     #[command(subcommand)]
     Run(RunCommand),
+    /// Resource bindings tooling.
+    #[command(subcommand)]
+    Bindings(BindingsCommand),
 }
 
 #[derive(Subcommand, Debug)]
@@ -77,6 +82,40 @@ enum RunCommand {
     Serve(ServeArgs),
 }
 
+#[derive(Subcommand, Debug)]
+enum BindingsCommand {
+    /// Work with machine-generated bindings lockfiles.
+    #[command(subcommand)]
+    Lock(LockCommand),
+}
+
+#[derive(Subcommand, Debug)]
+enum LockCommand {
+    /// Generate a bindings.lock.json for a built-in example.
+    Generate(LockGenerateArgs),
+}
+
+#[derive(Args, Debug)]
+struct LockGenerateArgs {
+    /// Built-in example name (e.g. `s4_preflight`).
+    #[arg(long)]
+    example: String,
+    /// Bind capability providers for required `resource::*` domains.
+    ///
+    /// Examples:
+    /// - `--bind resource::kv=memory`
+    /// - `--bind kv=memory` (sugar)
+    /// - `--bind resource::http::write=reqwest`
+    #[arg(long = "bind")]
+    bindings: Vec<String>,
+    /// RFC3339 timestamp for `generated_at` (default is stable).
+    #[arg(long, default_value = "1970-01-01T00:00:00Z")]
+    generated_at: String,
+    /// Output path for the generated bindings.lock.json.
+    #[arg(long)]
+    out: PathBuf,
+}
+
 #[derive(Args, Debug)]
 struct LocalArgs {
     /// Built-in example to execute (e.g. `s1_echo`).
@@ -90,6 +129,9 @@ struct LocalArgs {
     /// - `--bind resource::http::write=reqwest`
     #[arg(long = "bind")]
     bindings: Vec<String>,
+    /// Path to a machine-generated `bindings.lock.json` file.
+    #[arg(long)]
+    bindings_lock: Option<PathBuf>,
     /// Inline JSON payload to feed the trigger input.
     #[arg(long)]
     payload: Option<String>,
@@ -112,6 +154,9 @@ struct ServeArgs {
     /// Bind capability providers for required `resource::*` domains.
     #[arg(long = "bind")]
     bindings: Vec<String>,
+    /// Path to a machine-generated `bindings.lock.json` file.
+    #[arg(long)]
+    bindings_lock: Option<PathBuf>,
     /// Address to bind (host:port).
     #[arg(long, default_value = "127.0.0.1:8080")]
     addr: SocketAddr,
@@ -168,6 +213,9 @@ fn main() -> Result<()> {
         Command::Entrypoints(EntrypointsCommand::Check(args)) => run_entrypoints_check(args),
         Command::Run(RunCommand::Local(args)) => run_local(args),
         Command::Run(RunCommand::Serve(args)) => run_serve(args),
+        Command::Bindings(BindingsCommand::Lock(LockCommand::Generate(args))) => {
+            run_bindings_lock_generate(args)
+        }
     }
 }
 
@@ -419,7 +467,9 @@ fn run_local(args: LocalArgs) -> Result<()> {
         return Err(anyhow!("--json cannot be combined with --stream"));
     }
     let payload = parse_payload(&args)?;
-    let resources = resource_bag_from_bindings(&args.bindings)?;
+    if args.bindings_lock.is_some() && !args.bindings.is_empty() {
+        return Err(anyhow!("--bindings-lock cannot be combined with --bind"));
+    }
     let handle = load_example(&args.example)?;
 
     if handle.is_streaming && !stream_mode {
@@ -438,6 +488,12 @@ fn run_local(args: LocalArgs) -> Result<()> {
         environment_plugins,
         ..
     } = handle;
+
+    let resources = if let Some(lock_path) = &args.bindings_lock {
+        resource_bag_from_bindings_lock(lock_path.as_path(), ir.flow().id.as_str())?
+    } else {
+        resource_bag_from_bindings(&args.bindings)?
+    };
 
     let flow_name = ir.flow().name.clone();
     let capture_alias_str = capture_alias.to_string();
@@ -529,6 +585,7 @@ fn run_serve(args: ServeArgs) -> Result<()> {
         example,
         addr,
         bindings,
+        bindings_lock,
     } = args;
     let ExampleHandle {
         executor,
@@ -542,7 +599,15 @@ fn run_serve(args: ServeArgs) -> Result<()> {
         ..
     } = load_example(&example)?;
 
-    let resources = resource_bag_from_bindings(&bindings)?;
+    if bindings_lock.is_some() && !bindings.is_empty() {
+        return Err(anyhow!("--bindings-lock cannot be combined with --bind"));
+    }
+
+    let resources = if let Some(lock_path) = bindings_lock {
+        resource_bag_from_bindings_lock(lock_path.as_path(), ir.flow().id.as_str())?
+    } else {
+        resource_bag_from_bindings(&bindings)?
+    };
 
     let runtime = RuntimeBuilder::new_multi_thread()
         .enable_all()
@@ -814,6 +879,404 @@ fn resource_bag_from_bindings(bindings: &[String]) -> Result<ResourceBag> {
     Ok(bag)
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct BindingsLock {
+    version: u32,
+    generated_at: String,
+    content_hash: String,
+    #[serde(default)]
+    instances: BTreeMap<String, LockInstance>,
+    #[serde(default)]
+    flows: BTreeMap<String, LockFlow>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct LockInstance {
+    provider_kind: String,
+    #[serde(default)]
+    provides: Vec<String>,
+    #[serde(default)]
+    connect: JsonValue,
+    #[serde(default)]
+    config: JsonValue,
+    #[serde(default)]
+    isolation: Vec<JsonValue>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct LockFlow {
+    #[serde(rename = "use", default)]
+    use_map: BTreeMap<String, String>,
+}
+
+fn canonical_json(value: &JsonValue) -> String {
+    match value {
+        JsonValue::Null | JsonValue::Bool(_) | JsonValue::Number(_) | JsonValue::String(_) => {
+            serde_json::to_string(value).expect("json")
+        }
+        JsonValue::Array(values) => {
+            let mut out = String::from("[");
+            for (index, item) in values.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                out.push_str(&canonical_json(item));
+            }
+            out.push(']');
+            out
+        }
+        JsonValue::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+
+            let mut out = String::from("{");
+            for (index, key) in keys.into_iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                out.push_str(&serde_json::to_string(key).expect("json key"));
+                out.push(':');
+                out.push_str(&canonical_json(map.get(key).expect("key present")));
+            }
+            out.push('}');
+            out
+        }
+    }
+}
+
+fn sha256_hex(payload: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(payload.as_bytes());
+    let digest = hasher.finalize();
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn compute_lock_content_hash(lock_json: &JsonValue) -> Result<String> {
+    let mut copy = lock_json.clone();
+    let Some(obj) = copy.as_object_mut() else {
+        return Err(anyhow!("bindings.lock must be a JSON object"));
+    };
+    obj.remove("content_hash");
+
+    Ok(sha256_hex(&canonical_json(&copy)))
+}
+
+fn required_resource_hints(flow: &dag_core::FlowIR) -> BTreeSet<String> {
+    let mut required = BTreeSet::new();
+    for node in &flow.nodes {
+        for hint in &node.effect_hints {
+            if hint.starts_with("resource::") {
+                required.insert(hint.clone());
+            }
+        }
+    }
+    required
+}
+
+fn provider_kind_from_token(token: &str) -> Option<&'static str> {
+    match token {
+        "memory" | "kv.memory" => Some("kv.memory"),
+        "reqwest" | "http.reqwest" => Some("http.reqwest"),
+        _ => None,
+    }
+}
+
+fn default_provider_kind_for_required_hint(required: &str) -> Option<&'static str> {
+    if required.starts_with("resource::kv") {
+        return Some("kv.memory");
+    }
+
+    if required.starts_with("resource::http") {
+        return Some("http.reqwest");
+    }
+
+    None
+}
+
+fn binding_key_covers_required(binding_key: &str, required: &str) -> bool {
+    required == binding_key || required.starts_with(&format!("{binding_key}::"))
+}
+
+fn parse_bindings_for_lock(bindings: &[String]) -> Result<Vec<(String, String)>> {
+    let mut parsed = Vec::new();
+
+    for binding in bindings {
+        let (raw_key, raw_value) = binding.split_once('=').ok_or_else(|| {
+            anyhow!("invalid --bind `{binding}`; expected `<resource::hint>=<provider>`")
+        })?;
+        let key = normalize_binding_key(raw_key.trim());
+        if !key.starts_with("resource::") {
+            return Err(anyhow!(
+                "invalid --bind `{binding}`; expected `resource::*` key after normalization"
+            ));
+        }
+
+        let token = raw_value.trim();
+        let provider_kind = provider_kind_from_token(token).ok_or_else(|| {
+            anyhow!(
+                "unsupported provider `{token}` in --bind `{binding}`; supported: memory, reqwest"
+            )
+        })?;
+
+        parsed.push((key, provider_kind.to_string()));
+    }
+
+    Ok(parsed)
+}
+
+fn lock_instance_for_provider_kind(provider_kind: &str) -> Result<LockInstance> {
+    let provides = match provider_kind {
+        "kv.memory" => vec!["resource::kv".to_string()],
+        "http.reqwest" => vec!["resource::http".to_string()],
+        other => {
+            return Err(anyhow!(
+                "unsupported provider_kind `{other}` in bindings.lock generator"
+            ));
+        }
+    };
+
+    Ok(LockInstance {
+        provider_kind: provider_kind.to_string(),
+        provides,
+        connect: json!({}),
+        config: json!({}),
+        isolation: Vec::new(),
+    })
+}
+
+fn instance_name_for_provider_kind(provider_kind: &str) -> String {
+    provider_kind.replace('.', "_")
+}
+
+fn select_provider_kind_for_required_hint(
+    overrides: &[(String, String)],
+    required: &str,
+) -> Result<String> {
+    let mut best: Option<&(String, String)> = None;
+
+    for entry in overrides {
+        let (key, _kind) = entry;
+        if binding_key_covers_required(key, required) {
+            match best {
+                Some((best_key, _)) if best_key.len() >= key.len() => {}
+                _ => best = Some(entry),
+            }
+        }
+    }
+
+    let provider_kind = if let Some((_, kind)) = best {
+        kind.clone()
+    } else if let Some(default) = default_provider_kind_for_required_hint(required) {
+        default.to_string()
+    } else {
+        return Err(anyhow!(
+            "no provider selected for required `{required}`; pass `--bind <resource::...>=<provider>`"
+        ));
+    };
+
+    let instance = lock_instance_for_provider_kind(&provider_kind)?;
+    if !instance_provides(&instance, required) {
+        return Err(anyhow!(
+            "provider_kind `{provider_kind}` does not provide `{required}`"
+        ));
+    }
+
+    Ok(provider_kind)
+}
+
+fn run_bindings_lock_generate(args: LockGenerateArgs) -> Result<()> {
+    if args.generated_at.trim().is_empty() {
+        return Err(anyhow!("--generated-at cannot be empty"));
+    }
+
+    let handle = load_example(&args.example)?;
+    let flow = handle.ir.flow();
+    let flow_id = flow.id.as_str().to_string();
+
+    let required = required_resource_hints(flow);
+    let overrides = parse_bindings_for_lock(&args.bindings)?;
+
+    let mut use_map: BTreeMap<String, String> = BTreeMap::new();
+    let mut instances: BTreeMap<String, LockInstance> = BTreeMap::new();
+
+    for hint in required {
+        let provider_kind = select_provider_kind_for_required_hint(&overrides, &hint)?;
+        let instance_name = instance_name_for_provider_kind(&provider_kind);
+        use_map.insert(hint, instance_name.clone());
+
+        match instances.entry(instance_name) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(lock_instance_for_provider_kind(&provider_kind)?);
+            }
+            std::collections::btree_map::Entry::Occupied(_) => {}
+        }
+    }
+
+    let mut flows = BTreeMap::new();
+    flows.insert(flow_id, LockFlow { use_map });
+
+    let mut lock = BindingsLock {
+        version: 1,
+        generated_at: args.generated_at,
+        content_hash: String::new(),
+        instances,
+        flows,
+    };
+
+    let json = serde_json::to_value(&lock).context("failed to serialize bindings.lock")?;
+    lock.content_hash = compute_lock_content_hash(&json)?;
+
+    let payload = serde_json::to_vec_pretty(&lock).context("failed to serialize bindings.lock")?;
+    fs::write(&args.out, payload)
+        .with_context(|| format!("failed to write {}", args.out.display()))?;
+    println!("{}", args.out.display());
+    Ok(())
+}
+
+fn load_bindings_lock(path: &Path) -> Result<BindingsLock> {
+    let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let value: JsonValue = serde_json::from_slice(&bytes)
+        .with_context(|| format!("{} is not valid JSON", path.display()))?;
+
+    let expected = value
+        .get("content_hash")
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| {
+            anyhow!(
+                "{} is missing required field `content_hash`",
+                path.display()
+            )
+        })?
+        .to_string();
+
+    let actual = compute_lock_content_hash(&value)?;
+    if expected != actual {
+        return Err(anyhow!(
+            "{} content_hash mismatch (expected {expected}, computed {actual})",
+            path.display()
+        ));
+    }
+
+    let lock: BindingsLock = serde_json::from_value(value)
+        .with_context(|| format!("{} is not a valid bindings.lock document", path.display()))?;
+
+    if lock.version != 1 {
+        return Err(anyhow!(
+            "{} has unsupported bindings.lock version {}; expected 1",
+            path.display(),
+            lock.version
+        ));
+    }
+
+    if lock.generated_at.trim().is_empty() {
+        return Err(anyhow!(
+            "{} is missing required field `generated_at`",
+            path.display()
+        ));
+    }
+
+    if lock.content_hash != expected {
+        return Err(anyhow!(
+            "{} content_hash mismatch after parsing (expected {expected}, parsed {})",
+            path.display(),
+            lock.content_hash
+        ));
+    }
+
+    Ok(lock)
+}
+
+fn instance_provides(instance: &LockInstance, required: &str) -> bool {
+    instance
+        .provides
+        .iter()
+        .any(|provided| required == provided || required.starts_with(&format!("{provided}::")))
+}
+
+fn validate_lock_instance_well_formed(name: &str, instance: &LockInstance) -> Result<()> {
+    for provided in &instance.provides {
+        if !provided.starts_with("resource::") {
+            return Err(anyhow!(
+                "bindings.lock instance `{name}` has non-resource provides entry `{provided}`"
+            ));
+        }
+    }
+
+    if !instance.connect.is_object() {
+        return Err(anyhow!(
+            "bindings.lock instance `{name}` has invalid `connect` (expected object)"
+        ));
+    }
+
+    if !instance.config.is_object() {
+        return Err(anyhow!(
+            "bindings.lock instance `{name}` has invalid `config` (expected object)"
+        ));
+    }
+
+    if !instance.isolation.is_empty() {
+        return Err(anyhow!(
+            "bindings.lock instance `{name}` uses isolation wrappers; wrappers not supported"
+        ));
+    }
+
+    Ok(())
+}
+
+fn resource_bag_from_bindings_lock(path: &Path, flow_id: &str) -> Result<ResourceBag> {
+    let lock = load_bindings_lock(path)?;
+
+    let flow = lock
+        .flows
+        .get(flow_id)
+        .ok_or_else(|| anyhow!("bindings.lock does not define bindings for flow_id `{flow_id}`"))?;
+
+    let mut instance_names: BTreeSet<&str> = BTreeSet::new();
+    for (resource_key, instance_name) in &flow.use_map {
+        if !resource_key.starts_with("resource::") {
+            return Err(anyhow!(
+                "bindings.lock flow `{flow_id}` contains non-resource key `{resource_key}`"
+            ));
+        }
+
+        let instance = lock.instances.get(instance_name).ok_or_else(|| {
+            anyhow!("bindings.lock flow `{flow_id}` references unknown instance `{instance_name}`")
+        })?;
+
+        if !instance_provides(instance, resource_key) {
+            return Err(anyhow!(
+                "bindings.lock instance `{instance_name}` does not provide `{resource_key}`"
+            ));
+        }
+
+        instance_names.insert(instance_name.as_str());
+    }
+
+    let mut bag = ResourceBag::new();
+    for name in instance_names {
+        let instance = lock.instances.get(name).expect("instance exists");
+        validate_lock_instance_well_formed(name, instance)?;
+
+        match instance.provider_kind.as_str() {
+            "kv.memory" => {
+                bag = bag.with_kv(Arc::new(capabilities::kv::MemoryKv::new()));
+            }
+            "http.reqwest" => {
+                let client = Arc::new(cap_http_reqwest::ReqwestHttpClient::default());
+                bag = bag.with_http_read(Arc::clone(&client));
+                bag = bag.with_http_write(client);
+            }
+            other => {
+                return Err(anyhow!(
+                    "unsupported provider_kind `{other}` for instance `{name}`"
+                ));
+            }
+        }
+    }
+
+    Ok(bag)
+}
+
 fn parse_payload(args: &LocalArgs) -> Result<JsonValue> {
     if args.payload.is_some() && args.payload_file.is_some() {
         return Err(anyhow!(
@@ -939,5 +1402,171 @@ mod tests {
         let json = serde_json::to_string(&response).expect("serialize graph response");
         assert!(json.contains("\"status\":\"error\""));
         assert!(json.contains("\"code\":\"DET302\""));
+    }
+
+    fn temp_lock_path() -> PathBuf {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let mut path = std::env::temp_dir();
+        let pid = std::process::id();
+        let counter = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        path.push(format!("lattice.bindings.lock.{pid}.{counter}.json"));
+        path
+    }
+
+    #[test]
+    fn bindings_lock_hash_round_trips() {
+        let mut lock = json!({
+            "version": 1,
+            "generated_at": "2025-12-15T00:00:00Z",
+            "content_hash": "",
+            "instances": {},
+            "flows": {}
+        });
+        let hash = compute_lock_content_hash(&lock).expect("hash");
+        lock["content_hash"] = json!(hash);
+
+        let path = temp_lock_path();
+        std::fs::write(&path, serde_json::to_vec(&lock).expect("json")).expect("write");
+
+        let loaded = load_bindings_lock(&path).expect("load lock");
+        assert_eq!(loaded.version, 1);
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn bindings_lock_hash_mismatch_rejected() {
+        let lock = json!({
+            "version": 1,
+            "generated_at": "2025-12-15T00:00:00Z",
+            "content_hash": "deadbeef",
+            "instances": {},
+            "flows": {}
+        });
+
+        let path = temp_lock_path();
+        std::fs::write(&path, serde_json::to_vec(&lock).expect("json")).expect("write");
+
+        let err = load_bindings_lock(&path).expect_err("expected mismatch");
+        let msg = err.to_string();
+        assert!(msg.contains("content_hash mismatch"), "{msg}");
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn bindings_lock_builds_resource_bag_for_flow() {
+        use capabilities::ResourceAccess;
+
+        let flow_id = "test-flow";
+        let mut lock = json!({
+            "version": 1,
+            "generated_at": "2025-12-15T00:00:00Z",
+            "content_hash": "",
+            "instances": {
+                "kv1": {
+                    "provider_kind": "kv.memory",
+                    "provides": ["resource::kv"],
+                    "connect": {},
+                    "config": {},
+                    "isolation": []
+                }
+            },
+            "flows": {
+                flow_id: {
+                    "use": {
+                        "resource::kv": "kv1"
+                    }
+                }
+            }
+        });
+        let hash = compute_lock_content_hash(&lock).expect("hash");
+        lock["content_hash"] = json!(hash);
+
+        let path = temp_lock_path();
+        std::fs::write(&path, serde_json::to_vec(&lock).expect("json")).expect("write");
+
+        let bag = resource_bag_from_bindings_lock(&path, flow_id).expect("bag");
+        assert!(bag.kv().is_some());
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn bindings_lock_rejects_non_object_connect() {
+        let flow_id = "test-flow";
+        let mut lock = json!({
+            "version": 1,
+            "generated_at": "2025-12-15T00:00:00Z",
+            "content_hash": "",
+            "instances": {
+                "kv1": {
+                    "provider_kind": "kv.memory",
+                    "provides": ["resource::kv"],
+                    "connect": "oops",
+                    "config": {},
+                    "isolation": []
+                }
+            },
+            "flows": {
+                flow_id: {
+                    "use": {
+                        "resource::kv": "kv1"
+                    }
+                }
+            }
+        });
+        let hash = compute_lock_content_hash(&lock).expect("hash");
+        lock["content_hash"] = json!(hash);
+
+        let path = temp_lock_path();
+        std::fs::write(&path, serde_json::to_vec(&lock).expect("json")).expect("write");
+
+        let err = resource_bag_from_bindings_lock(&path, flow_id)
+            .err()
+            .expect("expected connect reject");
+        let msg = err.to_string();
+        assert!(msg.contains("invalid `connect`"), "{msg}");
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn bindings_lock_rejects_isolation_wrappers_until_supported() {
+        let flow_id = "test-flow";
+        let mut lock = json!({
+            "version": 1,
+            "generated_at": "2025-12-15T00:00:00Z",
+            "content_hash": "",
+            "instances": {
+                "kv1": {
+                    "provider_kind": "kv.memory",
+                    "provides": ["resource::kv"],
+                    "connect": {},
+                    "config": {},
+                    "isolation": [{"kind": "isolation.prefix_keys", "config": {}}]
+                }
+            },
+            "flows": {
+                flow_id: {
+                    "use": {
+                        "resource::kv": "kv1"
+                    }
+                }
+            }
+        });
+        let hash = compute_lock_content_hash(&lock).expect("hash");
+        lock["content_hash"] = json!(hash);
+
+        let path = temp_lock_path();
+        std::fs::write(&path, serde_json::to_vec(&lock).expect("json")).expect("write");
+
+        let err = resource_bag_from_bindings_lock(&path, flow_id)
+            .err()
+            .expect("expected isolation reject");
+        let msg = err.to_string();
+        assert!(msg.contains("isolation wrappers"), "{msg}");
+
+        std::fs::remove_file(&path).ok();
     }
 }
