@@ -34,6 +34,10 @@ Responsibilities:
 - Declare required isolation wrappers (namespacing, key-hmac, encryption) and secret references by name.
 - Map flows to instances.
 
+`resources.catalog.json` can be authored manually, or generated from infra state.
+For example, Terraform can produce catalog entries by exporting module outputs (endpoints, ids) and secret references
+(names/paths), without embedding secret material.
+
 ### `bindings.lock.json` (resolved)
 
 Environment-specific, **machine-generated**.
@@ -55,6 +59,11 @@ Examples:
 - `redis.upstash`
 - `cloudflare.kv`
 - `cloudflare.do`
+
+Provider kinds can be "plain" (just connectivity) or "composite" (bake in isolation semantics).
+For example:
+- `kv.redis` (plain)
+- `kv.zero_trust_upstash` (composite: requires scoping/encryption config; enforces it at runtime)
 
 Provider kinds are validated via a **provider registry** (built into the host/CLI binary in 0.1).
 Each provider registry entry MUST declare:
@@ -82,6 +91,37 @@ Wrappers MUST declare:
 - `kind` string
 - `applies_to[]` domains
 - `config_schema`
+
+### Modeling choices
+
+Deployments may model isolation in two ways:
+
+- Wrapper composition: a "plain" provider kind plus one or more wrappers.
+  - Example: `kv.redis` + `isolation.prefix_keys` + `isolation.encrypt_values`.
+- Composite provider kinds: provider kind semantics include isolation/zero-trust behavior.
+  - Example: `kv.zero_trust_upstash` requires a namespace strategy and key references and enforces them.
+
+Both approaches are valid. Wrapper composition maximizes reuse across backends; composite providers can enforce stronger invariants by construction.
+
+### Shared instances across many flows
+
+A single physical service (e.g. one Postgres cluster or one serverless KV account) can be shared by many flows.
+`bindings.lock.json` supports this by letting many `flows.<flow_id>.use[...]` entries reference the same `instances.<name>`.
+
+If a deployment needs per-flow scoping for a shared physical service (e.g. per-flow namespace prefixes), a resolver MAY synthesize derived instances in the lock
+(e.g. `kv_shared` plus `kv_flow_<flow_id>` instances) so each flow binds to its own scoped logical instance without changing the lock schema.
+A future lock schema MAY add per-use isolation config, but derived instances keep 0.1 compatible.
+
+## Resolver Boundary (MVP)
+
+A resolver consumes intent and produces a concrete lock file.
+
+- Inputs: Flow requirements (from Flow IR `effectHints[]`), a `resources.catalog.json`, and optional policy/environment selectors.
+- Output: a `bindings.lock.json` scoped to one or more flows.
+- Determinism: the resolver MUST be deterministic given the same inputs (no wall clock dependence; `generated_at` is injected).
+- Safety: the resolver MUST NOT fetch secrets or embed secret material; it only carries secret references.
+
+Terraform/pulumi/etc integration belongs on the catalog-production side: those tools can export `resources.catalog.json` from existing infra state and outputs.
 
 ## Schema (MVP)
 

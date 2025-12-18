@@ -52,6 +52,12 @@ Examples:
 
 In 0.1, the concrete infra/provisioning is considered out-of-band.
 
+Binding MAY include isolation semantics (namespacing, multi-tenant scoping, encryption) in two ways:
+- Wrapper composition (portable): apply ordered isolation wrappers to a plain provider.
+- Composite provider kinds (enforced): use a provider that bakes in and enforces the isolation semantics (e.g. "zero trust" providers).
+
+See `impl-docs/spec/resource-catalog.md` for how deployments can express these choices.
+
 ## Preflight Checks
 
 Hosts SHOULD perform preflight checks before serving traffic:
@@ -183,8 +189,9 @@ To avoid locking in the wrong abstraction too early, these remain deferred:
 - Terraform-driven infra generation.
 
 Toward local + infra automation:
-- Introduce a resource catalog + bindings-plan artifact that maps required `resource::*` domains to provider kinds + configs (secrets referenced by name only).
+- Introduce a resource catalog artifact (`resources.catalog.json`) and resolved lockfile (`bindings.lock.json`).
 - Provisioners can materialize those bindings per environment (docker-compose for local, Terraform modules for cloud) and output a resolved bindings file consumed by hosts.
+- Terraform integration is expected to work by exporting a catalog from existing infra state/outputs; the resolver remains deterministic/offline.
 - Spec: `impl-docs/spec/resource-catalog.md`
 
 These can land after the 0.1 contract is stable, without changing Flow IR core fields.
