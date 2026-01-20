@@ -1,5 +1,8 @@
 [workspace]
 resolver = "3"
+exclude = [
+  "crates/cap-http-workers/workerd-tests",
+]
 members = [
   "crates/adapters",
   "crates/cap-blob-fs",
@@ -10,6 +13,7 @@ members = [
   "crates/contrib/redis/cap-dedupe-redis",
   "crates/contrib/redis/cap-redis",
   "crates/cap-http-reqwest",
+  "crates/cap-http-workers",
   "crates/cap-kv-sqlite",
   "crates/capabilities",
   "crates/cli",
@@ -78,7 +82,7 @@ proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full"] }
 serde_with = "3"
-uuid = { version = "1", features = ["v4", "v5", "serde"] }
+uuid = { version = "1", features = ["v4", "v5", "serde", "js"] }
 wasmtime = { version = "16", features = ["async"] }
 wit-bindgen = "0.24"
 rustls = { version = "0.23", features = ["ring"] }

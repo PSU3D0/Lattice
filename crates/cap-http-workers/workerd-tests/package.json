@@ -1,0 +1,15 @@
+{
+  "name": "cap-http-workers-test",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "worker-build --release",
+    "test": "npm run build && vitest run"
+  },
+  "devDependencies": {
+    "miniflare": "^4.20250723.0",
+    "undici": "^7.0.0",
+    "vitest": "^3.0.0"
+  }
+}

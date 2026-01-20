@@ -1,0 +1,25 @@
+[package]
+name = "cap-http-workers"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Workers fetch-backed HTTP capability for Lattice."
+
+[dependencies]
+capabilities = { path = "../capabilities" }
+anyhow.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+worker = { version = "0.7.4", default-features = false, features = ["http"] }
+js-sys = "0.3"
+futures-util = "0.3"
+
+[dev-dependencies]
+dag-core = { path = "../dag-core" }
+wasm-bindgen-test = "0.3"

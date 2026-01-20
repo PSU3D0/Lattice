@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wasm-pack test:*)",
+      "Bash(cargo install:*)",
+      "Bash(npm install:*)",
+      "Bash(worker-build:*)",
+      "Bash(NODE_OPTIONS='--experimental-vm-modules' npx vitest run:*)"
+    ]
+  }
+}

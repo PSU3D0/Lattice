@@ -16,4 +16,9 @@ serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 dag-core = { path = "../dag-core" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tokio = { version = "1", default-features = false, features = ["macros", "rt", "sync", "time"] }
