@@ -31,6 +31,7 @@ example-s2-site = { path = "../../examples/s2_site" }
 example-s3-branching = { path = "../../examples/s3_branching" }
 example-s4-preflight = { path = "../../examples/s4_preflight" }
 example-s5-unsupported-surface = { path = "../../examples/s5_unsupported_surface" }
+example-s6-spill = { path = "../../examples/s6_spill" }
 host-inproc = { path = "../host-inproc" }
 anyhow.workspace = true
 clap.workspace = true

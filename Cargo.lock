@@ -1809,6 +1809,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-s6-spill"
+version = "0.1.0"
+dependencies = [
+ "capabilities",
+ "dag-core",
+ "dag-macros",
+ "kernel-exec",
+ "kernel-plan",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "exporters"
 version = "0.1.0"
 dependencies = [
@@ -1929,6 +1943,7 @@ dependencies = [
  "example-s3-branching",
  "example-s4-preflight",
  "example-s5-unsupported-surface",
+ "example-s6-spill",
  "exporters",
  "futures",
  "host-inproc",

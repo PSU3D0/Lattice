@@ -254,7 +254,7 @@ enum CapturedPayload {
     Stream(StreamingCapture),
 }
 
-struct StreamingCapture {
+pub struct StreamingCapture {
     alias: String,
     stream: futures::stream::BoxStream<'static, NodeResult<JsonValue>>,
     cancellation: CancellationToken,
@@ -1386,7 +1386,7 @@ impl FlowInstance {
     }
 
     /// Fetch the next captured result from the configured sink.
-    pub(crate) async fn next(&mut self) -> Option<Result<CaptureResult, ExecutionError>> {
+    pub async fn next(&mut self) -> Option<Result<CaptureResult, ExecutionError>> {
         match self.capture.recv().await {
             Some(CapturedOutput {
                 alias,
@@ -1438,7 +1438,7 @@ impl FlowInstance {
 }
 
 /// Result captured from a workflow execution.
-pub(crate) enum CaptureResult {
+pub enum CaptureResult {
     /// Single JSON value completion.
     Value(JsonValue),
     /// Streaming handle producing incremental events.

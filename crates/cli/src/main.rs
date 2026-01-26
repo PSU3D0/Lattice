@@ -33,6 +33,7 @@ use example_s2_site as s2_site;
 use example_s3_branching as s3_branching;
 use example_s4_preflight as s4_preflight;
 use example_s5_unsupported_surface as s5_unsupported_surface;
+use example_s6_spill as s6_spill;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -97,7 +98,7 @@ enum LockCommand {
 
 #[derive(Args, Debug)]
 struct LockGenerateArgs {
-    /// Built-in example name (e.g. `s4_preflight`).
+    /// Built-in example name (e.g. `s6_spill`).
     #[arg(long)]
     example: String,
     /// Bind capability providers for required `resource::*` domains.
@@ -118,7 +119,7 @@ struct LockGenerateArgs {
 
 #[derive(Args, Debug)]
 struct LocalArgs {
-    /// Built-in example to execute (e.g. `s1_echo`).
+    /// Built-in example to execute (e.g. `s6_spill`).
     #[arg(long, default_value = "s1_echo")]
     example: String,
     /// Bind capability providers for required `resource::*` domains.
@@ -144,11 +145,14 @@ struct LocalArgs {
     /// Emit structured JSON containing the result and metrics summary.
     #[arg(long)]
     json: bool,
+    /// Invoke the trigger multiple times against a single instance.
+    #[arg(long, default_value_t = 1)]
+    burst: usize,
 }
 
 #[derive(Args, Debug)]
 struct ServeArgs {
-    /// Built-in example to serve (e.g. `s1_echo`).
+    /// Built-in example to serve (e.g. `s6_spill`).
     #[arg(long, default_value = "s1_echo")]
     example: String,
     /// Bind capability providers for required `resource::*` domains.
@@ -463,6 +467,7 @@ fn run_local(args: LocalArgs) -> Result<()> {
     let example_name = args.example.clone();
     let stream_mode = args.stream;
     let json_mode = args.json;
+    let burst = args.burst.max(1);
     if json_mode && stream_mode {
         return Err(anyhow!("--json cannot be combined with --stream"));
     }
@@ -489,6 +494,12 @@ fn run_local(args: LocalArgs) -> Result<()> {
         ..
     } = handle;
 
+    let executor = if burst > 1 {
+        executor.with_capture_capacity(burst)
+    } else {
+        executor
+    };
+
     let resources = if let Some(lock_path) = &args.bindings_lock {
         resource_bag_from_bindings_lock(lock_path.as_path(), ir.flow().id.as_str())?
     } else {
@@ -511,45 +522,89 @@ fn run_local(args: LocalArgs) -> Result<()> {
         let host_runtime = HostRuntime::with_plugins(executor, ir.clone(), environment_plugins)
             .with_resource_bag(resources);
 
-        let invocation =
-            Invocation::new(trigger_alias, capture_alias, payload).with_deadline(deadline);
+        if burst == 1 {
+            let invocation =
+                Invocation::new(trigger_alias, capture_alias, payload).with_deadline(deadline);
 
-        let execution = host_runtime
-            .execute(invocation)
-            .await
-            .map_err(|err| match &err {
-                kernel_exec::ExecutionError::MissingCapabilities { hints } => {
-                    anyhow!("[CAP101] missing required capabilities: {hints:?}")
-                }
-                _ => anyhow::Error::new(err),
-            })?;
-
-        let result: Result<RunOutcome> = match execution {
-            ExecutionResult::Value(value) => Ok(RunOutcome {
-                result: Some(value),
-                stream_events: Vec::new(),
-                stream_count: 0,
-            }),
-            ExecutionResult::Stream(mut stream) => {
-                let mut events = Vec::new();
-                let mut count = 0usize;
-                while let Some(event) = stream.next().await {
-                    let payload = event.map_err(anyhow::Error::from)?;
-                    if json_mode {
-                        events.push(payload.clone());
-                    } else {
-                        println!("{}", serde_json::to_string(&payload)?);
+            let execution = host_runtime
+                .execute(invocation)
+                .await
+                .map_err(|err| match &err {
+                    kernel_exec::ExecutionError::MissingCapabilities { hints } => {
+                        anyhow!("[CAP101] missing required capabilities: {hints:?}")
                     }
-                    count += 1;
+                    _ => anyhow::Error::new(err),
+                })?;
+
+            let result: Result<RunOutcome> = match execution {
+                ExecutionResult::Value(value) => Ok(RunOutcome {
+                    result: Some(value),
+                    stream_events: Vec::new(),
+                    stream_count: 0,
+                }),
+                ExecutionResult::Stream(mut stream) => {
+                    let mut events = Vec::new();
+                    let mut count = 0usize;
+                    while let Some(event) = stream.next().await {
+                        let payload = event.map_err(anyhow::Error::from)?;
+                        if json_mode {
+                            events.push(payload.clone());
+                        } else {
+                            println!("{}", serde_json::to_string(&payload)?);
+                        }
+                        count += 1;
+                    }
+                    Ok(RunOutcome {
+                        result: None,
+                        stream_events: events,
+                        stream_count: count,
+                    })
                 }
-                Ok(RunOutcome {
-                    result: None,
-                    stream_events: events,
-                    stream_count: count,
-                })
+            };
+            return result;
+        }
+
+        if stream_mode {
+            return Err(anyhow!("--burst is not supported with streaming examples"));
+        }
+
+        let mut instance = host_runtime
+            .executor()
+            .instantiate(ir.as_ref(), capture_alias)
+            .map_err(anyhow::Error::new)?;
+
+        for idx in 0..burst {
+            let mut burst_payload = payload.clone();
+            if let JsonValue::Object(map) = &mut burst_payload {
+                map.insert("lf_burst_index".to_string(), JsonValue::from(idx as u64));
             }
-        };
-        result
+            instance
+                .send(trigger_alias, burst_payload)
+                .await
+                .map_err(anyhow::Error::new)?;
+        }
+
+        let mut results = Vec::with_capacity(burst);
+        for _ in 0..burst {
+            match instance.next().await {
+                Some(Ok(kernel_exec::CaptureResult::Value(value))) => {
+                    results.push(value);
+                }
+                Some(Ok(kernel_exec::CaptureResult::Stream(_))) => {
+                    return Err(anyhow!("streaming capture not supported in burst mode"));
+                }
+                Some(Err(err)) => return Err(anyhow::Error::new(err)),
+                None => return Err(anyhow!("capture channel closed before completion")),
+            }
+        }
+
+        instance.shutdown().await.map_err(anyhow::Error::new)?;
+
+        Ok(RunOutcome {
+            result: Some(JsonValue::Array(results)),
+            stream_events: Vec::new(),
+            stream_count: 0,
+        })
     })?;
 
     let duration = start.elapsed();
@@ -857,6 +912,9 @@ fn resource_bag_from_bindings(bindings: &[String]) -> Result<ResourceBag> {
             ("resource::kv" | "resource::kv::read" | "resource::kv::write", "memory") => {
                 bag = bag.with_kv(Arc::new(capabilities::kv::MemoryKv::new()));
             }
+            ("resource::blob" | "resource::blob::read" | "resource::blob::write", "memory") => {
+                bag = bag.with_blob(Arc::new(capabilities::blob::MemoryBlobStore::new()));
+            }
             ("resource::http", "reqwest") => {
                 let client = Arc::new(cap_http_reqwest::ReqwestHttpClient::default());
                 bag = bag.with_http_read(Arc::clone(&client));
@@ -870,7 +928,7 @@ fn resource_bag_from_bindings(bindings: &[String]) -> Result<ResourceBag> {
             }
             _ => {
                 return Err(anyhow!(
-                    "unsupported binding `{binding}`; supported: resource::kv=memory, resource::http::read=reqwest, resource::http::write=reqwest"
+                    "unsupported binding `{binding}`; supported: resource::kv=memory, resource::blob=memory, resource::http::read=reqwest, resource::http::write=reqwest"
                 ));
             }
         }
@@ -973,9 +1031,19 @@ fn required_resource_hints(flow: &dag_core::FlowIR) -> BTreeSet<String> {
     required
 }
 
-fn provider_kind_from_token(token: &str) -> Option<&'static str> {
+fn provider_kind_from_binding(key: &str, token: &str) -> Option<&'static str> {
     match token {
-        "memory" | "kv.memory" => Some("kv.memory"),
+        "memory" => {
+            if key.starts_with("resource::kv") {
+                Some("kv.memory")
+            } else if key.starts_with("resource::blob") {
+                Some("blob.memory")
+            } else {
+                None
+            }
+        }
+        "kv.memory" => Some("kv.memory"),
+        "blob.memory" => Some("blob.memory"),
         "reqwest" | "http.reqwest" => Some("http.reqwest"),
         _ => None,
     }
@@ -984,6 +1052,10 @@ fn provider_kind_from_token(token: &str) -> Option<&'static str> {
 fn default_provider_kind_for_required_hint(required: &str) -> Option<&'static str> {
     if required.starts_with("resource::kv") {
         return Some("kv.memory");
+    }
+
+    if required.starts_with("resource::blob") {
+        return Some("blob.memory");
     }
 
     if required.starts_with("resource::http") {
@@ -1012,9 +1084,9 @@ fn parse_bindings_for_lock(bindings: &[String]) -> Result<Vec<(String, String)>>
         }
 
         let token = raw_value.trim();
-        let provider_kind = provider_kind_from_token(token).ok_or_else(|| {
+        let provider_kind = provider_kind_from_binding(&key, token).ok_or_else(|| {
             anyhow!(
-                "unsupported provider `{token}` in --bind `{binding}`; supported: memory, reqwest"
+                "unsupported provider `{token}` in --bind `{binding}`; supported: memory, kv.memory, blob.memory, reqwest"
             )
         })?;
 
@@ -1027,6 +1099,7 @@ fn parse_bindings_for_lock(bindings: &[String]) -> Result<Vec<(String, String)>>
 fn lock_instance_for_provider_kind(provider_kind: &str) -> Result<LockInstance> {
     let provides = match provider_kind {
         "kv.memory" => vec!["resource::kv".to_string()],
+        "blob.memory" => vec!["resource::blob".to_string()],
         "http.reqwest" => vec!["resource::http".to_string()],
         other => {
             return Err(anyhow!(
@@ -1261,6 +1334,9 @@ fn resource_bag_from_bindings_lock(path: &Path, flow_id: &str) -> Result<Resourc
             "kv.memory" => {
                 bag = bag.with_kv(Arc::new(capabilities::kv::MemoryKv::new()));
             }
+            "blob.memory" => {
+                bag = bag.with_blob(Arc::new(capabilities::blob::MemoryBlobStore::new()));
+            }
             "http.reqwest" => {
                 let client = Arc::new(cap_http_reqwest::ReqwestHttpClient::default());
                 bag = bag.with_http_read(Arc::clone(&client));
@@ -1353,6 +1429,17 @@ fn load_example(name: &str) -> Result<ExampleHandle> {
             capture_alias: s5_unsupported_surface::CAPTURE_ALIAS,
             deadline: Some(s5_unsupported_surface::DEADLINE),
             route_path: s5_unsupported_surface::ROUTE_PATH,
+            method: Method::POST,
+            is_streaming: false,
+            environment_plugins: Vec::new(),
+        }),
+        "s6_spill" => Ok(ExampleHandle {
+            executor: s6_spill::executor(),
+            ir: Arc::new(s6_spill::validated_ir()),
+            trigger_alias: s6_spill::TRIGGER_ALIAS,
+            capture_alias: s6_spill::CAPTURE_ALIAS,
+            deadline: Some(s6_spill::DEADLINE),
+            route_path: s6_spill::ROUTE_PATH,
             method: Method::POST,
             is_streaming: false,
             environment_plugins: Vec::new(),

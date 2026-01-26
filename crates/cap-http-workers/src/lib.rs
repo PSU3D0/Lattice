@@ -173,7 +173,6 @@ mod wasm {
         use worker::web_sys::{AbortSignal, Request as WebRequest};
         use worker::{Headers, Response};
 
-
         thread_local! {
             static FETCH_STUB: RefCell<Option<Closure<dyn FnMut(JsValue, JsValue) -> js_sys::Promise>>> =
                 RefCell::new(None);

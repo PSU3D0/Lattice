@@ -1,0 +1,20 @@
+[package]
+name = "example-s6-spill"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "S6 example demonstrating buffer and spill behavior."
+
+[dependencies]
+dag-core = { path = "../../crates/dag-core" }
+dag-macros = { path = "../../crates/dag-macros" }
+kernel-exec = { path = "../../crates/kernel-exec" }
+kernel-plan = { path = "../../crates/kernel-plan" }
+capabilities = { path = "../../crates/capabilities" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
