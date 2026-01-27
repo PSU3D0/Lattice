@@ -1,0 +1,28 @@
+[package]
+name = "host-workers"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Cloudflare Workers host adapter for Lattice Flow"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+worker = { version = "0.7.4", default-features = false, features = ["http"] }
+host-inproc = { path = "../host-inproc" }
+kernel-exec = { path = "../kernel-exec", default-features = false, features = ["wasm"] }
+kernel-plan = { path = "../kernel-plan" }
+dag-core = { path = "../dag-core" }
+capabilities = { path = "../capabilities" }
+serde.workspace = true
+serde_json.workspace = true
+futures.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+wasm-bindgen-test.workspace = true

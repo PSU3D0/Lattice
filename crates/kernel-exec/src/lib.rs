@@ -9,7 +9,6 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::future::Future;
 use std::marker::PhantomData;
-use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -25,18 +24,169 @@ use kernel_plan::ValidatedIR;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value as JsonValue;
-use tempfile::{Builder as TempDirBuilder, TempDir};
 use thiserror::Error;
-use tokio::fs;
 use tokio::sync::{
     OwnedSemaphorePermit, Semaphore, mpsc,
     mpsc::error::{SendError, TrySendError},
 };
 use tokio::time;
+#[cfg(not(target_arch = "wasm32"))]
 use tokio_stream::{StreamMap, wrappers::ReceiverStream};
+#[cfg(not(target_arch = "wasm32"))]
 use tokio_util::sync::CancellationToken;
+#[cfg(target_arch = "wasm32")]
+use futures::stream::SelectAll;
+#[cfg(target_arch = "wasm32")]
+use wasm_stream::ReceiverStream;
+#[cfg(target_arch = "wasm32")]
+use cancellation::CancellationToken;
 use tracing::{debug, error, instrument, trace, warn};
-use uuid::Uuid;
+
+#[cfg(target_arch = "wasm32")]
+mod cancellation {
+    use std::future::Future;
+    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+    use tokio::sync::Notify;
+
+    #[derive(Clone)]
+    pub struct CancellationToken {
+        cancelled: Arc<AtomicBool>,
+        notify: Arc<Notify>,
+    }
+
+    impl CancellationToken {
+        pub fn new() -> Self {
+            Self {
+                cancelled: Arc::new(AtomicBool::new(false)),
+                notify: Arc::new(Notify::new()),
+            }
+        }
+
+        pub fn cancel(&self) {
+            if !self.cancelled.swap(true, Ordering::AcqRel) {
+                self.notify.notify_waiters();
+            }
+        }
+
+        pub fn is_cancelled(&self) -> bool {
+            self.cancelled.load(Ordering::Acquire)
+        }
+
+        pub fn cancelled(&self) -> impl Future<Output = ()> + '_ {
+            let notify = self.notify.clone();
+            async move {
+                if self.is_cancelled() {
+                    return;
+                }
+                notify.notified().await;
+            }
+        }
+
+        pub fn cancelled_owned(self) -> impl Future<Output = ()> {
+            let notify = self.notify.clone();
+            async move {
+                if self.is_cancelled() {
+                    return;
+                }
+                notify.notified().await;
+            }
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+mod wasm_stream {
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    use futures::Stream;
+    use tokio::sync::mpsc::Receiver;
+
+    pub struct ReceiverStream<T> {
+        inner: Receiver<T>,
+    }
+
+    impl<T> ReceiverStream<T> {
+        pub fn new(inner: Receiver<T>) -> Self {
+            Self { inner }
+        }
+    }
+
+    impl<T> Stream for ReceiverStream<T> {
+        type Item = T;
+
+        fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            self.get_mut().inner.poll_recv(cx)
+        }
+    }
+}
+
+#[cfg(feature = "spill-fs")]
+mod blob_spill {
+    use super::{AnyhowContext, AnyhowResult, JsonValue};
+    use std::path::PathBuf;
+
+    use tempfile::{Builder as TempDirBuilder, TempDir};
+    use thiserror::Error;
+    use tokio::fs;
+    use uuid::Uuid;
+
+    #[derive(Debug, Error)]
+    pub(super) enum SpillError {
+        #[error("failed to serialise payload for spill: {0}")]
+        Serialize(#[from] serde_json::Error),
+        #[error("failed to persist/load spill file: {0}")]
+        Io(#[from] std::io::Error),
+    }
+
+    #[derive(Debug)]
+    pub struct BlobSpill {
+        root: PathBuf,
+        _guard: TempDir,
+    }
+
+    impl BlobSpill {
+        pub(super) fn new(flow_id: &str, tier: &str) -> AnyhowResult<Self> {
+            let dir = TempDirBuilder::new()
+                .prefix(&format!("lf-spill-{flow_id}-{tier}-"))
+                .tempdir()
+                .context("create spill directory")?;
+            let root = dir.path().to_path_buf();
+            Ok(Self { root, _guard: dir })
+        }
+
+        pub(super) async fn persist(&self, payload: &JsonValue) -> Result<SpillRecord, SpillError> {
+            let bytes = serde_json::to_vec(payload)?;
+            let key = format!("{}.json", Uuid::new_v4());
+            let path = self.root.join(&key);
+            fs::write(&path, &bytes).await?;
+            Ok(SpillRecord { key })
+        }
+
+        pub(super) async fn load(&self, key: &str) -> Result<JsonValue, SpillError> {
+            let path = self.root.join(key);
+            let bytes = fs::read(&path).await?;
+            let value = serde_json::from_slice(&bytes)?;
+            Ok(value)
+        }
+
+        pub(super) async fn remove(&self, key: &str) -> Result<(), SpillError> {
+            let path = self.root.join(key);
+            if path.exists() {
+                fs::remove_file(path).await?;
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Debug)]
+    pub(super) struct SpillRecord {
+        pub(super) key: String,
+    }
+}
+
+#[cfg(feature = "spill-fs")]
+pub use blob_spill::BlobSpill;
 
 const DEFAULT_EDGE_CAPACITY: usize = 32;
 const DEFAULT_TRIGGER_CAPACITY: usize = 8;
@@ -397,65 +547,18 @@ impl ExecutorMetrics {
     }
 }
 
-#[derive(Debug, Error)]
-enum SpillError {
-    #[error("failed to serialise payload for spill: {0}")]
-    Serialize(#[from] serde_json::Error),
-    #[error("failed to persist/load spill file: {0}")]
-    Io(#[from] std::io::Error),
-}
-
-#[derive(Debug)]
-struct BlobSpill {
-    root: PathBuf,
-    _guard: TempDir,
-}
-
-impl BlobSpill {
-    fn new(flow_id: &str, tier: &str) -> AnyhowResult<Self> {
-        let dir = TempDirBuilder::new()
-            .prefix(&format!("lf-spill-{flow_id}-{tier}-"))
-            .tempdir()
-            .context("create spill directory")?;
-        let root = dir.path().to_path_buf();
-        Ok(Self { root, _guard: dir })
-    }
-
-    async fn persist(&self, payload: &JsonValue) -> Result<SpillRecord, SpillError> {
-        let bytes = serde_json::to_vec(payload)?;
-        let key = format!("{}.json", Uuid::new_v4());
-        let path = self.root.join(&key);
-        fs::write(&path, &bytes).await?;
-        Ok(SpillRecord { key })
-    }
-
-    async fn load(&self, key: &str) -> Result<JsonValue, SpillError> {
-        let path = self.root.join(key);
-        let bytes = fs::read(&path).await?;
-        let value = serde_json::from_slice(&bytes)?;
-        Ok(value)
-    }
-
-    async fn remove(&self, key: &str) -> Result<(), SpillError> {
-        let path = self.root.join(key);
-        if path.exists() {
-            fs::remove_file(path).await?;
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug)]
-struct SpillRecord {
-    key: String,
-}
-
+#[cfg(feature = "spill-fs")]
 #[derive(Clone)]
 struct SpillContext {
     storage: Arc<BlobSpill>,
     threshold_bytes: Option<u64>,
 }
 
+#[cfg(not(feature = "spill-fs"))]
+#[derive(Clone)]
+struct SpillContext;
+
+#[cfg(feature = "spill-fs")]
 impl SpillContext {
     fn new(storage: Arc<BlobSpill>, threshold_bytes: Option<u64>) -> Self {
         Self {
@@ -527,10 +630,15 @@ impl SpillContext {
     }
 }
 
+#[cfg(feature = "spill-fs")]
 struct SpillManager {
     storages: HashMap<String, Arc<BlobSpill>>,
 }
 
+#[cfg(not(feature = "spill-fs"))]
+struct SpillManager;
+
+#[cfg(feature = "spill-fs")]
 impl SpillManager {
     fn new(flow: &dag_core::FlowIR) -> AnyhowResult<Self> {
         let mut storages = HashMap::new();
@@ -556,6 +664,34 @@ impl SpillManager {
             })
         })
     }
+}
+
+#[cfg(not(feature = "spill-fs"))]
+impl SpillManager {
+    fn new(_flow: &dag_core::FlowIR) -> AnyhowResult<Self> {
+        Ok(Self)
+    }
+
+    fn context_for(&self, _policy: &dag_core::BufferPolicy) -> Option<Arc<SpillContext>> {
+        None
+    }
+}
+
+#[cfg(feature = "spill-fs")]
+fn check_spill_support(_flow: &dag_core::FlowIR) -> Result<(), ExecutionError> {
+    Ok(())
+}
+
+#[cfg(not(feature = "spill-fs"))]
+fn check_spill_support(flow: &dag_core::FlowIR) -> Result<(), ExecutionError> {
+    if flow.edges.iter().any(|edge| edge.buffer.spill_tier.is_some()) {
+        return Err(ExecutionError::UnsupportedSpill {
+            message:
+                "Spill-to-filesystem is not supported on this platform (wasm). Disable spill_tier or run on native."
+                    .to_string(),
+        });
+    }
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -974,6 +1110,7 @@ impl InstrumentedSender {
             queue_tracker: Some(tracker.clone()),
         };
 
+        #[cfg(feature = "spill-fs")]
         if let Some(spill) = &self.spill {
             if matches!(&message, FlowMessage::Data { payload, .. } if spill.exceeds_threshold(payload))
             {
@@ -1195,6 +1332,7 @@ impl FlowExecutor {
             outbound.insert(node.alias.clone(), Vec::new());
         }
 
+        check_spill_support(&flow)?;
         let spill_manager = SpillManager::new(&flow).map_err(ExecutionError::SpillSetup)?;
 
         for edge in &flow.edges {
@@ -1554,6 +1692,7 @@ enum FlowMessage {
         permit: Option<OwnedSemaphorePermit>,
         queue_tracker: Option<Arc<QueueDepthTracker>>,
     },
+    #[cfg(feature = "spill-fs")]
     Spilled {
         key: String,
         storage: Arc<BlobSpill>,
@@ -1585,9 +1724,15 @@ async fn run_node(
         return;
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     let mut streams = StreamMap::new();
+    #[cfg(target_arch = "wasm32")]
+    let mut streams = SelectAll::new();
     for (idx, receiver) in inputs.drain(..).enumerate() {
+        #[cfg(not(target_arch = "wasm32"))]
         streams.insert(idx, ReceiverStream::new(receiver));
+        #[cfg(target_arch = "wasm32")]
+        streams.push(ReceiverStream::new(receiver).map(move |message| (idx, message)));
     }
 
     while !ctx.is_cancelled() {
@@ -1613,6 +1758,7 @@ async fn run_node(
                 permit,
                 queue_tracker,
             } => Some((permit, queue_tracker, payload)),
+            #[cfg(feature = "spill-fs")]
             FlowMessage::Spilled {
                 key,
                 storage,
@@ -1927,6 +2073,9 @@ pub enum ExecutionError {
         kind: String,
         reason: String,
     },
+    /// Spill was configured but this runtime cannot spill to filesystem.
+    #[error("spill configuration is not supported: {message}")]
+    UnsupportedSpill { message: String },
     /// Spill storage could not be initialised.
     #[error("failed to configure spill storage: {0}")]
     SpillSetup(anyhow::Error),

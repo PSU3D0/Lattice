@@ -25,6 +25,7 @@ members = [
   "crates/bridge-queue-redis",
   "crates/host-temporal",
   "crates/host-inproc",
+  "crates/host-workers",
   "crates/host-web-axum",
   "crates/importer-n8n",
   "crates/kernel-exec",
@@ -101,3 +102,4 @@ async-stream = "0.3"
 metrics = "0.24.2"
 metrics-util = "0.20"
 proptest = "1.5"
+wasm-bindgen-test = "0.3"

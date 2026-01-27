@@ -2490,6 +2490,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "host-workers"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "capabilities",
+ "dag-core",
+ "futures",
+ "host-inproc",
+ "kernel-exec",
+ "kernel-plan",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "wasm-bindgen-test",
+ "worker",
+]
+
+[[package]]
 name = "http"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5746,6 +5764,7 @@ dependencies = [
  "io-uring",
  "libc",
  "mio",
+ "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
  "slab",

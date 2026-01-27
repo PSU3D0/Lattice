@@ -662,6 +662,10 @@ fn map_execution_error(err: ExecutionError) -> (StatusCode, JsonValue) {
                 }),
             )
         }
+        ExecutionError::UnsupportedSpill { message } => (
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "unsupported_spill", "message": message }),
+        ),
         ExecutionError::SpillSetup(err) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             json!({ "error": format!("failed to configure spill storage: {err}") }),
