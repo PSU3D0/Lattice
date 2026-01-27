@@ -83,11 +83,19 @@ This section defines a minimal, capability-class-specific metadata model plus an
 
 ### Provider Metadata
 
-Each capability class SHOULD expose a typed descriptor (e.g. `KeyValue::info() -> KvCapabilityInfo`).
+Each capability class SHOULD expose a typed descriptor (e.g. `KeyValue::capability_info() -> KvCapabilityInfo`).
 
 Descriptor shape (conceptual):
 - **Standard invariants**: portable, stable fields that every provider must populate (use explicit `unknown` values when needed).
 - **Extensions**: `BTreeMap<String, JsonValue>` for provider/plugin-specific metadata (keys must be namespaced, e.g. `com.cloudflare.kv.*`).
+
+KeyValue standard fields (0.1.x):
+- `ttl`: `none | namespace_default | per_write`
+- `consistency`: `eventual | strong`
+- `supports_metadata`: boolean
+- `supports_list`: boolean
+- `supports_cache_ttl`: boolean
+- `supports_expiration`: boolean
 
 Provider variability (config + infra):
 - Capability metadata MUST be derived from the concrete provider instance + binding config and reflect guaranteed semantics.
@@ -129,6 +137,28 @@ Domains (hint ids) and current provider interfaces live in `crates/capabilities/
 - DB (`resource::db*`): hints + constraints only (no provider trait yet)
 - Clock/RNG (`resource::clock`, `resource::rng`): `Clock`, `Rng`
 - Cache: `Cache` (currently not expressed via `resource::*` hints)
+
+### KeyValue Interface (0.1.x)
+
+`KeyValue` provides a portable KV surface for nodes:
+
+- `get(key)` -> `Option<Vec<u8>>`
+- `get_with_metadata(key, options)` -> `Option<KvValue>`
+  - `options.cache_ttl` (best-effort hint; non-caching providers may ignore)
+- `put(key, value, ttl)` (legacy convenience)
+- `put_with_options(key, value, options)`
+  - `options.ttl` (relative TTL)
+  - `options.expires_at` (absolute expiration)
+  - `options.metadata` (JSON metadata)
+- `delete(key)`
+- `list(options)` -> `KvListResponse`
+  - `options.prefix`, `options.cursor`, `options.limit`
+  - `options.include_metadata`, `options.include_expiration`
+
+Provider behavior:
+- If both `ttl` and `expires_at` are set, providers MUST reject the write as invalid.
+- Providers that cannot honor requested options SHOULD return `KvError::Unsupported`.
+- List ordering is lexicographic by key; `cursor` is the last key returned by a prior page.
 
 ### MVP Requirement Structs (Per Capability Class)
 

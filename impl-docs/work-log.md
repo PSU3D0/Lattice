@@ -454,3 +454,11 @@ Learnings
 Acceptance gates:
 - `cargo test --workspace` passes.
 - `cargo run -p flows-cli -- run local --example s1_echo --burst 1` works.
+
+## 2026-01-27 — KeyValue surface expansion (Epic 03.1)
+
+- Expanded `capabilities::kv::KeyValue` to include options/metadata/list surfaces (`KvGetOptions`, `KvPutOptions`, `KvListOptions`, `KvValue`, `KvListResponse`) and new `KvError` variants.
+- Moved `KvCapabilityInfo`/TTL/consistency enums into `capabilities::kv` with feature support flags; `cap-kv-opendal` now re-exports them and wires `capability_info()` from the provider.
+- `MemoryKv` now stores metadata + absolute expiration, supports list pagination and metadata reads, and has new tests for metadata/list/expiration conflicts.
+- Updated contract docs in `impl-docs/spec/capabilities-and-binding.md` and KV Workers ticket to reflect the expanded interface and option semantics.
+- Acceptance gates: not run (not requested).

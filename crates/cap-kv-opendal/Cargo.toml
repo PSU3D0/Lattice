@@ -34,7 +34,6 @@ async-trait.workspace = true
 cap-opendal-core = { path = "../cap-opendal-core" }
 capabilities = { path = "../capabilities" }
 opendal = { version = "0.54.1", default-features = false }
-serde = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
 
 [dev-dependencies]

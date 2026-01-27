@@ -11,49 +11,14 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use cap_opendal_core::{OpendalError, OpendalResult, OperatorFactory};
+pub use capabilities::kv::{KvCapabilityInfo, KvConsistency, KvTtlSupport};
 use capabilities::{
     Capability,
-    kv::{KeyValue, KvError},
+    kv::{KeyValue, KvError, KvGetOptions, KvPutOptions},
 };
 use opendal::Operator;
 use opendal::raw::{Accessor, Layer};
-use serde::{Deserialize, Serialize};
-
-/// Capability metadata describing TTL support.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum KvTtlSupport {
-    /// Backend ignores TTL hints; values never expire.
-    None,
-    /// Backend accepts per-write TTL values.
-    PerWrite,
-    /// Backend enforces a namespace-level default TTL.
-    NamespaceDefault(Duration),
-}
-
-/// Consistency guarantees surfaced by the backend.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum KvConsistency {
-    /// Operations are strongly consistent.
-    Strong,
-    /// Backend provides best-effort or eventual consistency.
-    Eventual,
-}
-
-/// Describes the capability guarantees for an OpenDAL-backed KV store.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct KvCapabilityInfo {
-    /// TTL support advertised by the backend.
-    pub ttl: KvTtlSupport,
-    /// Consistency guarantee.
-    pub consistency: KvConsistency,
-}
-
-impl KvCapabilityInfo {
-    /// Construct capability info.
-    pub const fn new(ttl: KvTtlSupport, consistency: KvConsistency) -> Self {
-        Self { ttl, consistency }
-    }
-}
+ 
 
 /// Builder for OpenDAL-backed key-value stores.
 pub struct KvStoreBuilder<F> {
@@ -197,7 +162,14 @@ impl Capability for OpendalKvStore {
 
 #[async_trait]
 impl KeyValue for OpendalKvStore {
-    async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, KvError> {
+    async fn get_with_options(
+        &self,
+        key: &str,
+        options: KvGetOptions,
+    ) -> Result<Option<Vec<u8>>, KvError> {
+        if options.cache_ttl.is_some() {
+            return Err(KvError::Unsupported("cache_ttl"));
+        }
         match self.operator.read(key).await {
             Ok(bytes) => Ok(Some(bytes.to_vec())),
             Err(err) => match OpendalError::from_opendal(err) {
@@ -207,7 +179,28 @@ impl KeyValue for OpendalKvStore {
         }
     }
 
-    async fn put(&self, key: &str, value: &[u8], ttl: Option<Duration>) -> Result<(), KvError> {
+    async fn put_with_options(
+        &self,
+        key: &str,
+        value: &[u8],
+        options: KvPutOptions,
+    ) -> Result<(), KvError> {
+        let KvPutOptions {
+            ttl,
+            expires_at,
+            metadata,
+        } = options;
+        if ttl.is_some() && expires_at.is_some() {
+            return Err(KvError::InvalidOptions(
+                "ttl and expires_at cannot both be set".to_string(),
+            ));
+        }
+        if metadata.is_some() {
+            return Err(KvError::Unsupported("metadata"));
+        }
+        if expires_at.is_some() {
+            return Err(KvError::Unsupported("expires_at"));
+        }
         if ttl.is_some() && !matches!(self.capability_info.ttl, KvTtlSupport::PerWrite) {
             return Err(KvError::Other(
                 "backend does not support per-write TTL".to_string(),
@@ -245,6 +238,10 @@ impl KeyValue for OpendalKvStore {
             .await
             .map(|_| ())
             .map_err(|err| map_kv_error(OpendalError::from_opendal(err)))
+    }
+
+    fn capability_info(&self) -> KvCapabilityInfo {
+        self.capability_info
     }
 }
 

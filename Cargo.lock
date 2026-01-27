@@ -876,7 +876,6 @@ dependencies = [
  "cap-opendal-core",
  "capabilities",
  "opendal",
- "serde",
  "thiserror 1.0.69",
  "tokio",
 ]
@@ -920,6 +919,7 @@ dependencies = [
  "async-trait",
  "dag-core",
  "serde",
+ "serde_json",
  "thiserror 1.0.69",
  "tokio",
  "tracing",

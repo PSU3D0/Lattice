@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 pub mod hints;
 
@@ -699,6 +699,7 @@ pub mod db {
 
 pub mod kv {
     use super::*;
+    use serde_json::Value as JsonValue;
     use std::collections::HashMap;
 
     pub const HINT_KV: &str = "resource::kv";
@@ -738,21 +739,237 @@ pub mod kv {
     pub enum KvError {
         #[error("value not found")]
         NotFound,
+        #[error("unsupported feature: {0}")]
+        Unsupported(&'static str),
+        #[error("invalid options: {0}")]
+        InvalidOptions(String),
         #[error("operation failed: {0}")]
         Other(String),
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum KvTtlSupport {
+        None,
+        PerWrite,
+        NamespaceDefault(Duration),
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum KvConsistency {
+        Strong,
+        Eventual,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct KvCapabilityInfo {
+        pub ttl: KvTtlSupport,
+        pub consistency: KvConsistency,
+        pub supports_metadata: bool,
+        pub supports_list: bool,
+        pub supports_cache_ttl: bool,
+        pub supports_expiration: bool,
+    }
+
+    impl KvCapabilityInfo {
+        pub const fn new(ttl: KvTtlSupport, consistency: KvConsistency) -> Self {
+            Self {
+                ttl,
+                consistency,
+                supports_metadata: false,
+                supports_list: false,
+                supports_cache_ttl: false,
+                supports_expiration: false,
+            }
+        }
+
+        pub const fn with_metadata(mut self, supports: bool) -> Self {
+            self.supports_metadata = supports;
+            self
+        }
+
+        pub const fn with_list(mut self, supports: bool) -> Self {
+            self.supports_list = supports;
+            self
+        }
+
+        pub const fn with_cache_ttl(mut self, supports: bool) -> Self {
+            self.supports_cache_ttl = supports;
+            self
+        }
+
+        pub const fn with_expiration(mut self, supports: bool) -> Self {
+            self.supports_expiration = supports;
+            self
+        }
+    }
+
+    impl Default for KvCapabilityInfo {
+        fn default() -> Self {
+            Self::new(KvTtlSupport::None, KvConsistency::Eventual)
+        }
+    }
+
+    pub type KvMetadata = JsonValue;
+
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct KvValue {
+        pub value: Vec<u8>,
+        pub metadata: Option<KvMetadata>,
+    }
+
+    #[derive(Debug, Clone, Default)]
+    pub struct KvGetOptions {
+        pub cache_ttl: Option<Duration>,
+    }
+
+    impl KvGetOptions {
+        pub fn with_cache_ttl(mut self, ttl: Duration) -> Self {
+            self.cache_ttl = Some(ttl);
+            self
+        }
+    }
+
+    #[derive(Debug, Clone, Default)]
+    pub struct KvPutOptions {
+        pub ttl: Option<Duration>,
+        pub expires_at: Option<SystemTime>,
+        pub metadata: Option<KvMetadata>,
+    }
+
+    impl KvPutOptions {
+        pub fn with_ttl(mut self, ttl: Duration) -> Self {
+            self.ttl = Some(ttl);
+            self
+        }
+
+        pub fn with_expires_at(mut self, expires_at: SystemTime) -> Self {
+            self.expires_at = Some(expires_at);
+            self
+        }
+
+        pub fn with_metadata(mut self, metadata: KvMetadata) -> Self {
+            self.metadata = Some(metadata);
+            self
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct KvListOptions {
+        pub prefix: Option<String>,
+        pub cursor: Option<String>,
+        pub limit: Option<usize>,
+        pub include_metadata: bool,
+        pub include_expiration: bool,
+    }
+
+    impl Default for KvListOptions {
+        fn default() -> Self {
+            Self {
+                prefix: None,
+                cursor: None,
+                limit: None,
+                include_metadata: false,
+                include_expiration: false,
+            }
+        }
+    }
+
+    impl KvListOptions {
+        pub fn with_prefix(mut self, prefix: impl Into<String>) -> Self {
+            self.prefix = Some(prefix.into());
+            self
+        }
+
+        pub fn with_cursor(mut self, cursor: impl Into<String>) -> Self {
+            self.cursor = Some(cursor.into());
+            self
+        }
+
+        pub fn with_limit(mut self, limit: usize) -> Self {
+            self.limit = Some(limit);
+            self
+        }
+
+        pub fn include_metadata(mut self) -> Self {
+            self.include_metadata = true;
+            self
+        }
+
+        pub fn include_expiration(mut self) -> Self {
+            self.include_expiration = true;
+            self
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct KvListEntry {
+        pub key: String,
+        pub expires_at: Option<SystemTime>,
+        pub metadata: Option<KvMetadata>,
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct KvListResponse {
+        pub keys: Vec<KvListEntry>,
+        pub list_complete: bool,
+        pub cursor: Option<String>,
     }
 
     /// Generic key-value interface exposed to nodes.
     #[async_trait]
     pub trait KeyValue: Capability {
-        async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, KvError>;
-        async fn put(&self, key: &str, value: &[u8], ttl: Option<Duration>) -> Result<(), KvError>;
+        async fn get_with_options(
+            &self,
+            key: &str,
+            options: KvGetOptions,
+        ) -> Result<Option<Vec<u8>>, KvError>;
+
+        async fn get_with_metadata(
+            &self,
+            key: &str,
+            options: KvGetOptions,
+        ) -> Result<Option<KvValue>, KvError> {
+            let value = self.get_with_options(key, options).await?;
+            Ok(value.map(|value| KvValue {
+                value,
+                metadata: None,
+            }))
+        }
+
+        async fn put_with_options(
+            &self,
+            key: &str,
+            value: &[u8],
+            options: KvPutOptions,
+        ) -> Result<(), KvError>;
+
         async fn delete(&self, key: &str) -> Result<(), KvError>;
+
+        async fn list(&self, _options: KvListOptions) -> Result<KvListResponse, KvError> {
+            Err(KvError::Unsupported("list"))
+        }
+
+        fn capability_info(&self) -> KvCapabilityInfo {
+            KvCapabilityInfo::default()
+        }
+
+        async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, KvError> {
+            self.get_with_options(key, KvGetOptions::default()).await
+        }
+
+        async fn put(&self, key: &str, value: &[u8], ttl: Option<Duration>) -> Result<(), KvError> {
+            let options = KvPutOptions {
+                ttl,
+                ..KvPutOptions::default()
+            };
+            self.put_with_options(key, value, options).await
+        }
     }
 
     struct KvEntry {
         value: Vec<u8>,
-        expires_at: Option<Instant>,
+        expires_at: Option<SystemTime>,
+        metadata: Option<KvMetadata>,
     }
 
     /// Simple in-memory KV store for tests and local dev.
@@ -767,11 +984,25 @@ pub mod kv {
             }
         }
 
-        fn is_expired(expires_at: Option<Instant>) -> bool {
+        fn is_expired(expires_at: Option<SystemTime>) -> bool {
             match expires_at {
-                Some(deadline) => Instant::now() > deadline,
+                Some(deadline) => SystemTime::now() >= deadline,
                 None => false,
             }
+        }
+
+        fn resolve_expires_at(options: &KvPutOptions) -> Result<Option<SystemTime>, KvError> {
+            if options.ttl.is_some() && options.expires_at.is_some() {
+                return Err(KvError::InvalidOptions(
+                    "ttl and expires_at cannot both be set".to_string(),
+                ));
+            }
+
+            if let Some(ttl) = options.ttl {
+                return Ok(Some(SystemTime::now() + ttl));
+            }
+
+            Ok(options.expires_at)
         }
     }
 
@@ -789,7 +1020,11 @@ pub mod kv {
 
     #[async_trait]
     impl KeyValue for MemoryKv {
-        async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, KvError> {
+        async fn get_with_options(
+            &self,
+            key: &str,
+            _options: KvGetOptions,
+        ) -> Result<Option<Vec<u8>>, KvError> {
             let mut entries = self.entries.lock().expect("kv mutex poisoned");
             if let Some(entry) = entries.get(key) {
                 if Self::is_expired(entry.expires_at) {
@@ -801,14 +1036,45 @@ pub mod kv {
             Ok(None)
         }
 
-        async fn put(&self, key: &str, value: &[u8], ttl: Option<Duration>) -> Result<(), KvError> {
+        async fn get_with_metadata(
+            &self,
+            key: &str,
+            _options: KvGetOptions,
+        ) -> Result<Option<KvValue>, KvError> {
             let mut entries = self.entries.lock().expect("kv mutex poisoned");
-            let expires_at = ttl.map(|duration| Instant::now() + duration);
+            if let Some(entry) = entries.get(key) {
+                if Self::is_expired(entry.expires_at) {
+                    entries.remove(key);
+                    return Ok(None);
+                }
+                return Ok(Some(KvValue {
+                    value: entry.value.clone(),
+                    metadata: entry.metadata.clone(),
+                }));
+            }
+            Ok(None)
+        }
+
+        async fn put_with_options(
+            &self,
+            key: &str,
+            value: &[u8],
+            options: KvPutOptions,
+        ) -> Result<(), KvError> {
+            let mut entries = self.entries.lock().expect("kv mutex poisoned");
+            let expires_at = Self::resolve_expires_at(&options)?;
+            if let Some(deadline) = expires_at {
+                if SystemTime::now() >= deadline {
+                    entries.remove(key);
+                    return Ok(());
+                }
+            }
             entries.insert(
                 key.to_owned(),
                 KvEntry {
                     value: value.to_vec(),
                     expires_at,
+                    metadata: options.metadata,
                 },
             );
             Ok(())
@@ -817,6 +1083,64 @@ pub mod kv {
         async fn delete(&self, key: &str) -> Result<(), KvError> {
             let mut entries = self.entries.lock().expect("kv mutex poisoned");
             entries.remove(key).map(|_| ()).ok_or(KvError::NotFound)
+        }
+
+        async fn list(&self, options: KvListOptions) -> Result<KvListResponse, KvError> {
+            let mut entries = self.entries.lock().expect("kv mutex poisoned");
+            entries.retain(|_, entry| !Self::is_expired(entry.expires_at));
+
+            let mut keys: Vec<KvListEntry> = entries
+                .iter()
+                .filter(|(key, _)| match options.prefix.as_deref() {
+                    Some(prefix) => key.starts_with(prefix),
+                    None => true,
+                })
+                .map(|(key, entry)| KvListEntry {
+                    key: key.clone(),
+                    expires_at: if options.include_expiration {
+                        entry.expires_at
+                    } else {
+                        None
+                    },
+                    metadata: if options.include_metadata {
+                        entry.metadata.clone()
+                    } else {
+                        None
+                    },
+                })
+                .collect();
+
+            keys.sort_by(|a, b| a.key.cmp(&b.key));
+
+            if let Some(cursor) = options.cursor.as_deref() {
+                keys = keys
+                    .into_iter()
+                    .filter(|entry| entry.key.as_str() > cursor)
+                    .collect();
+            }
+
+            let total = keys.len();
+            let limit = options.limit.unwrap_or(total);
+            let keys: Vec<KvListEntry> = keys.into_iter().take(limit).collect();
+            let list_complete = keys.len() >= total;
+            let cursor = if list_complete {
+                None
+            } else {
+                keys.last().map(|entry| entry.key.clone())
+            };
+
+            Ok(KvListResponse {
+                keys,
+                list_complete,
+                cursor,
+            })
+        }
+
+        fn capability_info(&self) -> KvCapabilityInfo {
+            KvCapabilityInfo::new(KvTtlSupport::PerWrite, KvConsistency::Strong)
+                .with_metadata(true)
+                .with_list(true)
+                .with_expiration(true)
         }
     }
 
@@ -853,6 +1177,80 @@ pub mod kv {
         async fn memory_kv_delete_returns_not_found() {
             let kv = MemoryKv::new();
             assert!(matches!(kv.delete("missing").await, Err(KvError::NotFound)));
+        }
+
+        #[tokio::test]
+        async fn memory_kv_round_trips_metadata() {
+            let kv = MemoryKv::new();
+            let metadata = serde_json::json!({"origin": "memory"});
+            kv.put_with_options(
+                "k",
+                b"v",
+                KvPutOptions::default().with_metadata(metadata.clone()),
+            )
+            .await
+            .expect("put");
+            let value = kv
+                .get_with_metadata("k", KvGetOptions::default())
+                .await
+                .expect("get")
+                .expect("value");
+            assert_eq!(value.value, b"v".to_vec());
+            assert_eq!(value.metadata, Some(metadata));
+        }
+
+        #[tokio::test]
+        async fn memory_kv_list_respects_prefix_and_cursor() {
+            let kv = MemoryKv::new();
+            kv.put("a/1", b"v1", None).await.expect("put");
+            kv.put("a/2", b"v2", None).await.expect("put");
+            kv.put("b/1", b"v3", None).await.expect("put");
+
+            let first = kv
+                .list(KvListOptions::default().with_prefix("a/").with_limit(1))
+                .await
+                .expect("list");
+            assert_eq!(first.keys.len(), 1);
+            assert_eq!(first.keys[0].key, "a/1");
+            assert!(!first.list_complete);
+            let cursor = first.cursor.expect("cursor");
+
+            let second = kv
+                .list(
+                    KvListOptions::default()
+                        .with_prefix("a/")
+                        .with_cursor(cursor),
+                )
+                .await
+                .expect("list");
+            assert_eq!(second.keys.len(), 1);
+            assert_eq!(second.keys[0].key, "a/2");
+            assert!(second.list_complete);
+        }
+
+        #[tokio::test]
+        async fn memory_kv_expires_at_removes_entry() {
+            let kv = MemoryKv::new();
+            let expires_at = SystemTime::now() + Duration::from_millis(5);
+            kv.put_with_options(
+                "k",
+                b"v",
+                KvPutOptions::default().with_expires_at(expires_at),
+            )
+            .await
+            .expect("put");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            assert_eq!(kv.get("k").await.expect("get"), None);
+        }
+
+        #[tokio::test]
+        async fn memory_kv_rejects_conflicting_expiration() {
+            let kv = MemoryKv::new();
+            let options = KvPutOptions::default()
+                .with_ttl(Duration::from_secs(1))
+                .with_expires_at(SystemTime::now() + Duration::from_secs(2));
+            let err = kv.put_with_options("k", b"v", options).await.unwrap_err();
+            assert!(matches!(err, KvError::InvalidOptions(_)));
         }
     }
 }
