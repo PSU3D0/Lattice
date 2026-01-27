@@ -99,7 +99,7 @@ impl NodeRegistry {
     }
 
     /// Lookup a handler by implementation identifier.
-    pub(crate) fn handler(&self, identifier: &str) -> Option<Arc<dyn NodeHandler>> {
+    pub fn handler(&self, identifier: &str) -> Option<Arc<dyn NodeHandler>> {
         self.handlers.get(identifier).cloned()
     }
 }
@@ -113,7 +113,7 @@ pub enum RegistryError {
 }
 
 #[async_trait]
-trait NodeHandler: Send + Sync {
+pub trait NodeHandler: Send + Sync {
     async fn invoke(&self, input: JsonValue, ctx: &NodeContext) -> NodeResult<NodeOutput>;
 }
 

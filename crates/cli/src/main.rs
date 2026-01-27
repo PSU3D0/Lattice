@@ -414,10 +414,10 @@ impl From<&Diagnostic> for DiagnosticPayload {
 struct ExampleHandle {
     executor: FlowExecutor,
     ir: Arc<ValidatedIR>,
-    trigger_alias: &'static str,
-    capture_alias: &'static str,
+    trigger_alias: String,
+    capture_alias: String,
     deadline: Option<Duration>,
-    route_path: &'static str,
+    route_path: String,
     method: Method,
     is_streaming: bool,
     environment_plugins: Vec<Arc<dyn EnvironmentPlugin>>,
@@ -523,8 +523,12 @@ fn run_local(args: LocalArgs) -> Result<()> {
             .with_resource_bag(resources);
 
         if burst == 1 {
-            let invocation =
-                Invocation::new(trigger_alias, capture_alias, payload).with_deadline(deadline);
+            let invocation = Invocation::new(
+                trigger_alias.as_str(),
+                capture_alias.as_str(),
+                payload,
+            )
+            .with_deadline(deadline);
 
             let execution = host_runtime
                 .execute(invocation)
@@ -570,7 +574,7 @@ fn run_local(args: LocalArgs) -> Result<()> {
 
         let mut instance = host_runtime
             .executor()
-            .instantiate(ir.as_ref(), capture_alias)
+            .instantiate(ir.as_ref(), capture_alias.as_str())
             .map_err(anyhow::Error::new)?;
 
         for idx in 0..burst {
@@ -579,7 +583,7 @@ fn run_local(args: LocalArgs) -> Result<()> {
                 map.insert("lf_burst_index".to_string(), JsonValue::from(idx as u64));
             }
             instance
-                .send(trigger_alias, burst_payload)
+                .send(trigger_alias.as_str(), burst_payload)
                 .await
                 .map_err(anyhow::Error::new)?;
         }
@@ -674,9 +678,9 @@ fn run_serve(args: ServeArgs) -> Result<()> {
             .await
             .with_context(|| format!("failed to bind {addr}"))?;
 
-        let mut config = RouteConfig::new(route_path)
-            .with_trigger_alias(trigger_alias)
-            .with_capture_alias(capture_alias)
+        let mut config = RouteConfig::new(route_path.as_str())
+            .with_trigger_alias(trigger_alias.as_str())
+            .with_capture_alias(capture_alias.as_str())
             .with_resources(resources);
         config = config.with_method(method);
         if let Some(deadline) = deadline {
@@ -1377,75 +1381,44 @@ fn parse_payload(args: &LocalArgs) -> Result<JsonValue> {
 }
 
 fn load_example(name: &str) -> Result<ExampleHandle> {
-    match name {
-        "s1_echo" => Ok(ExampleHandle {
-            executor: s1_echo::executor(),
-            ir: Arc::new(s1_echo::validated_ir()),
-            trigger_alias: s1_echo::TRIGGER_ALIAS,
-            capture_alias: s1_echo::CAPTURE_ALIAS,
-            deadline: Some(s1_echo::DEADLINE),
-            route_path: s1_echo::ROUTE_PATH,
-            method: Method::POST,
-            is_streaming: false,
-            environment_plugins: s1_echo::environment_plugins(),
-        }),
-        "s2_site" => Ok(ExampleHandle {
-            executor: s2_site::executor(),
-            ir: Arc::new(s2_site::validated_ir()),
-            trigger_alias: s2_site::TRIGGER_ALIAS,
-            capture_alias: s2_site::CAPTURE_ALIAS,
-            deadline: Some(s2_site::DEADLINE),
-            route_path: s2_site::ROUTE_PATH,
-            method: Method::POST,
-            is_streaming: true,
-            environment_plugins: Vec::new(),
-        }),
-        "s3_branching" => Ok(ExampleHandle {
-            executor: s3_branching::executor(),
-            ir: Arc::new(s3_branching::validated_ir()),
-            trigger_alias: s3_branching::TRIGGER_ALIAS,
-            capture_alias: s3_branching::CAPTURE_ALIAS,
-            deadline: Some(s3_branching::DEADLINE),
-            route_path: s3_branching::ROUTE_PATH,
-            method: Method::POST,
-            is_streaming: false,
-            environment_plugins: Vec::new(),
-        }),
-        "s4_preflight" => Ok(ExampleHandle {
-            executor: s4_preflight::executor(),
-            ir: Arc::new(s4_preflight::validated_ir()),
-            trigger_alias: s4_preflight::TRIGGER_ALIAS,
-            capture_alias: s4_preflight::CAPTURE_ALIAS,
-            deadline: Some(s4_preflight::DEADLINE),
-            route_path: s4_preflight::ROUTE_PATH,
-            method: Method::POST,
-            is_streaming: false,
-            environment_plugins: Vec::new(),
-        }),
-        "s5_unsupported_surface" => Ok(ExampleHandle {
-            executor: s5_unsupported_surface::executor(),
-            ir: Arc::new(s5_unsupported_surface::validated_ir()),
-            trigger_alias: s5_unsupported_surface::TRIGGER_ALIAS,
-            capture_alias: s5_unsupported_surface::CAPTURE_ALIAS,
-            deadline: Some(s5_unsupported_surface::DEADLINE),
-            route_path: s5_unsupported_surface::ROUTE_PATH,
-            method: Method::POST,
-            is_streaming: false,
-            environment_plugins: Vec::new(),
-        }),
-        "s6_spill" => Ok(ExampleHandle {
-            executor: s6_spill::executor(),
-            ir: Arc::new(s6_spill::validated_ir()),
-            trigger_alias: s6_spill::TRIGGER_ALIAS,
-            capture_alias: s6_spill::CAPTURE_ALIAS,
-            deadline: Some(s6_spill::DEADLINE),
-            route_path: s6_spill::ROUTE_PATH,
-            method: Method::POST,
-            is_streaming: false,
-            environment_plugins: Vec::new(),
-        }),
-        other => Err(anyhow!("unknown example `{other}`")),
-    }
+    let (bundle, is_streaming) = match name {
+        "s1_echo" => (s1_echo::bundle(), false),
+        "s2_site" => (s2_site::bundle(), true),
+        "s3_branching" => (s3_branching::bundle(), false),
+        "s4_preflight" => (s4_preflight::bundle(), false),
+        "s5_unsupported_surface" => (s5_unsupported_surface::bundle(), false),
+        "s6_spill" => (s6_spill::bundle(), false),
+        other => return Err(anyhow!("unknown example `{other}`")),
+    };
+
+    example_from_bundle(bundle, is_streaming)
+}
+
+fn example_from_bundle(
+    bundle: host_inproc::FlowBundle,
+    is_streaming: bool,
+) -> Result<ExampleHandle> {
+    let entrypoint = bundle
+        .entrypoints
+        .first()
+        .context("bundle has entrypoint")?;
+    let method_str = entrypoint.method.as_deref().unwrap_or("POST");
+    let method = method_str
+        .parse::<Method>()
+        .with_context(|| format!("invalid entrypoint method `{method_str}`"))?;
+    let route_path = entrypoint.route_path.as_deref().unwrap_or("/").to_string();
+
+    Ok(ExampleHandle {
+        executor: bundle.executor(),
+        ir: Arc::new(bundle.validated_ir),
+        trigger_alias: entrypoint.trigger_alias.clone(),
+        capture_alias: entrypoint.capture_alias.clone(),
+        deadline: entrypoint.deadline,
+        route_path,
+        method,
+        is_streaming,
+        environment_plugins: bundle.environment_plugins,
+    })
 }
 
 #[cfg(test)]

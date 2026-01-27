@@ -1,9 +1,10 @@
+use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
 use capabilities::{ResourceAccess, ResourceBag};
-use kernel_exec::{ExecutionError, ExecutionResult, FlowExecutor};
+use kernel_exec::{ExecutionError, ExecutionResult, FlowExecutor, NodeHandler, NodeRegistry};
 use kernel_plan::ValidatedIR;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
@@ -12,6 +13,92 @@ use serde_json::Value as JsonValue;
 pub use kernel_exec::{
     ExecutionError as HostExecutionError, ExecutionResult as HostExecutionResult,
 };
+
+pub struct FlowBundle {
+    pub validated_ir: ValidatedIR,
+    pub entrypoints: Vec<FlowEntrypoint>,
+    pub resolver: Arc<dyn NodeResolver>,
+    pub node_contracts: Vec<NodeContract>,
+    pub environment_plugins: Vec<Arc<dyn EnvironmentPlugin>>,
+}
+
+impl FlowBundle {
+    pub fn executor(&self) -> FlowExecutor {
+        self
+            .validate_allowlist()
+            .unwrap_or_else(|err| panic!("FlowBundle allowlist validation failed: {err}"));
+        let resolver_any: Arc<dyn Any + Send + Sync> = self.resolver.clone();
+        let registry = Arc::downcast::<NodeRegistry>(resolver_any).expect(
+            "FlowBundle resolver must be a NodeRegistry to build a FlowExecutor",
+        );
+        FlowExecutor::new(registry)
+    }
+
+    pub fn validate_allowlist(&self) -> Result<(), BundleError> {
+        let allowlist: BTreeSet<&str> = self
+            .node_contracts
+            .iter()
+            .map(|contract| contract.identifier.as_str())
+            .collect();
+        for node in &self.validated_ir.flow().nodes {
+            if !allowlist.contains(node.identifier.as_str()) {
+                return Err(BundleError::UnknownIdentifier {
+                    identifier: node.identifier.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+pub struct FlowEntrypoint {
+    pub trigger_alias: String,
+    pub capture_alias: String,
+    pub route_path: Option<String>,
+    pub method: Option<String>,
+    pub deadline: Option<Duration>,
+}
+
+pub trait NodeResolver: Send + Sync + Any {
+    fn resolve(&self, identifier: &str) -> Option<Arc<dyn NodeHandler>>;
+    fn known_identifiers(&self) -> Vec<String> {
+        Vec::new()
+    }
+}
+
+impl NodeResolver for NodeRegistry {
+    fn resolve(&self, identifier: &str) -> Option<Arc<dyn NodeHandler>> {
+        self.handler(identifier)
+    }
+}
+
+pub struct NodeContract {
+    pub identifier: String,
+    pub contract_hash: Option<String>,
+    pub source: NodeSource,
+}
+
+#[derive(Clone, Debug)]
+pub enum NodeSource {
+    Local,
+    Plugin,
+    Remote,
+}
+
+#[derive(Debug)]
+pub enum BundleError {
+    UnknownIdentifier { identifier: String },
+}
+
+impl std::fmt::Display for BundleError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BundleError::UnknownIdentifier { identifier } => {
+                write!(f, "unknown node identifier `{identifier}`")
+            }
+        }
+    }
+}
 
 /// Canonical invocation payload forwarded from bridges into the in-process host.
 #[derive(Debug, Clone)]
@@ -1251,6 +1338,141 @@ mod tests {
                 );
             }
             Err(err) => panic!("unexpected error: {err}"),
+        }
+    }
+
+    fn build_bundle_ir() -> ValidatedIR {
+        let mut builder = FlowBuilder::new("bundle_test", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let capture = builder
+            .add_node(
+                "capture",
+                &NodeSpec::inline(
+                    "tests::capture",
+                    "Capture",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &capture);
+        validate(&builder.build()).expect("flow validates")
+    }
+
+    #[tokio::test]
+    async fn bundle_executor_runs_with_registry() {
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn(
+                "tests::trigger",
+                |value: JsonValue| async move { Ok(value) },
+            )
+            .unwrap();
+        registry
+            .register_fn(
+                "tests::capture",
+                |value: JsonValue| async move { Ok(value) },
+            )
+            .unwrap();
+
+        let bundle = FlowBundle {
+            validated_ir: build_bundle_ir(),
+            entrypoints: Vec::new(),
+            resolver: Arc::new(registry),
+            node_contracts: vec![
+                NodeContract {
+                    identifier: "tests::trigger".to_string(),
+                    contract_hash: None,
+                    source: NodeSource::Local,
+                },
+                NodeContract {
+                    identifier: "tests::capture".to_string(),
+                    contract_hash: None,
+                    source: NodeSource::Local,
+                },
+            ],
+            environment_plugins: Vec::new(),
+        };
+
+        let result = bundle
+            .executor()
+            .run_once(
+                &bundle.validated_ir,
+                "trigger",
+                serde_json::json!({"ok": true}),
+                "capture",
+                None,
+            )
+            .await
+            .expect("execution succeeds");
+
+        match result {
+            ExecutionResult::Value(value) => assert_eq!(value, serde_json::json!({"ok": true})),
+            ExecutionResult::Stream(_) => panic!("expected value result"),
+        }
+    }
+
+    #[test]
+    fn bundle_allowlist_validates_identifiers() {
+        let bundle = FlowBundle {
+            validated_ir: build_bundle_ir(),
+            entrypoints: Vec::new(),
+            resolver: Arc::new(NodeRegistry::new()),
+            node_contracts: vec![
+                NodeContract {
+                    identifier: "tests::trigger".to_string(),
+                    contract_hash: None,
+                    source: NodeSource::Local,
+                },
+                NodeContract {
+                    identifier: "tests::capture".to_string(),
+                    contract_hash: None,
+                    source: NodeSource::Local,
+                },
+            ],
+            environment_plugins: Vec::new(),
+        };
+
+        bundle
+            .validate_allowlist()
+            .expect("allowlist should accept all identifiers");
+    }
+
+    #[test]
+    fn bundle_allowlist_rejects_missing_identifier() {
+        let bundle = FlowBundle {
+            validated_ir: build_bundle_ir(),
+            entrypoints: Vec::new(),
+            resolver: Arc::new(NodeRegistry::new()),
+            node_contracts: vec![NodeContract {
+                identifier: "tests::trigger".to_string(),
+                contract_hash: None,
+                source: NodeSource::Local,
+            }],
+            environment_plugins: Vec::new(),
+        };
+
+        match bundle.validate_allowlist() {
+            Ok(_) => panic!("expected allowlist failure"),
+            Err(BundleError::UnknownIdentifier { identifier }) => {
+                assert_eq!(identifier, "tests::capture");
+            }
         }
     }
 }

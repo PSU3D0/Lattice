@@ -12,6 +12,7 @@ description = "S5 example demonstrating CTRL901 unsupported control surfaces."
 [dependencies]
 dag-core = { path = "../../crates/dag-core" }
 dag-macros = { path = "../../crates/dag-macros" }
+host-inproc = { path = "../../crates/host-inproc" }
 kernel-exec = { path = "../../crates/kernel-exec" }
 kernel-plan = { path = "../../crates/kernel-plan" }
 serde.workspace = true

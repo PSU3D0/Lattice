@@ -1,10 +1,5 @@
-use std::sync::Arc;
-use std::time::Duration;
-
-use dag_core::{FlowIR, NodeResult};
+use dag_core::NodeResult;
 use dag_macros::{node, trigger};
-use kernel_exec::{FlowExecutor, NodeRegistry};
-use kernel_plan::{ValidatedIR, validate};
 use serde_json::{Value as JsonValue, json};
 
 #[trigger(
@@ -119,7 +114,7 @@ async fn capture(payload: JsonValue) -> NodeResult<JsonValue> {
     Ok(payload)
 }
 
-dag_macros::workflow! {
+dag_macros::workflow_bundle! {
     name: s3_branching_flow,
     version: "1.0.0",
     profile: Web,
@@ -162,51 +157,14 @@ dag_macros::workflow! {
     connect!(branch_b -> capture);
     connect!(branch_default -> capture);
     connect!(else_branch -> capture);
-}
 
-pub fn flow() -> FlowIR {
-    s3_branching_flow()
-}
-
-pub const TRIGGER_ALIAS: &str = "trigger";
-pub const CAPTURE_ALIAS: &str = "capture";
-pub const ROUTE_PATH: &str = "/branch";
-pub const DEADLINE: Duration = Duration::from_millis(250);
-
-pub fn executor() -> FlowExecutor {
-    let mut registry = NodeRegistry::new();
-    registry
-        .register_fn("example_s3_branching::http_trigger", http_trigger)
-        .expect("register http_trigger");
-    registry
-        .register_fn("example_s3_branching::route", route)
-        .expect("register route");
-    registry
-        .register_fn("example_s3_branching::then_branch", then_branch)
-        .expect("register then_branch");
-    registry
-        .register_fn("example_s3_branching::else_branch", else_branch)
-        .expect("register else_branch");
-    registry
-        .register_fn("example_s3_branching::mode_router", mode_router)
-        .expect("register mode_router");
-    registry
-        .register_fn("example_s3_branching::branch_a", branch_a)
-        .expect("register branch_a");
-    registry
-        .register_fn("example_s3_branching::branch_b", branch_b)
-        .expect("register branch_b");
-    registry
-        .register_fn("example_s3_branching::branch_default", branch_default)
-        .expect("register branch_default");
-    registry
-        .register_fn("example_s3_branching::capture", capture)
-        .expect("register capture");
-    FlowExecutor::new(Arc::new(registry))
-}
-
-pub fn validated_ir() -> ValidatedIR {
-    validate(&flow()).expect("S3 flow should validate")
+    entrypoint!({
+        trigger: "trigger",
+        capture: "capture",
+        route: "/branch",
+        method: "POST",
+        deadline_ms: 250,
+    });
 }
 
 #[cfg(test)]

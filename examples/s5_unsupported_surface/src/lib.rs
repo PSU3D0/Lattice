@@ -1,9 +1,5 @@
-use std::sync::Arc;
-use std::time::Duration;
-
 use dag_core::{ControlSurfaceIR, ControlSurfaceKind, FlowIR, NodeResult};
 use dag_macros::{node, trigger};
-use kernel_exec::{FlowExecutor, NodeRegistry};
 use kernel_plan::{ValidatedIR, validate};
 use serde_json::{Value as JsonValue, json};
 
@@ -35,22 +31,37 @@ async fn capture(payload: JsonValue) -> NodeResult<JsonValue> {
     Ok(payload)
 }
 
-dag_macros::workflow! {
-    name: s5_unsupported_surface_flow,
-    version: "1.0.0",
-    profile: Web,
-    summary: "Demonstrates CTRL901 when a reserved surface is present but unimplemented";
+mod bundle_def {
+    use super::{
+        capture_node_spec, capture_register, http_trigger_node_spec, http_trigger_register,
+        passthrough_node_spec, passthrough_register,
+    };
 
-    let trigger = http_trigger_node_spec();
-    let passthrough = passthrough_node_spec();
-    let capture = capture_node_spec();
+    dag_macros::workflow_bundle! {
+        name: s5_unsupported_surface_flow,
+        version: "1.0.0",
+        profile: Web,
+        summary: "Demonstrates CTRL901 when a reserved surface is present but unimplemented";
 
-    connect!(trigger -> passthrough);
-    connect!(passthrough -> capture);
+        let trigger = http_trigger_node_spec();
+        let passthrough = passthrough_node_spec();
+        let capture = capture_node_spec();
+
+        connect!(trigger -> passthrough);
+        connect!(passthrough -> capture);
+
+        entrypoint!({
+            trigger: "trigger",
+            capture: "capture",
+            route: "/unsupported",
+            method: "POST",
+            deadline_ms: 250,
+        });
+    }
 }
 
 pub fn flow() -> FlowIR {
-    let mut flow = s5_unsupported_surface_flow();
+    let mut flow = bundle_def::flow();
     flow.control_surfaces.push(ControlSurfaceIR {
         id: "rate_limit:0".to_string(),
         kind: ControlSurfaceKind::RateLimit,
@@ -60,27 +71,14 @@ pub fn flow() -> FlowIR {
     flow
 }
 
-pub const TRIGGER_ALIAS: &str = "trigger";
-pub const CAPTURE_ALIAS: &str = "capture";
-pub const ROUTE_PATH: &str = "/unsupported";
-pub const DEADLINE: Duration = Duration::from_millis(250);
-
-pub fn executor() -> FlowExecutor {
-    let mut registry = NodeRegistry::new();
-    registry
-        .register_fn("example_s5_unsupported_surface::http_trigger", http_trigger)
-        .expect("register http_trigger");
-    registry
-        .register_fn("example_s5_unsupported_surface::passthrough", passthrough)
-        .expect("register passthrough");
-    registry
-        .register_fn("example_s5_unsupported_surface::capture", capture)
-        .expect("register capture");
-    FlowExecutor::new(Arc::new(registry))
-}
-
 pub fn validated_ir() -> ValidatedIR {
     validate(&flow()).expect("S5 flow should validate")
+}
+
+pub fn bundle() -> host_inproc::FlowBundle {
+    let mut bundle = bundle_def::bundle();
+    bundle.validated_ir = validated_ir();
+    bundle
 }
 
 #[cfg(test)]

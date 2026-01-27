@@ -441,3 +441,16 @@ Learnings
   - `cargo fmt --all`
   - `cargo test --workspace`
   - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+
+## 2026-01-27 — FlowBundle Abstraction (Epic 01.x)
+
+- Added `FlowBundle`, `FlowEntrypoint`, `NodeResolver`, `NodeContract` types to `host-inproc`.
+- Extended `#[node]`/`#[trigger]` macros to emit `_register()` helpers.
+- Added `workflow_bundle!` macro with `entrypoint!` block parsing.
+- Migrated all examples (s1-s6) to use `workflow_bundle!`.
+- Refactored CLI to consume `bundle()` metadata.
+- Added allowlist enforcement via `validate_allowlist()`.
+
+Acceptance gates:
+- `cargo test --workspace` passes.
+- `cargo run -p flows-cli -- run local --example s1_echo --burst 1` works.

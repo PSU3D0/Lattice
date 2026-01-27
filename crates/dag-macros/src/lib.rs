@@ -36,6 +36,16 @@ pub fn workflow(input: TokenStream) -> TokenStream {
     }
 }
 
+/// Declarative workflow macro producing Flow bundles at compile time.
+#[proc_macro]
+pub fn workflow_bundle(input: TokenStream) -> TokenStream {
+    let parsed = parse_macro_input!(input as WorkflowBundleInput);
+    match parsed.expand() {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
 /// Attribute helper for Flow-value enums used to constrain generics.
 #[proc_macro_attribute]
 pub fn flow_enum(attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -415,6 +425,7 @@ fn node_impl(
     let fn_name = &function.sig.ident;
     let spec_ident = format_ident!("{}_NODE_SPEC", fn_name.to_string().to_uppercase());
     let accessor_ident = format_ident!("{}_node_spec", fn_name);
+    let register_ident = format_ident!("{}_register", fn_name);
 
     let effects = config
         .effects
@@ -457,6 +468,16 @@ fn node_impl(
         #[allow(dead_code)]
         pub fn #accessor_ident() -> &'static ::dag_core::NodeSpec {
             &#spec_ident
+        }
+
+        #[allow(dead_code)]
+        pub fn #register_ident(
+            registry: &mut ::kernel_exec::NodeRegistry,
+        ) -> Result<(), ::kernel_exec::RegistryError> {
+            registry.register_fn(
+                concat!(module_path!(), "::", stringify!(#fn_name)),
+                #fn_name,
+            )
         }
     })
 }
@@ -894,6 +915,48 @@ fn lit_to_string(lit: &Lit) -> Result<String> {
     }
 }
 
+fn register_info_for_binding(expr: &Expr) -> Result<(Path, String)> {
+    let call = match expr {
+        Expr::Call(call) => call,
+        _ => {
+            return Err(syn::Error::new_spanned(
+                expr,
+                "workflow_bundle! bindings must call <name>_node_spec()",
+            ))
+        }
+    };
+
+    let path = match call.func.as_ref() {
+        Expr::Path(path) => path,
+        _ => {
+            return Err(syn::Error::new_spanned(
+                call.func.as_ref(),
+                "workflow_bundle! bindings must call <name>_node_spec()",
+            ))
+        }
+    };
+
+    let Some(segment) = path.path.segments.last() else {
+        return Err(syn::Error::new_spanned(
+            path,
+            "workflow_bundle! bindings must call <name>_node_spec()",
+        ));
+    };
+
+    let fn_name = segment.ident.to_string();
+    let base = fn_name.strip_suffix("_node_spec").ok_or_else(|| {
+        syn::Error::new(
+            segment.ident.span(),
+            "workflow_bundle! bindings must call <name>_node_spec()",
+        )
+    })?;
+    let mut register_path = path.path.clone();
+    if let Some(last) = register_path.segments.last_mut() {
+        last.ident = format_ident!("{}_register", base);
+    }
+    Ok((register_path, base.to_string()))
+}
+
 struct WorkflowInput {
     name: Ident,
     version: LitStr,
@@ -907,6 +970,22 @@ struct WorkflowInput {
     spills: Vec<SpillEntry>,
     ifs: Vec<IfEntry>,
     switches: Vec<SwitchEntry>,
+}
+
+struct WorkflowBundleInput {
+    name: Ident,
+    version: LitStr,
+    profile: Ident,
+    summary: Option<LitStr>,
+    bindings: Vec<Binding>,
+    connects: Vec<ConnectEntry>,
+    timeouts: Vec<TimeoutEntry>,
+    deliveries: Vec<DeliveryEntry>,
+    buffers: Vec<BufferEntry>,
+    spills: Vec<SpillEntry>,
+    ifs: Vec<IfEntry>,
+    switches: Vec<SwitchEntry>,
+    entrypoints: Vec<EntrypointEntry>,
 }
 
 struct Binding {
@@ -985,6 +1064,14 @@ struct SwitchEntry {
     cases: Vec<(LitStr, Ident)>,
     default: Option<Ident>,
     span: Span,
+}
+
+struct EntrypointEntry {
+    trigger: LitStr,
+    capture: LitStr,
+    route: Option<LitStr>,
+    method: Option<LitStr>,
+    deadline_ms: Option<u64>,
 }
 
 struct IfEntry {
@@ -1503,6 +1590,93 @@ impl Parse for SwitchArgs {
     }
 }
 
+impl Parse for EntrypointEntry {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let content;
+        braced!(content in input);
+        let span = content.span();
+        let mut trigger = None;
+        let mut capture = None;
+        let mut route = None;
+        let mut method = None;
+        let mut deadline_ms = None;
+
+        while !content.is_empty() {
+            let key: Ident = content.parse()?;
+            content.parse::<Token![:]>()?;
+            match key.to_string().as_str() {
+                "trigger" => {
+                    if trigger.is_some() {
+                        return Err(syn::Error::new(key.span(), "duplicate entrypoint trigger"));
+                    }
+                    trigger = Some(content.parse()?);
+                }
+                "capture" => {
+                    if capture.is_some() {
+                        return Err(syn::Error::new(key.span(), "duplicate entrypoint capture"));
+                    }
+                    capture = Some(content.parse()?);
+                }
+                "route" => {
+                    if route.is_some() {
+                        return Err(syn::Error::new(key.span(), "duplicate entrypoint route"));
+                    }
+                    route = Some(content.parse()?);
+                }
+                "method" => {
+                    if method.is_some() {
+                        return Err(syn::Error::new(key.span(), "duplicate entrypoint method"));
+                    }
+                    method = Some(content.parse()?);
+                }
+                "deadline_ms" => {
+                    if deadline_ms.is_some() {
+                        return Err(syn::Error::new(
+                            key.span(),
+                            "duplicate entrypoint deadline_ms",
+                        ));
+                    }
+                    let ms_lit: LitInt = content.parse()?;
+                    let ms = ms_lit.base10_parse::<u64>().map_err(|err| {
+                        syn::Error::new(ms_lit.span(), format!("invalid deadline_ms literal: {err}"))
+                    })?;
+                    deadline_ms = Some(ms);
+                }
+                other => {
+                    return Err(syn::Error::new(
+                        key.span(),
+                        format!("unknown entrypoint field `{other}`"),
+                    ));
+                }
+            }
+
+            if content.peek(Token![,]) {
+                content.parse::<Token![,]>()?;
+                if content.is_empty() {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        let trigger = trigger.ok_or_else(|| {
+            syn::Error::new(span, "entrypoint! requires `trigger: \"...\"`")
+        })?;
+        let capture = capture.ok_or_else(|| {
+            syn::Error::new(span, "entrypoint! requires `capture: \"...\"`")
+        })?;
+
+        Ok(Self {
+            trigger,
+            capture,
+            route,
+            method,
+            deadline_ms,
+        })
+    }
+}
+
 impl Parse for WorkflowInput {
     fn parse(input: ParseStream) -> Result<Self> {
         let mut name = None;
@@ -1752,6 +1926,276 @@ impl Parse for WorkflowInput {
             spills,
             ifs,
             switches,
+        })
+    }
+}
+
+impl Parse for WorkflowBundleInput {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let mut name = None;
+        let mut version = None;
+        let mut profile = None;
+        let mut summary = None;
+        let mut bindings = Vec::new();
+        let mut connects = Vec::new();
+        let mut timeouts = Vec::new();
+        let mut deliveries = Vec::new();
+        let mut buffers = Vec::new();
+        let mut spills = Vec::new();
+        let mut ifs = Vec::new();
+        let mut switches = Vec::new();
+        let mut entrypoints = Vec::new();
+
+        while !input.is_empty() {
+            let key: Ident = input.parse()?;
+            input.parse::<Token![:]>()?;
+            match key.to_string().as_str() {
+                "name" => {
+                    if name.is_some() {
+                        return Err(syn::Error::new(key.span(), "duplicate `name` field"));
+                    }
+                    name = Some(input.parse()?);
+                }
+                "version" => {
+                    if version.is_some() {
+                        return Err(syn::Error::new(key.span(), "duplicate `version` field"));
+                    }
+                    version = Some(input.parse()?);
+                }
+                "profile" => {
+                    if profile.is_some() {
+                        return Err(syn::Error::new(key.span(), "duplicate `profile` field"));
+                    }
+                    profile = Some(input.parse()?);
+                }
+                "summary" => {
+                    summary = Some(input.parse()?);
+                }
+                other => {
+                    return Err(syn::Error::new(
+                        key.span(),
+                        format!("unknown workflow field `{other}`"),
+                    ));
+                }
+            }
+
+            if input.peek(Token![;]) {
+                input.parse::<Token![;]>()?;
+                break;
+            } else if input.peek(Token![,]) {
+                input.parse::<Token![,]>()?;
+            } else {
+                return Err(syn::Error::new(
+                    input.span(),
+                    "expected `,` or `;` after workflow metadata",
+                ));
+            }
+        }
+
+        while !input.is_empty() {
+            if input.peek(Token![let]) {
+                input.parse::<Token![let]>()?;
+                let alias: Ident = input.parse()?;
+                input.parse::<Token![=]>()?;
+                let expr: Expr = input.parse()?;
+                input.parse::<Token![;]>()?;
+                bindings.push(Binding { alias, expr });
+                continue;
+            }
+
+            if input.peek(Token![if])
+                || input.peek(Token![match])
+                || input.peek(Token![while])
+                || input.peek(Token![for])
+            {
+                return Err(syn::Error::new(
+                    input.span(),
+                    "workflow_bundle! does not support Rust control-flow statements; use the flow::switch/for_each helpers",
+                ));
+            }
+
+            let mac: Macro = input.parse()?;
+
+            if mac.path.is_ident("connect") {
+                let args = syn::parse2::<ConnectArgs>(mac.tokens)?;
+                if input.peek(Token![;]) {
+                    input.parse::<Token![;]>()?;
+                } else {
+                    return Err(syn::Error::new(
+                        input.span(),
+                        "expected `;` after connect! statement",
+                    ));
+                }
+                connects.push(ConnectEntry {
+                    from: args.from,
+                    to: args.to,
+                });
+                continue;
+            }
+
+            if mac.path.is_ident("timeout") {
+                let span = mac.span();
+                let args = syn::parse2::<TimeoutArgs>(mac.tokens)?;
+                if input.peek(Token![;]) {
+                    input.parse::<Token![;]>()?;
+                } else {
+                    return Err(syn::Error::new(
+                        input.span(),
+                        "expected `;` after timeout! statement",
+                    ));
+                }
+                timeouts.push(TimeoutEntry {
+                    from: args.from,
+                    to: args.to,
+                    ms: args.ms,
+                    span,
+                });
+                continue;
+            }
+
+            if mac.path.is_ident("delivery") {
+                let span = mac.span();
+                let args = syn::parse2::<DeliveryArgs>(mac.tokens)?;
+                if input.peek(Token![;]) {
+                    input.parse::<Token![;]>()?;
+                } else {
+                    return Err(syn::Error::new(
+                        input.span(),
+                        "expected `;` after delivery! statement",
+                    ));
+                }
+                deliveries.push(DeliveryEntry {
+                    from: args.from,
+                    to: args.to,
+                    mode: args.mode,
+                    span,
+                });
+                continue;
+            }
+
+            if mac.path.is_ident("buffer") {
+                let span = mac.span();
+                let args = syn::parse2::<BufferArgs>(mac.tokens)?;
+                if input.peek(Token![;]) {
+                    input.parse::<Token![;]>()?;
+                } else {
+                    return Err(syn::Error::new(
+                        input.span(),
+                        "expected `;` after buffer! statement",
+                    ));
+                }
+                buffers.push(BufferEntry {
+                    from: args.from,
+                    to: args.to,
+                    max_items: args.max_items,
+                    span,
+                });
+                continue;
+            }
+
+            if mac.path.is_ident("spill") {
+                let span = mac.span();
+                let args = syn::parse2::<SpillArgs>(mac.tokens)?;
+                if input.peek(Token![;]) {
+                    input.parse::<Token![;]>()?;
+                } else {
+                    return Err(syn::Error::new(
+                        input.span(),
+                        "expected `;` after spill! statement",
+                    ));
+                }
+                spills.push(SpillEntry {
+                    from: args.from,
+                    to: args.to,
+                    tier: args.tier,
+                    threshold_bytes: args.threshold_bytes,
+                    span,
+                });
+                continue;
+            }
+
+            if mac.path.is_ident("if_") {
+                let span = mac.span();
+                let args = syn::parse2::<IfArgs>(mac.tokens)?;
+                if input.peek(Token![;]) {
+                    input.parse::<Token![;]>()?;
+                } else {
+                    return Err(syn::Error::new(
+                        input.span(),
+                        "expected `;` after if_! statement",
+                    ));
+                }
+                ifs.push(IfEntry {
+                    source: args.source,
+                    selector_pointer: args.selector_pointer,
+                    then_target: args.then_target,
+                    else_target: args.else_target,
+                    span,
+                });
+                continue;
+            }
+
+            if mac.path.is_ident("switch") {
+                let span = mac.span();
+                let args = syn::parse2::<SwitchArgs>(mac.tokens)?;
+                if input.peek(Token![;]) {
+                    input.parse::<Token![;]>()?;
+                } else {
+                    return Err(syn::Error::new(
+                        input.span(),
+                        "expected `;` after switch! statement",
+                    ));
+                }
+                switches.push(SwitchEntry {
+                    source: args.source,
+                    selector_pointer: args.selector_pointer,
+                    cases: args.cases,
+                    default: args.default,
+                    span,
+                });
+                continue;
+            }
+
+            if mac.path.is_ident("entrypoint") {
+                let entry = syn::parse2::<EntrypointEntry>(mac.tokens)?;
+                if input.peek(Token![;]) {
+                    input.parse::<Token![;]>()?;
+                } else {
+                    return Err(syn::Error::new(
+                        input.span(),
+                        "expected `;` after entrypoint! statement",
+                    ));
+                }
+                entrypoints.push(entry);
+                continue;
+            }
+
+            return Err(syn::Error::new(
+                mac.span(),
+                "workflow_bundle! body currently supports only `let` bindings, `connect!`, `timeout!`, `delivery!`, `buffer!`, `spill!`, `if_!`, `switch!`, and `entrypoint!` statements",
+            ));
+        }
+
+        Ok(WorkflowBundleInput {
+            name: name.ok_or_else(|| {
+                syn::Error::new(Span::call_site(), "workflow_bundle! requires `name`")
+            })?,
+            version: version.ok_or_else(|| {
+                syn::Error::new(Span::call_site(), "workflow_bundle! requires `version`")
+            })?,
+            profile: profile.ok_or_else(|| {
+                syn::Error::new(Span::call_site(), "workflow_bundle! requires `profile`")
+            })?,
+            summary,
+            bindings,
+            connects,
+            timeouts,
+            deliveries,
+            buffers,
+            spills,
+            ifs,
+            switches,
+            entrypoints,
         })
     }
 }
@@ -2334,6 +2778,685 @@ impl WorkflowInput {
                 #(#if_statements)*
                 #(#switch_statements)*
                 flow
+            }
+        })
+    }
+}
+
+impl WorkflowBundleInput {
+    fn expand(&self) -> Result<TokenStream2> {
+        let flow_name = self.name.to_string();
+        let flow_name_lit = LitStr::new(&flow_name, self.name.span());
+        let profile_ident = &self.profile;
+        let version_literal = &self.version;
+
+        Version::parse(&version_literal.value()).map_err(|err| {
+            syn::Error::new(
+                version_literal.span(),
+                format!("invalid semver literal: {err}"),
+            )
+        })?;
+
+        let mut alias_set = HashSet::new();
+        for binding in &self.bindings {
+            let alias_str = binding.alias.to_string();
+            if !alias_set.insert(alias_str.clone()) {
+                return Err(syn::Error::new(
+                    binding.alias.span(),
+                    format!("[DAG205] duplicate node alias `{}`", binding.alias),
+                ));
+            }
+        }
+
+        for entrypoint in &self.entrypoints {
+            let trigger_alias = entrypoint.trigger.value();
+            if !alias_set.contains(&trigger_alias) {
+                return Err(syn::Error::new(
+                    entrypoint.trigger.span(),
+                    format!("[DAG202] unknown node alias `{trigger_alias}`"),
+                ));
+            }
+            let capture_alias = entrypoint.capture.value();
+            if !alias_set.contains(&capture_alias) {
+                return Err(syn::Error::new(
+                    entrypoint.capture.span(),
+                    format!("[DAG202] unknown node alias `{capture_alias}`"),
+                ));
+            }
+        }
+
+        for connect in &self.connects {
+            let from = connect.from.to_string();
+            let to = connect.to.to_string();
+            if !alias_set.contains(&from) {
+                return Err(syn::Error::new(
+                    connect.from.span(),
+                    format!("[DAG202] unknown node alias `{}`", connect.from),
+                ));
+            }
+            if !alias_set.contains(&to) {
+                return Err(syn::Error::new(
+                    connect.to.span(),
+                    format!("[DAG202] unknown node alias `{}`", connect.to),
+                ));
+            }
+        }
+
+        let mut connected_edges = HashSet::new();
+        for connect in &self.connects {
+            connected_edges.insert((connect.from.to_string(), connect.to.to_string()));
+        }
+
+        let mut timeout_edges = HashSet::new();
+        for timeout in &self.timeouts {
+            let from = timeout.from.to_string();
+            let to = timeout.to.to_string();
+
+            if !alias_set.contains(&from) {
+                return Err(syn::Error::new(
+                    timeout.from.span(),
+                    format!("[DAG202] unknown node alias `{}`", timeout.from),
+                ));
+            }
+            if !alias_set.contains(&to) {
+                return Err(syn::Error::new(
+                    timeout.to.span(),
+                    format!("[DAG202] unknown node alias `{}`", timeout.to),
+                ));
+            }
+
+            if !connected_edges.contains(&(from.clone(), to.clone())) {
+                return Err(syn::Error::new(
+                    timeout.span,
+                    format!("[DAG206] timeout! references missing edge `{from}` -> `{to}`"),
+                ));
+            }
+
+            if !timeout_edges.insert((from.clone(), to.clone())) {
+                return Err(syn::Error::new(
+                    timeout.span,
+                    format!("[DAG207] duplicate timeout! for edge `{from}` -> `{to}`"),
+                ));
+            }
+        }
+
+        let mut delivery_edges = HashSet::new();
+        for delivery in &self.deliveries {
+            let from = delivery.from.to_string();
+            let to = delivery.to.to_string();
+
+            if !alias_set.contains(&from) {
+                return Err(syn::Error::new(
+                    delivery.from.span(),
+                    format!("[DAG202] unknown node alias `{}`", delivery.from),
+                ));
+            }
+            if !alias_set.contains(&to) {
+                return Err(syn::Error::new(
+                    delivery.to.span(),
+                    format!("[DAG202] unknown node alias `{}`", delivery.to),
+                ));
+            }
+
+            if !connected_edges.contains(&(from.clone(), to.clone())) {
+                return Err(syn::Error::new(
+                    delivery.span,
+                    format!("[DAG206] delivery! references missing edge `{from}` -> `{to}`"),
+                ));
+            }
+
+            if !delivery_edges.insert((from.clone(), to.clone())) {
+                return Err(syn::Error::new(
+                    delivery.span,
+                    format!("[DAG207] duplicate delivery! for edge `{from}` -> `{to}`"),
+                ));
+            }
+        }
+
+        let mut buffer_edges = HashSet::new();
+        for buffer in &self.buffers {
+            let from = buffer.from.to_string();
+            let to = buffer.to.to_string();
+
+            if !alias_set.contains(&from) {
+                return Err(syn::Error::new(
+                    buffer.from.span(),
+                    format!("[DAG202] unknown node alias `{}`", buffer.from),
+                ));
+            }
+            if !alias_set.contains(&to) {
+                return Err(syn::Error::new(
+                    buffer.to.span(),
+                    format!("[DAG202] unknown node alias `{}`", buffer.to),
+                ));
+            }
+
+            if !connected_edges.contains(&(from.clone(), to.clone())) {
+                return Err(syn::Error::new(
+                    buffer.span,
+                    format!("[DAG206] buffer! references missing edge `{from}` -> `{to}`"),
+                ));
+            }
+
+            if !buffer_edges.insert((from.clone(), to.clone())) {
+                return Err(syn::Error::new(
+                    buffer.span,
+                    format!("[DAG207] duplicate buffer! for edge `{from}` -> `{to}`"),
+                ));
+            }
+        }
+
+        let mut spill_edges = HashSet::new();
+        for spill in &self.spills {
+            let from = spill.from.to_string();
+            let to = spill.to.to_string();
+
+            if !alias_set.contains(&from) {
+                return Err(syn::Error::new(
+                    spill.from.span(),
+                    format!("[DAG202] unknown node alias `{}`", spill.from),
+                ));
+            }
+            if !alias_set.contains(&to) {
+                return Err(syn::Error::new(
+                    spill.to.span(),
+                    format!("[DAG202] unknown node alias `{}`", spill.to),
+                ));
+            }
+
+            if !connected_edges.contains(&(from.clone(), to.clone())) {
+                return Err(syn::Error::new(
+                    spill.span,
+                    format!("[DAG206] spill! references missing edge `{from}` -> `{to}`"),
+                ));
+            }
+
+            if !spill_edges.insert((from.clone(), to.clone())) {
+                return Err(syn::Error::new(
+                    spill.span,
+                    format!("[DAG207] duplicate spill! for edge `{from}` -> `{to}`"),
+                ));
+            }
+        }
+
+        let mut routing_sources = HashSet::new();
+
+        let mut if_sources = HashSet::new();
+        for surface in &self.ifs {
+            let source = surface.source.to_string();
+            if !alias_set.contains(&source) {
+                return Err(syn::Error::new(
+                    surface.source.span(),
+                    format!("[DAG202] unknown node alias `{}`", surface.source),
+                ));
+            }
+
+            if !if_sources.insert(source.clone()) {
+                return Err(syn::Error::new(
+                    surface.span,
+                    format!("[DAG207] duplicate if_! for source `{source}`"),
+                ));
+            }
+
+            if !routing_sources.insert(source.clone()) {
+                return Err(syn::Error::new(
+                    surface.span,
+                    format!("[DAG207] multiple routing surfaces for source `{source}`"),
+                ));
+            }
+
+            let pointer = surface.selector_pointer.value();
+            if !(pointer.is_empty() || pointer.starts_with('/')) {
+                return Err(syn::Error::new(
+                    surface.selector_pointer.span(),
+                    "if_! selector_pointer must be a JSON Pointer (empty string or starting with `/`)",
+                ));
+            }
+
+            let then_target = surface.then_target.to_string();
+            if !alias_set.contains(&then_target) {
+                return Err(syn::Error::new(
+                    surface.then_target.span(),
+                    format!("[DAG202] unknown node alias `{}`", surface.then_target),
+                ));
+            }
+            if !connected_edges.contains(&(source.clone(), then_target.clone())) {
+                return Err(syn::Error::new(
+                    surface.span,
+                    format!(
+                        "[DAG206] if_! references missing edge `{}` -> `{}`",
+                        source, then_target
+                    ),
+                ));
+            }
+
+            let else_target = surface.else_target.to_string();
+            if !alias_set.contains(&else_target) {
+                return Err(syn::Error::new(
+                    surface.else_target.span(),
+                    format!("[DAG202] unknown node alias `{}`", surface.else_target),
+                ));
+            }
+            if !connected_edges.contains(&(source.clone(), else_target.clone())) {
+                return Err(syn::Error::new(
+                    surface.span,
+                    format!(
+                        "[DAG206] if_! references missing edge `{}` -> `{}`",
+                        source, else_target
+                    ),
+                ));
+            }
+        }
+
+        let mut switch_sources = HashSet::new();
+        for surface in &self.switches {
+            let source = surface.source.to_string();
+            if !alias_set.contains(&source) {
+                return Err(syn::Error::new(
+                    surface.source.span(),
+                    format!("[DAG202] unknown node alias `{}`", surface.source),
+                ));
+            }
+
+            if !switch_sources.insert(source.clone()) {
+                return Err(syn::Error::new(
+                    surface.span,
+                    format!("[DAG207] duplicate switch! for source `{source}`"),
+                ));
+            }
+
+            if !routing_sources.insert(source.clone()) {
+                return Err(syn::Error::new(
+                    surface.span,
+                    format!("[DAG207] multiple routing surfaces for source `{source}`"),
+                ));
+            }
+
+            if surface.cases.is_empty() {
+                return Err(syn::Error::new(
+                    surface.span,
+                    "switch! requires at least one case",
+                ));
+            }
+
+            let pointer = surface.selector_pointer.value();
+            if !(pointer.is_empty() || pointer.starts_with('/')) {
+                return Err(syn::Error::new(
+                    surface.selector_pointer.span(),
+                    "switch! selector_pointer must be a JSON Pointer (empty string or starting with `/`)",
+                ));
+            }
+
+            for (_case_key, target) in &surface.cases {
+                let target_str = target.to_string();
+                if !alias_set.contains(&target_str) {
+                    return Err(syn::Error::new(
+                        target.span(),
+                        format!("[DAG202] unknown node alias `{}`", target),
+                    ));
+                }
+                if !connected_edges.contains(&(source.clone(), target_str.clone())) {
+                    return Err(syn::Error::new(
+                        surface.span,
+                        format!(
+                            "[DAG206] switch! references missing edge `{}` -> `{}`",
+                            source, target_str
+                        ),
+                    ));
+                }
+            }
+
+            if let Some(default) = &surface.default {
+                let target_str = default.to_string();
+                if !alias_set.contains(&target_str) {
+                    return Err(syn::Error::new(
+                        default.span(),
+                        format!("[DAG202] unknown node alias `{}`", default),
+                    ));
+                }
+                if !connected_edges.contains(&(source.clone(), target_str.clone())) {
+                    return Err(syn::Error::new(
+                        surface.span,
+                        format!(
+                            "[DAG206] switch! references missing edge `{}` -> `{}`",
+                            source, target_str
+                        ),
+                    ));
+                }
+            }
+        }
+
+        let summary_stmt = if let Some(summary) = &self.summary {
+            quote!(builder.summary(Some(#summary));)
+        } else {
+            quote!()
+        };
+
+        let binding_statements = self.bindings.iter().map(|binding| {
+            let alias = &binding.alias;
+            let alias_str = binding.alias.to_string();
+            let expr = &binding.expr;
+            quote! {
+                let #alias = builder
+                    .add_node(#alias_str, #expr)
+                    .expect(concat!(
+                        "[DAG205] duplicate node alias `",
+                        stringify!(#alias),
+                        "`"
+                    ));
+            }
+        });
+
+        let connect_statements = self.connects.iter().map(|connect| {
+            let from = &connect.from;
+            let to = &connect.to;
+            quote! {
+                builder.connect(&#from, &#to);
+            }
+        });
+
+        let timeout_statements = self.timeouts.iter().map(|timeout| {
+            let from = &timeout.from;
+            let to = &timeout.to;
+            let ms = timeout.ms;
+            quote! {
+                builder
+                    .set_edge_timeout_ms(&#from, &#to, #ms)
+                    .expect("timeout! references existing edge");
+            }
+        });
+
+        let delivery_statements = self.deliveries.iter().map(|delivery| {
+            let from = &delivery.from;
+            let to = &delivery.to;
+            let mode = delivery.mode.to_tokens(delivery.span);
+            quote! {
+                builder
+                    .set_edge_delivery(&#from, &#to, #mode)
+                    .expect("delivery! references existing edge");
+            }
+        });
+
+        let buffer_statements = self.buffers.iter().map(|buffer| {
+            let from = &buffer.from;
+            let to = &buffer.to;
+            let max_items = buffer.max_items;
+            quote! {
+                builder
+                    .set_edge_buffer_max_items(&#from, &#to, #max_items)
+                    .expect("buffer! references existing edge");
+            }
+        });
+
+        let spill_statements = self.spills.iter().map(|spill| {
+            let from = &spill.from;
+            let to = &spill.to;
+            let tier = &spill.tier;
+            let threshold_stmt = spill.threshold_bytes.map(|threshold_bytes| {
+                quote! {
+                    builder
+                        .set_edge_spill_threshold_bytes(&#from, &#to, #threshold_bytes)
+                        .expect("spill! references existing edge");
+                }
+            });
+            quote! {
+                builder
+                    .set_edge_spill_tier(&#from, &#to, #tier)
+                    .expect("spill! references existing edge");
+                #threshold_stmt
+            }
+        });
+
+        let if_statements = self.ifs.iter().enumerate().map(|(idx, surface)| {
+            let source_alias = surface.source.to_string();
+            let source_alias_lit = LitStr::new(&source_alias, surface.source.span());
+            let selector_pointer = &surface.selector_pointer;
+
+            let then_alias = surface.then_target.to_string();
+            let then_alias_lit = LitStr::new(&then_alias, surface.then_target.span());
+            let else_alias = surface.else_target.to_string();
+            let else_alias_lit = LitStr::new(&else_alias, surface.else_target.span());
+
+            let mut target_aliases: Vec<String> = Vec::new();
+            if !target_aliases.contains(&then_alias) {
+                target_aliases.push(then_alias);
+            }
+            if !target_aliases.contains(&else_alias) {
+                target_aliases.push(else_alias);
+            }
+
+            let mut target_lits: Vec<LitStr> = Vec::new();
+            for alias in &target_aliases {
+                target_lits.push(LitStr::new(alias, surface.span));
+            }
+
+            let surface_id = format!("if:{source_alias}:{idx}");
+            let surface_id_lit = LitStr::new(&surface_id, surface.span);
+
+            quote! {
+                {
+                    let mut targets = Vec::new();
+                    targets.push(#source_alias_lit.to_string());
+                    #(targets.push(#target_lits.to_string());)*
+
+                    let mut config = ::dag_core::serde_json::Map::new();
+                    config.insert(
+                        "v".to_string(),
+                        ::dag_core::serde_json::Value::Number(::dag_core::serde_json::Number::from(1)),
+                    );
+                    config.insert(
+                        "source".to_string(),
+                        ::dag_core::serde_json::Value::String(#source_alias_lit.to_string()),
+                    );
+                    config.insert(
+                        "selector_pointer".to_string(),
+                        ::dag_core::serde_json::Value::String(#selector_pointer.to_string()),
+                    );
+                    config.insert(
+                        "then".to_string(),
+                        ::dag_core::serde_json::Value::String(#then_alias_lit.to_string()),
+                    );
+                    config.insert(
+                        "else".to_string(),
+                        ::dag_core::serde_json::Value::String(#else_alias_lit.to_string()),
+                    );
+
+                    flow.control_surfaces.push(::dag_core::ControlSurfaceIR {
+                        id: #surface_id_lit.to_string(),
+                        kind: ::dag_core::ControlSurfaceKind::If,
+                        targets,
+                        config: ::dag_core::serde_json::Value::Object(config),
+                    });
+                }
+            }
+        });
+
+        let switch_statements = self.switches.iter().enumerate().map(|(idx, surface)| {
+            let source_alias = surface.source.to_string();
+            let source_alias_lit = LitStr::new(&source_alias, surface.source.span());
+            let selector_pointer = &surface.selector_pointer;
+
+            let mut target_aliases: Vec<String> = Vec::new();
+            for (_key, target) in &surface.cases {
+                let alias = target.to_string();
+                if !target_aliases.contains(&alias) {
+                    target_aliases.push(alias);
+                }
+            }
+            if let Some(default) = &surface.default {
+                let alias = default.to_string();
+                if !target_aliases.contains(&alias) {
+                    target_aliases.push(alias);
+                }
+            }
+
+            let mut target_lits: Vec<LitStr> = Vec::new();
+            for alias in &target_aliases {
+                target_lits.push(LitStr::new(alias, surface.span));
+            }
+
+            let surface_id = format!("switch:{source_alias}:{idx}");
+            let surface_id_lit = LitStr::new(&surface_id, surface.span);
+
+            let case_inserts = surface.cases.iter().map(|(case_key, target)| {
+                let target_alias = target.to_string();
+                let target_alias_lit = LitStr::new(&target_alias, target.span());
+                quote! {
+                    cases.insert(#case_key.to_string(), ::dag_core::serde_json::Value::String(#target_alias_lit.to_string()));
+                }
+            });
+
+            let default_insert = surface.default.as_ref().map(|default| {
+                let default_alias = default.to_string();
+                let default_alias_lit = LitStr::new(&default_alias, default.span());
+                quote! {
+                    config.insert(
+                        "default".to_string(),
+                        ::dag_core::serde_json::Value::String(#default_alias_lit.to_string()),
+                    );
+                }
+            });
+
+            quote! {
+                {
+                    let mut cases = ::dag_core::serde_json::Map::new();
+                    #(#case_inserts)*
+
+                    let mut targets = Vec::new();
+                    targets.push(#source_alias_lit.to_string());
+                    #(targets.push(#target_lits.to_string());)*
+
+                    let mut config = ::dag_core::serde_json::Map::new();
+                    config.insert(
+                        "v".to_string(),
+                        ::dag_core::serde_json::Value::Number(::dag_core::serde_json::Number::from(1)),
+                    );
+                    config.insert(
+                        "source".to_string(),
+                        ::dag_core::serde_json::Value::String(#source_alias_lit.to_string()),
+                    );
+                    config.insert(
+                        "selector_pointer".to_string(),
+                        ::dag_core::serde_json::Value::String(#selector_pointer.to_string()),
+                    );
+                    config.insert(
+                        "cases".to_string(),
+                        ::dag_core::serde_json::Value::Object(cases),
+                    );
+                    #default_insert
+
+                    flow.control_surfaces.push(::dag_core::ControlSurfaceIR {
+                        id: #surface_id_lit.to_string(),
+                        kind: ::dag_core::ControlSurfaceKind::Switch,
+                        targets,
+                        config: ::dag_core::serde_json::Value::Object(config),
+                    });
+                }
+            }
+        });
+
+        let mut register_entries = Vec::new();
+        for binding in &self.bindings {
+            let (register_path, base_name) = register_info_for_binding(&binding.expr)?;
+            let label = LitStr::new(&format!("register {base_name}"), binding.alias.span());
+            register_entries.push((register_path, label));
+        }
+
+        let register_statements = register_entries.iter().map(|(register_path, label)| {
+            quote! {
+                #register_path(registry).expect(#label);
+            }
+        });
+
+        let node_contracts = self.bindings.iter().map(|binding| {
+            let expr = &binding.expr;
+            quote! {
+                ::host_inproc::NodeContract {
+                    identifier: #expr.identifier.to_string(),
+                    contract_hash: None,
+                    source: ::host_inproc::NodeSource::Local,
+                }
+            }
+        });
+
+        let entrypoints = self.entrypoints.iter().map(|entry| {
+            let trigger = &entry.trigger;
+            let capture = &entry.capture;
+            let route = entry
+                .route
+                .as_ref()
+                .map(|route| quote!(Some(#route.to_string())))
+                .unwrap_or_else(|| quote!(None));
+            let method = entry
+                .method
+                .as_ref()
+                .map(|method| quote!(Some(#method.to_string())))
+                .unwrap_or_else(|| quote!(None));
+            let deadline = entry
+                .deadline_ms
+                .map(|ms| quote!(Some(::std::time::Duration::from_millis(#ms))))
+                .unwrap_or_else(|| quote!(None));
+
+            quote! {
+                ::host_inproc::FlowEntrypoint {
+                    trigger_alias: #trigger.to_string(),
+                    capture_alias: #capture.to_string(),
+                    route_path: #route,
+                    method: #method,
+                    deadline: #deadline,
+                }
+            }
+        });
+
+        Ok(quote! {
+            pub fn flow() -> ::dag_core::FlowIR {
+                let version = ::dag_core::prelude::Version::parse(#version_literal)
+                    .expect("workflow_bundle!: invalid semver literal");
+                let mut builder = ::dag_core::FlowBuilder::new(
+                    #flow_name_lit,
+                    version,
+                    ::dag_core::Profile::#profile_ident,
+                );
+
+                #summary_stmt
+                #(#binding_statements)*
+                #(#connect_statements)*
+                #(#delivery_statements)*
+                #(#buffer_statements)*
+                #(#spill_statements)*
+                #(#timeout_statements)*
+
+                let mut flow = builder.build();
+                #(#if_statements)*
+                #(#switch_statements)*
+                flow
+            }
+
+            pub fn validated_ir() -> ::kernel_plan::ValidatedIR {
+                let flow = flow();
+                ::kernel_plan::validate(&flow)
+                    .expect("workflow_bundle!: flow validation failed")
+            }
+
+            fn __register_nodes(registry: &mut ::kernel_exec::NodeRegistry) {
+                #(#register_statements)*
+            }
+
+            pub fn bundle() -> ::host_inproc::FlowBundle {
+                let validated_ir = validated_ir();
+                let mut registry = ::kernel_exec::NodeRegistry::new();
+                __register_nodes(&mut registry);
+                let resolver: ::std::sync::Arc<dyn ::host_inproc::NodeResolver> =
+                    ::std::sync::Arc::new(registry);
+                let entrypoints = vec![#(#entrypoints),*];
+                let node_contracts = vec![#(#node_contracts),*];
+                ::host_inproc::FlowBundle {
+                    validated_ir,
+                    entrypoints,
+                    resolver,
+                    node_contracts,
+                    environment_plugins: Vec::new(),
+                }
             }
         })
     }

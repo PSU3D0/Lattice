@@ -12,6 +12,7 @@ description = "S6 example demonstrating buffer and spill behavior."
 [dependencies]
 dag-core = { path = "../../crates/dag-core" }
 dag-macros = { path = "../../crates/dag-macros" }
+host-inproc = { path = "../../crates/host-inproc" }
 kernel-exec = { path = "../../crates/kernel-exec" }
 kernel-plan = { path = "../../crates/kernel-plan" }
 capabilities = { path = "../../crates/capabilities" }

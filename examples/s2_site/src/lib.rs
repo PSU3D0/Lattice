@@ -1,13 +1,13 @@
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::Mutex;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use async_stream::stream;
-use dag_core::{FlowIR, NodeResult};
+use dag_core::NodeResult;
 use dag_macros::{node, trigger};
 use futures::Stream;
-use kernel_exec::{FlowExecutor, NodeRegistry};
-use kernel_plan::{ValidatedIR, validate};
+use kernel_exec::{NodeRegistry, RegistryError};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -55,7 +55,38 @@ impl SiteEvent {
     }
 }
 
-type SiteEventStream = Pin<Box<dyn Stream<Item = NodeResult<SiteEvent>> + Send>>;
+struct SiteEventStream {
+    inner: Mutex<Pin<Box<dyn Stream<Item = NodeResult<SiteEvent>> + Send>>>,
+}
+
+impl SiteEventStream {
+    fn new(stream: impl Stream<Item = NodeResult<SiteEvent>> + Send + 'static) -> Self {
+        Self {
+            inner: Mutex::new(Box::pin(stream)),
+        }
+    }
+}
+
+impl Stream for SiteEventStream {
+    type Item = NodeResult<SiteEvent>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut guard = self
+            .inner
+            .lock()
+            .expect("site event stream lock poisoned");
+        guard.as_mut().poll_next(cx)
+    }
+}
+
+impl serde::Serialize for SiteEventStream {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_unit()
+    }
+}
 
 #[trigger(
     name = "SiteHttpTrigger",
@@ -101,46 +132,39 @@ async fn stream_telemetry(snapshot: SiteSnapshot) -> NodeResult<SiteEventStream>
         }
     };
 
-    Ok(Box::pin(stream))
+    Ok(SiteEventStream::new(stream))
 }
 
-dag_macros::workflow! {
+fn stream_telemetry_stream_node_spec() -> &'static dag_core::NodeSpec {
+    stream_telemetry_node_spec()
+}
+
+fn stream_telemetry_stream_register(
+    registry: &mut NodeRegistry,
+) -> Result<(), RegistryError> {
+    registry.register_stream_fn(
+        concat!(module_path!(), "::", stringify!(stream_telemetry)),
+        stream_telemetry,
+    )
+}
+
+dag_macros::workflow_bundle! {
     name: s2_site_flow,
     version: "1.0.0",
     profile: Web,
     summary: "Implements the S2 streaming site-status example with SSE";
     let trigger = http_trigger_node_spec();
     let snapshot = build_snapshot_node_spec();
-    let stream = stream_telemetry_node_spec();
+    let stream = stream_telemetry_stream_node_spec();
     connect!(trigger -> snapshot);
     connect!(snapshot -> stream);
-}
-
-pub fn flow() -> FlowIR {
-    s2_site_flow()
-}
-
-pub const TRIGGER_ALIAS: &str = "trigger";
-pub const CAPTURE_ALIAS: &str = "stream";
-pub const ROUTE_PATH: &str = "/site/stream";
-pub const DEADLINE: Duration = Duration::from_secs(5);
-
-pub fn executor() -> FlowExecutor {
-    let mut registry = NodeRegistry::new();
-    registry
-        .register_fn("example_s2_site::http_trigger", http_trigger)
-        .expect("register http_trigger");
-    registry
-        .register_fn("example_s2_site::build_snapshot", build_snapshot)
-        .expect("register build_snapshot");
-    registry
-        .register_stream_fn("example_s2_site::stream_telemetry", stream_telemetry)
-        .expect("register stream_telemetry");
-    FlowExecutor::new(Arc::new(registry))
-}
-
-pub fn validated_ir() -> ValidatedIR {
-    validate(&flow()).expect("S2 flow should validate")
+    entrypoint!({
+        trigger: "trigger",
+        capture: "stream",
+        route: "/site/stream",
+        method: "POST",
+        deadline_ms: 5000,
+    });
 }
 
 #[cfg(test)]

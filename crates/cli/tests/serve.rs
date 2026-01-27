@@ -11,12 +11,17 @@ use tokio::time::timeout;
 
 #[tokio::test]
 async fn serve_echo_route_round_trips_json() -> Result<(), Box<dyn std::error::Error>> {
-    let executor = s1_echo::executor();
-    let ir = Arc::new(s1_echo::validated_ir());
-    let mut config = RouteConfig::new(s1_echo::ROUTE_PATH)
-        .with_trigger_alias(s1_echo::TRIGGER_ALIAS)
-        .with_capture_alias(s1_echo::CAPTURE_ALIAS)
-        .with_deadline(s1_echo::DEADLINE);
+    let bundle = s1_echo::bundle();
+    let entrypoint = bundle.entrypoints.first().expect("bundle entrypoint");
+    let executor = bundle.executor();
+    let ir = Arc::new(bundle.validated_ir);
+    let route_path = entrypoint.route_path.as_deref().unwrap_or("/");
+    let mut config = RouteConfig::new(route_path)
+        .with_trigger_alias(entrypoint.trigger_alias.clone())
+        .with_capture_alias(entrypoint.capture_alias.clone());
+    if let Some(deadline) = entrypoint.deadline {
+        config = config.with_deadline(deadline);
+    }
     for plugin in s1_echo::environment_plugins() {
         config = config.with_environment_plugin(plugin);
     }
@@ -35,7 +40,7 @@ async fn serve_echo_route_round_trips_json() -> Result<(), Box<dyn std::error::E
     });
 
     let client = reqwest::Client::new();
-    let url = format!("http://{addr}{}", s1_echo::ROUTE_PATH);
+    let url = format!("http://{addr}{route_path}");
     let response = timeout(
         Duration::from_secs(5),
         client
@@ -71,13 +76,20 @@ async fn serve_echo_route_round_trips_json() -> Result<(), Box<dyn std::error::E
 
 #[tokio::test]
 async fn serve_streaming_route_emits_sse() -> Result<(), Box<dyn std::error::Error>> {
-    let executor = s2_site::executor();
-    let ir = Arc::new(s2_site::validated_ir());
-    let config = RouteConfig::new(s2_site::ROUTE_PATH)
-        .with_method(axum::http::Method::POST)
-        .with_trigger_alias(s2_site::TRIGGER_ALIAS)
-        .with_capture_alias(s2_site::CAPTURE_ALIAS)
-        .with_deadline(s2_site::DEADLINE);
+    let bundle = s2_site::bundle();
+    let entrypoint = bundle.entrypoints.first().expect("bundle entrypoint");
+    let executor = bundle.executor();
+    let ir = Arc::new(bundle.validated_ir);
+    let route_path = entrypoint.route_path.as_deref().unwrap_or("/");
+    let method_str = entrypoint.method.as_deref().unwrap_or("POST");
+    let method = method_str.parse::<axum::http::Method>()?;
+    let mut config = RouteConfig::new(route_path)
+        .with_method(method)
+        .with_trigger_alias(entrypoint.trigger_alias.clone())
+        .with_capture_alias(entrypoint.capture_alias.clone());
+    if let Some(deadline) = entrypoint.deadline {
+        config = config.with_deadline(deadline);
+    }
 
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
@@ -93,7 +105,7 @@ async fn serve_streaming_route_emits_sse() -> Result<(), Box<dyn std::error::Err
     });
 
     let client = reqwest::Client::new();
-    let url = format!("http://{addr}{}", s2_site::ROUTE_PATH);
+    let url = format!("http://{addr}{route_path}");
     let response = timeout(
         Duration::from_secs(5),
         client.post(url).json(&json!({ "site": "alpha" })).send(),

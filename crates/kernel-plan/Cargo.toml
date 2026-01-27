@@ -22,3 +22,4 @@ uuid.workspace = true
 proptest.workspace = true
 dag-macros = { path = "../dag-macros" }
 capabilities = { path = "../capabilities" }
+kernel-exec = { path = "../kernel-exec" }

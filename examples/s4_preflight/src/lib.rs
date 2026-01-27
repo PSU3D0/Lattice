@@ -1,10 +1,5 @@
-use std::sync::Arc;
-use std::time::Duration;
-
-use dag_core::{FlowIR, NodeResult};
+use dag_core::NodeResult;
 use dag_macros::{node, trigger};
-use kernel_exec::{FlowExecutor, NodeRegistry};
-use kernel_plan::{ValidatedIR, validate};
 use serde_json::Value as JsonValue;
 
 #[trigger(
@@ -36,7 +31,7 @@ async fn capture(payload: JsonValue) -> NodeResult<JsonValue> {
     Ok(payload)
 }
 
-dag_macros::workflow! {
+dag_macros::workflow_bundle! {
     name: s4_preflight_flow,
     version: "1.0.0",
     profile: Web,
@@ -48,33 +43,14 @@ dag_macros::workflow! {
 
     connect!(trigger -> kv_read);
     connect!(kv_read -> capture);
-}
 
-pub fn flow() -> FlowIR {
-    s4_preflight_flow()
-}
-
-pub const TRIGGER_ALIAS: &str = "trigger";
-pub const CAPTURE_ALIAS: &str = "capture";
-pub const ROUTE_PATH: &str = "/preflight";
-pub const DEADLINE: Duration = Duration::from_millis(250);
-
-pub fn executor() -> FlowExecutor {
-    let mut registry = NodeRegistry::new();
-    registry
-        .register_fn("example_s4_preflight::http_trigger", http_trigger)
-        .expect("register http_trigger");
-    registry
-        .register_fn("example_s4_preflight::kv_read", kv_read)
-        .expect("register kv_read");
-    registry
-        .register_fn("example_s4_preflight::capture", capture)
-        .expect("register capture");
-    FlowExecutor::new(Arc::new(registry))
-}
-
-pub fn validated_ir() -> ValidatedIR {
-    validate(&flow()).expect("S4 flow should validate")
+    entrypoint!({
+        trigger: "trigger",
+        capture: "capture",
+        route: "/preflight",
+        method: "POST",
+        deadline_ms: 250,
+    });
 }
 
 #[cfg(test)]
