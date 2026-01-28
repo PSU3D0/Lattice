@@ -1,0 +1,25 @@
+[package]
+name = "host-workers-test"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+publish = false
+
+# Standalone workspace - not part of parent workspace
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+async-stream = "0.3"
+dag-core = { path = "../../dag-core" }
+dag-macros = { path = "../../dag-macros" }
+futures = "0.3"
+host-inproc = { path = "../../host-inproc" }
+host-workers = { path = "..", default-features = false }
+kernel-exec = { path = "../../kernel-exec", default-features = false, features = ["wasm"] }
+kernel-plan = { path = "../../kernel-plan" }
+serde = "1.0"
+serde_json = "1.0"
+worker = { version = "0.7.4", default-features = false, features = ["http"] }

@@ -71,10 +71,7 @@ impl Stream for SiteEventStream {
     type Item = NodeResult<SiteEvent>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let mut guard = self
-            .inner
-            .lock()
-            .expect("site event stream lock poisoned");
+        let mut guard = self.inner.lock().expect("site event stream lock poisoned");
         guard.as_mut().poll_next(cx)
     }
 }
@@ -139,9 +136,7 @@ fn stream_telemetry_stream_node_spec() -> &'static dag_core::NodeSpec {
     stream_telemetry_node_spec()
 }
 
-fn stream_telemetry_stream_register(
-    registry: &mut NodeRegistry,
-) -> Result<(), RegistryError> {
+fn stream_telemetry_stream_register(registry: &mut NodeRegistry) -> Result<(), RegistryError> {
     registry.register_stream_fn(
         concat!(module_path!(), "::", stringify!(stream_telemetry)),
         stream_telemetry,

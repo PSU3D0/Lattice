@@ -158,7 +158,8 @@ Domains (hint ids) and current provider interfaces live in `crates/capabilities/
 Provider behavior:
 - If both `ttl` and `expires_at` are set, providers MUST reject the write as invalid.
 - Providers that cannot honor requested options SHOULD return `KvError::Unsupported`.
-- List ordering is lexicographic by key; `cursor` is the last key returned by a prior page.
+- List ordering is lexicographic by key; `cursor` is an opaque continuation token returned by the provider.
+- Providers MAY use the last key as the cursor value, but callers MUST treat cursors as opaque and pass them through unchanged.
 
 ### MVP Requirement Structs (Per Capability Class)
 

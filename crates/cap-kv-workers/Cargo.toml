@@ -1,0 +1,26 @@
+[package]
+name = "cap-kv-workers"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Workers KV-backed key-value capability for Lattice."
+
+[dependencies]
+capabilities = { path = "../capabilities" }
+anyhow.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde-wasm-bindgen = "0.6"
+thiserror.workspace = true
+tracing.workspace = true
+worker = { version = "0.7.4", default-features = false, features = ["http"] }
+js-sys = "0.3"
+
+[dev-dependencies]
+dag-core = { path = "../dag-core" }
+wasm-bindgen-test = "0.3"

@@ -13,12 +13,22 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use instant::Instant;
 
 use anyhow::{Context as AnyhowContext, Result as AnyhowResult};
 use async_trait::async_trait;
+#[cfg(target_arch = "wasm32")]
+use cancellation::CancellationToken;
 use capabilities::{ResourceAccess, ResourceBag, context};
 use dag_core::{NodeError, NodeResult, Profile};
+#[cfg(target_arch = "wasm32")]
+use futures::channel::oneshot;
+#[cfg(target_arch = "wasm32")]
+use futures::stream::SelectAll;
 use futures::{Stream, StreamExt};
 use kernel_plan::ValidatedIR;
 use serde::Serialize;
@@ -29,23 +39,23 @@ use tokio::sync::{
     OwnedSemaphorePermit, Semaphore, mpsc,
     mpsc::error::{SendError, TrySendError},
 };
+#[cfg(not(target_arch = "wasm32"))]
 use tokio::time;
 #[cfg(not(target_arch = "wasm32"))]
 use tokio_stream::{StreamMap, wrappers::ReceiverStream};
 #[cfg(not(target_arch = "wasm32"))]
 use tokio_util::sync::CancellationToken;
-#[cfg(target_arch = "wasm32")]
-use futures::stream::SelectAll;
+use tracing::{debug, error, instrument, trace, warn};
 #[cfg(target_arch = "wasm32")]
 use wasm_stream::ReceiverStream;
-#[cfg(target_arch = "wasm32")]
-use cancellation::CancellationToken;
-use tracing::{debug, error, instrument, trace, warn};
 
 #[cfg(target_arch = "wasm32")]
 mod cancellation {
     use std::future::Future;
-    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
     use tokio::sync::Notify;
 
     #[derive(Clone)]
@@ -92,6 +102,102 @@ mod cancellation {
             }
         }
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+mod time {
+    use std::time::Duration;
+
+    use futures::future::{self, Either};
+    use futures::Future;
+    use gloo_timers::future::TimeoutFuture;
+
+    #[derive(Debug)]
+    pub struct TimeoutError;
+
+    pub async fn timeout<T, Fut>(duration: Duration, future: Fut) -> Result<T, TimeoutError>
+    where
+        Fut: Future<Output = T>,
+    {
+        let timeout_ms = duration.as_millis().min(u128::from(u32::MAX)) as u32;
+        let timeout = TimeoutFuture::new(timeout_ms);
+        futures::pin_mut!(future);
+        futures::pin_mut!(timeout);
+        match future::select(future, timeout).await {
+            Either::Left((value, _)) => Ok(value),
+            Either::Right((_elapsed, _)) => Err(TimeoutError),
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+type TaskHandle = tokio::task::JoinHandle<()>;
+
+#[cfg(target_arch = "wasm32")]
+struct TaskHandle {
+    receiver: oneshot::Receiver<()>,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Debug)]
+struct TaskJoinError;
+
+#[cfg(target_arch = "wasm32")]
+impl fmt::Display for TaskJoinError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("task cancelled")
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl std::error::Error for TaskJoinError {}
+
+#[cfg(target_arch = "wasm32")]
+impl Future for TaskHandle {
+    type Output = Result<(), TaskJoinError>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        Pin::new(&mut self.receiver)
+            .poll(cx)
+            .map(|result| result.map_err(|_| TaskJoinError))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn spawn_task<F>(future: F) -> TaskHandle
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    tokio::spawn(future)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn spawn_task<F>(future: F) -> TaskHandle
+where
+    F: Future<Output = ()> + 'static,
+{
+    let (sender, receiver) = oneshot::channel();
+    wasm_bindgen_futures::spawn_local(async move {
+        future.await;
+        let _ = sender.send(());
+    });
+    TaskHandle { receiver }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn spawn_detached<F>(future: F)
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    tokio::spawn(future);
+}
+
+#[cfg(target_arch = "wasm32")]
+fn spawn_detached<F>(future: F)
+where
+    F: Future<Output = ()> + 'static,
+{
+    wasm_bindgen_futures::spawn_local(future);
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -684,7 +790,11 @@ fn check_spill_support(_flow: &dag_core::FlowIR) -> Result<(), ExecutionError> {
 
 #[cfg(not(feature = "spill-fs"))]
 fn check_spill_support(flow: &dag_core::FlowIR) -> Result<(), ExecutionError> {
-    if flow.edges.iter().any(|edge| edge.buffer.spill_tier.is_some()) {
+    if flow
+        .edges
+        .iter()
+        .any(|edge| edge.buffer.spill_tier.is_some())
+    {
         return Err(ExecutionError::UnsupportedSpill {
             message:
                 "Spill-to-filesystem is not supported on this platform (wasm). Disable spill_tier or run on native."
@@ -1400,7 +1510,7 @@ impl FlowExecutor {
             let token = cancellation.clone();
             let alias = node.alias.clone();
             let resource_handle = self.resources.clone();
-            tasks.push(tokio::spawn(run_node(
+            tasks.push(spawn_task(run_node(
                 alias,
                 capture_target,
                 handler,
@@ -1489,7 +1599,7 @@ pub struct FlowInstance {
     capture: mpsc::Receiver<CapturedOutput>,
     cancellation: CancellationToken,
     permits: Arc<Semaphore>,
-    tasks: Vec<tokio::task::JoinHandle<()>>,
+    tasks: Vec<TaskHandle>,
     metrics: Arc<ExecutorMetrics>,
 }
 
@@ -1629,7 +1739,7 @@ impl StreamHandle {
             if cancel {
                 instance.cancel_with_reason("stream_cancelled");
             }
-            tokio::spawn(async move {
+            spawn_detached(async move {
                 if let Err(err) = instance.shutdown().await {
                     error!("stream shutdown failed: {err}");
                 }

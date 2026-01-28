@@ -127,8 +127,8 @@ async fn capture(acks: Vec<Ack>) -> NodeResult<Vec<Ack>> {
 mod bundle_def {
     use super::{
         batch_trigger_node_spec, batch_trigger_register, capture_node_spec, capture_register,
-        prepare_payload_node_spec, prepare_payload_register, slow_ack_node_spec,
-        slow_ack_register, store_blob_node_spec, store_blob_register,
+        prepare_payload_node_spec, prepare_payload_register, slow_ack_node_spec, slow_ack_register,
+        store_blob_node_spec, store_blob_register,
     };
 
     dag_macros::workflow_bundle! {
@@ -231,8 +231,8 @@ pub fn bundle() -> host_inproc::FlowBundle {
 mod tests {
     use super::*;
     use kernel_exec::ExecutionResult;
-    use std::sync::Arc;
     use serde_json::json;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn spill_flow_runs_end_to_end() {

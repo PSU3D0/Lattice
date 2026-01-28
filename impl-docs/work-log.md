@@ -461,4 +461,51 @@ Acceptance gates:
 - Moved `KvCapabilityInfo`/TTL/consistency enums into `capabilities::kv` with feature support flags; `cap-kv-opendal` now re-exports them and wires `capability_info()` from the provider.
 - `MemoryKv` now stores metadata + absolute expiration, supports list pagination and metadata reads, and has new tests for metadata/list/expiration conflicts.
 - Updated contract docs in `impl-docs/spec/capabilities-and-binding.md` and KV Workers ticket to reflect the expanded interface and option semantics.
-- Acceptance gates: not run (not requested).
+- Acceptance gates: ran 2026-01-27.
+- Commands exercised:
+  - `cargo check --target wasm32-unknown-unknown -p cap-kv-workers`
+  - `npm install && npm run build && npm test` (in `crates/cap-kv-workers/workerd-tests/`)
+- Notes: `npm install` reported 2 moderate vulnerabilities; see `npm audit` output. All tests passed.
+
+## 2026-01-27 — Durable Objects handler + Miniflare harness (Epic 03.2)
+
+- Implemented the Durable Object protocol types and client-side helpers for storage CRUD, alarms, and SQLite exec/cursor in `crates/cap-do-workers/src/lib.rs`.
+- Hardened DO storage guardrails (value size aligned to 2 MiB SQLite limit) and added runtime-unavailable stubs for non-wasm targets.
+- Added a Miniflare workerd test harness under `crates/cap-do-workers/workerd-tests/` with worker endpoints for dedupe, storage, alarms, and SQLite queries.
+- Added `wrangler.toml` migrations for `FlowDurableObject` using SQLite plus CPU limits per epic requirements.
+- Acceptance gates: ran 2026-01-27.
+- Commands exercised:
+  - `cargo check -p cap-do-workers`
+  - `cargo check --target wasm32-unknown-unknown -p cap-do-workers`
+  - `npm install && npm run build && npm test` (in `crates/cap-do-workers/workerd-tests/`)
+- Notes: `npm install` reported 2 moderate vulnerabilities; see `npm audit` output. All tests passed.
+
+## 2026-01-27 — host-workers Miniflare harness (Epic 02.3)
+
+- Added `crates/host-workers/workerd-tests/` with worker-build + wrangler config, mirroring the cap-http-workers Miniflare/Vitest layout.
+- Implemented a minimal test worker entrypoint wiring `host-workers` and exposing `/health`, `/echo`, `/stream`, and `/cancel` routes for baseline, streaming, and cancellation coverage.
+- Added Miniflare/Vitest tests that dispatch fetch requests against the worker and assert response bodies, SSE chunking, and abort behavior.
+- Acceptance gates: ran 2026-01-27.
+- Commands exercised:
+  - `cargo check --target wasm32-unknown-unknown -p host-workers`
+  - `npm install && npm run build && npm test` (in `crates/host-workers/workerd-tests/`)
+- Notes: `npm install` reported 2 moderate vulnerabilities; see `npm audit` output. Build/test passed with existing `kernel-exec`/`host-workers` warnings about unused imports/fields/mutability.
+- Compatibility/contract notes: no Flow IR or invocation ABI changes (test harness only).
+
+## 2026-01-27 — Workers KV provider + harness (Epic 03.1)
+
+- Added `cap-kv-workers` adapter binding `capabilities::kv::KeyValue` to Workers KV via `Env::kv`, including capability metadata wiring.
+- Implemented option mapping for get/list/put with metadata, cache TTL, and expiration/TTL; delete returns `KvError::NotFound` for missing keys.
+- Enforced Workers KV constraints (key/value/metadata sizes, key shape, minimum TTL/cache TTLs) and surfaced validation errors.
+- Added a Miniflare workerd harness under `crates/cap-kv-workers/workerd-tests/` with Vitest coverage for get/put/get_with_metadata/list/delete and limit validation.
+- Acceptance gates: ran 2026-01-27.
+- Commands exercised:
+  - `cargo check --target wasm32-unknown-unknown -p cap-kv-workers`
+  - `npm run build && npm test` (in `crates/cap-kv-workers/workerd-tests/`)
+- Compatibility/contract notes: no Flow IR changes; provider reports eventual consistency with per-write TTL and Workers KV minimums enforced.
+
+## 2026-01-27 — Docs alignment for Workers KV cursors (Epic 03.1)
+
+- Aligned epic 03 roadmap phase numbering with current tickets/work-log by defining 03.1 as the Workers KV provider (`impl-docs/roadmap/epic-03-cloudflare-caps-minimal.md`).
+- Updated KV list cursor semantics to treat cursors as opaque continuation tokens while allowing last-key cursors as a provider-specific subtype (`impl-docs/spec/capabilities-and-binding.md`).
+- Compatibility/contract notes: capability spec now explicitly permits opaque cursors; providers must not be forced to translate cursors into last-key values.

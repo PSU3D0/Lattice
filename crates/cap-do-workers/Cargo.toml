@@ -1,0 +1,33 @@
+[package]
+name = "cap-do-workers"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Workers Durable Objects-backed dedupe capability for Lattice."
+
+[dependencies]
+capabilities = { path = "../capabilities" }
+anyhow.workspace = true
+async-trait.workspace = true
+base64 = "0.22"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+worker = { version = "0.7.4", default-features = false, features = ["http", "d1"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+futures.workspace = true
+js-sys = "0.3"
+serde-wasm-bindgen = "0.6"
+wasm-bindgen-futures = "0.4"
+wasm-bindgen = "0.2"
+
+[dev-dependencies]
+dag-core = { path = "../dag-core" }
+wasm-bindgen-test = "0.3"
+tokio.workspace = true

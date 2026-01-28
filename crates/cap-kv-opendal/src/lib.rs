@@ -18,7 +18,6 @@ use capabilities::{
 };
 use opendal::Operator;
 use opendal::raw::{Accessor, Layer};
- 
 
 /// Builder for OpenDAL-backed key-value stores.
 pub struct KvStoreBuilder<F> {

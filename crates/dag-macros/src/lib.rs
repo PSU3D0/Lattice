@@ -922,7 +922,7 @@ fn register_info_for_binding(expr: &Expr) -> Result<(Path, String)> {
             return Err(syn::Error::new_spanned(
                 expr,
                 "workflow_bundle! bindings must call <name>_node_spec()",
-            ))
+            ));
         }
     };
 
@@ -932,7 +932,7 @@ fn register_info_for_binding(expr: &Expr) -> Result<(Path, String)> {
             return Err(syn::Error::new_spanned(
                 call.func.as_ref(),
                 "workflow_bundle! bindings must call <name>_node_spec()",
-            ))
+            ));
         }
     };
 
@@ -1638,7 +1638,10 @@ impl Parse for EntrypointEntry {
                     }
                     let ms_lit: LitInt = content.parse()?;
                     let ms = ms_lit.base10_parse::<u64>().map_err(|err| {
-                        syn::Error::new(ms_lit.span(), format!("invalid deadline_ms literal: {err}"))
+                        syn::Error::new(
+                            ms_lit.span(),
+                            format!("invalid deadline_ms literal: {err}"),
+                        )
                     })?;
                     deadline_ms = Some(ms);
                 }
@@ -1660,12 +1663,10 @@ impl Parse for EntrypointEntry {
             }
         }
 
-        let trigger = trigger.ok_or_else(|| {
-            syn::Error::new(span, "entrypoint! requires `trigger: \"...\"`")
-        })?;
-        let capture = capture.ok_or_else(|| {
-            syn::Error::new(span, "entrypoint! requires `capture: \"...\"`")
-        })?;
+        let trigger = trigger
+            .ok_or_else(|| syn::Error::new(span, "entrypoint! requires `trigger: \"...\"`"))?;
+        let capture = capture
+            .ok_or_else(|| syn::Error::new(span, "entrypoint! requires `capture: \"...\"`"))?;
 
         Ok(Self {
             trigger,

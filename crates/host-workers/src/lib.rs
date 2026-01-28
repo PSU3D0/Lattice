@@ -23,35 +23,50 @@ use host_inproc::{FlowBundle, FlowEntrypoint, HostRuntime, Invocation, Invocatio
 use kernel_exec::{ExecutionError, ExecutionResult, StreamHandle};
 #[cfg(target_arch = "wasm32")]
 use serde_json::{Value as JsonValue, json};
-#[cfg(target_arch = "wasm32")]
-use worker::wasm_bindgen::closure::Closure;
+#[cfg(all(target_arch = "wasm32", feature = "entrypoint"))]
+use worker::event;
 #[cfg(target_arch = "wasm32")]
 use worker::wasm_bindgen::JsCast;
 #[cfg(target_arch = "wasm32")]
-use worker::event;
+use worker::wasm_bindgen::closure::Closure;
 #[cfg(target_arch = "wasm32")]
 use worker::{AbortController, Context, Env, Headers, Request, Response, Result};
+#[cfg(target_arch = "wasm32")]
+use tokio::runtime::{Builder as RuntimeBuilder, Handle as RuntimeHandle};
 
 #[cfg(target_arch = "wasm32")]
 type AbortFuture = Shared<LocalBoxFuture<'static, ()>>;
 
 #[cfg(target_arch = "wasm32")]
-#[event(fetch)]
-pub async fn main(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
-    let mut bundle = load_bundle(&env);
+pub async fn handle_fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
+    if RuntimeHandle::try_current().is_err() {
+        let runtime = match RuntimeBuilder::new_current_thread().build() {
+            Ok(runtime) => runtime,
+            Err(err) => return Response::error(format!("tokio runtime init failed: {err}"), 500),
+        };
+        let _guard = runtime.enter();
+        return handle_fetch_inner(req, env).await;
+    }
+
+    handle_fetch_inner(req, env).await
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn handle_fetch_inner(mut req: Request, env: Env) -> Result<Response> {
+    let bundle = load_bundle(&env);
     if bundle.entrypoints.is_empty() {
         return Response::error("no entrypoints configured", 500);
     }
 
-    let (trigger_alias, capture_alias, deadline) = match select_entrypoint(&req, &bundle.entrypoints)
-    {
-        Some(entrypoint) => (
-            entrypoint.trigger_alias.clone(),
-            entrypoint.capture_alias.clone(),
-            entrypoint.deadline,
-        ),
-        None => return Response::error("route not found", 404),
-    };
+    let (trigger_alias, capture_alias, deadline) =
+        match select_entrypoint(&req, &bundle.entrypoints) {
+            Some(entrypoint) => (
+                entrypoint.trigger_alias.clone(),
+                entrypoint.capture_alias.clone(),
+                entrypoint.deadline,
+            ),
+            None => return Response::error("route not found", 404),
+        };
 
     let payload = match read_payload(&mut req).await {
         Ok(value) => value,
@@ -99,6 +114,12 @@ pub async fn main(mut req: Request, env: Env, _ctx: Context) -> Result<Response>
     }
 }
 
+#[cfg(all(target_arch = "wasm32", feature = "entrypoint"))]
+#[event(fetch)]
+pub async fn main(req: Request, env: Env, ctx: Context) -> Result<Response> {
+    handle_fetch(req, env, ctx).await
+}
+
 #[cfg(target_arch = "wasm32")]
 fn load_bundle(_env: &Env) -> FlowBundle {
     unsafe { get_bundle() }
@@ -110,7 +131,10 @@ unsafe extern "Rust" {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn select_entrypoint<'a>(req: &Request, entrypoints: &'a [FlowEntrypoint]) -> Option<&'a FlowEntrypoint> {
+fn select_entrypoint<'a>(
+    req: &Request,
+    entrypoints: &'a [FlowEntrypoint],
+) -> Option<&'a FlowEntrypoint> {
     let path = req.path();
     let method = req.method();
     let method_str = method.as_ref();
@@ -147,9 +171,7 @@ fn wants_sse(req: &Request) -> bool {
 
 #[cfg(target_arch = "wasm32")]
 fn populate_lattice_metadata(req: &Request, metadata: &mut InvocationMetadata) {
-    if let Some(value) = header_value(req, "x-request-id")
-        .or_else(|| header_value(req, "cf-ray"))
-    {
+    if let Some(value) = header_value(req, "x-request-id").or_else(|| header_value(req, "cf-ray")) {
         metadata.insert_label("lf.request_id", value);
     }
 
@@ -221,7 +243,8 @@ fn streaming_response(stream: StreamHandle, abort_bridge: AbortBridge) -> Result
             Ok(payload) => match serde_json::to_string(&payload) {
                 Ok(data) => Ok::<Vec<u8>, worker::Error>(sse_data(&data)),
                 Err(err) => {
-                    let payload = json!({ "error": "serialization_failure", "message": err.to_string() });
+                    let payload =
+                        json!({ "error": "serialization_failure", "message": err.to_string() });
                     Ok(sse_error(&payload.to_string()))
                 }
             },
@@ -322,9 +345,10 @@ fn map_execution_error(err: ExecutionError) -> (u16, JsonValue) {
                 }),
             )
         }
-        ExecutionError::UnsupportedSpill { message } => {
-            (400, json!({ "error": "unsupported_spill", "message": message }))
-        }
+        ExecutionError::UnsupportedSpill { message } => (
+            400,
+            json!({ "error": "unsupported_spill", "message": message }),
+        ),
         ExecutionError::SpillSetup(err) => (
             500,
             json!({ "error": format!("failed to configure spill storage: {err}") }),

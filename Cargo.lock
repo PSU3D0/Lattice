@@ -836,6 +836,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "cap-do-workers"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "capabilities",
+ "dag-core",
+ "futures",
+ "js-sys",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
+ "worker",
+]
+
+[[package]]
 name = "cap-http-reqwest"
 version = "0.1.0"
 dependencies = [
@@ -893,6 +916,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "cap-kv-workers"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "capabilities",
+ "dag-core",
+ "js-sys",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tracing",
+ "wasm-bindgen-test",
+ "worker",
+]
+
+[[package]]
 name = "cap-opendal-core"
 version = "0.1.0"
 dependencies = [
@@ -918,6 +959,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "dag-core",
+ "instant",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -2503,6 +2545,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+ "tokio",
  "wasm-bindgen-test",
  "worker",
 ]
@@ -2984,6 +3027,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "instant"
+version = "0.1.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e0242819d153cba4b4b05a5a8f2a7e9bbf97b6055b2a002b395c96b5ff3c0222"
+dependencies = [
+ "cfg-if",
+ "js-sys",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "io-uring"
 version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3134,6 +3189,8 @@ dependencies = [
  "capabilities",
  "dag-core",
  "futures",
+ "gloo-timers",
+ "instant",
  "kernel-plan",
  "metrics",
  "metrics-util",
@@ -3147,6 +3204,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "uuid",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]

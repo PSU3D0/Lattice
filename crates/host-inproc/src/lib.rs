@@ -24,13 +24,11 @@ pub struct FlowBundle {
 
 impl FlowBundle {
     pub fn executor(&self) -> FlowExecutor {
-        self
-            .validate_allowlist()
+        self.validate_allowlist()
             .unwrap_or_else(|err| panic!("FlowBundle allowlist validation failed: {err}"));
         let resolver_any: Arc<dyn Any + Send + Sync> = self.resolver.clone();
-        let registry = Arc::downcast::<NodeRegistry>(resolver_any).expect(
-            "FlowBundle resolver must be a NodeRegistry to build a FlowExecutor",
-        );
+        let registry = Arc::downcast::<NodeRegistry>(resolver_any)
+            .expect("FlowBundle resolver must be a NodeRegistry to build a FlowExecutor");
         FlowExecutor::new(registry)
     }
 

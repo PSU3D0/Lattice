@@ -523,12 +523,9 @@ fn run_local(args: LocalArgs) -> Result<()> {
             .with_resource_bag(resources);
 
         if burst == 1 {
-            let invocation = Invocation::new(
-                trigger_alias.as_str(),
-                capture_alias.as_str(),
-                payload,
-            )
-            .with_deadline(deadline);
+            let invocation =
+                Invocation::new(trigger_alias.as_str(), capture_alias.as_str(), payload)
+                    .with_deadline(deadline);
 
             let execution = host_runtime
                 .execute(invocation)

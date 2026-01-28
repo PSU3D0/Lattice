@@ -2,7 +2,11 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use instant::Instant;
 
 pub mod hints;
 
@@ -507,7 +511,8 @@ pub mod dedupe {
         Other(String),
     }
 
-    #[async_trait]
+    #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
     pub trait DedupeStore: Capability {
         async fn put_if_absent(&self, key: &[u8], ttl: Duration) -> Result<bool, DedupeError>;
         async fn forget(&self, key: &[u8]) -> Result<(), DedupeError>;
@@ -916,7 +921,8 @@ pub mod kv {
     }
 
     /// Generic key-value interface exposed to nodes.
-    #[async_trait]
+    #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
     pub trait KeyValue: Capability {
         async fn get_with_options(
             &self,
@@ -1018,7 +1024,8 @@ pub mod kv {
         }
     }
 
-    #[async_trait]
+    #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
     impl KeyValue for MemoryKv {
         async fn get_with_options(
             &self,

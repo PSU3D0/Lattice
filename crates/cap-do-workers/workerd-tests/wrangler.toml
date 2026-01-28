@@ -1,0 +1,19 @@
+name = "cap-do-workers-test"
+workers_dev = true
+compatibility_date = "2024-09-23"
+main = "build/worker/shim.mjs"
+
+[build]
+command = "cargo install worker-build 2>/dev/null || true && worker-build --release"
+
+[durable_objects]
+bindings = [
+  { name = "FLOW_DO", class_name = "FlowDurableObject" }
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["FlowDurableObject"]
+
+[limits]
+cpu_ms = 300_000
