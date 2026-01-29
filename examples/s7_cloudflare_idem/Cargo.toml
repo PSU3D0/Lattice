@@ -1,0 +1,37 @@
+[package]
+name = "example-s7-cloudflare-idem"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Cloudflare idempotent ingest + replay example flow."
+
+[dependencies]
+cap-do-workers = { path = "../../crates/cap-do-workers" }
+cap-http-workers = { path = "../../crates/cap-http-workers" }
+cap-kv-workers = { path = "../../crates/cap-kv-workers" }
+capabilities = { path = "../../crates/capabilities" }
+dag-core = { path = "../../crates/dag-core" }
+dag-macros = { path = "../../crates/dag-macros" }
+host-inproc = { path = "../../crates/host-inproc" }
+kernel-plan = { path = "../../crates/kernel-plan" }
+async-stream.workspace = true
+futures.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_bytes = "0.11"
+serde_json.workspace = true
+sha2 = "0.10"
+uuid.workspace = true
+ 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+kernel-exec = { path = "../../crates/kernel-exec" }
+tokio = { workspace = true, default-features = false, features = ["rt", "time"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+kernel-exec = { path = "../../crates/kernel-exec", default-features = false, features = ["wasm"] }
+gloo-timers = { version = "0.3", features = ["futures"] }
+js-sys = "0.3"

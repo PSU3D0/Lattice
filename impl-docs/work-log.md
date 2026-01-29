@@ -119,6 +119,15 @@ Deferred / mostly-stubbed:
 
 Completed scope aligns with early contract/runtime milestones; references to `impl-docs/impl-plan.md` below are historical (roadmap-of-record is `impl-docs/roadmap/epics.md`):
 
+## 2026-01-28 — Cloudflare idempotent ingest example (Epic 04.1)
+
+- Added a Cloudflare Workers example flow with idempotent ingest, replay, snapshot, and SSE stream routes (`examples/s7_cloudflare_idem/src/lib.rs`).
+- Wired Workers KV storage + Durable Object sequencing + OTLP/HTTP dispatch with explicit node contracts and bundle entrypoints.
+- Introduced a Miniflare harness for the example with KV/DO bindings and E2E tests for idempotency, ordering, replay cursor, snapshot, SSE, and OTLP dispatch (`examples/s7_cloudflare_idem/workerd-tests/*`).
+- Added example `wrangler.toml` for KV/DO bindings and DO migrations (`examples/s7_cloudflare_idem/wrangler.toml`).
+- Extended `cap-do-workers` with an atomic DO sequence op and alarm cleanup for idempotency entries (`crates/cap-do-workers/src/lib.rs`).
+- Acceptance gates: `cargo check --target wasm32-unknown-unknown -p host-workers`, `cargo check --target wasm32-unknown-unknown -p cap-kv-workers`, `cargo check -p cap-do-workers`, `cargo check --target wasm32-unknown-unknown -p cap-do-workers`, `npm run build && npm test` in `examples/s7_cloudflare_idem/workerd-tests`.
+
 - ✅ Workspace scaffold, shared dependency management, MSRV pin (`Phase 0`).
 - ✅ Diagnostic registry & sync checks (`Phase 0`).
 - ✅ Core Flow IR types, builder utilities, and serde support (`Phase 1`).

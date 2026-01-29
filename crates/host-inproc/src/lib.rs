@@ -26,9 +26,23 @@ impl FlowBundle {
     pub fn executor(&self) -> FlowExecutor {
         self.validate_allowlist()
             .unwrap_or_else(|err| panic!("FlowBundle allowlist validation failed: {err}"));
-        let resolver_any: Arc<dyn Any + Send + Sync> = self.resolver.clone();
-        let registry = Arc::downcast::<NodeRegistry>(resolver_any)
-            .expect("FlowBundle resolver must be a NodeRegistry to build a FlowExecutor");
+        #[cfg(not(target_arch = "wasm32"))]
+        let registry = {
+            let resolver_any: Arc<dyn Any + Send + Sync> = self.resolver.clone();
+            Arc::downcast::<NodeRegistry>(resolver_any)
+                .expect("FlowBundle resolver must be a NodeRegistry to build a FlowExecutor")
+        };
+
+        #[cfg(target_arch = "wasm32")]
+        let registry = {
+            let registry = self
+                .resolver
+                .as_any()
+                .downcast_ref::<NodeRegistry>()
+                .expect("FlowBundle resolver must be a NodeRegistry to build a FlowExecutor")
+                .clone();
+            Arc::new(registry)
+        };
         FlowExecutor::new(registry)
     }
 
@@ -57,8 +71,33 @@ pub struct FlowEntrypoint {
     pub deadline: Option<Duration>,
 }
 
-pub trait NodeResolver: Send + Sync + Any {
+#[cfg(target_arch = "wasm32")]
+pub trait MaybeSend {}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub trait MaybeSend: Send {}
+
+#[cfg(target_arch = "wasm32")]
+impl<T> MaybeSend for T {}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send> MaybeSend for T {}
+
+#[cfg(target_arch = "wasm32")]
+pub trait MaybeSync {}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub trait MaybeSync: Sync {}
+
+#[cfg(target_arch = "wasm32")]
+impl<T> MaybeSync for T {}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Sync> MaybeSync for T {}
+
+pub trait NodeResolver: Any + MaybeSend + MaybeSync {
     fn resolve(&self, identifier: &str) -> Option<Arc<dyn NodeHandler>>;
+    fn as_any(&self) -> &dyn Any;
     fn known_identifiers(&self) -> Vec<String> {
         Vec::new()
     }
@@ -67,6 +106,10 @@ pub trait NodeResolver: Send + Sync + Any {
 impl NodeResolver for NodeRegistry {
     fn resolve(&self, identifier: &str) -> Option<Arc<dyn NodeHandler>> {
         self.handler(identifier)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
 
@@ -293,10 +336,7 @@ impl HostRuntime {
     }
 
     /// Replace the resource access collection used for node execution.
-    pub fn with_resource_access<T>(mut self, resources: Arc<T>) -> Self
-    where
-        T: ResourceAccess,
-    {
+    pub fn with_resource_access(mut self, resources: Arc<dyn ResourceAccess>) -> Self {
         self.executor = self
             .executor
             .clone()

@@ -299,10 +299,34 @@ const DEFAULT_TRIGGER_CAPACITY: usize = 8;
 const DEFAULT_CAPTURE_CAPACITY: usize = 8;
 
 /// Registry mapping node identifiers to executable handlers.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct NodeRegistry {
     handlers: HashMap<&'static str, Arc<dyn NodeHandler>>,
 }
+
+#[cfg(target_arch = "wasm32")]
+pub trait MaybeSend {}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub trait MaybeSend: Send {}
+
+#[cfg(target_arch = "wasm32")]
+impl<T> MaybeSend for T {}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send> MaybeSend for T {}
+
+#[cfg(target_arch = "wasm32")]
+pub trait MaybeSync {}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub trait MaybeSync: Sync {}
+
+#[cfg(target_arch = "wasm32")]
+impl<T> MaybeSync for T {}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Sync> MaybeSync for T {}
 
 impl NodeRegistry {
     /// Create an empty registry.
@@ -318,10 +342,10 @@ impl NodeRegistry {
         handler: F,
     ) -> Result<(), RegistryError>
     where
-        F: Fn(In) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = NodeResult<Out>> + Send + 'static,
-        In: DeserializeOwned + Send + Sync + 'static,
-        Out: Serialize + Send + Sync + 'static,
+        F: Fn(In) -> Fut + MaybeSync + MaybeSend + 'static,
+        Fut: Future<Output = NodeResult<Out>> + MaybeSend + 'static,
+        In: DeserializeOwned + MaybeSync + MaybeSend + 'static,
+        Out: Serialize + MaybeSync + MaybeSend + 'static,
     {
         if self.handlers.contains_key(identifier) {
             return Err(RegistryError::Duplicate(identifier));
@@ -339,11 +363,11 @@ impl NodeRegistry {
         handler: F,
     ) -> Result<(), RegistryError>
     where
-        F: Fn(In) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = NodeResult<S>> + Send + 'static,
-        In: DeserializeOwned + Send + Sync + 'static,
-        S: Stream<Item = NodeResult<Item>> + Send + 'static,
-        Item: Serialize + Send + Sync + 'static,
+        F: Fn(In) -> Fut + MaybeSync + MaybeSend + 'static,
+        Fut: Future<Output = NodeResult<S>> + MaybeSend + 'static,
+        In: DeserializeOwned + MaybeSync + MaybeSend + 'static,
+        S: Stream<Item = NodeResult<Item>> + MaybeSend + 'static,
+        Item: Serialize + MaybeSync + MaybeSend + 'static,
     {
         if self.handlers.contains_key(identifier) {
             return Err(RegistryError::Duplicate(identifier));
@@ -368,17 +392,18 @@ pub enum RegistryError {
     Duplicate(&'static str),
 }
 
-#[async_trait]
-pub trait NodeHandler: Send + Sync {
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+pub trait NodeHandler: MaybeSync + MaybeSend {
     async fn invoke(&self, input: JsonValue, ctx: &NodeContext) -> NodeResult<NodeOutput>;
 }
 
 struct FunctionHandler<F, Fut, In, Out>
 where
-    F: Fn(In) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = NodeResult<Out>> + Send + 'static,
-    In: DeserializeOwned + Send + 'static,
-    Out: Serialize + Send + 'static,
+    F: Fn(In) -> Fut + MaybeSync + MaybeSend + 'static,
+    Fut: Future<Output = NodeResult<Out>> + MaybeSend + 'static,
+    In: DeserializeOwned + MaybeSync + MaybeSend + 'static,
+    Out: Serialize + MaybeSync + MaybeSend + 'static,
 {
     inner: F,
     _marker: PhantomData<(In, Out)>,
@@ -386,10 +411,10 @@ where
 
 impl<F, Fut, In, Out> FunctionHandler<F, Fut, In, Out>
 where
-    F: Fn(In) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = NodeResult<Out>> + Send + 'static,
-    In: DeserializeOwned + Send + Sync + 'static,
-    Out: Serialize + Send + Sync + 'static,
+    F: Fn(In) -> Fut + MaybeSync + MaybeSend + 'static,
+    Fut: Future<Output = NodeResult<Out>> + MaybeSend + 'static,
+    In: DeserializeOwned + MaybeSync + MaybeSend + 'static,
+    Out: Serialize + MaybeSync + MaybeSend + 'static,
 {
     fn new(inner: F) -> Self {
         Self {
@@ -399,13 +424,14 @@ where
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl<F, Fut, In, Out> NodeHandler for FunctionHandler<F, Fut, In, Out>
 where
-    F: Fn(In) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = NodeResult<Out>> + Send + 'static,
-    In: DeserializeOwned + Send + Sync + 'static,
-    Out: Serialize + Send + Sync + 'static,
+    F: Fn(In) -> Fut + MaybeSync + MaybeSend + 'static,
+    Fut: Future<Output = NodeResult<Out>> + MaybeSend + 'static,
+    In: DeserializeOwned + MaybeSync + MaybeSend + 'static,
+    Out: Serialize + MaybeSync + MaybeSend + 'static,
 {
     async fn invoke(&self, input: JsonValue, _ctx: &NodeContext) -> NodeResult<NodeOutput> {
         let deserialised: In = serde_json::from_value(input.clone())
@@ -419,11 +445,11 @@ where
 
 struct StreamingFunctionHandler<F, Fut, In, S, Item>
 where
-    F: Fn(In) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = NodeResult<S>> + Send + 'static,
-    In: DeserializeOwned + Send + Sync + 'static,
-    S: Stream<Item = NodeResult<Item>> + Send + 'static,
-    Item: Serialize + Send + Sync + 'static,
+    F: Fn(In) -> Fut + MaybeSync + MaybeSend + 'static,
+    Fut: Future<Output = NodeResult<S>> + MaybeSend + 'static,
+    In: DeserializeOwned + MaybeSync + MaybeSend + 'static,
+    S: Stream<Item = NodeResult<Item>> + MaybeSend + 'static,
+    Item: Serialize + MaybeSync + MaybeSend + 'static,
 {
     inner: F,
     _marker: PhantomData<(In, Item)>,
@@ -431,11 +457,11 @@ where
 
 impl<F, Fut, In, S, Item> StreamingFunctionHandler<F, Fut, In, S, Item>
 where
-    F: Fn(In) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = NodeResult<S>> + Send + 'static,
-    In: DeserializeOwned + Send + Sync + 'static,
-    S: Stream<Item = NodeResult<Item>> + Send + 'static,
-    Item: Serialize + Send + Sync + 'static,
+    F: Fn(In) -> Fut + MaybeSync + MaybeSend + 'static,
+    Fut: Future<Output = NodeResult<S>> + MaybeSend + 'static,
+    In: DeserializeOwned + MaybeSync + MaybeSend + 'static,
+    S: Stream<Item = NodeResult<Item>> + MaybeSend + 'static,
+    Item: Serialize + MaybeSync + MaybeSend + 'static,
 {
     fn new(inner: F) -> Self {
         Self {
@@ -445,14 +471,15 @@ where
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl<F, Fut, In, S, Item> NodeHandler for StreamingFunctionHandler<F, Fut, In, S, Item>
 where
-    F: Fn(In) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = NodeResult<S>> + Send + 'static,
-    In: DeserializeOwned + Send + Sync + 'static,
-    S: Stream<Item = NodeResult<Item>> + Send + 'static,
-    Item: Serialize + Send + Sync + 'static,
+    F: Fn(In) -> Fut + MaybeSync + MaybeSend + 'static,
+    Fut: Future<Output = NodeResult<S>> + MaybeSend + 'static,
+    In: DeserializeOwned + MaybeSync + MaybeSend + 'static,
+    S: Stream<Item = NodeResult<Item>> + MaybeSend + 'static,
+    Item: Serialize + MaybeSync + MaybeSend + 'static,
 {
     async fn invoke(&self, input: JsonValue, _ctx: &NodeContext) -> NodeResult<NodeOutput> {
         let deserialised: In = serde_json::from_value(input.clone())
@@ -465,7 +492,11 @@ where
                 })
             })
         });
-        Ok(NodeOutput::Stream(json_stream.boxed()))
+        #[cfg(target_arch = "wasm32")]
+        let boxed_stream = json_stream.boxed_local();
+        #[cfg(not(target_arch = "wasm32"))]
+        let boxed_stream = json_stream.boxed();
+        Ok(NodeOutput::Stream(boxed_stream))
     }
 }
 
@@ -510,9 +541,15 @@ enum CapturedPayload {
     Stream(StreamingCapture),
 }
 
+#[cfg(target_arch = "wasm32")]
+type NodeStream = futures::stream::LocalBoxStream<'static, NodeResult<JsonValue>>;
+
+#[cfg(not(target_arch = "wasm32"))]
+type NodeStream = futures::stream::BoxStream<'static, NodeResult<JsonValue>>;
+
 pub struct StreamingCapture {
     alias: String,
-    stream: futures::stream::BoxStream<'static, NodeResult<JsonValue>>,
+    stream: NodeStream,
     cancellation: CancellationToken,
     permit: Option<OwnedSemaphorePermit>,
 }
@@ -520,7 +557,7 @@ pub struct StreamingCapture {
 impl StreamingCapture {
     fn new(
         alias: String,
-        stream: futures::stream::BoxStream<'static, NodeResult<JsonValue>>,
+        stream: NodeStream,
         cancellation: CancellationToken,
         permit: Option<OwnedSemaphorePermit>,
     ) -> Self {
@@ -538,7 +575,7 @@ pub enum NodeOutput {
     /// Single JSON value to forward downstream.
     Value(JsonValue),
     /// Stream of JSON payloads emitted incrementally.
-    Stream(futures::stream::BoxStream<'static, NodeResult<JsonValue>>),
+    Stream(NodeStream),
     /// Node intentionally emitted no output.
     None,
 }
@@ -1398,10 +1435,7 @@ impl FlowExecutor {
     }
 
     /// Provide a custom resource access handle used for node execution.
-    pub fn with_resource_access<T>(mut self, resources: Arc<T>) -> Self
-    where
-        T: ResourceAccess,
-    {
+    pub fn with_resource_access(mut self, resources: Arc<dyn ResourceAccess>) -> Self {
         self.resources = resources;
         self
     }
@@ -1703,7 +1737,7 @@ pub enum ExecutionResult {
 
 pub struct StreamHandle {
     alias: String,
-    stream: futures::stream::BoxStream<'static, NodeResult<JsonValue>>,
+    stream: NodeStream,
     cancellation: CancellationToken,
     permit: Option<OwnedSemaphorePermit>,
     instance: Option<FlowInstance>,
@@ -1712,7 +1746,7 @@ pub struct StreamHandle {
 impl StreamHandle {
     fn new(
         alias: String,
-        stream: futures::stream::BoxStream<'static, NodeResult<JsonValue>>,
+        stream: NodeStream,
         cancellation: CancellationToken,
         permit: Option<OwnedSemaphorePermit>,
         instance: FlowInstance,
@@ -2089,9 +2123,11 @@ async fn run_node(
                         async move { context::with_resources(resources, async move { item }).await }
                     }
                 });
-                let boxed_stream = scoped_stream
-                    .take_until(cancellation.clone().cancelled_owned())
-                    .boxed();
+                let scoped_stream = scoped_stream.take_until(cancellation.clone().cancelled_owned());
+                #[cfg(target_arch = "wasm32")]
+                let boxed_stream = scoped_stream.boxed_local();
+                #[cfg(not(target_arch = "wasm32"))]
+                let boxed_stream = scoped_stream.boxed();
                 let streaming =
                     StreamingCapture::new(alias.clone(), boxed_stream, cancellation, permit.take());
                 let start = Instant::now();

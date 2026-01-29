@@ -16,7 +16,7 @@ async-trait.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-worker = { version = "0.7.4", default-features = false, features = ["http"] }
+worker = { version = "=0.7.4", default-features = false, features = ["http"] }
 js-sys = "0.3"
 futures-util = "0.3"
 

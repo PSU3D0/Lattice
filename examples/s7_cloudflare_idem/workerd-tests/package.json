@@ -1,0 +1,15 @@
+{
+  "name": "@lattice-flow/example-s7-cloudflare-idem-tests",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "cargo install worker-build 2>/dev/null || true && worker-build --release",
+    "test": "npm run build && vitest run"
+  },
+  "devDependencies": {
+    "miniflare": "^3.20241205.0",
+    "vitest": "^3.0.0",
+    "wrangler": "^4.0.0"
+  }
+}

@@ -18,7 +18,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-worker = { version = "0.7.4", default-features = false, features = ["http", "d1"] }
+worker = { version = "=0.7.4", default-features = false, features = ["http", "d1"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 futures.workspace = true

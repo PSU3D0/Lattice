@@ -5,6 +5,7 @@ rust = "1.93.0"
 age = "latest"
 fnox = "latest"
 uv = "latest"
+"npm:wrangler" = "latest"
 
 [env]
 CARGO_TERM_COLOR = "always"

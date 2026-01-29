@@ -45,7 +45,8 @@ members = [
   "examples/s3_branching",
   "examples/s4_preflight",
   "examples/s5_unsupported_surface",
-  "examples/s6_spill"
+  "examples/s6_spill",
+  "examples/s7_cloudflare_idem"
 ]
 
 [workspace.package]

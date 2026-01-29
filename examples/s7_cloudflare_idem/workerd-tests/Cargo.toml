@@ -1,0 +1,26 @@
+[package]
+name = "example-s7-cloudflare-idem-tests"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+publish = false
+
+# Standalone workspace - not part of parent workspace
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+worker = { version = "=0.7.4", features = ["http", "d1"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+cap-do-workers = { path = "../../../crates/cap-do-workers" }
+cap-http-workers = { path = "../../../crates/cap-http-workers" }
+cap-kv-workers = { path = "../../../crates/cap-kv-workers" }
+capabilities = { path = "../../../crates/capabilities" }
+host-inproc = { path = "../../../crates/host-inproc" }
+host-workers = { path = "../../../crates/host-workers", default-features = false }
+
+example-s7-cloudflare-idem = { path = ".." }

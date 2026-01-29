@@ -72,6 +72,9 @@ pub const MAX_KEY_SIZE: usize = 2048;
 
 /// Prefix for DO storage keys used by dedupe entries.
 pub const DEDUPE_KEY_PREFIX: &str = "dedupe:";
+pub const IDEM_KEY_PREFIX: &str = "idem:";
+pub const LAST_SEQ_KEY: &str = "seq:last";
+pub const SNAPSHOT_SEQ_KEY: &str = "seq:snapshot";
 
 /// Maximum value size in bytes for DO storage (2 MiB).
 ///
@@ -206,6 +209,17 @@ pub enum DoRequest {
         #[serde(default)]
         mode: SqlExecMode,
     },
+    /// Reserve a sequence number with idempotency tracking.
+    Sequence {
+        /// Idempotency key scoped to a durable object instance.
+        idempotency_key: String,
+        /// Payload hash for diagnostic purposes.
+        payload_hash: String,
+        /// TTL in seconds.
+        ttl_secs: u64,
+        /// Current time in ms since epoch (optional).
+        now_ms: i64,
+    },
 }
 
 /// Response payload from the Durable Object.
@@ -222,7 +236,19 @@ pub enum DoResponse {
     AlarmDelete,
     SqlExec { rows: Vec<JsonValue> },
     SqlExecRaw { rows: Vec<Vec<SqlValue>> },
+    Sequence {
+        inserted: bool,
+        seq: u64,
+        first_seen_ts: i64,
+    },
     Error { message: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SequenceResult {
+    pub inserted: bool,
+    pub seq: u64,
+    pub first_seen_ts: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -300,6 +326,14 @@ mod wasm {
 
     #[derive(Debug, Serialize, Deserialize, Clone)]
     struct DedupeEntry {
+        expires_at_ms: i64,
+    }
+
+    #[derive(Debug, Serialize, Deserialize, Clone)]
+    struct IdemEntry {
+        seq: u64,
+        hash: String,
+        first_seen_ts: i64,
         expires_at_ms: i64,
     }
 
@@ -507,7 +541,92 @@ mod wasm {
                         }
                     }
                 }
+                DoRequest::Sequence {
+                    idempotency_key,
+                    payload_hash,
+                    ttl_secs,
+                    now_ms,
+                } => {
+                    let result = self
+                        .sequence_with_idempotency(idempotency_key, payload_hash, ttl_secs, now_ms)
+                        .await?;
+                    Ok(DoResponse::Sequence {
+                        inserted: result.inserted,
+                        seq: result.seq,
+                        first_seen_ts: result.first_seen_ts,
+                    })
+                }
             }
+        }
+
+        async fn sequence_with_idempotency(
+            &self,
+            idempotency_key: String,
+            payload_hash: String,
+            ttl_secs: u64,
+            now_override_ms: i64,
+        ) -> Result<SequenceResult, DoError> {
+            let storage = self.state.storage();
+            let now_ms = if now_override_ms > 0 {
+                now_override_ms
+            } else {
+                now_ms()
+            };
+            let ttl_secs = if ttl_secs == 0 {
+                DEFAULT_TTL_SECONDS
+            } else {
+                ttl_secs
+            };
+            let expires_at_ms = now_ms + ttl_secs as i64 * 1000;
+
+            let storage_key = format!("{IDEM_KEY_PREFIX}{idempotency_key}");
+            if let Some(entry) = storage
+                .get::<IdemEntry>(&storage_key)
+                .await
+                .map_err(|e| DoError::StorageError(e.to_string()))?
+            {
+                if entry.expires_at_ms > now_ms {
+                    return Ok(SequenceResult {
+                        inserted: false,
+                        seq: entry.seq,
+                        first_seen_ts: entry.first_seen_ts,
+                    });
+                }
+                storage
+                    .delete(&storage_key)
+                    .await
+                    .map_err(|e| DoError::StorageError(e.to_string()))?;
+            }
+
+            let last_seq = storage
+                .get::<u64>(LAST_SEQ_KEY)
+                .await
+                .map_err(|e| DoError::StorageError(e.to_string()))?
+                .unwrap_or(0);
+            let next_seq = last_seq.saturating_add(1);
+
+            storage
+                .put(LAST_SEQ_KEY, next_seq)
+                .await
+                .map_err(|e| DoError::StorageError(e.to_string()))?;
+
+            let entry = IdemEntry {
+                seq: next_seq,
+                hash: payload_hash,
+                first_seen_ts: now_ms,
+                expires_at_ms,
+            };
+            storage
+                .put(&storage_key, entry)
+                .await
+                .map_err(|e| DoError::StorageError(e.to_string()))?;
+            self.ensure_alarm(expires_at_ms).await?;
+
+            Ok(SequenceResult {
+                inserted: true,
+                seq: next_seq,
+                first_seen_ts: now_ms,
+            })
         }
 
         async fn put_if_absent_internal(&self, key: &str, ttl_secs: u64) -> Result<bool, DoError> {
@@ -724,7 +843,24 @@ mod wasm {
                     }
                     continue;
                 }
-                if let Ok(entry) = serde_wasm_bindgen::from_value::<DedupeEntry>(value) {
+                if let Ok(entry) = serde_wasm_bindgen::from_value::<DedupeEntry>(value.clone()) {
+                    if entry.expires_at_ms <= now {
+                        self.state
+                            .storage()
+                            .delete(&key)
+                            .await
+                            .map_err(|e| DoError::StorageError(e.to_string()))?;
+                        removed += 1;
+                    } else {
+                        next_alarm = Some(match next_alarm {
+                            Some(current) => current.min(entry.expires_at_ms),
+                            None => entry.expires_at_ms,
+                        });
+                    }
+                    continue;
+                }
+
+                if let Ok(entry) = serde_wasm_bindgen::from_value::<IdemEntry>(value) {
                     if entry.expires_at_ms <= now {
                         self.state
                             .storage()
@@ -985,6 +1121,38 @@ mod wasm {
             }
         }
 
+        pub async fn sequence(
+            &self,
+            idempotency_key: impl Into<String>,
+            payload_hash: impl Into<String>,
+            ttl: Duration,
+            now_ms: Option<i64>,
+        ) -> Result<SequenceResult, DoError> {
+            let ttl_secs = if ttl.is_zero() { 0 } else { ttl.as_secs().max(1) };
+            let request = DoRequest::Sequence {
+                idempotency_key: idempotency_key.into(),
+                payload_hash: payload_hash.into(),
+                ttl_secs,
+                now_ms: now_ms.unwrap_or(0),
+            };
+
+            match self.send_request(request).await? {
+                DoResponse::Sequence {
+                    inserted,
+                    seq,
+                    first_seen_ts,
+                } => Ok(SequenceResult {
+                    inserted,
+                    seq,
+                    first_seen_ts,
+                }),
+                DoResponse::Error { message } => Err(DoError::InvalidResponse(message)),
+                other => Err(DoError::InvalidResponse(format!(
+                    "unexpected response: {other:?}"
+                ))),
+            }
+        }
+
         async fn put_if_absent_local(&self, key: &[u8], ttl: Duration) -> Result<bool, DedupeError> {
             tracing::debug!(
                 key_len = key.len(),
@@ -1039,7 +1207,8 @@ mod wasm {
                 | DoRequest::AlarmGet
                 | DoRequest::AlarmSet { .. }
                 | DoRequest::AlarmDelete
-                | DoRequest::SqlExec { .. } => None,
+                | DoRequest::SqlExec { .. }
+                | DoRequest::Sequence { .. } => None,
             };
 
             if let Some(key) = key {
@@ -1230,6 +1399,16 @@ impl WorkersDurableObject {
         _query: impl Into<String>,
         _bindings: Vec<SqlValue>,
     ) -> Result<Vec<Vec<SqlValue>>, DoError> {
+        Err(DoError::RuntimeUnavailable)
+    }
+
+    pub async fn sequence(
+        &self,
+        _idempotency_key: impl Into<String>,
+        _payload_hash: impl Into<String>,
+        _ttl: Duration,
+        _now_ms: Option<i64>,
+    ) -> Result<SequenceResult, DoError> {
         Err(DoError::RuntimeUnavailable)
     }
 }

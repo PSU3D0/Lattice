@@ -85,9 +85,27 @@ mod wasm {
 
     impl KvStoreParts {
         fn from_store(store: &KvStore) -> &Self {
+            assert_kvstore_layout();
             // SAFETY: worker::kv::KvStore is a repr(Rust) struct with stable field order in
-            // workers-rs 0.7.x. We only read shared references to call list with custom options.
+            // workers-rs 0.7.4. We only read shared references to call list with custom options.
             unsafe { &*(store as *const KvStore as *const KvStoreParts) }
+        }
+    }
+
+    fn assert_kvstore_layout() {
+        let store_size = std::mem::size_of::<KvStore>();
+        let parts_size = std::mem::size_of::<KvStoreParts>();
+        let store_align = std::mem::align_of::<KvStore>();
+        let parts_align = std::mem::align_of::<KvStoreParts>();
+
+        if store_size != parts_size || store_align != parts_align {
+            panic!(
+                "worker::kv::KvStore layout mismatch (size {}, align {}) vs KvStoreParts (size {}, align {}); update cap-kv-workers for worker =0.7.4",
+                store_size,
+                store_align,
+                parts_size,
+                parts_align
+            );
         }
     }
 
@@ -455,6 +473,11 @@ mod wasm {
         fn validate_key_accepts_valid_key() {
             let key = "a".repeat(MAX_KEY_SIZE);
             assert!(WorkersKv::validate_key(&key).is_ok());
+        }
+
+        #[wasm_bindgen_test]
+        fn kvstore_layout_matches_parts() {
+            assert_kvstore_layout();
         }
 
         #[wasm_bindgen_test]

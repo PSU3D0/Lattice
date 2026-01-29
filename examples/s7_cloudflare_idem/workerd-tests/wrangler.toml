@@ -1,0 +1,19 @@
+name = "example-s7-cloudflare-idem-tests"
+main = "build/index.js"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["durable_object_alarms"]
+
+kv_namespaces = [
+  { binding = "EVENTS_KV", id = "dev-events", preview_id = "dev-events" }
+]
+
+[[durable_objects.bindings]]
+name = "DEDUP_DO"
+class_name = "FlowDurableObject"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["FlowDurableObject"]
+
+[vars]
+OTEL_EXPORTER_OTLP_ENDPOINT = "http://127.0.0.1:4318/v1/traces"

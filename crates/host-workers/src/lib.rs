@@ -20,6 +20,8 @@ use futures::stream::{self, StreamExt};
 #[cfg(target_arch = "wasm32")]
 use host_inproc::{FlowBundle, FlowEntrypoint, HostRuntime, Invocation, InvocationMetadata};
 #[cfg(target_arch = "wasm32")]
+use capabilities::{ResourceAccess, ResourceBag};
+#[cfg(target_arch = "wasm32")]
 use kernel_exec::{ExecutionError, ExecutionResult, StreamHandle};
 #[cfg(target_arch = "wasm32")]
 use serde_json::{Value as JsonValue, json};
@@ -36,6 +38,29 @@ use tokio::runtime::{Builder as RuntimeBuilder, Handle as RuntimeHandle};
 
 #[cfg(target_arch = "wasm32")]
 type AbortFuture = Shared<LocalBoxFuture<'static, ()>>;
+
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    static RESOURCE_OVERRIDE: RefCell<Option<Arc<dyn ResourceAccess>>> = const { RefCell::new(None) };
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn set_resource_access(resources: Arc<dyn ResourceAccess>) {
+    RESOURCE_OVERRIDE.with(|slot| {
+        *slot.borrow_mut() = Some(resources);
+    });
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn set_resource_bag(bag: ResourceBag) {
+    let resources: Arc<ResourceBag> = Arc::new(bag);
+    set_resource_access(resources);
+}
+
+#[cfg(target_arch = "wasm32")]
+fn get_resource_access() -> Option<Arc<dyn ResourceAccess>> {
+    RESOURCE_OVERRIDE.with(|slot| slot.borrow().clone())
+}
 
 #[cfg(target_arch = "wasm32")]
 pub async fn handle_fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
@@ -81,6 +106,10 @@ async fn handle_fetch_inner(mut req: Request, env: Env) -> Result<Response> {
         HostRuntime::new(executor, Arc::clone(&ir))
     } else {
         HostRuntime::with_plugins(executor, Arc::clone(&ir), bundle.environment_plugins)
+    };
+    let runtime = match get_resource_access() {
+        Some(resources) => runtime.with_resource_access(resources),
+        None => runtime,
     };
 
     let mut invocation =
@@ -153,6 +182,32 @@ async fn read_payload(req: &mut Request) -> std::result::Result<JsonValue, Respo
     };
 
     if bytes.is_empty() {
+        if let Ok(url) = req.url() {
+            let mut map = serde_json::Map::new();
+            for (key, value) in url.query_pairs() {
+                match map.get_mut(key.as_ref()) {
+                    Some(existing) => match existing {
+                        JsonValue::Array(items) => items.push(JsonValue::String(value.to_string())),
+                        JsonValue::String(prev) => {
+                            let prev_value = std::mem::take(prev);
+                            *existing = JsonValue::Array(vec![
+                                JsonValue::String(prev_value),
+                                JsonValue::String(value.to_string()),
+                            ]);
+                        }
+                        _ => {
+                            *existing = JsonValue::Array(vec![JsonValue::String(value.to_string())]);
+                        }
+                    },
+                    None => {
+                        map.insert(key.to_string(), JsonValue::String(value.to_string()));
+                    }
+                }
+            }
+            if !map.is_empty() {
+                return Ok(JsonValue::Object(map));
+            }
+        }
         return Ok(JsonValue::Null);
     }
 
