@@ -58,6 +58,28 @@ Binding MAY include isolation semantics (namespacing, multi-tenant scoping, encr
 
 See `impl-docs/spec/resource-catalog.md` for how deployments can express these choices.
 
+## Durability Binding (Host Services)
+
+Checkpointing and resumability are **host-internal services**, not flow-exposed capabilities. They are
+described in `impl-docs/spec/checkpointing-and-durability.md` and implemented by the host runtime.
+
+Hosts MAY provide the following durability services:
+- `CheckpointStore` (required for any durability)
+- `ResumeScheduler` (required for timer/wait nodes)
+- `ResumeSignalSource` (required for HITL/callback nodes)
+- `CheckpointBlobStore` (required when checkpoint state exceeds blob threshold)
+
+These services are **not bound via `resource::*` hints**. Instead, they are selected by the host based on
+deployment configuration and the flow's durability policy.
+
+Durability binding rules (0.1.x):
+- `durability=off`: no durability services required.
+- `durability=partial` or `durability=strong`: `CheckpointStore` required.
+- If a flow includes timer/wait nodes: `ResumeScheduler` required.
+- If a flow includes HITL/callback nodes: `ResumeSignalSource` required.
+- If checkpoint state may exceed the inline threshold: `CheckpointBlobStore` required (or the host must
+  reject flows that can exceed it).
+
 ## Preflight Checks
 
 Hosts SHOULD perform preflight checks before serving traffic:

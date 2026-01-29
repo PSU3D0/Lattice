@@ -54,6 +54,14 @@ Namespace conventions:
 - `lf.event_id`: upstream event id (webhook message id, queue message id, etc).
 - `lf.idem_key`: computed idempotency key (string form) when relevant.
 
+Resume metadata (hosts SHOULD set when resuming from a checkpoint):
+- `lf.checkpoint_id`: checkpoint identifier.
+- `lf.resume_id`: unique resume invocation id.
+- `lf.resume_attempt`: attempt counter (1-based).
+
+Extensions (non-normative shape; see durability spec):
+- `lf.resume`: structured resume context (frontier, resumed_at, attempt).
+
 HTTP adapters MAY populate (examples exist in Axum host):
 - labels: `http.method`, `http.path`, `http.host`, `http.query_raw`, `http.version`
 - extensions: `http.query`, `http.headers`

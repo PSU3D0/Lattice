@@ -59,6 +59,19 @@ Key fields:
 - `metadata`: human tags (non-semantic).
 - `artifacts[]`: sidecar artifact references (DOT, schema, entrypoints manifest, etc).
 
+Durability policy (0.1.x, optional):
+- `policies.durability.mode`: `off|partial|strong` (default `partial`).
+- `policies.durability.checkpoint_interval`: optional checkpoint cadence (host-specific interpretation).
+- `policies.durability.blob_threshold_bytes`: spill threshold for checkpoint state.
+- `policies.durability.lease_ttl`: lease duration for resume concurrency control.
+- `policies.durability.checkpoint_ttl`: maximum time a checkpoint remains valid.
+- `policies.durability.retain_completed_for`: optional retention window after ack.
+- `policies.durability.retry_on_lease_conflict`: whether to retry resume after lease conflict.
+- `policies.durability.max_resume_attempts`: maximum resume attempts before failure.
+
+These fields become runtime-semantic with Epic 04 (durability runtime). Until then, validators may
+accept them but hosts may ignore them.
+
 ## NodeIR
 
 A node describes an executable unit.

@@ -37,6 +37,15 @@ ensure the registry stays in sync with the implementation.
 | DAG331    | Validation     | Error   | Provider scopes fall outside declared policy. |
 | DAG340    | Validation     | Error   | Variable shadowing detected in workflow definition. |
 | DAG341    | Validation     | Error   | Variable binding has incompatible type. |
+| DAG-CKPT-001 | Validation  | Error   | Node not checkpointable; cannot use durability=strong. |
+| DAG-CKPT-002 | Validation  | Error   | Halt node requires durability != off. |
+| DAG-CKPT-003 | Validation  | Error   | Halt node requires CheckpointStore capability. |
+| DAG-CKPT-004 | Validation  | Error   | Effectful node on resume path must declare idempotency. |
+| DAG-CKPT-005 | Validation  | Error   | Streaming node not replayable; cannot checkpoint mid-stream. |
+| DAG-CKPT-006 | Runtime     | Error   | Checkpoint not found. |
+| DAG-CKPT-007 | Runtime     | Error   | Lease conflict on checkpoint. |
+| DAG-CKPT-008 | Runtime     | Error   | Checkpoint state corrupted. |
+| DAG-CKPT-009 | Runtime     | Error   | Incompatible checkpoint version. |
 | EFFECT201 | Validation     | Error   | Declared effects do not match bound capabilities. |
 | DET301    | Validation     | Error   | Determinism claim conflicts with resource usage. |
 | DET302    | Validation     | Error   | Declared determinism conflicts with registered resource hints. |

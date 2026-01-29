@@ -128,6 +128,19 @@ Completed scope aligns with early contract/runtime milestones; references to `im
 - Extended `cap-do-workers` with an atomic DO sequence op and alarm cleanup for idempotency entries (`crates/cap-do-workers/src/lib.rs`).
 - Acceptance gates: `cargo check --target wasm32-unknown-unknown -p host-workers`, `cargo check --target wasm32-unknown-unknown -p cap-kv-workers`, `cargo check -p cap-do-workers`, `cargo check --target wasm32-unknown-unknown -p cap-do-workers`, `npm run build && npm test` in `examples/s7_cloudflare_idem/workerd-tests`.
 
+## 2026-01-29 — Durability + stdlib roadmap expansion (Epics 04–07)
+
+- Expanded checkpointing runtime details: resume endpoint contract and lease renewal semantics (`impl-docs/spec/checkpointing-and-durability.md`).
+- Added durability binding rules to host capability spec (`impl-docs/spec/capabilities-and-binding.md`).
+- Drafted new specs for stdlib registry, workspace capability, subflows, connector model, and credential provider.
+- Reordered epics 04–07 in `impl-docs/roadmap/epics.md` and drafted new epic plans; prior epic 04–07 docs archived.
+
+Acceptance gates:
+- Docs-only updates; no tests run.
+
+Compatibility/contract notes:
+- New host-level durability binding requirements and scheduler selection semantics for wait/HITL nodes.
+
 - ✅ Workspace scaffold, shared dependency management, MSRV pin (`Phase 0`).
 - ✅ Diagnostic registry & sync checks (`Phase 0`).
 - ✅ Core Flow IR types, builder utilities, and serde support (`Phase 1`).

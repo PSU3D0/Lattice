@@ -224,7 +224,29 @@ Mitigation: bind `cap-dedupe-redis` (or equivalent) via `capabilities` and ensur
 
 Mitigation: declare an explicit TTL that meets or exceeds the platform minimum (e.g. `ttl_ms = 300_000` for a five minute lease) so the queue bridge can safely dedupe retries.
 
-## 6. Spill Configuration
+## 6. Durability & Resume
+- **Durability mode incompatibility** — `DAG-CKPT-001`, `DAG-CKPT-002` (Durability spec §2, §11). Raised when a flow requests `durability=strong` with non-checkpointable nodes or uses a halt node with durability disabled.
+- **Missing durability services** — `DAG-CKPT-003`. Validator rejects flows that require checkpointing without a `CheckpointStore` capability.
+- **Resume safety** — `DAG-CKPT-004`, `DAG-CKPT-005`. Effectful nodes on a resume path require idempotency; streaming nodes without replay are incompatible with strong durability.
+- **Runtime resume failures** — `DAG-CKPT-006`..`DAG-CKPT-009`. Missing checkpoints, lease conflicts, corrupted state, or version mismatches during resume.
+
+### Example: Halt node without durability (`DAG-CKPT-002`)
+
+```rust
+workflow! {
+    name: human_gate,
+    version: "1.0.0",
+    profile: Web;
+    let submit = trigger_http_node_spec();
+    let approval = hitl_approval_node_spec();
+    connect!(submit -> approval);
+    // flow.policies.durability = off
+}
+```
+
+**Mitigation:** set `durability=partial` (or strong) and ensure the host provides a `CheckpointStore`.
+
+## 7. Spill Configuration
 - **Missing buffer bound** — `SPILL001` (RFC §6.4). Any edge that enables `spill_tier` must still declare an in-memory `max_items` budget so the executor knows when to begin spilling. Rust mistakes: setting `spill_tier = "local"` without bounding the queue, or forgetting to propagate the configuration when composing flows.
 - **Missing blob binding** — `SPILL002` (RFC §6.4). Spilling to blob storage requires the flow to bind a blob capability (e.g., `cap-blob-fs`, `cap-blob-s3`) and emit the corresponding `resource::blob::write` hint. Without the hint the validator assumes the runtime cannot persist overflow safely.
 

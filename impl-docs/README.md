@@ -29,6 +29,12 @@ Source-of-truth rule (Flow IR shape):
   - `spec/invocation-abi.md`
   - `spec/control-surfaces.md`
   - `spec/capabilities-and-binding.md`
+  - `spec/checkpointing-and-durability.md`
+  - `spec/stdlib-and-node-registry.md`
+  - `spec/workspace-capability.md`
+  - `spec/subflows.md`
+  - `spec/connector-and-plugin-model.md`
+  - `spec/credential-provider.md`
 - ADRs (forever decisions): `adrs/`
 - Scenario specs (acceptance targets): `user-stories.md`
 
