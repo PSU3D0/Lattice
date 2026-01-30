@@ -2211,6 +2211,9 @@ pub enum ExecutionError {
     /// Required capability bindings are missing from the host resource bag.
     #[error("missing required capabilities: {hints:?}")]
     MissingCapabilities { hints: Vec<String> },
+    /// Required durability services are missing from the host.
+    #[error("missing required durability services: {missing:?}")]
+    MissingDurabilityServices { missing: Vec<String> },
     /// Control surface is present but not supported by this runtime.
     #[error("control surface `{id}` ({kind}) is not supported by this runtime")]
     UnsupportedControlSurface { id: String, kind: String },
@@ -2248,6 +2251,7 @@ impl ExecutionError {
             ExecutionError::CheckpointLeaseConflict { .. } => Some("DAG-CKPT-007"),
             ExecutionError::CheckpointStateCorrupted { .. } => Some("DAG-CKPT-008"),
             ExecutionError::CheckpointIncompatibleVersion { .. } => Some("DAG-CKPT-009"),
+            ExecutionError::MissingDurabilityServices { .. } => Some("DAG-CKPT-003"),
             _ => None,
         }
     }

@@ -613,7 +613,7 @@ InvocationMetadata {
         "lf.resume": {
             "frontier": { ... },
             "attempt": 1,
-            "resumed_at": "2026-01-29T12:00:00Z",
+            "resumed_at_ms": 1769716800000,
         }
     }
 }
@@ -909,16 +909,10 @@ IF node.effects == Effectful AND NOT node.idempotency.key:
                              must declare idempotency"
 ```
 
-### 11.4 Streaming Node Compatibility
+### 11.4 Streaming Node Compatibility (Reserved)
 
-```
-IF node.output is Stream:
-  IF NOT node.durability.replayable:
-    node.durability.checkpointable = false
-    IF flow.durability == "strong":
-      EMIT error DAG-CKPT-005: "Streaming node '{alias}' is not replayable;
-                               cannot checkpoint mid-stream"
-```
+Streaming resume semantics are not fully defined yet. Until they are, `DAG-CKPT-005` is reserved and
+no streaming replayability validation is enforced.
 
 ---
 

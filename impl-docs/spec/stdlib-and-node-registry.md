@@ -69,6 +69,17 @@ Hosts MUST reject Flow IR whose identifiers are not in `node_contracts`.
 ## Standard Library Packaging
 
 Stdlib nodes should live in a dedicated crate (e.g., `latticeflow-stdlib`) with feature-gated modules.
+Recommended layout:
+
+```
+crates/stdlib/
+  src/
+    lib.rs
+    timer.rs
+    callback.rs
+    workspace.rs
+    transform/
+```
 
 Example feature gating:
 
@@ -78,6 +89,15 @@ latticeflow-stdlib = { version = "0.1", features = ["timer", "hitl", "workspace"
 ```
 
 Only explicitly referenced modules are linked, enabling dead-code elimination.
+
+## Subflows as Nodes
+
+Subflows are compiled into the same registry surface via a generated wrapper node. The wrapper:
+- Emits `NodeKind::Subflow` in the IR.
+- Uses the SubflowDescriptor to populate `effects`, `determinism`, `effect_hints`, and `durability`.
+- Registers a handler that executes the referenced subflow bundle in-process.
+
+This keeps subflows compile-linked while preserving the node-based execution model.
 
 ## Host Gating and Durability Requirements
 

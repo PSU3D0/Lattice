@@ -60,7 +60,7 @@ Resume metadata (hosts SHOULD set when resuming from a checkpoint):
 - `lf.resume_attempt`: attempt counter (1-based).
 
 Extensions (non-normative shape; see durability spec):
-- `lf.resume`: structured resume context (frontier, resumed_at, attempt).
+- `lf.resume`: structured resume context (frontier, resumed_at_ms, attempt).
 
 HTTP adapters MAY populate (examples exist in Axum host):
 - labels: `http.method`, `http.path`, `http.host`, `http.query_raw`, `http.version`

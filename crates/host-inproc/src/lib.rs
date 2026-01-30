@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use capabilities::{ResourceAccess, ResourceBag};
+use dag_core::DurabilityMode;
 use capabilities::durability::FlowFrontier;
 use kernel_exec::{ExecutionError, ExecutionResult, FlowExecutor, NodeHandler, NodeRegistry};
 use kernel_plan::ValidatedIR;
@@ -390,6 +391,16 @@ impl HostRuntime {
     ///
     /// Derivation rule (0.1): required domains are inferred from `NodeIR.effect_hints`.
     pub fn preflight(&self) -> Result<(), ExecutionError> {
+        let mut missing_durability = collect_missing_durability_services(self.ir.as_ref(),
+            self.resources.as_ref());
+        if !missing_durability.is_empty() {
+            missing_durability.sort();
+            missing_durability.dedup();
+            return Err(ExecutionError::MissingDurabilityServices {
+                missing: missing_durability,
+            });
+        }
+
         let mut missing: Vec<String> = self
             .required_effect_hints
             .iter()
@@ -458,6 +469,49 @@ impl HostRuntime {
     }
 }
 
+fn collect_missing_durability_services(
+    ir: &ValidatedIR,
+    resources: &dyn ResourceAccess,
+) -> Vec<String> {
+    let flow = ir.flow();
+    let mode = flow.policies.durability.mode;
+    let has_halts = flow.nodes.iter().any(|node| node.durability.halts);
+
+    let mut missing = Vec::new();
+
+    if mode != DurabilityMode::Off {
+        if resources.checkpoint_store().is_none() {
+            missing.push("durability::checkpoint_store".to_string());
+        }
+    }
+
+    if has_halts {
+        let needs_scheduler = flow
+            .nodes
+            .iter()
+            .any(|node| node.identifier == "std.timer.wait");
+        let needs_signal = flow.nodes.iter().any(|node| {
+            node.identifier == "std.callback.wait" || node.identifier == "std.hitl.approval"
+        });
+
+        if needs_scheduler && resources.resume_scheduler().is_none() {
+            missing.push("durability::resume_scheduler".to_string());
+        }
+        if needs_signal && resources.resume_signal_source().is_none() {
+            missing.push("durability::resume_signal_source".to_string());
+        }
+    }
+
+    if mode != DurabilityMode::Off
+        && flow.policies.durability.blob_threshold_bytes.is_some()
+        && resources.checkpoint_blob_store().is_none()
+    {
+        missing.push("durability::checkpoint_blob_store".to_string());
+    }
+
+    missing
+}
+
 /// Environment plugins can inspect invocation metadata and execution outcomes to inject
 /// environment-specific behaviour (tracing, logging, capability provisioning, etc.).
 pub trait EnvironmentPlugin: Send + Sync {
@@ -476,10 +530,81 @@ pub trait EnvironmentPlugin: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use capabilities::durability::{
+        CheckpointError, CheckpointFilter, CheckpointHandle, CheckpointRecord, CheckpointStore,
+        ResumeScheduler, ScheduleError, ScheduleId, ScheduleStatus,
+    };
     use dag_core::prelude::*;
     use kernel_exec::NodeRegistry;
     use kernel_plan::validate;
     use std::sync::{Arc as StdArc, Mutex};
+
+    struct StubCheckpointStore;
+
+    impl capabilities::Capability for StubCheckpointStore {
+        fn name(&self) -> &'static str {
+            "checkpoint.stub"
+        }
+    }
+
+    #[async_trait]
+    impl CheckpointStore for StubCheckpointStore {
+        async fn put(&self, _record: CheckpointRecord) -> Result<CheckpointHandle, CheckpointError> {
+            Err(CheckpointError::Storage("stub".to_string()))
+        }
+
+        async fn get(&self, _handle: &CheckpointHandle) -> Result<CheckpointRecord, CheckpointError> {
+            Err(CheckpointError::NotFound)
+        }
+
+        async fn ack(&self, _handle: &CheckpointHandle) -> Result<(), CheckpointError> {
+            Ok(())
+        }
+
+        async fn lease(&self, _handle: &CheckpointHandle, _ttl: Duration) -> Result<capabilities::durability::Lease, CheckpointError> {
+            Err(CheckpointError::LeaseConflict)
+        }
+
+        async fn release_lease(&self, _lease: capabilities::durability::Lease) -> Result<(), CheckpointError> {
+            Ok(())
+        }
+
+        async fn list(&self, _filter: CheckpointFilter) -> Result<Vec<CheckpointHandle>, CheckpointError> {
+            Ok(Vec::new())
+        }
+    }
+
+    struct StubResumeScheduler;
+
+    impl capabilities::Capability for StubResumeScheduler {
+        fn name(&self) -> &'static str {
+            "resume.scheduler.stub"
+        }
+    }
+
+    #[async_trait]
+    impl ResumeScheduler for StubResumeScheduler {
+        async fn schedule_at(&self, _handle: CheckpointHandle, _at_ms: u64) -> Result<ScheduleId, ScheduleError> {
+            Ok(ScheduleId("schedule".to_string()))
+        }
+
+        async fn schedule_after(&self, _handle: CheckpointHandle, _delay: Duration) -> Result<ScheduleId, ScheduleError> {
+            Ok(ScheduleId("schedule".to_string()))
+        }
+
+        async fn cancel(&self, _schedule_id: ScheduleId) -> Result<(), ScheduleError> {
+            Ok(())
+        }
+
+        async fn status(&self, _schedule_id: ScheduleId) -> Result<ScheduleStatus, ScheduleError> {
+            Ok(ScheduleStatus::Pending { fires_at_ms: 0 })
+        }
+    }
+
+    fn resource_bag_with_checkpoint() -> ResourceBag {
+        ResourceBag::new().with_checkpoint_store(Arc::new(StubCheckpointStore))
+    }
 
     #[tokio::test]
     async fn executes_invocation_via_runtime() {
@@ -529,7 +654,8 @@ mod tests {
         builder.connect(&trigger, &capture);
         let ir = Arc::new(validate(&builder.build()).expect("flow validates"));
 
-        let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), ir);
+        let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), ir)
+            .with_resource_bag(resource_bag_with_checkpoint());
         let invocation = Invocation::new("trigger", "capture", serde_json::json!({"ok": true}));
 
         let result = runtime
@@ -649,7 +775,8 @@ mod tests {
             FlowExecutor::new(Arc::new(registry)),
             ir,
             vec![Arc::new(plugin)],
-        );
+        )
+        .with_resource_bag(resource_bag_with_checkpoint());
 
         runtime
             .execute(Invocation::new(
@@ -810,8 +937,12 @@ mod tests {
             after: after.clone(),
         });
 
-        let runtime =
-            HostRuntime::with_plugins(FlowExecutor::new(Arc::new(registry)), ir, vec![plugin]);
+        let runtime = HostRuntime::with_plugins(
+            FlowExecutor::new(Arc::new(registry)),
+            ir,
+            vec![plugin],
+        )
+        .with_resource_bag(resource_bag_with_checkpoint());
         let mut invocation = Invocation::new("trigger", "capture", serde_json::json!({"ok": true}));
         invocation
             .metadata_mut()
@@ -882,7 +1013,7 @@ mod tests {
         let ir = Arc::new(validate(&builder.build()).expect("flow validates"));
 
         let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), ir)
-            .with_resource_bag(ResourceBag::new());
+            .with_resource_bag(resource_bag_with_checkpoint());
         let invocation = Invocation::new("trigger", "kv", serde_json::json!({"ok": true}));
 
         match runtime.execute(invocation).await {
@@ -943,7 +1074,8 @@ mod tests {
         builder.connect(&trigger, &kv_node);
         let ir = Arc::new(validate(&builder.build()).expect("flow validates"));
 
-        let resources = ResourceBag::new().with_kv(Arc::new(capabilities::kv::MemoryKv::new()));
+        let resources = resource_bag_with_checkpoint()
+            .with_kv(Arc::new(capabilities::kv::MemoryKv::new()));
         let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), ir)
             .with_resource_bag(resources);
         let invocation = Invocation::new("trigger", "kv", serde_json::json!({"ok": true}));
@@ -955,6 +1087,339 @@ mod tests {
         match result {
             ExecutionResult::Value(value) => assert_eq!(value, serde_json::json!({"ok": true})),
             ExecutionResult::Stream(_) => panic!("expected value result"),
+        }
+    }
+
+    #[tokio::test]
+    async fn preflight_fails_when_checkpoint_store_missing() {
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn(
+                "tests::trigger",
+                |value: JsonValue| async move { Ok(value) },
+            )
+            .unwrap();
+        registry
+            .register_fn(
+                "tests::sink",
+                |value: JsonValue| async move { Ok(value) },
+            )
+            .unwrap();
+
+        let mut builder = FlowBuilder::new("preflight_checkpoint", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let sink = builder
+            .add_node(
+                "sink",
+                &NodeSpec::inline(
+                    "tests::sink",
+                    "Sink",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &sink);
+
+        let mut flow = builder.build();
+        flow.policies.durability.mode = DurabilityMode::Strong;
+        let ir = Arc::new(validate(&flow).expect("flow validates"));
+
+        let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), ir)
+            .with_resource_bag(ResourceBag::new());
+        let invocation = Invocation::new("trigger", "sink", serde_json::json!({"ok": true}));
+
+        match runtime.execute(invocation).await {
+            Ok(_) => panic!("expected preflight failure"),
+            Err(ExecutionError::MissingDurabilityServices { missing }) => {
+                assert!(missing.contains(&"durability::checkpoint_store".to_string()));
+            }
+            Err(err) => panic!("unexpected error: {err}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn preflight_fails_when_checkpoint_store_missing_in_partial_mode() {
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn(
+                "tests::trigger",
+                |value: JsonValue| async move { Ok(value) },
+            )
+            .unwrap();
+        registry
+            .register_fn(
+                "tests::sink",
+                |value: JsonValue| async move { Ok(value) },
+            )
+            .unwrap();
+
+        let mut builder = FlowBuilder::new(
+            "preflight_checkpoint_partial",
+            Version::new(1, 0, 0),
+            Profile::Dev,
+        );
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let sink = builder
+            .add_node(
+                "sink",
+                &NodeSpec::inline(
+                    "tests::sink",
+                    "Sink",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &sink);
+
+        let mut flow = builder.build();
+        flow.policies.durability.mode = DurabilityMode::Partial;
+        let ir = Arc::new(validate(&flow).expect("flow validates"));
+
+        let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), ir)
+            .with_resource_bag(ResourceBag::new());
+        let invocation = Invocation::new("trigger", "sink", serde_json::json!({"ok": true}));
+
+        match runtime.execute(invocation).await {
+            Ok(_) => panic!("expected preflight failure"),
+            Err(ExecutionError::MissingDurabilityServices { missing }) => {
+                assert!(missing.contains(&"durability::checkpoint_store".to_string()));
+            }
+            Err(err) => panic!("unexpected error: {err}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn preflight_fails_when_resume_scheduler_missing() {
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn(
+                "tests::trigger",
+                |value: JsonValue| async move { Ok(value) },
+            )
+            .unwrap();
+        registry
+            .register_fn(
+                "std.timer.wait",
+                |value: JsonValue| async move { Ok(value) },
+            )
+            .unwrap();
+
+        let mut builder = FlowBuilder::new("preflight_timer", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let wait = builder
+            .add_node(
+                "wait",
+                &NodeSpec::inline(
+                    "std.timer.wait",
+                    "TimerWait",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::BestEffort,
+                    None,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &wait);
+
+        let mut flow = builder.build();
+        if let Some(node) = flow.nodes.iter_mut().find(|node| node.alias == "wait") {
+            node.durability.halts = true;
+        }
+        let ir = Arc::new(validate(&flow).expect("flow validates"));
+
+        let resources = resource_bag_with_checkpoint();
+        let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), ir)
+            .with_resource_bag(resources);
+        let invocation = Invocation::new("trigger", "wait", serde_json::json!({"ok": true}));
+
+        match runtime.execute(invocation).await {
+            Ok(_) => panic!("expected preflight failure"),
+            Err(ExecutionError::MissingDurabilityServices { missing }) => {
+                assert!(missing.contains(&"durability::resume_scheduler".to_string()));
+            }
+            Err(err) => panic!("unexpected error: {err}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn preflight_fails_when_resume_signal_source_missing() {
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn(
+                "tests::trigger",
+                |value: JsonValue| async move { Ok(value) },
+            )
+            .unwrap();
+        registry
+            .register_fn(
+                "std.callback.wait",
+                |value: JsonValue| async move { Ok(value) },
+            )
+            .unwrap();
+
+        let mut builder = FlowBuilder::new("preflight_callback", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let callback = builder
+            .add_node(
+                "callback",
+                &NodeSpec::inline(
+                    "std.callback.wait",
+                    "CallbackWait",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::BestEffort,
+                    None,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &callback);
+
+        let mut flow = builder.build();
+        if let Some(node) = flow.nodes.iter_mut().find(|node| node.alias == "callback") {
+            node.durability.halts = true;
+        }
+        let ir = Arc::new(validate(&flow).expect("flow validates"));
+
+        let resources = resource_bag_with_checkpoint()
+            .with_resume_scheduler(Arc::new(StubResumeScheduler));
+        let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), ir)
+            .with_resource_bag(resources);
+        let invocation = Invocation::new("trigger", "callback", serde_json::json!({"ok": true}));
+
+        match runtime.execute(invocation).await {
+            Ok(_) => panic!("expected preflight failure"),
+            Err(ExecutionError::MissingDurabilityServices { missing }) => {
+                assert!(missing.contains(&"durability::resume_signal_source".to_string()));
+            }
+            Err(err) => panic!("unexpected error: {err}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn preflight_fails_when_checkpoint_blob_store_missing() {
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn(
+                "tests::trigger",
+                |value: JsonValue| async move { Ok(value) },
+            )
+            .unwrap();
+        registry
+            .register_fn(
+                "tests::sink",
+                |value: JsonValue| async move { Ok(value) },
+            )
+            .unwrap();
+
+        let mut builder = FlowBuilder::new("preflight_blob", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let sink = builder
+            .add_node(
+                "sink",
+                &NodeSpec::inline(
+                    "tests::sink",
+                    "Sink",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &sink);
+
+        let mut flow = builder.build();
+        flow.policies.durability.mode = DurabilityMode::Strong;
+        flow.policies.durability.blob_threshold_bytes = Some(1);
+        let ir = Arc::new(validate(&flow).expect("flow validates"));
+
+        let resources = resource_bag_with_checkpoint();
+        let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), ir)
+            .with_resource_bag(resources);
+        let invocation = Invocation::new("trigger", "sink", serde_json::json!({"ok": true}));
+
+        match runtime.execute(invocation).await {
+            Ok(_) => panic!("expected preflight failure"),
+            Err(ExecutionError::MissingDurabilityServices { missing }) => {
+                assert!(missing.contains(&"durability::checkpoint_blob_store".to_string()));
+            }
+            Err(err) => panic!("unexpected error: {err}"),
         }
     }
 
@@ -1020,7 +1485,7 @@ mod tests {
         let ir = Arc::new(validate(&flow).expect("flow validates"));
 
         let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), ir)
-            .with_resource_bag(ResourceBag::new());
+            .with_resource_bag(resource_bag_with_checkpoint());
         let invocation = Invocation::new("trigger", "http", serde_json::json!({"ok": true}));
 
         match runtime.execute(invocation).await {
@@ -1109,7 +1574,7 @@ mod tests {
 
         let ir = Arc::new(validate(&flow).expect("flow validates"));
 
-        let resources = ResourceBag::new().with_http_write(Arc::new(NullHttp));
+        let resources = resource_bag_with_checkpoint().with_http_write(Arc::new(NullHttp));
         let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), ir)
             .with_resource_bag(resources);
         let invocation = Invocation::new("trigger", "http", serde_json::json!({"ok": true}));
@@ -1185,7 +1650,7 @@ mod tests {
         let ir = Arc::new(validate(&flow).expect("flow validates"));
 
         let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), ir)
-            .with_resource_bag(ResourceBag::new());
+            .with_resource_bag(resource_bag_with_checkpoint());
         let invocation = Invocation::new("trigger", "dedupe", serde_json::json!({"ok": true}));
 
         match runtime.execute(invocation).await {
@@ -1254,7 +1719,7 @@ mod tests {
         let ir = Arc::new(validate(&builder.build()).expect("flow validates"));
 
         let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), ir)
-            .with_resource_bag(ResourceBag::new());
+            .with_resource_bag(resource_bag_with_checkpoint());
         let invocation = Invocation::new("trigger", "unknown", serde_json::json!({"ok": true}));
 
         match runtime.execute(invocation).await {
@@ -1317,7 +1782,7 @@ mod tests {
         let ir = Arc::new(validate(&builder.build()).expect("flow validates"));
 
         let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), ir)
-            .with_resource_bag(ResourceBag::new());
+            .with_resource_bag(resource_bag_with_checkpoint());
         let invocation = Invocation::new("trigger", "clocky", serde_json::json!({"ok": true}));
 
         let result = runtime
@@ -1419,7 +1884,7 @@ mod tests {
         let ir = Arc::new(validate(&flow).expect("flow validates"));
 
         let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), ir)
-            .with_resource_bag(ResourceBag::new());
+            .with_resource_bag(resource_bag_with_checkpoint());
         let invocation = Invocation::new("trigger", "http", serde_json::json!({"ok": true}));
 
         match runtime.execute(invocation).await {

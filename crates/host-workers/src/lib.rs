@@ -376,6 +376,14 @@ fn map_execution_error(err: ExecutionError) -> (u16, JsonValue) {
                 "details": { "hints": hints }
             }),
         ),
+        ExecutionError::MissingDurabilityServices { missing } => (
+            500,
+            json!({
+                "error": "missing required durability services",
+                "code": "DAG-CKPT-003",
+                "details": { "missing": missing }
+            }),
+        ),
         ExecutionError::Cancelled => (503, json!({ "error": "execution cancelled" })),
         ExecutionError::UnsupportedControlSurface { id, kind } => (
             500,

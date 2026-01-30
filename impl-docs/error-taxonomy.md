@@ -226,7 +226,7 @@ Mitigation: declare an explicit TTL that meets or exceeds the platform minimum (
 
 ## 6. Durability & Resume
 - **Durability mode incompatibility** — `DAG-CKPT-001`, `DAG-CKPT-002` (Durability spec §2, §11). Raised when a flow requests `durability=strong` with non-checkpointable nodes or uses a halt node with durability disabled.
-- **Missing durability services** — `DAG-CKPT-003`. Validator rejects flows that require checkpointing without a `CheckpointStore` capability.
+- **Missing durability services** — `DAG-CKPT-003`. Emitted by host preflight when required durability services (e.g., CheckpointStore) are unavailable.
 - **Resume safety** — `DAG-CKPT-004`, `DAG-CKPT-005`. Effectful nodes on a resume path require idempotency; streaming nodes without replay are incompatible with strong durability.
 - **Runtime resume failures** — `DAG-CKPT-006`..`DAG-CKPT-009`. Missing checkpoints, lease conflicts, corrupted state, or version mismatches during resume.
 

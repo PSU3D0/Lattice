@@ -635,6 +635,14 @@ fn map_execution_error(err: ExecutionError) -> (StatusCode, JsonValue) {
                 "details": { "hints": hints }
             }),
         ),
+        ExecutionError::MissingDurabilityServices { missing } => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({
+                "error": "missing required durability services",
+                "code": "DAG-CKPT-003",
+                "details": { "missing": missing }
+            }),
+        ),
         ExecutionError::Cancelled => (
             StatusCode::SERVICE_UNAVAILABLE,
             json!({ "error": "execution cancelled" }),
@@ -1499,6 +1507,85 @@ mod tests {
             .as_array()
             .expect("details.hints array");
         assert!(hints.contains(&json!(capabilities::kv::HINT_KV_READ)));
+    }
+
+    #[tokio::test]
+    async fn preflight_missing_durability_services_returns_code() {
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn(
+                "tests::trigger",
+                |value: JsonValue| async move { Ok(value) },
+            )
+            .unwrap();
+        registry
+            .register_fn(
+                "tests::sink",
+                |value: JsonValue| async move { Ok(value) },
+            )
+            .unwrap();
+
+        let executor = FlowExecutor::new(Arc::new(registry));
+        let mut builder = FlowBuilder::new("preflight_durable", Version::new(1, 0, 0), Profile::Web);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let sink = builder
+            .add_node(
+                "respond",
+                &NodeSpec::inline(
+                    "tests::sink",
+                    "Sink",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &sink);
+
+        let mut flow = builder.build();
+        flow.policies.durability.mode = DurabilityMode::Strong;
+        let validated = validate(&flow).expect("validated");
+
+        let config = RouteConfig::new("/preflight_durable")
+            .with_method(Method::POST)
+            .with_trigger_alias("trigger")
+            .with_capture_alias("respond");
+        let state = make_state(executor, Arc::new(validated), config);
+
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/preflight_durable")
+            .header("content-type", "application/json")
+            .body(Body::from(json!({"ok": true}).to_string()))
+            .unwrap();
+
+        let response = super::dispatch_request(State(state), request).await;
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let body: JsonValue = serde_json::from_slice(&bytes).expect("parse json body");
+        assert_eq!(body["code"], json!("DAG-CKPT-003"));
+        let missing = body["details"]["missing"]
+            .as_array()
+            .expect("details.missing array");
+        assert!(missing.contains(&json!("durability::checkpoint_store")));
     }
 
     #[tokio::test]
