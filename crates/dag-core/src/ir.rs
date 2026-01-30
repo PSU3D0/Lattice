@@ -79,6 +79,19 @@ pub enum Profile {
     Dev,
 }
 
+/// Durability modes for checkpointing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DurabilityMode {
+    /// No checkpoints written; resume disabled.
+    Off,
+    /// Checkpoints only at halt nodes.
+    #[default]
+    Partial,
+    /// Checkpoints at every node boundary.
+    Strong,
+}
+
 /// High-level node categories.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -279,12 +292,42 @@ pub struct NodeIR {
     /// Optional idempotency configuration.
     #[serde(default)]
     pub idempotency: IdempotencySpec,
+    /// Optional durability profile (checkpoint/halts metadata).
+    #[serde(default, skip_serializing_if = "DurabilityProfile::is_default")]
+    pub durability: DurabilityProfile,
     /// Determinism hints recorded during macro expansion.
     #[serde(rename = "determinismHints", default)]
     pub determinism_hints: Vec<String>,
     /// Effect hints recorded during macro expansion.
     #[serde(rename = "effectHints", default)]
     pub effect_hints: Vec<String>,
+}
+
+/// Durability profile used for checkpoint validation.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct DurabilityProfile {
+    /// Node state can be serialized and resumed.
+    pub checkpointable: bool,
+    /// Streaming outputs can be replayed on resume.
+    pub replayable: bool,
+    /// Node is a halting boundary requiring suspend + resume.
+    pub halts: bool,
+}
+
+impl Default for DurabilityProfile {
+    fn default() -> Self {
+        Self {
+            checkpointable: true,
+            replayable: true,
+            halts: false,
+        }
+    }
+}
+
+impl DurabilityProfile {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// Edge entry within the Flow IR.
@@ -445,6 +488,38 @@ pub struct FlowPolicies {
     /// Lint configuration.
     #[serde(default)]
     pub lint: PolicyLintSettings,
+    /// Durability configuration.
+    #[serde(default)]
+    pub durability: DurabilityPolicy,
+}
+
+/// Durability policy settings.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+pub struct DurabilityPolicy {
+    /// Requested durability mode.
+    #[serde(default)]
+    pub mode: DurabilityMode,
+    /// Checkpoint interval (host-specific interpretation).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkpoint_interval: Option<u64>,
+    /// Blob spill threshold in bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blob_threshold_bytes: Option<u64>,
+    /// Lease TTL in milliseconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lease_ttl: Option<u64>,
+    /// Maximum time a checkpoint remains valid (milliseconds).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkpoint_ttl: Option<u64>,
+    /// Retention window after ack (milliseconds).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retain_completed_for: Option<u64>,
+    /// Retry resume on lease conflict.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_on_lease_conflict: Option<bool>,
+    /// Maximum number of resume attempts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_resume_attempts: Option<u32>,
 }
 
 /// Lint-specific policy settings.

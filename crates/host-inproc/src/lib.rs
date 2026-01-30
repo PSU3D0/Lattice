@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use capabilities::{ResourceAccess, ResourceBag};
+use capabilities::durability::FlowFrontier;
 use kernel_exec::{ExecutionError, ExecutionResult, FlowExecutor, NodeHandler, NodeRegistry};
 use kernel_plan::ValidatedIR;
 use serde::Serialize;
@@ -223,6 +224,13 @@ pub struct InvocationMetadata {
     extensions: BTreeMap<String, JsonValue>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ResumeContext {
+    pub frontier: FlowFrontier,
+    pub attempt: u32,
+    pub resumed_at_ms: u64,
+}
+
 impl InvocationMetadata {
     /// Insert a simple string label (e.g., request ID, tenant).
     pub fn insert_label(&mut self, key: impl Into<String>, value: impl Into<String>) {
@@ -247,6 +255,28 @@ impl InvocationMetadata {
     /// Retrieve structured extensions.
     pub fn extensions(&self) -> &BTreeMap<String, JsonValue> {
         &self.extensions
+    }
+
+    /// Attach resume metadata labels and extensions.
+    pub fn insert_resume_context(
+        &mut self,
+        checkpoint_id: impl Into<String>,
+        resume_id: impl Into<String>,
+        attempt: u32,
+        frontier: FlowFrontier,
+        resumed_at_ms: u64,
+    ) {
+        self.insert_label("lf.checkpoint_id", checkpoint_id);
+        self.insert_label("lf.resume_id", resume_id);
+        self.insert_label("lf.resume_attempt", attempt.to_string());
+        self.insert_extension(
+            "lf.resume",
+            ResumeContext {
+                frontier,
+                attempt,
+                resumed_at_ms,
+            },
+        );
     }
 }
 
@@ -657,6 +687,35 @@ mod tests {
             capture_aliases,
             vec!["capture".to_string(), "capture".to_string()]
         );
+    }
+
+    #[test]
+    fn resume_metadata_includes_checkpoint_and_resume_ids() {
+        let mut invocation = Invocation::new("trigger", "capture", serde_json::json!({"ok": true}));
+        let frontier = capabilities::durability::FlowFrontier {
+            completed: vec![capabilities::durability::FrontierEntry {
+                node_alias: "alpha".to_string(),
+                output_port: "out".to_string(),
+                cursor: None,
+            }],
+            pending: vec!["beta".to_string()],
+        };
+
+        invocation.metadata_mut().insert_resume_context(
+            "ckpt-1",
+            "resume-1",
+            1,
+            frontier,
+            1_700_000_000_000,
+        );
+
+        let labels = invocation.metadata().labels();
+        assert_eq!(labels.get("lf.checkpoint_id"), Some(&"ckpt-1".to_string()));
+        assert_eq!(labels.get("lf.resume_id"), Some(&"resume-1".to_string()));
+        assert_eq!(labels.get("lf.resume_attempt"), Some(&"1".to_string()));
+
+        let extensions = invocation.metadata().extensions();
+        assert!(extensions.contains_key("lf.resume"));
     }
 
     #[tokio::test]

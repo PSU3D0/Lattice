@@ -49,6 +49,8 @@ use tracing::{debug, error, instrument, trace, warn};
 #[cfg(target_arch = "wasm32")]
 use wasm_stream::ReceiverStream;
 
+pub mod durability;
+
 #[cfg(target_arch = "wasm32")]
 mod cancellation {
     use std::future::Future;
@@ -2225,6 +2227,30 @@ pub enum ExecutionError {
     /// Spill storage could not be initialised.
     #[error("failed to configure spill storage: {0}")]
     SpillSetup(anyhow::Error),
+    /// Checkpoint not found during resume.
+    #[error("checkpoint `{checkpoint_id}` not found")]
+    CheckpointNotFound { checkpoint_id: String },
+    /// Resume lease conflict for a checkpoint.
+    #[error("checkpoint `{checkpoint_id}` is locked by another consumer")]
+    CheckpointLeaseConflict { checkpoint_id: String },
+    /// Checkpoint state corrupted or unreadable.
+    #[error("checkpoint `{checkpoint_id}` state corrupted: {message}")]
+    CheckpointStateCorrupted { checkpoint_id: String, message: String },
+    /// Checkpoint record incompatible with this runtime.
+    #[error("checkpoint `{checkpoint_id}` has incompatible version {version}")]
+    CheckpointIncompatibleVersion { checkpoint_id: String, version: u32 },
+}
+
+impl ExecutionError {
+    pub fn diagnostic_code(&self) -> Option<&'static str> {
+        match self {
+            ExecutionError::CheckpointNotFound { .. } => Some("DAG-CKPT-006"),
+            ExecutionError::CheckpointLeaseConflict { .. } => Some("DAG-CKPT-007"),
+            ExecutionError::CheckpointStateCorrupted { .. } => Some("DAG-CKPT-008"),
+            ExecutionError::CheckpointIncompatibleVersion { .. } => Some("DAG-CKPT-009"),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]

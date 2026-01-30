@@ -107,6 +107,7 @@ impl FlowBuilder {
             effects: spec.effects,
             determinism: spec.determinism,
             idempotency: Default::default(),
+            durability: Default::default(),
             determinism_hints: spec
                 .determinism_hints
                 .iter()

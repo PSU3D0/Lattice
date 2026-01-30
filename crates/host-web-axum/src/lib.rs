@@ -662,6 +662,38 @@ fn map_execution_error(err: ExecutionError) -> (StatusCode, JsonValue) {
                 }),
             )
         }
+        ExecutionError::CheckpointNotFound { checkpoint_id } => (
+            StatusCode::NOT_FOUND,
+            json!({
+                "error": "checkpoint not found",
+                "code": "DAG-CKPT-006",
+                "details": { "checkpoint_id": checkpoint_id }
+            }),
+        ),
+        ExecutionError::CheckpointLeaseConflict { checkpoint_id } => (
+            StatusCode::CONFLICT,
+            json!({
+                "error": "checkpoint lease conflict",
+                "code": "DAG-CKPT-007",
+                "details": { "checkpoint_id": checkpoint_id }
+            }),
+        ),
+        ExecutionError::CheckpointStateCorrupted { checkpoint_id, message } => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({
+                "error": "checkpoint state corrupted",
+                "code": "DAG-CKPT-008",
+                "details": { "checkpoint_id": checkpoint_id, "message": message }
+            }),
+        ),
+        ExecutionError::CheckpointIncompatibleVersion { checkpoint_id, version } => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({
+                "error": "checkpoint version incompatible",
+                "code": "DAG-CKPT-009",
+                "details": { "checkpoint_id": checkpoint_id, "version": version }
+            }),
+        ),
         ExecutionError::UnsupportedSpill { message } => (
             StatusCode::BAD_REQUEST,
             json!({ "error": "unsupported_spill", "message": message }),

@@ -54,6 +54,7 @@ This ensures:
 - Node identifiers are stable and known at compile time.
 - Input/output schemas are derived from Rust types.
 - Effect/determinism hints are emitted for validation.
+- Durability profile (`checkpointable`, `replayable`, `halts`) is emitted for checkpoint validation.
 
 ## Flow Bundles and Allowlists
 

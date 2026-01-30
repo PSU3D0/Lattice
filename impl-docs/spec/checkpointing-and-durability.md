@@ -18,7 +18,7 @@ This specification defines the model for **checkpointing**, **durability**, and 
 This document covers:
 
 - Durability modes and their guarantees.
-- Node capability profiles for checkpoint compatibility.
+- Durability profiles for checkpoint compatibility.
 - Host trait surfaces for checkpoint storage, resume scheduling, and blob spilling.
 - Checkpoint record schema and lifecycle.
 - Timer and wait node design for the standard library.
@@ -29,7 +29,7 @@ Implementation guidance, host-specific details, and examples live in the Epic 04
 ### 1.2 Relationship to Other Specs
 
 - **Flow IR**: Uses `CheckpointIR` (frontier + state). Durability policy lives under `FlowIR.policies`.
-  Node capability profiles are **registry metadata** (stdlib or external registry), not required fields in Flow IR.
+  Durability profiles are **registry metadata** (stdlib or external registry), not required fields in Flow IR.
 - **Invocation ABI**: Resume triggers produce a new invocation that carries checkpoint context.
   This spec defines the required resume metadata and labels.
 - **Capabilities and Binding**: Introduces host durability traits (`CheckpointStore`, `ResumeScheduler`,
@@ -56,7 +56,7 @@ All nodes are **assumed checkpointable** unless they explicitly declare incompat
 
 - Authors don't annotate every node with checkpoint metadata.
 - Incompatible nodes are the exception, not the rule.
-- Validator enforces durability based on node capability profiles.
+- Validator enforces durability based on node durability profiles.
 
 ### 2.2 Durability Modes
 
@@ -106,19 +106,16 @@ This enables tooling to show "85% durable" and highlight which nodes block full 
 
 ---
 
-## 3. Node Capability Profile
+## 3. Durability Profile
 
-### 3.1 Capability Fields
+### 3.1 Profile Fields
 
-Every node has a **capability profile** provided by its registry metadata (stdlib or external registry).
+Every node has a **durability profile** provided by its registry metadata (stdlib or external registry).
 Flow IR does not require these fields; they are resolved at planning/validation time. Flows may optionally
 override a node's profile in rare cases (e.g., host-specific implementations), but the default is registry-derived.
 
 ```rust
-pub struct NodeCapabilityProfile {
-    /// Node produces deterministic output for same input.
-    pub deterministic: bool,
-    
+pub struct DurabilityProfile {
     /// Node state can be serialized and resumed.
     /// Default: true
     pub checkpointable: bool,
@@ -127,13 +124,9 @@ pub struct NodeCapabilityProfile {
     /// Default: true for non-streaming, false for unbounded streams.
     pub replayable: bool,
     
-    /// Node has external side effects.
-    /// Derived from effectHints or explicit declaration.
-    pub effectful: bool,
-    
-    /// Node is a halt point requiring checkpoint before execution.
-    /// True for timer, HITL, external callback nodes.
-    pub checkpoint_required: bool,
+    /// Node is a halting boundary requiring suspend + resume.
+    /// True for timer/callback/approval nodes.
+    pub halts: bool,
 }
 ```
 
@@ -142,12 +135,10 @@ pub struct NodeCapabilityProfile {
 For ordinary nodes (no special declarations):
 
 ```rust
-NodeCapabilityProfile {
-    deterministic: true,   // unless determinismHints say otherwise
+DurabilityProfile {
     checkpointable: true,  // default assumption
     replayable: true,      // for non-streaming nodes
-    effectful: false,      // unless effectHints say otherwise
-    checkpoint_required: false,
+    halts: false,
 }
 ```
 
@@ -176,7 +167,7 @@ async fn realtime_feed(input: FeedConfig) -> NodeResult<FeedStream> { ... }
 ```json
 {
   "id": "external.realtime_feed",
-  "capability": {
+  "durability": {
     "checkpointable": false,
     "reason": "holds open websocket"
   }
@@ -185,7 +176,7 @@ async fn realtime_feed(input: FeedConfig) -> NodeResult<FeedStream> { ... }
 
 ### 3.5 Halt Nodes
 
-Halt nodes declare `checkpoint_required = true`. The runtime **must** persist a checkpoint when entering these nodes. Examples:
+Halt nodes declare `halts = true`. The runtime **must** persist a checkpoint and suspend when entering these nodes. Examples:
 
 - `timer.wait` — wait for duration or absolute time.
 - `hitl.approval` — wait for human approval.
@@ -195,7 +186,7 @@ Halt nodes declare `checkpoint_required = true`. The runtime **must** persist a 
 
 1. Load registry profile for each node.
 2. Apply any flow overrides (if present).
-3. Derive `effectful` from `effectHints` if unspecified.
+3. Derive effectfulness/determinism from `effects` and `determinism`.
 4. Derive `replayable` for streams (default false for unbounded streams).
 5. Validate against durability mode.
 
@@ -669,7 +660,7 @@ Timer/wait nodes are **single logical nodes** that delegate to the host's `Resum
 
 ```rust
 #[node(
-    checkpoint_required = true,
+    halts = true,
     effectful = false,
     deterministic = false,
 )]
@@ -720,7 +711,7 @@ implementation notes.
 
 ```rust
 #[node(
-    checkpoint_required = true,
+    halts = true,
     effectful = true,  // sends notification
     deterministic = false,
 )]
@@ -766,7 +757,7 @@ Usage examples for HITL nodes live in the stdlib spec and the Epic 04 implementa
 
 ```rust
 #[node(
-    checkpoint_required = true,
+    halts = true,
     effectful = false,
     deterministic = false,
 )]
@@ -833,7 +824,7 @@ be embedded into host crates. Hosts may include/exclude stdlib node sets via fea
 portable contract remains the same.
 
 Gating rules:
-- Nodes declare required host services (e.g., `checkpoint_required`, `requires_resume_scheduler`).
+- Nodes declare required host services (e.g., `halts`, `requires_resume_scheduler`).
 - Validator checks host-provided durability services and scheduler aliases.
 - Host-specific nodes (e.g., `workers.timer.wait`) are allowed as **extensions** but are not part of
   the stdlib and should not be required by portable flows.
@@ -894,7 +885,7 @@ flows. This avoids accidental coupling between business data and runtime state.
 ```
 IF flow.durability == "strong":
   FOR each node in flow:
-    IF NOT node.capability.checkpointable:
+IF NOT node.durability.checkpointable:
       EMIT error DAG-CKPT-001: "Node '{alias}' is not checkpointable; 
                                cannot use durability=strong"
 ```
@@ -902,7 +893,7 @@ IF flow.durability == "strong":
 ### 11.2 Halt Node Validation
 
 ```
-IF node.capability.checkpoint_required:
+IF node.durability.halts:
   IF flow.durability == "off":
     EMIT error DAG-CKPT-002: "Halt node '{alias}' requires durability != off"
   IF host.checkpoint_store == None:
@@ -913,7 +904,7 @@ IF node.capability.checkpoint_required:
 
 ```
 FOR each node on potential resume path:
-  IF node.capability.effectful AND NOT node.idempotency.key:
+IF node.effects == Effectful AND NOT node.idempotency.key:
     EMIT error DAG-CKPT-004: "Effectful node '{alias}' on resume path 
                              must declare idempotency"
 ```
@@ -922,8 +913,8 @@ FOR each node on potential resume path:
 
 ```
 IF node.output is Stream:
-  IF NOT node.capability.replayable:
-    node.capability.checkpointable = false
+  IF NOT node.durability.replayable:
+    node.durability.checkpointable = false
     IF flow.durability == "strong":
       EMIT error DAG-CKPT-005: "Streaming node '{alias}' is not replayable;
                                cannot checkpoint mid-stream"

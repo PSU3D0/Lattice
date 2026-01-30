@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use dag_core::{Delivery, Diagnostic, Effects, FlowIR, SchemaRef, diagnostic_codes};
+use dag_core::{Delivery, Diagnostic, DurabilityMode, Effects, FlowIR, SchemaRef, diagnostic_codes};
 
 const MIN_EXACTLY_ONCE_TTL_MS: u64 = 300_000;
 const DEDUPE_HINT_PREFIX: &str = "resource::dedupe";
@@ -39,6 +39,7 @@ pub fn validate(flow: &FlowIR) -> Result<ValidatedIR, Vec<Diagnostic>> {
     check_edge_timeout_requirements(flow, &mut diagnostics);
     check_edge_buffer_requirements(flow, &mut diagnostics);
     check_spill_requirements(flow, &mut diagnostics);
+    check_durability_requirements(flow, &mut diagnostics);
     check_if_control_surfaces(flow, &mut diagnostics);
     check_switch_control_surfaces(flow, &mut diagnostics);
     check_reserved_control_surfaces(flow, &mut diagnostics);
@@ -366,6 +367,90 @@ fn check_spill_requirements(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
             }
         }
     }
+}
+
+fn check_durability_requirements(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    let mode = flow.policies.durability.mode;
+
+    if mode == DurabilityMode::Strong {
+        for node in &flow.nodes {
+            if !node.durability.checkpointable {
+                diagnostics.push(diagnostic(
+                    "DAG-CKPT-001",
+                    format!(
+                        "node `{}` is not checkpointable; cannot use durability=strong",
+                        node.alias
+                    ),
+                ));
+            }
+        }
+    }
+
+    if mode == DurabilityMode::Off {
+        for node in &flow.nodes {
+            if node.durability.halts {
+                diagnostics.push(diagnostic(
+                    "DAG-CKPT-002",
+                    format!(
+                        "halt node `{}` requires durability != off",
+                        node.alias
+                    ),
+                ));
+            }
+        }
+        return;
+    }
+
+    let resume_nodes = resume_path_nodes(flow, mode);
+    for node in &flow.nodes {
+        if !resume_nodes.contains(node.alias.as_str()) {
+            continue;
+        }
+        if node.effects == Effects::Effectful && node.idempotency.key.is_none() {
+            diagnostics.push(diagnostic(
+                "DAG-CKPT-004",
+                format!(
+                    "effectful node `{}` on resume path must declare idempotency",
+                    node.alias
+                ),
+            ));
+        }
+    }
+}
+
+fn resume_path_nodes<'a>(flow: &'a FlowIR, mode: DurabilityMode) -> HashSet<&'a str> {
+    if mode == DurabilityMode::Strong {
+        return flow.nodes.iter().map(|node| node.alias.as_str()).collect();
+    }
+
+    let mut adjacency: HashMap<&str, Vec<&str>> = HashMap::new();
+    for edge in &flow.edges {
+        adjacency
+            .entry(edge.from.as_str())
+            .or_default()
+            .push(edge.to.as_str());
+    }
+
+    let mut resume_nodes = HashSet::new();
+    let mut stack: Vec<&str> = flow
+        .nodes
+        .iter()
+        .filter(|node| node.durability.halts)
+        .map(|node| node.alias.as_str())
+        .collect();
+
+    while let Some(current) = stack.pop() {
+        if !resume_nodes.insert(current) {
+            continue;
+        }
+        if let Some(next) = adjacency.get(current) {
+            for &target in next {
+                stack.push(target);
+            }
+        }
+    }
+
+    resume_nodes
 }
 
 fn check_if_control_surfaces(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
@@ -1339,6 +1424,12 @@ mod tests {
         }
     }
 
+    fn mark_halt(flow: &mut FlowIR, alias: &str) {
+        if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == alias) {
+            node.durability.halts = true;
+        }
+    }
+
     fn ensure_dedupe_hint(flow: &mut FlowIR, alias: &str) {
         if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == alias)
             && !node
@@ -1358,6 +1449,59 @@ mod tests {
         queue::ensure_registered();
         capabilities::clock::ensure_registered();
         capabilities::rng::ensure_registered();
+    }
+
+    #[test]
+    fn strong_durability_rejects_incompatible_nodes() {
+        let mut flow = build_sample_flow();
+        flow.policies.durability.mode = DurabilityMode::Strong;
+
+        flow.nodes
+            .iter_mut()
+            .find(|node| node.alias == "consumer")
+            .expect("consumer node")
+            .durability
+            .checkpointable = false;
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "DAG-CKPT-001"));
+    }
+
+    #[test]
+    fn halt_nodes_require_durability_enabled() {
+        let mut flow = build_sample_flow();
+        flow.policies.durability.mode = DurabilityMode::Off;
+        mark_halt(&mut flow, "producer");
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "DAG-CKPT-002"));
+    }
+
+    #[test]
+    fn partial_durability_requires_idempotency_on_resume_path() {
+        let mut flow = build_sample_flow();
+        flow.policies.durability.mode = DurabilityMode::Partial;
+        mark_halt(&mut flow, "producer");
+
+        if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "consumer") {
+            node.effects = Effects::Effectful;
+        }
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "DAG-CKPT-004"));
+    }
+
+    #[test]
+    fn strong_durability_requires_idempotency_for_effectful_nodes() {
+        let mut flow = build_sample_flow();
+        flow.policies.durability.mode = DurabilityMode::Strong;
+
+        if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "consumer") {
+            node.effects = Effects::Effectful;
+        }
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "DAG-CKPT-004"));
     }
 
     #[test]

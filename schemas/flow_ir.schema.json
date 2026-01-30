@@ -245,6 +245,108 @@
         }
       ]
     },
+    "DurabilityMode": {
+      "description": "Durability modes for checkpointing.",
+      "oneOf": [
+        {
+          "description": "No checkpoints written; resume disabled.",
+          "enum": [
+            "off"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Checkpoints only at halt nodes.",
+          "enum": [
+            "partial"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Checkpoints at every node boundary.",
+          "enum": [
+            "strong"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "DurabilityPolicy": {
+      "description": "Durability policy settings.",
+      "properties": {
+        "blob_threshold_bytes": {
+          "description": "Blob spill threshold in bytes.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "checkpoint_interval": {
+          "description": "Checkpoint interval (host-specific interpretation).",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "checkpoint_ttl": {
+          "description": "Maximum time a checkpoint remains valid (milliseconds).",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "lease_ttl": {
+          "description": "Lease TTL in milliseconds.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_resume_attempts": {
+          "description": "Maximum number of resume attempts.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "mode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/DurabilityMode"
+            }
+          ],
+          "default": "partial",
+          "description": "Requested durability mode."
+        },
+        "retain_completed_for": {
+          "description": "Retention window after ack (milliseconds).",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "retry_on_lease_conflict": {
+          "description": "Retry resume on lease conflict.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "EdgeIR": {
       "description": "Edge entry within the Flow IR.",
       "properties": {
@@ -349,6 +451,17 @@
     "FlowPolicies": {
       "description": "Policy lint configuration.",
       "properties": {
+        "durability": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/DurabilityPolicy"
+            }
+          ],
+          "default": {
+            "mode": "partial"
+          },
+          "description": "Durability configuration."
+        },
         "lint": {
           "allOf": [
             {
@@ -422,12 +535,43 @@
       },
       "type": "object"
     },
+    "DurabilityProfile": {
+      "description": "Durability profile used for checkpoint validation.",
+      "properties": {
+        "checkpointable": {
+          "description": "Node state can be serialized and resumed.",
+          "type": "boolean"
+        },
+        "halts": {
+          "description": "Node is a halting boundary requiring suspend + resume.",
+          "type": "boolean"
+        },
+        "replayable": {
+          "description": "Streaming outputs can be replayed on resume.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "checkpointable",
+        "halts",
+        "replayable"
+      ],
+      "type": "object"
+    },
     "NodeIR": {
       "description": "Node entry within the Flow IR.",
       "properties": {
         "alias": {
           "description": "Alias used within the workflow definition.",
           "type": "string"
+        },
+        "durability": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/DurabilityProfile"
+            }
+          ],
+          "description": "Optional durability profile (checkpoint/halts metadata)."
         },
         "determinism": {
           "allOf": [
@@ -745,6 +889,9 @@
         }
       ],
       "default": {
+        "durability": {
+          "mode": "partial"
+        },
         "lint": {
           "require_control_hints": false
         }

@@ -90,10 +90,12 @@ Key fields:
 - `determinism`: declared determinism lattice (`strict|stable|best_effort|nondeterministic`).
 - `idempotency`: optional idempotency spec (`key`, `scope`, `ttlMs`).
 - `effectHints[]` / `determinismHints[]`: canonical resource hints inferred at compile-time.
+- `durability`: optional durability profile (`checkpointable`, `replayable`, `halts`).
 
 Notes:
 - In 0.1, schemas are primarily for validation/UX and are not enforced as structural JSON schema compatibility.
 - Effect/determinism are enforced against hints by `kernel-plan`.
+- Durability profile is registry metadata captured in the generated IR for tooling and validation.
 
 ## Triggers & Entrypoints (0.1.x)
 

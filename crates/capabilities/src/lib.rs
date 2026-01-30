@@ -9,6 +9,7 @@ use std::time::Instant;
 use instant::Instant;
 
 pub mod hints;
+pub mod durability;
 
 /// Marker trait implemented by all capability providers.
 pub trait Capability: Send + Sync + 'static {
@@ -49,10 +50,30 @@ pub trait ResourceAccess: Send + Sync + 'static {
     fn dedupe_store(&self) -> Option<&dyn dedupe::DedupeStore> {
         None
     }
+
+    fn checkpoint_store(&self) -> Option<&dyn durability::CheckpointStore> {
+        None
+    }
+
+    fn resume_scheduler(&self) -> Option<&dyn durability::ResumeScheduler> {
+        None
+    }
+
+    fn resume_signal_source(&self) -> Option<&dyn durability::ResumeSignalSource> {
+        None
+    }
+
+    fn checkpoint_blob_store(&self) -> Option<&dyn durability::CheckpointBlobStore> {
+        None
+    }
+
+    fn max_durability_mode(&self) -> dag_core::DurabilityMode {
+        dag_core::DurabilityMode::Off
+    }
 }
 
 /// Mutable collection of capability providers surfaced to the executor.
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct ResourceBag {
     http_read: Option<Arc<dyn http::HttpRead>>,
     http_write: Option<Arc<dyn http::HttpWrite>>,
@@ -62,6 +83,31 @@ pub struct ResourceBag {
     blob: Option<Arc<dyn blob::BlobStore>>,
     queue: Option<Arc<dyn queue::Queue>>,
     dedupe: Option<Arc<dyn dedupe::DedupeStore>>,
+    checkpoint_store: Option<Arc<dyn durability::CheckpointStore>>,
+    resume_scheduler: Option<Arc<dyn durability::ResumeScheduler>>,
+    resume_signal_source: Option<Arc<dyn durability::ResumeSignalSource>>,
+    checkpoint_blob_store: Option<Arc<dyn durability::CheckpointBlobStore>>,
+    max_durability_mode: dag_core::DurabilityMode,
+}
+
+impl Default for ResourceBag {
+    fn default() -> Self {
+        Self {
+            http_read: None,
+            http_write: None,
+            clock: None,
+            cache: None,
+            kv: None,
+            blob: None,
+            queue: None,
+            dedupe: None,
+            checkpoint_store: None,
+            resume_scheduler: None,
+            resume_signal_source: None,
+            checkpoint_blob_store: None,
+            max_durability_mode: dag_core::DurabilityMode::Off,
+        }
+    }
 }
 
 impl ResourceBag {
@@ -138,6 +184,47 @@ impl ResourceBag {
     {
         let capability: Arc<dyn dedupe::DedupeStore> = capability;
         self.dedupe = Some(capability);
+        self
+    }
+
+    pub fn with_checkpoint_store<T>(mut self, capability: Arc<T>) -> Self
+    where
+        T: durability::CheckpointStore + 'static,
+    {
+        let capability: Arc<dyn durability::CheckpointStore> = capability;
+        self.checkpoint_store = Some(capability);
+        self
+    }
+
+    pub fn with_resume_scheduler<T>(mut self, capability: Arc<T>) -> Self
+    where
+        T: durability::ResumeScheduler + 'static,
+    {
+        let capability: Arc<dyn durability::ResumeScheduler> = capability;
+        self.resume_scheduler = Some(capability);
+        self
+    }
+
+    pub fn with_resume_signal_source<T>(mut self, capability: Arc<T>) -> Self
+    where
+        T: durability::ResumeSignalSource + 'static,
+    {
+        let capability: Arc<dyn durability::ResumeSignalSource> = capability;
+        self.resume_signal_source = Some(capability);
+        self
+    }
+
+    pub fn with_checkpoint_blob_store<T>(mut self, capability: Arc<T>) -> Self
+    where
+        T: durability::CheckpointBlobStore + 'static,
+    {
+        let capability: Arc<dyn durability::CheckpointBlobStore> = capability;
+        self.checkpoint_blob_store = Some(capability);
+        self
+    }
+
+    pub fn with_max_durability_mode(mut self, mode: dag_core::DurabilityMode) -> Self {
+        self.max_durability_mode = mode;
         self
     }
 }
@@ -235,6 +322,34 @@ impl ResourceAccess for ResourceBag {
         self.dedupe
             .as_ref()
             .map(|cap| cap.as_ref() as &dyn dedupe::DedupeStore)
+    }
+
+    fn checkpoint_store(&self) -> Option<&dyn durability::CheckpointStore> {
+        self.checkpoint_store
+            .as_ref()
+            .map(|cap| cap.as_ref() as &dyn durability::CheckpointStore)
+    }
+
+    fn resume_scheduler(&self) -> Option<&dyn durability::ResumeScheduler> {
+        self.resume_scheduler
+            .as_ref()
+            .map(|cap| cap.as_ref() as &dyn durability::ResumeScheduler)
+    }
+
+    fn resume_signal_source(&self) -> Option<&dyn durability::ResumeSignalSource> {
+        self.resume_signal_source
+            .as_ref()
+            .map(|cap| cap.as_ref() as &dyn durability::ResumeSignalSource)
+    }
+
+    fn checkpoint_blob_store(&self) -> Option<&dyn durability::CheckpointBlobStore> {
+        self.checkpoint_blob_store
+            .as_ref()
+            .map(|cap| cap.as_ref() as &dyn durability::CheckpointBlobStore)
+    }
+
+    fn max_durability_mode(&self) -> dag_core::DurabilityMode {
+        self.max_durability_mode
     }
 }
 

@@ -9,7 +9,7 @@ mod ir;
 pub mod schema;
 
 pub use builder::{EdgeHandle, FlowBuilder, FlowBuilderError, NodeHandle};
-pub use diagnostics::{DIAGNOSTIC_CODES, Diagnostic, DiagnosticCode, Severity, diagnostic_codes};
+pub use diagnostics::{diagnostic_codes, Diagnostic, DiagnosticCode, Severity, DIAGNOSTIC_CODES};
 pub use effects::{Determinism, Effects, NodeError, NodeResult};
 pub use ir::*;
 pub use serde_json;
@@ -19,8 +19,8 @@ pub mod prelude {
     pub use crate::builder::{FlowBuilder, FlowBuilderError};
     pub use crate::effects::{Determinism, Effects, NodeError, NodeResult};
     pub use crate::ir::{
-        BufferPolicy, Delivery, FlowIR, FlowId, NodeId, NodeKind, NodeSpec, Profile, SchemaRef,
-        SchemaSpec,
+        BufferPolicy, Delivery, DurabilityMode, DurabilityPolicy, DurabilityProfile, FlowIR,
+        FlowId, NodeId, NodeKind, NodeSpec, Profile, SchemaRef, SchemaSpec,
     };
     pub use semver::Version;
 }
