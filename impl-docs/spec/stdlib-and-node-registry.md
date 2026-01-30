@@ -90,6 +90,20 @@ latticeflow-stdlib = { version = "0.1", features = ["timer", "hitl", "workspace"
 
 Only explicitly referenced modules are linked, enabling dead-code elimination.
 
+## Stdlib vs Connectors vs Contrib
+
+Stdlib is intentionally small and foundational. It should only include host-portable primitives and
+core control/utility nodes. Large connector surfaces (Google, Slack, etc.) should live in dedicated
+connector crates, not in stdlib.
+
+Recommended crate tiers:
+- **Core stdlib**: `crates/stdlib/` (timer/callback waits, workspace nodes, basic transforms/utilities).
+- **Connector crates**: `crates/connectors/<vendor>/` (first-party curated connectors).
+- **Contrib**: `crates/contrib/<vendor>/` (experimental/community connectors).
+- **Subflow bundles**: `crates/flows/` or `crates/subflows/` (stdlib of flows).
+
+This keeps the stdlib stable while allowing the connector ecosystem to scale without bloating the core.
+
 ## Subflows as Nodes
 
 Subflows are compiled into the same registry surface via a generated wrapper node. The wrapper:
