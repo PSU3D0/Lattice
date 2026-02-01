@@ -130,6 +130,14 @@ async fn handle_fetch_inner(mut req: Request, env: Env) -> Result<Response> {
     match exec_result {
         Ok(ExecutionResult::Value(value)) => Response::from_json(&value),
         Ok(ExecutionResult::Stream(stream)) => streaming_response(stream, abort_bridge),
+        Ok(ExecutionResult::Halt { alias, payload }) => {
+            let body = json!({
+                "halted": true,
+                "node": alias,
+                "payload": payload,
+            });
+            Response::from_json(&body).map(|response| response.with_status(202))
+        }
         Err(err) => {
             let wants_sse = wants_sse(&req);
             if wants_sse {

@@ -10,7 +10,7 @@ use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::{
-    Attribute, Expr, ExprLit, Ident, ItemEnum, ItemFn, Lit, LitInt, LitStr, Macro, Meta,
+    Attribute, Expr, ExprLit, Ident, ItemEnum, ItemFn, Lit, LitBool, LitInt, LitStr, Macro, Meta,
     MetaNameValue, Path, Result, Token, parse_macro_input, parse_quote, spanned::Spanned,
 };
 
@@ -261,6 +261,7 @@ impl Parse for ResourceList {
 }
 
 struct NodeArgs {
+    identifier: Option<LitStr>,
     name: Option<LitStr>,
     summary: Option<LitStr>,
     effects: Option<ParsedEffects>,
@@ -269,11 +270,15 @@ struct NodeArgs {
     input_schema: Option<LitStr>,
     output_schema: Option<LitStr>,
     resources: Vec<ResourceSpec>,
+    checkpointable: Option<LitBool>,
+    replayable: Option<LitBool>,
+    halts: Option<LitBool>,
 }
 
 impl NodeArgs {
     fn parse(args: Punctuated<Meta, Token![,]>, defaults: &NodeDefaults) -> Result<Self> {
         let mut parsed = NodeArgs {
+            identifier: None,
             name: None,
             summary: None,
             effects: None,
@@ -282,6 +287,9 @@ impl NodeArgs {
             input_schema: None,
             output_schema: None,
             resources: Vec::new(),
+            checkpointable: None,
+            replayable: None,
+            halts: None,
         };
 
         for meta in args {
@@ -295,6 +303,15 @@ impl NodeArgs {
                         _ => return Err(syn::Error::new(value.span(), "expected literal value")),
                     };
                     match ident.to_string().as_str() {
+                        "identifier" => match lit {
+                            Lit::Str(s) => parsed.identifier = Some(s),
+                            _ => {
+                                return Err(syn::Error::new(
+                                    lit.span(),
+                                    "identifier must be string literal",
+                                ));
+                            }
+                        },
                         "name" => match lit {
                             Lit::Str(s) => parsed.name = Some(s),
                             _ => {
@@ -331,6 +348,33 @@ impl NodeArgs {
                                 return Err(syn::Error::new(
                                     lit.span(),
                                     "out must be string literal",
+                                ));
+                            }
+                        },
+                        "checkpointable" => match lit {
+                            Lit::Bool(value) => parsed.checkpointable = Some(value),
+                            _ => {
+                                return Err(syn::Error::new(
+                                    lit.span(),
+                                    "checkpointable must be bool literal",
+                                ));
+                            }
+                        },
+                        "replayable" => match lit {
+                            Lit::Bool(value) => parsed.replayable = Some(value),
+                            _ => {
+                                return Err(syn::Error::new(
+                                    lit.span(),
+                                    "replayable must be bool literal",
+                                ));
+                            }
+                        },
+                        "halts" => match lit {
+                            Lit::Bool(value) => parsed.halts = Some(value),
+                            _ => {
+                                return Err(syn::Error::new(
+                                    lit.span(),
+                                    "halts must be bool literal",
                                 ));
                             }
                         },
@@ -427,6 +471,12 @@ fn node_impl(
     let accessor_ident = format_ident!("{}_node_spec", fn_name);
     let register_ident = format_ident!("{}_register", fn_name);
 
+    let identifier_expr = config
+        .identifier
+        .as_ref()
+        .map(|lit| quote!(#lit))
+        .unwrap_or_else(|| quote!(concat!(module_path!(), "::", stringify!(#fn_name))));
+
     let effects = config
         .effects
         .as_ref()
@@ -448,12 +498,28 @@ fn node_impl(
     let effects_expr = &effects.tokens;
     let determinism_expr = &determinism.tokens;
 
+    let checkpointable = config
+        .checkpointable
+        .as_ref()
+        .map(|value| value.value)
+        .unwrap_or(true);
+    let replayable = config
+        .replayable
+        .as_ref()
+        .map(|value| value.value)
+        .unwrap_or(true);
+    let halts = config.halts.as_ref().map(|value| value.value).unwrap_or(false);
+
+    let checkpointable_expr = if checkpointable { quote!(true) } else { quote!(false) };
+    let replayable_expr = if replayable { quote!(true) } else { quote!(false) };
+    let halts_expr = if halts { quote!(true) } else { quote!(false) };
+
     Ok(quote! {
         #function
 
         #[allow(non_upper_case_globals)]
         pub const #spec_ident: ::dag_core::NodeSpec = ::dag_core::NodeSpec {
-            identifier: concat!(module_path!(), "::", stringify!(#fn_name)),
+            identifier: #identifier_expr,
             name: #name_lit,
             kind: #kind_expr,
             summary: #summary_expr,
@@ -463,6 +529,11 @@ fn node_impl(
             determinism: #determinism_expr,
             determinism_hints: #determinism_hints_expr,
             effect_hints: #effect_hints_expr,
+            durability: ::dag_core::DurabilityProfile {
+                checkpointable: #checkpointable_expr,
+                replayable: #replayable_expr,
+                halts: #halts_expr,
+            },
         };
 
         #[allow(dead_code)]
@@ -474,10 +545,17 @@ fn node_impl(
         pub fn #register_ident(
             registry: &mut ::kernel_exec::NodeRegistry,
         ) -> Result<(), ::kernel_exec::RegistryError> {
-            registry.register_fn(
-                concat!(module_path!(), "::", stringify!(#fn_name)),
-                #fn_name,
-            )
+            if #halts_expr {
+                registry.register_halt_fn(
+                    #identifier_expr,
+                    #fn_name,
+                )
+            } else {
+                registry.register_fn(
+                    #identifier_expr,
+                    #fn_name,
+                )
+            }
         }
     })
 }

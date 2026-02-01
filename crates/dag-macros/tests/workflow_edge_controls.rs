@@ -13,6 +13,7 @@ const TRIGGER_SPEC: NodeSpec = NodeSpec {
     determinism: Determinism::Strict,
     determinism_hints: &[],
     effect_hints: &[],
+    durability: DurabilityProfile::default(),
 };
 
 const SINK_SPEC: NodeSpec = NodeSpec::inline(

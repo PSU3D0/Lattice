@@ -906,6 +906,7 @@ mod tests {
             determinism: Determinism::Strict,
             determinism_hints: &[],
             effect_hints: &[],
+            durability: DurabilityProfile::default(),
         };
 
         let worker_spec = NodeSpec::inline(

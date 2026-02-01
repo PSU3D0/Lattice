@@ -1,5 +1,5 @@
-use dag_core::ControlSurfaceKind;
 use dag_core::prelude::*;
+use dag_core::ControlSurfaceKind;
 use dag_macros::workflow;
 
 const TRIGGER_SPEC: NodeSpec = NodeSpec {
@@ -13,6 +13,7 @@ const TRIGGER_SPEC: NodeSpec = NodeSpec {
     determinism: Determinism::Strict,
     determinism_hints: &[],
     effect_hints: &[],
+    durability: DurabilityProfile::default(),
 };
 
 const ROUTE_SPEC: NodeSpec = NodeSpec::inline(

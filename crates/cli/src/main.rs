@@ -543,6 +543,15 @@ fn run_local(args: LocalArgs) -> Result<()> {
                     stream_events: Vec::new(),
                     stream_count: 0,
                 }),
+                ExecutionResult::Halt { alias, payload } => Ok(RunOutcome {
+                    result: Some(json!({
+                        "halted": true,
+                        "node": alias,
+                        "payload": payload,
+                    })),
+                    stream_events: Vec::new(),
+                    stream_count: 0,
+                }),
                 ExecutionResult::Stream(mut stream) => {
                     let mut events = Vec::new();
                     let mut count = 0usize;

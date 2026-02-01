@@ -231,7 +231,7 @@ impl ResourceBag {
 
 /// Utilities for scoping capability access to the current execution.
 pub mod context {
-    use super::ResourceAccess;
+    use super::{durability::CheckpointHandle, ResourceAccess};
     use std::future::Future;
     use std::sync::Arc;
 
@@ -239,6 +239,7 @@ pub mod context {
 
     task_local! {
         static CURRENT_RESOURCES: Arc<dyn ResourceAccess>;
+        static CURRENT_CHECKPOINT: Option<CheckpointHandle>;
     }
 
     /// Execute `future` with the provided resource access scoped to the current task.
@@ -247,6 +248,14 @@ pub mod context {
         Fut: Future<Output = R>,
     {
         CURRENT_RESOURCES.scope(resources, future).await
+    }
+
+    /// Execute `future` with the provided checkpoint handle scoped to the current task.
+    pub async fn with_checkpoint_handle<Fut, R>(handle: CheckpointHandle, future: Fut) -> R
+    where
+        Fut: Future<Output = R>,
+    {
+        CURRENT_CHECKPOINT.scope(Some(handle), future).await
     }
 
     /// Invoke the callback with the currently scoped resource access, if present.
@@ -272,6 +281,14 @@ pub mod context {
     /// Clone the currently scoped resource access handle, if any.
     pub fn current_handle() -> Option<Arc<dyn ResourceAccess>> {
         CURRENT_RESOURCES.try_with(Arc::clone).ok()
+    }
+
+    /// Clone the currently scoped checkpoint handle, if any.
+    pub fn current_checkpoint_handle() -> Option<CheckpointHandle> {
+        CURRENT_CHECKPOINT
+            .try_with(|handle| handle.clone())
+            .ok()
+            .flatten()
     }
 }
 

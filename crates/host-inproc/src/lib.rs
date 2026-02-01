@@ -533,12 +533,14 @@ mod tests {
     use async_trait::async_trait;
     use capabilities::durability::{
         CheckpointError, CheckpointFilter, CheckpointHandle, CheckpointRecord, CheckpointStore,
-        ResumeScheduler, ScheduleError, ScheduleId, ScheduleStatus,
+        ResumeScheduler, ResumeSignalSource, ResumeToken, ScheduleError, ScheduleId,
+        ScheduleStatus, TokenConfig, TokenError,
     };
     use dag_core::prelude::*;
     use kernel_exec::NodeRegistry;
     use kernel_plan::validate;
     use std::sync::{Arc as StdArc, Mutex};
+    use std::time::Duration;
 
     struct StubCheckpointStore;
 
@@ -599,6 +601,33 @@ mod tests {
 
         async fn status(&self, _schedule_id: ScheduleId) -> Result<ScheduleStatus, ScheduleError> {
             Ok(ScheduleStatus::Pending { fires_at_ms: 0 })
+        }
+    }
+
+    struct StubResumeSignalSource;
+
+    impl capabilities::Capability for StubResumeSignalSource {
+        fn name(&self) -> &'static str {
+            "resume.signal.stub"
+        }
+    }
+
+    #[async_trait]
+    impl ResumeSignalSource for StubResumeSignalSource {
+        async fn create_token(
+            &self,
+            _handle: &CheckpointHandle,
+            _config: TokenConfig,
+        ) -> Result<ResumeToken, TokenError> {
+            Ok(ResumeToken(format!("token-{}", uuid::Uuid::new_v4())))
+        }
+
+        async fn resolve_token(&self, _token: &ResumeToken) -> Result<CheckpointHandle, TokenError> {
+            Err(TokenError::NotFound)
+        }
+
+        async fn revoke_token(&self, _token: &ResumeToken) -> Result<(), TokenError> {
+            Ok(())
         }
     }
 
@@ -1423,6 +1452,164 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn timer_wait_halts_with_schedule() {
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn(
+                "tests::trigger",
+                |value: stdlib::timer::TimerWaitInput| async move { Ok(value) },
+            )
+            .unwrap();
+        registry
+            .register_fn(
+                "tests::capture",
+                |value: stdlib::timer::TimerWaitOutput| async move { Ok(value) },
+            )
+            .unwrap();
+        stdlib::timer::timer_wait_register(&mut registry).unwrap();
+
+        let mut builder = FlowBuilder::new("timer_wait", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let wait = builder
+            .add_node("wait", stdlib::timer::timer_wait_node_spec())
+            .unwrap();
+        let capture = builder
+            .add_node(
+                "capture",
+                &NodeSpec::inline(
+                    "tests::capture",
+                    "Capture",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &wait);
+        builder.connect(&wait, &capture);
+
+        let ir = Arc::new(validate(&builder.build()).expect("flow validates"));
+        let resources = resource_bag_with_checkpoint().with_resume_scheduler(Arc::new(StubResumeScheduler));
+        let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), ir)
+            .with_resource_bag(resources);
+
+        let payload = serde_json::json!({"ok": true});
+        let input = stdlib::timer::TimerWaitInput {
+            duration: Some(Duration::from_millis(10)),
+            until: None,
+            payload: payload.clone(),
+        };
+        let invocation = Invocation::new("trigger", "capture", serde_json::to_value(input).unwrap());
+
+        let result = runtime.execute(invocation).await.expect("exec ok");
+        let output = match result {
+            ExecutionResult::Halt { alias, payload } => {
+                assert_eq!(alias, "wait");
+                serde_json::from_value::<stdlib::timer::TimerWaitOutput>(payload)
+                    .expect("decode halt output")
+            }
+            ExecutionResult::Value(_) => panic!("unexpected value"),
+            ExecutionResult::Stream(_) => panic!("unexpected stream"),
+        };
+
+        assert_eq!(output.payload, payload);
+        assert!(output.scheduled_at_ms > 0);
+    }
+
+    #[tokio::test]
+    async fn callback_wait_resumes_when_signaled() {
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn(
+                "tests::trigger",
+                |value: stdlib::callback::CallbackWaitInput| async move { Ok(value) },
+            )
+            .unwrap();
+        registry
+            .register_fn(
+                "tests::capture",
+                |value: stdlib::callback::CallbackWaitOutput| async move { Ok(value) },
+            )
+            .unwrap();
+        stdlib::callback::callback_wait_register(&mut registry).unwrap();
+
+        let mut builder = FlowBuilder::new("callback_wait", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let wait = builder
+            .add_node("wait", stdlib::callback::callback_wait_node_spec())
+            .unwrap();
+        let capture = builder
+            .add_node(
+                "capture",
+                &NodeSpec::inline(
+                    "tests::capture",
+                    "Capture",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &wait);
+        builder.connect(&wait, &capture);
+
+        let ir = Arc::new(validate(&builder.build()).expect("flow validates"));
+        let resources = resource_bag_with_checkpoint()
+            .with_resume_signal_source(Arc::new(StubResumeSignalSource));
+        let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), ir)
+            .with_resource_bag(resources);
+
+        let input = stdlib::callback::CallbackWaitInput {
+            timeout: Some(Duration::from_secs(1)),
+            context: serde_json::json!({"source": "test"}),
+        };
+        let invocation = Invocation::new("trigger", "capture", serde_json::to_value(input).unwrap());
+
+        let result = runtime.execute(invocation).await.expect("exec ok");
+        let output = match result {
+            ExecutionResult::Halt { alias, payload } => {
+                assert_eq!(alias, "wait");
+                serde_json::from_value::<stdlib::callback::CallbackWaitOutput>(payload)
+                    .expect("decode halt output")
+            }
+            ExecutionResult::Value(_) => panic!("unexpected value"),
+            ExecutionResult::Stream(_) => panic!("unexpected stream"),
+        };
+
+        assert_eq!(output.context, serde_json::json!({"source": "test"}));
+        assert!(!output.resume_token.is_empty());
+    }
     #[tokio::test]
     async fn preflight_fails_when_required_http_write_missing() {
         const HTTP_WRITE_EFFECT_HINTS: [&str; 1] = [capabilities::http::HINT_HTTP_WRITE];

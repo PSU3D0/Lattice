@@ -165,6 +165,8 @@ pub struct NodeSpec {
     pub determinism_hints: &'static [&'static str],
     /// Effect hints emitted by macros or plugins.
     pub effect_hints: &'static [&'static str],
+    /// Durability profile metadata (checkpoint/halts).
+    pub durability: DurabilityProfile,
 }
 
 impl NodeSpec {
@@ -215,6 +217,11 @@ impl NodeSpec {
             determinism,
             determinism_hints,
             effect_hints,
+            durability: DurabilityProfile {
+                checkpointable: true,
+                replayable: true,
+                halts: false,
+            },
         }
     }
 }

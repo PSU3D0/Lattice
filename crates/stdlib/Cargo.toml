@@ -1,0 +1,25 @@
+[package]
+name = "stdlib"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Standard library nodes for Lattice flows."
+
+[features]
+default = ["timer", "callback"]
+timer = []
+callback = []
+
+[dependencies]
+capabilities = { path = "../capabilities" }
+dag-core = { path = "../dag-core" }
+dag-macros = { path = "../dag-macros" }
+kernel-exec = { path = "../kernel-exec" }
+chrono = { version = "0.4", features = ["serde", "clock"] }
+humantime-serde = "1.1"
+serde.workspace = true
+serde_json.workspace = true

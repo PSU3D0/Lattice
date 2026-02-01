@@ -23,8 +23,8 @@ use anyhow::{Context as AnyhowContext, Result as AnyhowResult};
 use async_trait::async_trait;
 #[cfg(target_arch = "wasm32")]
 use cancellation::CancellationToken;
-use capabilities::{ResourceAccess, ResourceBag, context};
-use dag_core::{NodeError, NodeResult, Profile};
+use capabilities::{context, durability::CheckpointHandle, ResourceAccess, ResourceBag};
+use dag_core::{FlowId, NodeError, NodeResult, Profile};
 #[cfg(target_arch = "wasm32")]
 use futures::channel::oneshot;
 #[cfg(target_arch = "wasm32")]
@@ -48,6 +48,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, instrument, trace, warn};
 #[cfg(target_arch = "wasm32")]
 use wasm_stream::ReceiverStream;
+use uuid::Uuid;
 
 pub mod durability;
 
@@ -352,7 +353,28 @@ impl NodeRegistry {
         if self.handlers.contains_key(identifier) {
             return Err(RegistryError::Duplicate(identifier));
         }
-        let wrapper = FunctionHandler::new(handler);
+        let wrapper = FunctionHandler::new(handler, false);
+        self.handlers
+            .insert(identifier, Arc::new(wrapper) as Arc<dyn NodeHandler>);
+        Ok(())
+    }
+
+    /// Register a new async handler that halts execution.
+    pub fn register_halt_fn<F, Fut, In, Out>(
+        &mut self,
+        identifier: &'static str,
+        handler: F,
+    ) -> Result<(), RegistryError>
+    where
+        F: Fn(In) -> Fut + MaybeSync + MaybeSend + 'static,
+        Fut: Future<Output = NodeResult<Out>> + MaybeSend + 'static,
+        In: DeserializeOwned + MaybeSync + MaybeSend + 'static,
+        Out: Serialize + MaybeSync + MaybeSend + 'static,
+    {
+        if self.handlers.contains_key(identifier) {
+            return Err(RegistryError::Duplicate(identifier));
+        }
+        let wrapper = FunctionHandler::new(handler, true);
         self.handlers
             .insert(identifier, Arc::new(wrapper) as Arc<dyn NodeHandler>);
         Ok(())
@@ -408,6 +430,7 @@ where
     Out: Serialize + MaybeSync + MaybeSend + 'static,
 {
     inner: F,
+    halts: bool,
     _marker: PhantomData<(In, Out)>,
 }
 
@@ -418,9 +441,10 @@ where
     In: DeserializeOwned + MaybeSync + MaybeSend + 'static,
     Out: Serialize + MaybeSync + MaybeSend + 'static,
 {
-    fn new(inner: F) -> Self {
+    fn new(inner: F, halts: bool) -> Self {
         Self {
             inner,
+            halts,
             _marker: PhantomData,
         }
     }
@@ -441,7 +465,11 @@ where
         let output = (self.inner)(deserialised).await?;
         let json = serde_json::to_value(output)
             .map_err(|err| NodeError::new(format!("failed to serialise node output: {err}")))?;
-        Ok(NodeOutput::Value(json))
+        if self.halts {
+            Ok(NodeOutput::Halt(json))
+        } else {
+            Ok(NodeOutput::Value(json))
+        }
     }
 }
 
@@ -541,6 +569,7 @@ impl NodeContext {
 enum CapturedPayload {
     Value(JsonValue),
     Stream(StreamingCapture),
+    Halt(JsonValue),
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -578,6 +607,8 @@ pub enum NodeOutput {
     Value(JsonValue),
     /// Stream of JSON payloads emitted incrementally.
     Stream(NodeStream),
+    /// Halting output (suspend execution and return to host).
+    Halt(JsonValue),
     /// Node intentionally emitted no output.
     None,
 }
@@ -587,6 +618,7 @@ impl fmt::Debug for NodeOutput {
         match self {
             NodeOutput::Value(value) => f.debug_tuple("Value").field(value).finish(),
             NodeOutput::Stream(_) => f.write_str("Stream(..)"),
+            NodeOutput::Halt(value) => f.debug_tuple("Halt").field(value).finish(),
             NodeOutput::None => f.write_str("None"),
         }
     }
@@ -1537,6 +1569,9 @@ impl FlowExecutor {
         );
 
         let mut tasks = Vec::with_capacity(flow.nodes.len());
+        let run_id = format!("run-{}", Uuid::new_v4());
+        let flow_id = flow.id.clone();
+
         for node in flow.nodes {
             let handler = handlers.get(&node.alias).expect("handler resolved").clone();
             let inputs = inbound.remove(&node.alias).expect("inputs allocated");
@@ -1546,6 +1581,9 @@ impl FlowExecutor {
             let token = cancellation.clone();
             let alias = node.alias.clone();
             let resource_handle = self.resources.clone();
+            let halts = node.durability.halts;
+            let node_flow_id = flow_id.clone();
+            let node_run_id = run_id.clone();
             tasks.push(spawn_task(run_node(
                 alias,
                 capture_target,
@@ -1557,6 +1595,9 @@ impl FlowExecutor {
                 capture_tracker.clone(),
                 NodeContext::new(token, resource_handle),
                 routing.clone(),
+                node_flow_id,
+                node_run_id,
+                halts,
             )));
         }
 
@@ -1621,6 +1662,10 @@ impl FlowExecutor {
             Ok(CaptureResult::Stream(stream)) => {
                 Ok(ExecutionResult::Stream(stream.into_handle(instance)))
             }
+            Ok(CaptureResult::Halt { alias, payload }) => {
+                instance.shutdown().await?;
+                Ok(ExecutionResult::Halt { alias, payload })
+            }
             Err(err) => {
                 instance.shutdown().await?;
                 Err(err)
@@ -1684,6 +1729,9 @@ impl FlowInstance {
                 let outcome = match result {
                     Ok(CapturedPayload::Value(value)) => Ok(CaptureResult::Value(value)),
                     Ok(CapturedPayload::Stream(stream)) => Ok(CaptureResult::Stream(stream)),
+                    Ok(CapturedPayload::Halt(payload)) => {
+                        Ok(CaptureResult::Halt { alias, payload })
+                    }
                     Err(err) => Err(ExecutionError::NodeFailed { alias, source: err }),
                 };
                 drop(permit);
@@ -1727,6 +1775,8 @@ pub enum CaptureResult {
     Value(JsonValue),
     /// Streaming handle producing incremental events.
     Stream(StreamingCapture),
+    /// Halted execution (suspend).
+    Halt { alias: String, payload: JsonValue },
 }
 
 /// Public outcome returned by `FlowExecutor::run_once`.
@@ -1735,6 +1785,8 @@ pub enum ExecutionResult {
     Value(JsonValue),
     /// Streaming response handle.
     Stream(StreamHandle),
+    /// Halted execution (suspend).
+    Halt { alias: String, payload: JsonValue },
 }
 
 pub struct StreamHandle {
@@ -1864,6 +1916,9 @@ async fn run_node(
     capture_tracker: Arc<QueueDepthTracker>,
     ctx: NodeContext,
     routing: Arc<RoutingTable>,
+    flow_id: FlowId,
+    run_id: String,
+    halts: bool,
 ) {
     if inputs.is_empty() {
         warn!("node `{alias}` has no inputs; dropping without execution");
@@ -1957,12 +2012,39 @@ async fn run_node(
         let ctx_for_handler = ctx.clone();
         let resources = ctx_for_handler.resource_handle();
         let handler_clone = handler.clone();
-        let result = context::with_resources(resources.clone(), async move {
-            handler_clone.invoke(payload, &ctx_for_handler).await
-        })
-        .await;
+        let invoke = async move {
+            context::with_resources(resources.clone(), async move {
+                handler_clone.invoke(payload, &ctx_for_handler).await
+            })
+            .await
+        };
+        let result = if halts {
+            let handle = new_checkpoint_handle(&flow_id, &run_id);
+            context::with_checkpoint_handle(handle, invoke).await
+        } else {
+            invoke.await
+        };
 
         match result {
+            Ok(NodeOutput::Halt(value)) => {
+                let captured_permit = permit.take();
+                let start = Instant::now();
+                let send_result = capture
+                    .send(CapturedOutput {
+                        alias: alias.clone(),
+                        result: Ok(CapturedPayload::Halt(value)),
+                        permit: captured_permit,
+                        queue_tracker: Some(capture_tracker.clone()),
+                    })
+                    .await;
+                if send_result.is_ok() {
+                    capture_tracker.increment();
+                    metrics.observe_capture_backpressure(capture_alias.as_str(), start.elapsed());
+                }
+                metrics.record_cancellation(alias.as_str(), "halt");
+                ctx.token().cancel();
+                break;
+            }
             Ok(NodeOutput::Value(value)) => {
                 if alias == capture_alias {
                     let captured_permit = permit.take();
@@ -2178,6 +2260,14 @@ async fn run_node(
     }
 
     debug!("node `{alias}` exiting");
+}
+
+fn new_checkpoint_handle(flow_id: &FlowId, run_id: &str) -> CheckpointHandle {
+    CheckpointHandle {
+        checkpoint_id: format!("cp-{}", Uuid::new_v4()),
+        flow_id: flow_id.clone(),
+        run_id: run_id.to_string(),
+    }
 }
 
 /// Errors surfaced during flow execution.

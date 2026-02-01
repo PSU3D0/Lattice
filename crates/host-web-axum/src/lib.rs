@@ -477,6 +477,19 @@ async fn handle_request(state: SharedState, request: Request<Body>) -> HandlerRe
             let response = streaming_response(stream, state.metrics.clone());
             HandlerResult::success(response)
         }
+        Ok(ExecutionResult::Halt { alias, payload }) => {
+            let body = json!({
+                "halted": true,
+                "node": alias,
+                "payload": payload,
+            });
+            let response = Response::builder()
+                .status(StatusCode::ACCEPTED)
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap();
+            HandlerResult::success(response)
+        }
         Err(err) => {
             let deadline = matches!(err, ExecutionError::DeadlineExceeded { .. });
 

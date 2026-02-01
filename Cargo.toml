@@ -38,6 +38,7 @@ members = [
   "crates/registry-cert",
   "crates/registry-client",
   "crates/studio-backend",
+  "crates/stdlib",
   "crates/testing-harness-idem",
   "crates/types-common",
   "examples/s1_echo",
