@@ -1,9 +1,9 @@
 use dag_core::NodeResult;
-use dag_macros::node;
+use dag_macros::def_node;
 
 struct DbWriter;
 
-#[node(
+#[def_node(
     name = "DbWriter",
     effects = "Pure",
     determinism = "BestEffort",

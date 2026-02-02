@@ -16,14 +16,18 @@ use syn::{
 
 /// Attribute macro for defining workflow nodes.
 #[proc_macro_attribute]
-pub fn node(attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn def_node(attr: TokenStream, item: TokenStream) -> TokenStream {
     expand_node(attr, item, NodeDefaults::node())
 }
 
-/// Attribute macro for defining workflow triggers.
-#[proc_macro_attribute]
-pub fn trigger(attr: TokenStream, item: TokenStream) -> TokenStream {
-    expand_node(attr, item, NodeDefaults::trigger())
+/// Helper macro for binding nodes in workflow specs.
+#[proc_macro]
+pub fn node(input: TokenStream) -> TokenStream {
+    let path = parse_macro_input!(input as Path);
+    match node_spec_path_from_path(&path) {
+        Ok(path) => quote!(#path()).into(),
+        Err(err) => err.to_compile_error().into(),
+    }
 }
 
 /// Declarative workflow macro producing Flow IR at compile time.
@@ -38,7 +42,7 @@ pub fn workflow(input: TokenStream) -> TokenStream {
 
 /// Declarative workflow macro producing Flow bundles at compile time.
 #[proc_macro]
-pub fn workflow_bundle(input: TokenStream) -> TokenStream {
+pub fn flow(input: TokenStream) -> TokenStream {
     let parsed = parse_macro_input!(input as WorkflowBundleInput);
     match parsed.expand() {
         Ok(tokens) => tokens.into(),
@@ -266,6 +270,8 @@ struct NodeArgs {
     summary: Option<LitStr>,
     effects: Option<ParsedEffects>,
     determinism: Option<ParsedDeterminism>,
+    effects_provided: bool,
+    determinism_provided: bool,
     kind: Option<TokenStream2>,
     input_schema: Option<LitStr>,
     output_schema: Option<LitStr>,
@@ -277,12 +283,18 @@ struct NodeArgs {
 
 impl NodeArgs {
     fn parse(args: Punctuated<Meta, Token![,]>, defaults: &NodeDefaults) -> Result<Self> {
+        let mut defaults_kind = defaults.kind;
+        let mut defaults_effects = defaults.effects;
+        let mut defaults_determinism = defaults.determinism;
+        let mut trigger_shorthand = false;
         let mut parsed = NodeArgs {
             identifier: None,
             name: None,
             summary: None,
             effects: None,
             determinism: None,
+            effects_provided: false,
+            determinism_provided: false,
             kind: None,
             input_schema: None,
             output_schema: None,
@@ -330,9 +342,23 @@ impl NodeArgs {
                                 ));
                             }
                         },
-                        "effects" => parsed.effects = Some(parse_effects(&lit)?),
-                        "determinism" => parsed.determinism = Some(parse_determinism(&lit)?),
-                        "kind" => parsed.kind = Some(parse_node_kind(&lit)?),
+                        "effects" => {
+                            parsed.effects = Some(parse_effects(&lit)?);
+                            parsed.effects_provided = true;
+                        }
+                        "determinism" => {
+                            parsed.determinism = Some(parse_determinism(&lit)?);
+                            parsed.determinism_provided = true;
+                        }
+                        "kind" => {
+                            if parsed.kind.is_some() {
+                                return Err(syn::Error::new(
+                                    lit.span(),
+                                    "node kind already set",
+                                ));
+                            }
+                            parsed.kind = Some(parse_node_kind(&lit)?);
+                        }
                         "in" => match lit {
                             Lit::Str(s) => parsed.input_schema = Some(s),
                             _ => {
@@ -405,25 +431,49 @@ impl NodeArgs {
                     }
                 }
                 Meta::Path(path) => {
-                    return Err(syn::Error::new(
-                        path.span(),
-                        "expected key = \"value\" pairs in attribute",
-                    ));
+                    let ident = path
+                        .get_ident()
+                        .ok_or_else(|| syn::Error::new(path.span(), "expected identifier"))?;
+                    match ident.to_string().as_str() {
+                        "trigger" => {
+                            if parsed.kind.is_some() {
+                                return Err(syn::Error::new(
+                                    path.span(),
+                                    "node kind already set",
+                                ));
+                            }
+                            parsed.kind = Some(enum_expr("NodeKind", "Trigger", path.span()));
+                            trigger_shorthand = true;
+                        }
+                        _ => {
+                            return Err(syn::Error::new(
+                                path.span(),
+                                "expected key = \"value\" pairs in attribute",
+                            ));
+                        }
+                    }
                 }
             }
         }
 
+        if trigger_shorthand {
+            let trigger_defaults = NodeDefaults::trigger();
+            defaults_kind = trigger_defaults.kind;
+            defaults_effects = trigger_defaults.effects;
+            defaults_determinism = trigger_defaults.determinism;
+        }
+
         if parsed.effects.is_none() {
-            parsed.effects = Some(ParsedEffects::new(defaults.effects, Span::call_site()));
+            parsed.effects = Some(ParsedEffects::new(defaults_effects, Span::call_site()));
         }
         if parsed.determinism.is_none() {
             parsed.determinism = Some(ParsedDeterminism::new(
-                defaults.determinism,
+                defaults_determinism,
                 Span::call_site(),
             ));
         }
         if parsed.kind.is_none() {
-            parsed.kind = Some(enum_expr("NodeKind", defaults.kind, Span::call_site()));
+            parsed.kind = Some(enum_expr("NodeKind", defaults_kind, Span::call_site()));
         }
 
         Ok(parsed)
@@ -447,17 +497,17 @@ fn node_impl(
     if function.sig.asyncness.is_none() {
         return Err(syn::Error::new(
             function.sig.span(),
-            "[DAG001] #[node] requires an async function",
+            "[DAG001] #[def_node] requires an async function",
         ));
     }
 
     let config = NodeArgs::parse(args, &defaults)?;
-    let name_lit = config.name.as_ref().cloned().ok_or_else(|| {
-        syn::Error::new(
-            function.sig.span(),
-            "[DAG001] #[node] requires `name = \"...\"`",
-        )
-    })?;
+    let warning_tokens = metadata_warning_tokens(&config, &function.sig.ident);
+    let name_lit = config
+        .name
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| default_node_name(&function.sig.ident));
     let summary_expr = config
         .summary
         .as_ref()
@@ -516,6 +566,7 @@ fn node_impl(
 
     Ok(quote! {
         #function
+        #warning_tokens
 
         #[allow(non_upper_case_globals)]
         pub const #spec_ident: ::dag_core::NodeSpec = ::dag_core::NodeSpec {
@@ -558,6 +609,54 @@ fn node_impl(
             }
         }
     })
+}
+
+fn metadata_warning_tokens(config: &NodeArgs, fn_name: &Ident) -> TokenStream2 {
+    let mut tokens = TokenStream2::new();
+    if config.summary.is_none() {
+        tokens.extend(deprecated_warning_tokens(fn_name, "summary"));
+    }
+    if !config.effects_provided {
+        tokens.extend(deprecated_warning_tokens(fn_name, "effects"));
+    }
+    if !config.determinism_provided {
+        tokens.extend(deprecated_warning_tokens(fn_name, "determinism"));
+    }
+    tokens
+}
+
+fn deprecated_warning_tokens(fn_name: &Ident, field: &str) -> TokenStream2 {
+    let message = format!("#[def_node] `{}` missing `{}` metadata", fn_name, field);
+    let note = LitStr::new(&message, Span::call_site());
+    quote! {
+        const _: () = {
+            #[deprecated(note = #note)]
+            const fn __dag_macro_missing_metadata_warning() {}
+            __dag_macro_missing_metadata_warning();
+        };
+    }
+}
+
+fn default_node_name(ident: &Ident) -> LitStr {
+    let raw = ident.to_string();
+    let mut name = String::with_capacity(raw.len());
+    let mut capitalize = true;
+    for ch in raw.chars() {
+        if ch == '_' {
+            capitalize = true;
+            continue;
+        }
+        if capitalize {
+            name.push(ch.to_ascii_uppercase());
+            capitalize = false;
+        } else {
+            name.push(ch);
+        }
+    }
+    if name.is_empty() {
+        name = raw;
+    }
+    LitStr::new(&name, ident.span())
 }
 
 struct HintSpec {
@@ -994,30 +1093,49 @@ fn lit_to_string(lit: &Lit) -> Result<String> {
 }
 
 fn register_info_for_binding(expr: &Expr) -> Result<(Path, String)> {
-    let call = match expr {
-        Expr::Call(call) => call,
-        _ => {
-            return Err(syn::Error::new_spanned(
-                expr,
-                "workflow_bundle! bindings must call <name>_node_spec()",
-            ));
-        }
-    };
+    match expr {
+        Expr::Call(call) => register_info_for_call(call),
+        Expr::Macro(mac) => register_info_for_node_macro(&mac.mac),
+        _ => Err(syn::Error::new_spanned(
+            expr,
+            "flow! bindings must call <name>_node_spec()",
+        )),
+    }
+}
 
+fn register_info_for_call(call: &syn::ExprCall) -> Result<(Path, String)> {
     let path = match call.func.as_ref() {
         Expr::Path(path) => path,
         _ => {
             return Err(syn::Error::new_spanned(
                 call.func.as_ref(),
-                "workflow_bundle! bindings must call <name>_node_spec()",
+                "flow! bindings must call <name>_node_spec()",
             ));
         }
     };
 
+    register_info_from_node_spec_path(path)
+}
+
+fn register_info_for_node_macro(mac: &Macro) -> Result<(Path, String)> {
+    if !mac.path.is_ident("node") {
+        return Err(syn::Error::new_spanned(
+            mac.path.clone(),
+            "flow! bindings must call <name>_node_spec()",
+        ));
+    }
+
+    let path: Path = syn::parse2(mac.tokens.clone()).map_err(|err| {
+        syn::Error::new(err.span(), "node! expects a path identifier")
+    })?;
+    register_info_from_base_path(&path)
+}
+
+fn register_info_from_node_spec_path(path: &syn::ExprPath) -> Result<(Path, String)> {
     let Some(segment) = path.path.segments.last() else {
         return Err(syn::Error::new_spanned(
             path,
-            "workflow_bundle! bindings must call <name>_node_spec()",
+            "flow! bindings must call <name>_node_spec()",
         ));
     };
 
@@ -1025,7 +1143,7 @@ fn register_info_for_binding(expr: &Expr) -> Result<(Path, String)> {
     let base = fn_name.strip_suffix("_node_spec").ok_or_else(|| {
         syn::Error::new(
             segment.ident.span(),
-            "workflow_bundle! bindings must call <name>_node_spec()",
+            "flow! bindings must call <name>_node_spec()",
         )
     })?;
     let mut register_path = path.path.clone();
@@ -1033,6 +1151,48 @@ fn register_info_for_binding(expr: &Expr) -> Result<(Path, String)> {
         last.ident = format_ident!("{}_register", base);
     }
     Ok((register_path, base.to_string()))
+}
+
+fn register_info_from_base_path(path: &Path) -> Result<(Path, String)> {
+    let Some(segment) = path.segments.last() else {
+        return Err(syn::Error::new_spanned(
+            path,
+            "flow! bindings must call <name>_node_spec()",
+        ));
+    };
+
+    if !matches!(segment.arguments, syn::PathArguments::None) {
+        return Err(syn::Error::new(
+            segment.span(),
+            "node! expects a path identifier",
+        ));
+    }
+
+    let base = segment.ident.to_string();
+    let mut register_path = path.clone();
+    if let Some(last) = register_path.segments.last_mut() {
+        last.ident = format_ident!("{}_register", base);
+    }
+    Ok((register_path, base))
+}
+
+fn node_spec_path_from_path(path: &Path) -> Result<Path> {
+    let mut path = path.clone();
+    let Some(segment) = path.segments.last_mut() else {
+        return Err(syn::Error::new_spanned(
+            path,
+            "node! expects a path identifier",
+        ));
+    };
+    if !matches!(segment.arguments, syn::PathArguments::None) {
+        return Err(syn::Error::new(
+            segment.span(),
+            "node! expects a path identifier",
+        ));
+    }
+    let base = segment.ident.to_string();
+    segment.ident = format_ident!("{}_node_spec", base);
+    Ok(path)
 }
 
 struct WorkflowInput {
@@ -2089,7 +2249,7 @@ impl Parse for WorkflowBundleInput {
             {
                 return Err(syn::Error::new(
                     input.span(),
-                    "workflow_bundle! does not support Rust control-flow statements; use the flow::switch/for_each helpers",
+                    "flow! does not support Rust control-flow statements; use the flow::switch/for_each helpers",
                 ));
             }
 
@@ -2251,19 +2411,19 @@ impl Parse for WorkflowBundleInput {
 
             return Err(syn::Error::new(
                 mac.span(),
-                "workflow_bundle! body currently supports only `let` bindings, `connect!`, `timeout!`, `delivery!`, `buffer!`, `spill!`, `if_!`, `switch!`, and `entrypoint!` statements",
+                "flow! body currently supports only `let` bindings, `connect!`, `timeout!`, `delivery!`, `buffer!`, `spill!`, `if_!`, `switch!`, and `entrypoint!` statements",
             ));
         }
 
         Ok(WorkflowBundleInput {
             name: name.ok_or_else(|| {
-                syn::Error::new(Span::call_site(), "workflow_bundle! requires `name`")
+                syn::Error::new(Span::call_site(), "flow! requires `name`")
             })?,
             version: version.ok_or_else(|| {
-                syn::Error::new(Span::call_site(), "workflow_bundle! requires `version`")
+                syn::Error::new(Span::call_site(), "flow! requires `version`")
             })?,
             profile: profile.ok_or_else(|| {
-                syn::Error::new(Span::call_site(), "workflow_bundle! requires `profile`")
+                syn::Error::new(Span::call_site(), "flow! requires `profile`")
             })?,
             summary,
             bindings,
@@ -3490,7 +3650,7 @@ impl WorkflowBundleInput {
         Ok(quote! {
             pub fn flow() -> ::dag_core::FlowIR {
                 let version = ::dag_core::prelude::Version::parse(#version_literal)
-                    .expect("workflow_bundle!: invalid semver literal");
+                    .expect("flow!: invalid semver literal");
                 let mut builder = ::dag_core::FlowBuilder::new(
                     #flow_name_lit,
                     version,
@@ -3514,7 +3674,7 @@ impl WorkflowBundleInput {
             pub fn validated_ir() -> ::kernel_plan::ValidatedIR {
                 let flow = flow();
                 ::kernel_plan::validate(&flow)
-                    .expect("workflow_bundle!: flow validation failed")
+                    .expect("flow!: flow validation failed")
             }
 
             fn __register_nodes(registry: &mut ::kernel_exec::NodeRegistry) {

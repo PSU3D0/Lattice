@@ -15,6 +15,11 @@ Source of truth:
 - Some is control-surface native (if/switch routing).
 - Complex surfaces are spec'd early but may be lint-only or runtime-rejected until implemented.
 
+## Authoring Surface (non-normative)
+
+- Control surfaces are emitted by the `flow!` macro when authors use routing helpers.
+- Nodes are defined with `#[def_node]` and bound into flows via `node!(...)` helpers.
+
 ## 0.1 Runtime-Semantic Surfaces
 
 ### Delivery (EdgeIR.delivery)

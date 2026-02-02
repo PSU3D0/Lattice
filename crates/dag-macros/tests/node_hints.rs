@@ -1,12 +1,12 @@
 #![allow(dead_code)]
 
 use dag_core::NodeResult;
-use dag_macros::node;
+use dag_macros::{def_node, node};
 
 struct HttpRead;
 struct HttpWrite;
 
-#[node(
+#[def_node(
     name = "FetchWebhook",
     effects = "ReadOnly",
     determinism = "BestEffort",
@@ -16,7 +16,7 @@ async fn fetch_webhook(url: String) -> NodeResult<String> {
     Ok(url)
 }
 
-#[node(
+#[def_node(
     name = "PostWebhook",
     effects = "Effectful",
     determinism = "BestEffort",
@@ -28,7 +28,7 @@ async fn post_webhook(url: String) -> NodeResult<String> {
 
 #[test]
 fn read_node_emits_http_read_hint() {
-    let spec = fetch_webhook_node_spec();
+    let spec = node!(fetch_webhook);
     assert!(
         spec.effect_hints.contains(&"resource::http::read"),
         "expected http read hint, got {:?}",
@@ -43,7 +43,7 @@ fn read_node_emits_http_read_hint() {
 
 #[test]
 fn write_node_emits_http_write_hint() {
-    let spec = post_webhook_node_spec();
+    let spec = node!(post_webhook);
     assert!(
         spec.effect_hints.contains(&"resource::http::write"),
         "expected http write hint, got {:?}",

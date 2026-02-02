@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use dag_core::NodeResult;
-use dag_macros::{node, trigger};
+use dag_macros::{def_node, node};
 use host_inproc::EnvironmentPlugin;
 use serde::{Deserialize, Serialize};
 
@@ -20,7 +20,7 @@ pub struct EchoResponse {
     pub user: Option<AuthUser>,
 }
 
-#[trigger(
+#[def_node(trigger,
     name = "HttpTrigger",
     summary = "Ingress HTTP trigger for the echo route"
 )]
@@ -28,7 +28,7 @@ async fn http_trigger(request: EchoRequest) -> NodeResult<EchoRequest> {
     Ok(request)
 }
 
-#[node(
+#[def_node(
     name = "Normalize",
     summary = "Trim whitespace and lowercase the payload",
     effects = "Pure",
@@ -42,7 +42,7 @@ async fn normalize(input: EchoRequest) -> NodeResult<EchoResponse> {
     Ok(normalized)
 }
 
-#[node(
+#[def_node(
     name = "Responder",
     summary = "Finalize the HTTP response",
     effects = "Pure",
@@ -53,20 +53,20 @@ async fn responder(mut payload: EchoResponse) -> NodeResult<EchoResponse> {
     Ok(payload)
 }
 
-dag_macros::workflow_bundle! {
+dag_macros::flow! {
     name: s1_echo_flow,
     version: "1.0.0",
     profile: Web,
     summary: "Implements the S1 webhook echo example";
-    let trigger = http_trigger_node_spec();
-    let normalize = normalize_node_spec();
-    let responder = responder_node_spec();
+    let trigger = node!(http_trigger);
+    let normalize = node!(normalize);
+    let responder = node!(responder);
     connect!(trigger -> normalize);
     connect!(normalize -> responder);
     entrypoint!({
         trigger: "trigger",
         capture: "responder",
-        route: "/echo",
+        route_aliases: ["/echo"],
         method: "POST",
         deadline_ms: 250,
     });

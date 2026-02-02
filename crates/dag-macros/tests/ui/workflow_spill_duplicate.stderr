@@ -1,5 +1,5 @@
 error: [DAG207] duplicate spill! for edge `trigger` -> `sink`
-  --> tests/ui/workflow_spill_duplicate.rs:37:5
+  --> tests/ui/workflow_spill_duplicate.rs:42:5
    |
-37 |     spill!(trigger -> sink, tier = "remote");
+42 |     spill!(trigger -> sink, tier = "remote");
    |     ^^^^^

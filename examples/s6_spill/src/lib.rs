@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use capabilities::context;
 use dag_core::{FlowIR, IdempotencyScope, NodeError, NodeResult};
-use dag_macros::{node, trigger};
+use dag_macros::{def_node, node};
 use kernel_plan::{ValidatedIR, validate};
 use serde::{Deserialize, Serialize};
 
@@ -34,12 +34,12 @@ pub struct Ack {
     pub stored: bool,
 }
 
-#[trigger(name = "BatchTrigger", summary = "Ingress trigger for batch ingest")]
+#[def_node(trigger, name = "BatchTrigger", summary = "Ingress trigger for batch ingest")]
 async fn batch_trigger(request: BatchRequest) -> NodeResult<BatchRequest> {
     Ok(request)
 }
 
-#[node(
+#[def_node(
     name = "PreparePayload",
     summary = "Package each item with its blob key",
     effects = "Pure",
@@ -66,7 +66,7 @@ async fn prepare_payload(request: BatchRequest) -> NodeResult<Vec<BlobPayload>> 
     Ok(payloads)
 }
 
-#[node(
+#[def_node(
     name = "StoreBlob",
     summary = "Persist payload to blob storage",
     effects = "Effectful",
@@ -103,7 +103,7 @@ async fn store_blob(payloads: Vec<BlobPayload>) -> NodeResult<Vec<Ack>> {
     Ok(acks)
 }
 
-#[node(
+#[def_node(
     name = "SlowAck",
     summary = "Simulate slow downstream acknowledgement",
     effects = "Pure",
@@ -114,7 +114,7 @@ async fn slow_ack(acks: Vec<Ack>) -> NodeResult<Vec<Ack>> {
     Ok(acks)
 }
 
-#[node(
+#[def_node(
     name = "Capture",
     summary = "Capture acknowledgements",
     effects = "Pure",
@@ -125,23 +125,20 @@ async fn capture(acks: Vec<Ack>) -> NodeResult<Vec<Ack>> {
 }
 
 mod bundle_def {
-    use super::{
-        batch_trigger_node_spec, batch_trigger_register, capture_node_spec, capture_register,
-        prepare_payload_node_spec, prepare_payload_register, slow_ack_node_spec, slow_ack_register,
-        store_blob_node_spec, store_blob_register,
-    };
+    use super::{batch_trigger, capture, prepare_payload, slow_ack, store_blob};
+    use dag_macros::node;
 
-    dag_macros::workflow_bundle! {
+    dag_macros::flow! {
         name: s6_spill_flow,
         version: "1.0.0",
         profile: Web,
         summary: "Demonstrates buffer and spill on batch ingest workflows";
 
-        let trigger = batch_trigger_node_spec();
-        let prepare = prepare_payload_node_spec();
-        let store = store_blob_node_spec();
-        let ack = slow_ack_node_spec();
-        let capture = capture_node_spec();
+        let trigger = node!(batch_trigger);
+        let prepare = node!(prepare_payload);
+        let store = node!(store_blob);
+        let ack = node!(slow_ack);
+        let capture = node!(capture);
 
         connect!(trigger -> prepare);
         connect!(prepare -> store);
@@ -154,7 +151,7 @@ mod bundle_def {
         entrypoint!({
             trigger: "trigger",
             capture: "capture",
-            route: "/spill",
+            route_aliases: ["/spill"],
             method: "POST",
             deadline_ms: 2000,
         });
@@ -190,30 +187,31 @@ pub fn bundle() -> host_inproc::FlowBundle {
         route_path: Some("/spill".to_string()),
         method: Some("POST".to_string()),
         deadline: Some(Duration::from_millis(2000)),
+        route_aliases: vec!["/spill".to_string()],
     }];
     let node_contracts = vec![
         host_inproc::NodeContract {
-            identifier: batch_trigger_node_spec().identifier.to_string(),
+            identifier: node!(batch_trigger).identifier.to_string(),
             contract_hash: None,
             source: host_inproc::NodeSource::Local,
         },
         host_inproc::NodeContract {
-            identifier: prepare_payload_node_spec().identifier.to_string(),
+            identifier: node!(prepare_payload).identifier.to_string(),
             contract_hash: None,
             source: host_inproc::NodeSource::Local,
         },
         host_inproc::NodeContract {
-            identifier: store_blob_node_spec().identifier.to_string(),
+            identifier: node!(store_blob).identifier.to_string(),
             contract_hash: None,
             source: host_inproc::NodeSource::Local,
         },
         host_inproc::NodeContract {
-            identifier: slow_ack_node_spec().identifier.to_string(),
+            identifier: node!(slow_ack).identifier.to_string(),
             contract_hash: None,
             source: host_inproc::NodeSource::Local,
         },
         host_inproc::NodeContract {
-            identifier: capture_node_spec().identifier.to_string(),
+            identifier: node!(capture).identifier.to_string(),
             contract_hash: None,
             source: host_inproc::NodeSource::Local,
         },

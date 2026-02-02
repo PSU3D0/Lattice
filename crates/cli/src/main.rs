@@ -600,6 +600,9 @@ fn run_local(args: LocalArgs) -> Result<()> {
                 Some(Ok(kernel_exec::CaptureResult::Value(value))) => {
                     results.push(value);
                 }
+                Some(Ok(kernel_exec::CaptureResult::Halt { .. })) => {
+                    return Err(anyhow!("halted execution not supported in burst mode"));
+                }
                 Some(Ok(kernel_exec::CaptureResult::Stream(_))) => {
                     return Err(anyhow!("streaming capture not supported in burst mode"));
                 }

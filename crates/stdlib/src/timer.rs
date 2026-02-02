@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use dag_core::{NodeError, NodeResult};
-use dag_macros::node;
+use dag_macros::def_node;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::time::Duration;
@@ -23,7 +23,7 @@ pub struct TimerWaitOutput {
     pub scheduled_at_ms: i64,
 }
 
-#[node(
+#[def_node(
     name = "TimerWait",
     summary = "Pause execution until the requested time",
     identifier = "std.timer.wait",

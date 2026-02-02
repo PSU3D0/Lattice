@@ -71,6 +71,7 @@ pub struct FlowEntrypoint {
     pub route_path: Option<String>,
     pub method: Option<String>,
     pub deadline: Option<Duration>,
+    pub route_aliases: Vec<String>,
 }
 
 #[cfg(target_arch = "wasm32")]

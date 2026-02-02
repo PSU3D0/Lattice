@@ -1,8 +1,8 @@
 use dag_core::NodeResult;
-use dag_macros::{node, trigger};
+use dag_macros::{def_node, node};
 use serde_json::{Value as JsonValue, json};
 
-#[trigger(
+#[def_node(trigger,
     name = "HttpTrigger",
     summary = "Ingress trigger for branching example"
 )]
@@ -10,7 +10,7 @@ async fn http_trigger(payload: JsonValue) -> NodeResult<JsonValue> {
     Ok(payload)
 }
 
-#[node(
+#[def_node(
     name = "Route",
     summary = "Normalize input into a routing object",
     effects = "Pure",
@@ -34,7 +34,7 @@ async fn route(payload: JsonValue) -> NodeResult<JsonValue> {
     }))
 }
 
-#[node(
+#[def_node(
     name = "ThenBranch",
     summary = "Annotate then branch prior to switch",
     effects = "Pure",
@@ -46,7 +46,7 @@ async fn then_branch(payload: JsonValue) -> NodeResult<JsonValue> {
     Ok(JsonValue::Object(obj))
 }
 
-#[node(
+#[def_node(
     name = "ElseBranch",
     summary = "Annotate else branch and return directly",
     effects = "Pure",
@@ -58,7 +58,7 @@ async fn else_branch(payload: JsonValue) -> NodeResult<JsonValue> {
     Ok(JsonValue::Object(obj))
 }
 
-#[node(
+#[def_node(
     name = "ModeRouter",
     summary = "Prepare value for switch routing",
     effects = "Pure",
@@ -68,7 +68,7 @@ async fn mode_router(payload: JsonValue) -> NodeResult<JsonValue> {
     Ok(payload)
 }
 
-#[node(
+#[def_node(
     name = "BranchA",
     summary = "Handle mode a",
     effects = "Pure",
@@ -80,7 +80,7 @@ async fn branch_a(payload: JsonValue) -> NodeResult<JsonValue> {
     Ok(JsonValue::Object(obj))
 }
 
-#[node(
+#[def_node(
     name = "BranchB",
     summary = "Handle mode b",
     effects = "Pure",
@@ -92,7 +92,7 @@ async fn branch_b(payload: JsonValue) -> NodeResult<JsonValue> {
     Ok(JsonValue::Object(obj))
 }
 
-#[node(
+#[def_node(
     name = "BranchDefault",
     summary = "Handle default mode",
     effects = "Pure",
@@ -104,7 +104,7 @@ async fn branch_default(payload: JsonValue) -> NodeResult<JsonValue> {
     Ok(JsonValue::Object(obj))
 }
 
-#[node(
+#[def_node(
     name = "Capture",
     summary = "Capture terminal output",
     effects = "Pure",
@@ -114,21 +114,21 @@ async fn capture(payload: JsonValue) -> NodeResult<JsonValue> {
     Ok(payload)
 }
 
-dag_macros::workflow_bundle! {
+dag_macros::flow! {
     name: s3_branching_flow,
     version: "1.0.0",
     profile: Web,
     summary: "Demonstrates if_! and switch! branching";
 
-    let trigger = http_trigger_node_spec();
-    let route = route_node_spec();
-    let then_branch = then_branch_node_spec();
-    let else_branch = else_branch_node_spec();
-    let mode_router = mode_router_node_spec();
-    let branch_a = branch_a_node_spec();
-    let branch_b = branch_b_node_spec();
-    let branch_default = branch_default_node_spec();
-    let capture = capture_node_spec();
+    let trigger = node!(http_trigger);
+    let route = node!(route);
+    let then_branch = node!(then_branch);
+    let else_branch = node!(else_branch);
+    let mode_router = node!(mode_router);
+    let branch_a = node!(branch_a);
+    let branch_b = node!(branch_b);
+    let branch_default = node!(branch_default);
+    let capture = node!(capture);
 
     connect!(trigger -> route);
     connect!(route -> then_branch);
@@ -161,7 +161,7 @@ dag_macros::workflow_bundle! {
     entrypoint!({
         trigger: "trigger",
         capture: "capture",
-        route: "/branch",
+        route_aliases: ["/branch"],
         method: "POST",
         deadline_ms: 250,
     });

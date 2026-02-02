@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use async_stream::stream;
 use dag_core::NodeResult;
-use dag_macros::{node, trigger};
+use dag_macros::{def_node, node};
 use futures::Stream;
 use host_inproc::{FlowBundle, FlowEntrypoint, NodeContract, NodeSource};
 use kernel_exec::{NodeRegistry, RegistryError};
@@ -70,12 +70,12 @@ impl serde::Serialize for StreamEventStream {
     }
 }
 
-#[trigger(name = "HealthTrigger", summary = "Ingress trigger for health")]
+#[def_node(trigger, name = "HealthTrigger", summary = "Ingress trigger for health")]
 async fn health_trigger(payload: JsonValue) -> NodeResult<JsonValue> {
     Ok(payload)
 }
 
-#[node(
+#[def_node(
     name = "HealthResponse",
     summary = "Return health response",
     effects = "Pure",
@@ -85,12 +85,12 @@ async fn health_response(_payload: JsonValue) -> NodeResult<JsonValue> {
     Ok(json!({ "status": "ok" }))
 }
 
-#[trigger(name = "EchoTrigger", summary = "Ingress trigger for echo")]
+#[def_node(trigger, name = "EchoTrigger", summary = "Ingress trigger for echo")]
 async fn echo_trigger(payload: JsonValue) -> NodeResult<JsonValue> {
     Ok(payload)
 }
 
-#[node(
+#[def_node(
     name = "EchoResponse",
     summary = "Return echoed payload",
     effects = "Pure",
@@ -100,13 +100,13 @@ async fn echo_response(payload: JsonValue) -> NodeResult<JsonValue> {
     Ok(json!({ "echoed": payload }))
 }
 
-#[trigger(name = "StreamTrigger", summary = "Ingress trigger for stream")]
+#[def_node(trigger, name = "StreamTrigger", summary = "Ingress trigger for stream")]
 async fn stream_trigger(payload: JsonValue) -> NodeResult<StreamRequest> {
     let count = payload.get("count").and_then(|value| value.as_u64());
     Ok(StreamRequest { count })
 }
 
-#[node(
+#[def_node(
     name = "StreamResponse",
     summary = "Emit SSE stream events",
     effects = "ReadOnly",
@@ -127,7 +127,7 @@ async fn stream_response(request: StreamRequest) -> NodeResult<StreamEventStream
 }
 
 fn stream_response_stream_node_spec() -> &'static dag_core::NodeSpec {
-    stream_response_node_spec()
+    node!(stream_response)
 }
 
 fn stream_response_stream_register(registry: &mut NodeRegistry) -> Result<(), RegistryError> {
@@ -137,12 +137,12 @@ fn stream_response_stream_register(registry: &mut NodeRegistry) -> Result<(), Re
     )
 }
 
-#[trigger(name = "CancelTrigger", summary = "Ingress trigger for cancellation")]
+#[def_node(trigger, name = "CancelTrigger", summary = "Ingress trigger for cancellation")]
 async fn cancel_trigger(payload: JsonValue) -> NodeResult<JsonValue> {
     Ok(payload)
 }
 
-#[node(
+#[def_node(
     name = "CancelResponse",
     summary = "Simulate a long-running task",
     effects = "ReadOnly",
@@ -156,32 +156,32 @@ async fn cancel_response(_payload: JsonValue) -> NodeResult<JsonValue> {
     Ok(json!({ "completed": true }))
 }
 
-dag_macros::workflow_bundle! {
+dag_macros::flow! {
     name: host_workers_test_flow,
     version: "0.1.0",
     profile: Web,
     summary: "Host-workers Miniflare harness flow";
 
-    let health = health_trigger_node_spec();
-    let health_capture = health_response_node_spec();
+    let health = node!(health_trigger);
+    let health_capture = node!(health_response);
     connect!(health -> health_capture);
 
-    let echo = echo_trigger_node_spec();
-    let echo_capture = echo_response_node_spec();
+    let echo = node!(echo_trigger);
+    let echo_capture = node!(echo_response);
     connect!(echo -> echo_capture);
 
-    let stream = stream_trigger_node_spec();
+    let stream = node!(stream_trigger);
     let stream_capture = stream_response_stream_node_spec();
     connect!(stream -> stream_capture);
 
-    let cancel = cancel_trigger_node_spec();
-    let cancel_capture = cancel_response_node_spec();
+    let cancel = node!(cancel_trigger);
+    let cancel_capture = node!(cancel_response);
     connect!(cancel -> cancel_capture);
 
     entrypoint!({
         trigger: "health",
         capture: "health_capture",
-        route: "/health",
+        route_aliases: ["/health"],
         method: "GET",
         deadline_ms: 500,
     });
@@ -189,7 +189,7 @@ dag_macros::workflow_bundle! {
     entrypoint!({
         trigger: "echo",
         capture: "echo_capture",
-        route: "/echo",
+        route_aliases: ["/echo"],
         method: "POST",
         deadline_ms: 1000,
     });
@@ -197,7 +197,7 @@ dag_macros::workflow_bundle! {
     entrypoint!({
         trigger: "stream",
         capture: "stream_capture",
-        route: "/stream",
+        route_aliases: ["/stream"],
         method: "POST",
         deadline_ms: 5000,
     });
@@ -205,7 +205,7 @@ dag_macros::workflow_bundle! {
     entrypoint!({
         trigger: "cancel",
         capture: "cancel_capture",
-        route: "/cancel",
+        route_aliases: ["/cancel"],
         method: "POST",
         deadline_ms: 10000,
     });
@@ -215,8 +215,7 @@ fn bundle_with_policies() -> FlowBundle {
     let mut flow = flow();
     flow.policies.lint.allow_multiple_triggers = Some(true);
 
-    let validated_ir = kernel_plan::validate(&flow)
-        .expect("workflow_bundle!: flow validation failed");
+    let validated_ir = kernel_plan::validate(&flow).expect("flow!: flow validation failed");
     let mut registry = NodeRegistry::new();
     register_nodes(&mut registry);
 
@@ -228,6 +227,7 @@ fn bundle_with_policies() -> FlowBundle {
             route_path: Some("/health".to_string()),
             method: Some("GET".to_string()),
             deadline: Some(Duration::from_millis(500)),
+            route_aliases: vec!["/health".to_string()],
         },
         FlowEntrypoint {
             trigger_alias: "echo".to_string(),
@@ -235,6 +235,7 @@ fn bundle_with_policies() -> FlowBundle {
             route_path: Some("/echo".to_string()),
             method: Some("POST".to_string()),
             deadline: Some(Duration::from_millis(1000)),
+            route_aliases: vec!["/echo".to_string()],
         },
         FlowEntrypoint {
             trigger_alias: "stream".to_string(),
@@ -242,6 +243,7 @@ fn bundle_with_policies() -> FlowBundle {
             route_path: Some("/stream".to_string()),
             method: Some("POST".to_string()),
             deadline: Some(Duration::from_millis(5000)),
+            route_aliases: vec!["/stream".to_string()],
         },
         FlowEntrypoint {
             trigger_alias: "cancel".to_string(),
@@ -249,17 +251,18 @@ fn bundle_with_policies() -> FlowBundle {
             route_path: Some("/cancel".to_string()),
             method: Some("POST".to_string()),
             deadline: Some(Duration::from_millis(10000)),
+            route_aliases: vec!["/cancel".to_string()],
         },
     ];
     let node_contracts = vec![
-        health_trigger_node_spec(),
-        health_response_node_spec(),
-        echo_trigger_node_spec(),
-        echo_response_node_spec(),
-        stream_trigger_node_spec(),
+        node!(health_trigger),
+        node!(health_response),
+        node!(echo_trigger),
+        node!(echo_response),
+        node!(stream_trigger),
         stream_response_stream_node_spec(),
-        cancel_trigger_node_spec(),
-        cancel_response_node_spec(),
+        node!(cancel_trigger),
+        node!(cancel_response),
     ]
     .into_iter()
     .map(|spec| NodeContract {

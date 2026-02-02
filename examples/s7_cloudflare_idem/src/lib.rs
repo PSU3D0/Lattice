@@ -16,7 +16,7 @@ use capabilities::context;
 use capabilities::http::{HttpHeaders, HttpMethod, HttpRequest, HttpWrite};
 use capabilities::kv::{KeyValue, KvGetOptions, KvListOptions, KvPutOptions};
 use dag_core::{FlowIR, IdempotencyScope, NodeError, NodeResult};
-use dag_macros::{node, trigger};
+use dag_macros::{def_node, node};
 use futures::Stream;
 use host_inproc::{FlowBundle, FlowEntrypoint, NodeContract, NodeSource};
 use kernel_exec::{NodeRegistry, RegistryError};
@@ -364,7 +364,7 @@ pub struct IngestResponse {
     pub hash: String,
 }
 
-#[trigger(name = "trigger_http_ingest", summary = "Ingress trigger for ingest")]
+#[def_node(trigger, name = "trigger_http_ingest", summary = "Ingress trigger for ingest")]
 async fn trigger_http_ingest(request: IngestRequest) -> NodeResult<IngestRequest> {
     Ok(request)
 }
@@ -378,7 +378,7 @@ fn build_list_idempotency_key(request: &ListRequest) -> String {
     key
 }
 
-#[trigger(name = "trigger_http_events", summary = "Ingress trigger for event listing")]
+#[def_node(trigger, name = "trigger_http_events", summary = "Ingress trigger for event listing")]
 async fn trigger_http_events(mut request: ListRequest) -> NodeResult<ListRequest> {
     if request.idempotency_key.is_empty() {
         request.idempotency_key = build_list_idempotency_key(&request);
@@ -386,12 +386,12 @@ async fn trigger_http_events(mut request: ListRequest) -> NodeResult<ListRequest
     Ok(request)
 }
 
-#[trigger(name = "trigger_http_snapshot", summary = "Ingress trigger for snapshot reads")]
+#[def_node(trigger, name = "trigger_http_snapshot", summary = "Ingress trigger for snapshot reads")]
 async fn trigger_http_snapshot(request: SnapshotRequest) -> NodeResult<SnapshotRequest> {
     Ok(request)
 }
 
-#[trigger(name = "trigger_http_stream", summary = "Ingress trigger for stream")]
+#[def_node(trigger, name = "trigger_http_stream", summary = "Ingress trigger for stream")]
 async fn trigger_http_stream(mut request: ListRequest) -> NodeResult<ListRequest> {
     if request.idempotency_key.is_empty() {
         request.idempotency_key = build_list_idempotency_key(&request);
@@ -399,7 +399,7 @@ async fn trigger_http_stream(mut request: ListRequest) -> NodeResult<ListRequest
     Ok(request)
 }
 
-#[node(
+#[def_node(
     name = "ingest_validate",
     summary = "Validate and hash ingest payload",
     effects = "Pure",
@@ -417,7 +417,7 @@ async fn ingest_validate(request: IngestRequest) -> NodeResult<ValidatedIngest> 
     })
 }
 
-#[node(
+#[def_node(
     name = "dedupe_sequence",
     summary = "Reserve a per-stream sequence with DO idempotency",
     effects = "Effectful",
@@ -450,7 +450,7 @@ async fn dedupe_sequence(input: ValidatedIngest) -> NodeResult<DedupeResult> {
     })
 }
 
-#[node(
+#[def_node(
     name = "kv_put_event",
     summary = "Store event payload + metadata in Workers KV",
     effects = "Effectful",
@@ -498,7 +498,7 @@ async fn kv_put_event(input: DedupeResult) -> NodeResult<KvWriteResult> {
     Ok(KvWriteResult { stored: true, key })
 }
 
-#[node(
+#[def_node(
     name = "snapshot_maybe",
     summary = "Persist snapshot every N events",
     effects = "Effectful",
@@ -566,7 +566,7 @@ async fn snapshot_maybe(input: DedupeResult) -> NodeResult<SnapshotResult> {
     })
 }
 
-#[node(
+#[def_node(
     name = "otel_dispatch",
     summary = "Dispatch OTLP/HTTP payload",
     effects = "Effectful",
@@ -619,7 +619,7 @@ async fn otel_dispatch(event: OtelEvent) -> NodeResult<OtelDispatchResult> {
     }
 }
 
-#[node(
+#[def_node(
     name = "events_list",
     summary = "List stored events from KV",
     effects = "ReadOnly",
@@ -688,7 +688,7 @@ async fn events_list(request: ListRequest) -> NodeResult<ListResponse> {
     .ok_or_else(|| NodeError::new("resource context missing"))?
 }
 
-#[node(
+#[def_node(
     name = "snapshot_get",
     summary = "Read latest snapshot from KV",
     effects = "ReadOnly",
@@ -725,7 +725,7 @@ async fn snapshot_get(request: SnapshotRequest) -> NodeResult<SnapshotResponse> 
     .ok_or_else(|| NodeError::new("resource context missing"))?
 }
 
-#[node(
+#[def_node(
     name = "build_otel_ingest",
     summary = "Build ingest OTLP payload",
     effects = "Pure",
@@ -769,7 +769,7 @@ async fn build_otel_ingest(input: DedupeResult) -> NodeResult<OtelEvent> {
     })
 }
 
-#[node(
+#[def_node(
     name = "build_otel_replay",
     summary = "Build replay OTLP payload",
     effects = "Pure",
@@ -801,7 +801,7 @@ async fn build_otel_replay(input: ListResponse) -> NodeResult<OtelEvent> {
     })
 }
 
-#[node(
+#[def_node(
     name = "ingest_response",
     summary = "Format ingest response",
     effects = "Pure",
@@ -815,7 +815,7 @@ async fn ingest_response(input: DedupeResult) -> NodeResult<IngestResponse> {
     })
 }
 
-#[node(
+#[def_node(
     name = "events_response",
     summary = "Format events response",
     effects = "Pure",
@@ -872,7 +872,7 @@ impl serde::Serialize for ListEventStream {
     }
 }
 
-#[node(
+#[def_node(
     name = "stream_events",
     summary = "Stream events over SSE",
     effects = "Effectful",
@@ -1163,10 +1163,6 @@ fn base64_encode(data: &[u8]) -> String {
     result
 }
 
-fn stream_events_stream_node_spec() -> &'static dag_core::NodeSpec {
-    stream_events_node_spec()
-}
-
 fn stream_events_stream_register(registry: &mut NodeRegistry) -> Result<(), RegistryError> {
     registry.register_stream_fn(
         concat!(module_path!(), "::", stringify!(stream_events)),
@@ -1176,33 +1172,34 @@ fn stream_events_stream_register(registry: &mut NodeRegistry) -> Result<(), Regi
 
 mod bundle_def {
     use super::*;
+    use dag_macros::node;
 
-    dag_macros::workflow_bundle! {
+    dag_macros::flow! {
         name: s7_cloudflare_idem_flow,
         version: "1.0.0",
         profile: Web,
         summary: "Cloudflare idempotent ingest + replay example";
 
-        let trigger_http_ingest = trigger_http_ingest_node_spec();
-        let trigger_http_events = trigger_http_events_node_spec();
-        let trigger_http_snapshot = trigger_http_snapshot_node_spec();
-        let trigger_http_stream = trigger_http_stream_node_spec();
+        let trigger_http_ingest = node!(trigger_http_ingest);
+        let trigger_http_events = node!(trigger_http_events);
+        let trigger_http_snapshot = node!(trigger_http_snapshot);
+        let trigger_http_stream = node!(trigger_http_stream);
 
-        let ingest_validate = ingest_validate_node_spec();
-        let dedupe_sequence = dedupe_sequence_node_spec();
-        let kv_put_event = kv_put_event_node_spec();
-        let snapshot_maybe = snapshot_maybe_node_spec();
-        let build_otel_ingest = build_otel_ingest_node_spec();
-        let otel_dispatch = otel_dispatch_node_spec();
-        let ingest_response = ingest_response_node_spec();
+        let ingest_validate = node!(ingest_validate);
+        let dedupe_sequence = node!(dedupe_sequence);
+        let kv_put_event = node!(kv_put_event);
+        let snapshot_maybe = node!(snapshot_maybe);
+        let build_otel_ingest = node!(build_otel_ingest);
+        let otel_dispatch = node!(otel_dispatch);
+        let ingest_response = node!(ingest_response);
 
-        let events_list = events_list_node_spec();
-        let build_otel_replay = build_otel_replay_node_spec();
-        let events_response = events_response_node_spec();
+        let events_list = node!(events_list);
+        let build_otel_replay = node!(build_otel_replay);
+        let events_response = node!(events_response);
 
-        let snapshot_get = snapshot_get_node_spec();
+        let snapshot_get = node!(snapshot_get);
 
-        let stream_events = stream_events_stream_node_spec();
+        let stream_events = node!(stream_events);
 
         connect!(trigger_http_ingest -> ingest_validate);
         connect!(ingest_validate -> dedupe_sequence);
@@ -1224,7 +1221,7 @@ mod bundle_def {
         entrypoint!({
             trigger: "trigger_http_ingest",
             capture: "ingest_response",
-            route: "/ingest",
+            route_aliases: ["/ingest"],
             method: "POST",
             deadline_ms: 2000,
         });
@@ -1232,7 +1229,7 @@ mod bundle_def {
         entrypoint!({
             trigger: "trigger_http_events",
             capture: "events_response",
-            route: "/events",
+            route_aliases: ["/events"],
             method: "GET",
             deadline_ms: 2000,
         });
@@ -1240,7 +1237,7 @@ mod bundle_def {
         entrypoint!({
             trigger: "trigger_http_snapshot",
             capture: "snapshot_get",
-            route: "/snapshot",
+            route_aliases: ["/snapshot"],
             method: "GET",
             deadline_ms: 2000,
         });
@@ -1248,7 +1245,7 @@ mod bundle_def {
         entrypoint!({
             trigger: "trigger_http_stream",
             capture: "stream_events",
-            route: "/stream",
+            route_aliases: ["/stream"],
             method: "GET",
             deadline_ms: 10000,
         });
@@ -1307,6 +1304,7 @@ pub fn bundle() -> FlowBundle {
             route_path: Some("/ingest".to_string()),
             method: Some("POST".to_string()),
             deadline: Some(Duration::from_millis(2000)),
+            route_aliases: vec!["/ingest".to_string()],
         },
         FlowEntrypoint {
             trigger_alias: "trigger_http_events".to_string(),
@@ -1314,6 +1312,7 @@ pub fn bundle() -> FlowBundle {
             route_path: Some("/events".to_string()),
             method: Some("GET".to_string()),
             deadline: Some(Duration::from_millis(2000)),
+            route_aliases: vec!["/events".to_string()],
         },
         FlowEntrypoint {
             trigger_alias: "trigger_http_snapshot".to_string(),
@@ -1321,6 +1320,7 @@ pub fn bundle() -> FlowBundle {
             route_path: Some("/snapshot".to_string()),
             method: Some("GET".to_string()),
             deadline: Some(Duration::from_millis(2000)),
+            route_aliases: vec!["/snapshot".to_string()],
         },
         FlowEntrypoint {
             trigger_alias: "trigger_http_stream".to_string(),
@@ -1328,26 +1328,27 @@ pub fn bundle() -> FlowBundle {
             route_path: Some("/stream".to_string()),
             method: Some("GET".to_string()),
             deadline: Some(Duration::from_millis(10000)),
+            route_aliases: vec!["/stream".to_string()],
         },
     ];
 
     let node_contracts = vec![
-        trigger_http_ingest_node_spec(),
-        trigger_http_events_node_spec(),
-        trigger_http_snapshot_node_spec(),
-        trigger_http_stream_node_spec(),
-        ingest_validate_node_spec(),
-        dedupe_sequence_node_spec(),
-        kv_put_event_node_spec(),
-        snapshot_maybe_node_spec(),
-        build_otel_ingest_node_spec(),
-        build_otel_replay_node_spec(),
-        otel_dispatch_node_spec(),
-        ingest_response_node_spec(),
-        events_list_node_spec(),
-        events_response_node_spec(),
-        snapshot_get_node_spec(),
-        stream_events_stream_node_spec(),
+        node!(trigger_http_ingest),
+        node!(trigger_http_events),
+        node!(trigger_http_snapshot),
+        node!(trigger_http_stream),
+        node!(ingest_validate),
+        node!(dedupe_sequence),
+        node!(kv_put_event),
+        node!(snapshot_maybe),
+        node!(build_otel_ingest),
+        node!(build_otel_replay),
+        node!(otel_dispatch),
+        node!(ingest_response),
+        node!(events_list),
+        node!(events_response),
+        node!(snapshot_get),
+        node!(stream_events),
     ]
     .into_iter()
     .map(|spec| NodeContract {

@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use async_stream::stream;
 use dag_core::NodeResult;
-use dag_macros::{node, trigger};
+use dag_macros::{def_node, node};
 use futures::Stream;
 use kernel_exec::{NodeRegistry, RegistryError};
 use serde::{Deserialize, Serialize};
@@ -85,7 +85,7 @@ impl serde::Serialize for SiteEventStream {
     }
 }
 
-#[trigger(
+#[def_node(trigger,
     name = "SiteHttpTrigger",
     summary = "Ingress trigger for site status requests"
 )]
@@ -93,7 +93,7 @@ async fn http_trigger(request: SiteRequest) -> NodeResult<SiteRequest> {
     Ok(request)
 }
 
-#[node(
+#[def_node(
     name = "BuildSnapshot",
     summary = "Construct the initial site snapshot prior to streaming",
     effects = "ReadOnly",
@@ -109,7 +109,7 @@ async fn build_snapshot(request: SiteRequest) -> NodeResult<SiteSnapshot> {
     Ok(snapshot)
 }
 
-#[node(
+#[def_node(
     name = "StreamTelemetry",
     summary = "Emit incremental status updates as an SSE stream",
     effects = "ReadOnly",
@@ -133,7 +133,7 @@ async fn stream_telemetry(snapshot: SiteSnapshot) -> NodeResult<SiteEventStream>
 }
 
 fn stream_telemetry_stream_node_spec() -> &'static dag_core::NodeSpec {
-    stream_telemetry_node_spec()
+    node!(stream_telemetry)
 }
 
 fn stream_telemetry_stream_register(registry: &mut NodeRegistry) -> Result<(), RegistryError> {
@@ -143,20 +143,20 @@ fn stream_telemetry_stream_register(registry: &mut NodeRegistry) -> Result<(), R
     )
 }
 
-dag_macros::workflow_bundle! {
+dag_macros::flow! {
     name: s2_site_flow,
     version: "1.0.0",
     profile: Web,
     summary: "Implements the S2 streaming site-status example with SSE";
-    let trigger = http_trigger_node_spec();
-    let snapshot = build_snapshot_node_spec();
+    let trigger = node!(http_trigger);
+    let snapshot = node!(build_snapshot);
     let stream = stream_telemetry_stream_node_spec();
     connect!(trigger -> snapshot);
     connect!(snapshot -> stream);
     entrypoint!({
         trigger: "trigger",
         capture: "stream",
-        route: "/site/stream",
+        route_aliases: ["/site/stream"],
         method: "POST",
         deadline_ms: 5000,
     });

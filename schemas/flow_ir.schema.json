@@ -434,9 +434,57 @@
         }
       ]
     },
+    "EntrypointMetadata": {
+      "description": "Entrypoint metadata describing external ingress wiring.",
+      "properties": {
+        "capture_alias": {
+          "description": "Capture node alias for response/egress.",
+          "type": "string"
+        },
+        "method": {
+          "description": "Optional HTTP method for HTTP-capable hosts.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "route_aliases": {
+          "default": [],
+          "description": "Optional non-authoritative aliases for the canonical route.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "route_path": {
+          "description": "Optional canonical route path (host-derived when omitted).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "trigger_alias": {
+          "description": "Trigger node alias for ingress.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "capture_alias",
+        "trigger_alias"
+      ],
+      "type": "object"
+    },
     "FlowMetadata": {
       "description": "Arbitrary metadata describing the workflow.",
       "properties": {
+        "entrypoints": {
+          "default": [],
+          "description": "Optional entrypoint metadata provided by hosts or tooling.",
+          "items": {
+            "$ref": "#/definitions/EntrypointMetadata"
+          },
+          "type": "array"
+        },
         "tags": {
           "default": [],
           "description": "Optional tags associated with the workflow.",

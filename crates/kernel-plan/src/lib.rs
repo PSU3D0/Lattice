@@ -35,6 +35,7 @@ pub fn validate(flow: &FlowIR) -> Result<ValidatedIR, Vec<Diagnostic>> {
     check_effectful_idempotency(flow, &mut diagnostics);
     check_effect_conflicts(flow, &mut diagnostics);
     check_determinism_conflicts(flow, &mut diagnostics);
+    check_node_metadata(flow, &mut diagnostics);
     check_exactly_once_requirements(flow, &mut diagnostics);
     check_edge_timeout_requirements(flow, &mut diagnostics);
     check_edge_buffer_requirements(flow, &mut diagnostics);
@@ -305,6 +306,18 @@ fn check_determinism_conflicts(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>)
         }
     }
 }
+
+fn check_node_metadata(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    for node in &flow.nodes {
+        if node.summary.is_none() {
+            diagnostics.push(diagnostic(
+                "DAG350",
+                format!("node `{}` missing summary metadata", node.alias),
+            ));
+        }
+    }
+}
+
 
 fn check_edge_timeout_requirements(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
     for edge in &flow.edges {
@@ -1359,7 +1372,7 @@ mod tests {
     use dag_core::IdempotencyScope;
     use dag_core::NodeResult;
     use dag_core::prelude::*;
-    use dag_macros::node;
+    use dag_macros::def_node;
     use proptest::prelude::*;
     use proptest::sample::select;
     use std::collections::BTreeSet;
@@ -1451,6 +1464,19 @@ mod tests {
         capabilities::rng::ensure_registered();
     }
 
+    fn assert_ok_or_metadata_warnings(result: Result<ValidatedIR, Vec<Diagnostic>>) {
+        match result {
+            Ok(_) => {}
+            Err(diagnostics) => {
+                assert!(
+                    diagnostics.iter().all(|d| d.code.code == "DAG350"),
+                    "unexpected diagnostics: {:?}",
+                    diagnostics
+                );
+            }
+        }
+    }
+
     #[test]
     fn strong_durability_rejects_incompatible_nodes() {
         let mut flow = build_sample_flow();
@@ -1475,6 +1501,28 @@ mod tests {
 
         let diagnostics = validate(&flow).expect_err("expected validation errors");
         assert!(diagnostics.iter().any(|d| d.code.code == "DAG-CKPT-002"));
+    }
+
+    #[test]
+    fn lint_warns_when_node_metadata_missing() {
+        let mut builder = FlowBuilder::new("lint", Version::new(1, 0, 0), Profile::Web);
+        let spec = NodeSpec::inline(
+            "tests::missing",
+            "Missing",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::BestEffort,
+            None,
+        );
+        builder
+            .add_node("missing", &spec)
+            .expect("add missing node");
+
+        let flow = builder.build();
+        let diagnostics = validate(&flow).expect_err("expected lint diagnostics");
+
+        assert!(diagnostics.iter().any(|d| d.code.code == "DAG350"));
     }
 
     #[test]
@@ -2285,7 +2333,7 @@ mod tests {
         }
 
         let result = validate(&flow);
-        assert!(result.is_ok(), "unexpected diagnostics: {result:?}");
+        assert_ok_or_metadata_warnings(result);
     }
 
     fn dedup_hints(hints: Vec<&'static str>) -> Vec<&'static str> {
@@ -2300,7 +2348,7 @@ mod tests {
     fn validate_accepts_well_formed_flow() {
         let flow = build_sample_flow();
         let result = validate(&flow);
-        assert!(result.is_ok(), "unexpected diagnostics: {result:?}");
+        assert_ok_or_metadata_warnings(result);
     }
 
     #[test]
@@ -2488,10 +2536,7 @@ mod tests {
                             );
                         }
                     } else {
-                        prop_assert!(
-                            result.is_ok(),
-                            "expected validation success when declared policies satisfy hints"
-                        );
+                        assert_ok_or_metadata_warnings(result);
                     }
                     Ok(())
                 },
@@ -2605,7 +2650,7 @@ mod tests {
             node.kind = dag_core::NodeKind::Trigger;
         }
 
-        validate(&flow).expect("expected validation success");
+        assert_ok_or_metadata_warnings(validate(&flow));
     }
 
     #[test]
@@ -2734,13 +2779,7 @@ mod tests {
         set_idempotency(&mut flow, "worker");
 
         let result = validate(&flow);
-        if let Err(diags) = &result {
-            let codes: Vec<&str> = diags.iter().map(|d| d.code.code).collect();
-            panic!(
-                "spill validation should succeed when blob hints are present, diagnostics: {:?}",
-                codes
-            );
-        }
+        assert_ok_or_metadata_warnings(result);
     }
 
     #[test]
@@ -2846,7 +2885,7 @@ mod tests {
         struct Noop;
 
         #[allow(dead_code)]
-        #[node(
+        #[def_node(
             name = "HttpWriter",
             effects = "Effectful",
             determinism = "BestEffort",
@@ -2857,7 +2896,7 @@ mod tests {
         }
 
         #[allow(dead_code)]
-        #[node(
+        #[def_node(
             name = "ClockBestEffort",
             effects = "ReadOnly",
             determinism = "BestEffort",
@@ -2868,7 +2907,7 @@ mod tests {
         }
 
         #[allow(dead_code)]
-        #[node(
+        #[def_node(
             name = "DbWriter",
             effects = "Effectful",
             determinism = "BestEffort",
@@ -2879,7 +2918,7 @@ mod tests {
         }
 
         #[allow(dead_code)]
-        #[node(name = "NoResources", effects = "Pure", determinism = "Strict")]
+        #[def_node(name = "NoResources", effects = "Pure", determinism = "Strict")]
         async fn no_resources(_: ()) -> NodeResult<()> {
             Ok(())
         }
@@ -2920,10 +2959,7 @@ mod tests {
             // effectful nodes require idempotency; clone and set before validation
             let mut flow = flow;
             ensure_idempotency(&mut flow, "writer_ok");
-            assert!(
-                validate(&flow).is_ok(),
-                "effectful http writer should validate cleanly"
-            );
+            assert_ok_or_metadata_warnings(validate(&flow));
         }
 
         #[test]
@@ -2966,10 +3002,7 @@ mod tests {
                 "expected no hints for resource-free node"
             );
             let flow = single_node_flow("noop", spec);
-            assert!(
-                validate(&flow).is_ok(),
-                "resource-free nodes with pure/strict defaults should validate"
-            );
+            assert_ok_or_metadata_warnings(validate(&flow));
         }
     }
 }

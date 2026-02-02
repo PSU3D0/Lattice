@@ -1,7 +1,7 @@
 use dag_core::NodeResult;
-use dag_macros::node;
+use dag_macros::def_node;
 
-#[node(
+#[def_node(
     name = "Clocky",
     determinism = "Strict",
     resources(clock(Clock))

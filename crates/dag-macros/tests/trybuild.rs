@@ -1,7 +1,8 @@
 #[test]
 fn ui_failures() {
     let t = trybuild::TestCases::new();
-    t.compile_fail("tests/ui/node_missing_name.rs");
+    t.pass("tests/ui/node_missing_name.rs");
+    t.compile_fail("tests/ui/node_missing_metadata.rs");
     t.compile_fail("tests/ui/node_invalid_effect.rs");
     t.compile_fail("tests/ui/node_effect_hint_conflict.rs");
     t.compile_fail("tests/ui/node_determinism_hint_conflict.rs");

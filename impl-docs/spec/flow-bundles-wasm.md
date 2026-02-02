@@ -1,0 +1,168 @@
+Status: Draft
+Purpose: spec
+Owner: Core
+Last reviewed: 2026-02-01
+
+# WASM-First Flow Bundles (0.1.x Addendum)
+
+This addendum defines a portable FlowBundle artifact and a WASM-first ABI for executing
+flows across native hosts (wasmtime) and Workers runtimes. It extends:
+
+- `impl-docs/spec/stdlib-and-node-registry.md` (FlowBundle + NodeRegistry concepts)
+- `impl-docs/spec/subflows.md` (subflow catalog and linking rules)
+- `impl-docs/spec/checkpointing-and-durability.md` (resume pinning requirements)
+
+## Goals
+
+- Provide a single, stable ABI for executing flow nodes in WASM.
+- Define a portable FlowBundle artifact format (manifest + module) that is host-agnostic.
+- Keep authoring Rust-first (macros emit IR + metadata at build time).
+- Align bundle emission with the `flow!` authoring surface and `node!(...)` bindings.
+- Preserve compile-time linking and validation semantics.
+- Make bundle pinning explicit for checkpoint/resume safety.
+
+## Non-goals
+
+- Cross-host durability backends or control-plane services.
+- Dynamic plugin discovery at runtime.
+- Embedding secrets or credentials in bundles.
+- Redefining Flow IR schemas or node semantics.
+
+## Artifact Layout
+
+```
+flow.bundle/
+  manifest.json
+  manifest.sig
+  module.wasm
+  module.sig (optional)
+  artifacts/ (optional)
+```
+
+`manifest.json` is authoritative. `module.wasm` is the compiled code bundle. Optional
+artifacts may include Flow IR JSON, DOT output, or derived schemas.
+
+## Bundle Manifest (v0.1)
+
+The manifest is the primary host-facing contract. It must be stable and self-describing.
+
+```json
+{
+  "bundle_version": "0.1",
+  "abi": { "name": "latticeflow.wit", "version": "0.1" },
+  "bundle_id": "sha256:...",
+  "code": { "kind": "wasm32-unknown-unknown", "hash": "sha256:...", "size_bytes": 123456 },
+  "flow": { "id": "flow://...", "version": "v0.1.0", "profile": "partial" },
+  "flow_ir": { "artifact": "artifacts/flow_ir.json", "hash": "sha256:..." },
+  "entrypoints": [
+    {
+      "trigger": "trigger",
+      "capture": "responder",
+      "route_aliases": ["/echo"],
+      "deadline_ms": 250
+    }
+  ],
+  "nodes": {
+    "std.timer.wait": {
+      "id": "node://...",
+      "effects": "effectful",
+      "determinism": "nondeterministic",
+      "durability": { "checkpointable": true, "replayable": true, "halts": true },
+      "bindings": ["resume_scheduler"],
+      "input_schema": "...",
+      "output_schema": "..."
+    }
+  },
+  "capabilities": {
+    "required": [
+      { "name": "resume_scheduler", "kind": "scheduler", "constraints": { "resolution_ms": 1000 } }
+    ],
+    "optional": []
+  },
+  "subflows": {
+    "mode": "embedded|external",
+    "entries": [
+      { "id": "flow://subflow", "bundle_id": "sha256:...", "entrypoint": "main", "embedded": true }
+    ]
+  },
+  "signing": { "algorithm": "ed25519", "key_id": "...", "signed_at": "..." }
+}
+```
+
+Notes:
+
+- `bundle_id` is derived from the manifest + code hash. Hosts use it for caching and resume pinning.
+- `flow_ir` may be embedded as a file reference; hosts should verify the hash.
+- `entrypoints` are explicit; `route_aliases` are optional and non-authoritative.
+- `route_aliases` is the only alias field; `route_alias` is invalid in 0.1.x.
+- `capabilities.required` declares binding names and capability kinds; credentials never live here.
+
+## ABI (WIT / Component Model)
+
+The bundle must export a minimal, stable interface:
+
+- `bundle_manifest() -> string` (JSON manifest)
+- `invoke_node(alias: string, input: list<u8>) -> node_output`
+
+`node_output` is a variant:
+
+- `value(list<u8>)`
+- `halt(list<u8>)`
+- `none`
+- `stream(handle)` (optional in v0.1; can be disabled)
+
+The bundle imports host capability interfaces, such as:
+
+- `capability.scheduler.schedule_at(handle_id, epoch_ms)`
+- `capability.signal.create_token(handle_id, config) -> token`
+- `capability.kv.get/put`
+- `capability.blob.put/get`
+- `invocation.metadata()`
+
+All effects must go through capability imports. Direct host calls are disallowed.
+
+## Capability Bindings
+
+- Bundles declare logical binding names (e.g., `"customer_store"`).
+- Hosts map binding names to concrete resources (KV namespaces, DB URIs, DOs, etc.).
+- Credentials are host-owned and rotatable without changing bundles.
+- Binding identities are pinned per `bundle_id` for resume consistency.
+
+## Checkpoint / Resume Pinning
+
+- Checkpoint records MUST include `bundle_id` and `flow_version`.
+- Resume MUST load the exact `bundle_id`. If missing, resume fails deterministically.
+- Hosts must retain old bundles until checkpoints referencing them are drained or expired.
+
+## Subflow Linking
+
+Subflows follow the rules in `impl-docs/spec/subflows.md` and are referenced via `subflows.entries`:
+
+- `embedded`: subflow compiled into the same module (single bundle).
+- `external`: subflow compiled as its own bundle and resolved by host catalog.
+
+Hosts may choose embedded or external packaging strategies, but the manifest must record which
+strategy was used.
+
+## Routing + Sharding
+
+- Default routes are derived from bundle identifiers (e.g., `/.lf/<bundle_id>/<trigger_alias>`).
+- `route_aliases` are friendly overrides and are not authoritative.
+- Aliases MAY be overridden by host config for public-facing routes.
+- Sharding is a host deployment concern and is not encoded in bundles.
+
+## Build Profiles
+
+- Development builds favor fast iteration and omit `wasm-opt`.
+- Release builds may apply `wasm-opt` and size checks.
+- The manifest must always reflect the final code hash.
+
+## Security and Limits
+
+Hosts should enforce:
+
+- memory limits and fuel/timeout budgets per invocation
+- capability call limits (rate and count)
+- size limits on payloads and blobs
+
+Capability calls should be logged to a structured ledger for debugging and policy enforcement.

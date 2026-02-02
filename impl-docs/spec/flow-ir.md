@@ -99,13 +99,16 @@ Notes:
 
 ## Triggers & Entrypoints (0.1.x)
 
-- A trigger is a `NodeIR` with `kind = trigger`.
-- A host/deployment selects which trigger alias to run via the invocation boundary (`trigger_alias`), not via Flow IR fields (see `impl-docs/spec/invocation-abi.md`).
-- Route wiring (HTTP paths/methods, queue subscriptions, cron schedules), auth, and rate limits are deployment concerns and are intentionally out-of-band in 0.1.
+- A trigger is a `NodeIR` with `kind = trigger` and represents an ingress boundary.
+- Entrypoints are **explicit** and live in bundle/host metadata (not in `FlowIR`).
+- Entrypoints are never inferred from trigger nodes; hosts MUST require explicit entrypoints for ingress.
+- An entrypoint binds a `trigger_alias` and `capture_alias`, plus optional `route_aliases` for UX.
+- `route_aliases` is the only alias field; `route_alias` is invalid in 0.1.x.
+- Hosts derive a canonical route deterministically (for example `/.lf/<bundle_id>/<trigger_alias>`).
+  `route_aliases` are friendly overrides and are not authoritative.
 
-Policy guardrail (recommended for agent-authored flows):
-- By default, validators reject multiple trigger nodes in a single flow.
-- Opt-in with `policies.lint.allow_multiple_triggers=true` when a flow intentionally supports multiple ingress shapes.
+Multiple triggers are allowed, but hosts MUST require explicit entrypoints for each ingress.
+Validators SHOULD reject entrypoints that reference missing aliases or a non-trigger `trigger_alias`.
 
 ## EdgeIR
 

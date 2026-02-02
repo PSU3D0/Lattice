@@ -13,7 +13,11 @@ const TRIGGER_SPEC: NodeSpec = NodeSpec {
     determinism: Determinism::Strict,
     determinism_hints: &[],
     effect_hints: &[],
-    durability: DurabilityProfile::default(),
+    durability: DurabilityProfile {
+        checkpointable: true,
+        replayable: true,
+        halts: false,
+    },
 };
 
 const ROUTE_SPEC: NodeSpec = NodeSpec::inline(
