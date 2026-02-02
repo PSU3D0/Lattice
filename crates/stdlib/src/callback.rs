@@ -32,16 +32,17 @@ pub struct CallbackWaitOutput {
 async fn callback_wait(input: CallbackWaitInput) -> NodeResult<CallbackWaitOutput> {
     let timeout = input.timeout;
     let context_value = input.context;
+    let metadata_value = context_value.clone();
     let token = context::with_current_async(|resources| async move {
         let source = resources.resume_signal_source().ok_or_else(|| {
             NodeError::new("std.callback.wait requires ResumeSignalSource")
         })?;
         let handle = context::current_checkpoint_handle()
             .ok_or_else(|| NodeError::new("std.callback.wait missing checkpoint handle"))?;
-        let metadata = if context_value.is_null() {
+        let metadata = if metadata_value.is_null() {
             None
         } else {
-            Some(context_value)
+            Some(metadata_value)
         };
         source
             .create_token(
@@ -60,6 +61,6 @@ async fn callback_wait(input: CallbackWaitInput) -> NodeResult<CallbackWaitOutpu
 
     Ok(CallbackWaitOutput {
         resume_token: token.0,
-        context: input.context,
+        context: context_value,
     })
 }

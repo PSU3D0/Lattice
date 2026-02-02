@@ -696,6 +696,7 @@ mod tests {
                 assert_eq!(value, serde_json::json!({"ok": true}));
             }
             ExecutionResult::Stream(_) => panic!("expected value result"),
+            ExecutionResult::Halt { .. } => panic!("unexpected halt result"),
         }
     }
 
@@ -1116,6 +1117,7 @@ mod tests {
         match result {
             ExecutionResult::Value(value) => assert_eq!(value, serde_json::json!({"ok": true})),
             ExecutionResult::Stream(_) => panic!("expected value result"),
+            ExecutionResult::Halt { .. } => panic!("unexpected halt result"),
         }
     }
 
@@ -2174,6 +2176,7 @@ mod tests {
         match result {
             ExecutionResult::Value(value) => assert_eq!(value, serde_json::json!({"ok": true})),
             ExecutionResult::Stream(_) => panic!("expected value result"),
+            ExecutionResult::Halt { .. } => panic!("unexpected halt result"),
         }
     }
 

@@ -2011,9 +2011,10 @@ async fn run_node(
 
         let ctx_for_handler = ctx.clone();
         let resources = ctx_for_handler.resource_handle();
+        let resources_for_invoke = resources.clone();
         let handler_clone = handler.clone();
         let invoke = async move {
-            context::with_resources(resources.clone(), async move {
+            context::with_resources(resources_for_invoke, async move {
                 handler_clone.invoke(payload, &ctx_for_handler).await
             })
             .await
