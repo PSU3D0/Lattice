@@ -3,8 +3,9 @@ use std::process::Command;
 use assert_cmd::prelude::*;
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
-use serde_json::Value;
 use serde_json::json;
+use serde_json::Value;
+use tempfile::tempdir;
 
 #[test]
 fn run_local_echoes_normalised_payload() -> Result<(), Box<dyn std::error::Error>> {
@@ -163,13 +164,11 @@ fn run_local_streams_events() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let second: Value = serde_json::from_str(events[1])?;
-    assert!(
-        second
-            .get("stage")
-            .and_then(Value::as_str)
-            .map(|stage| stage.starts_with("update_"))
-            .unwrap_or(false)
-    );
+    assert!(second
+        .get("stage")
+        .and_then(Value::as_str)
+        .map(|stage| stage.starts_with("update_"))
+        .unwrap_or(false));
 
     Ok(())
 }
@@ -226,6 +225,78 @@ fn run_local_emits_json_summary() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(Value::as_array)
         .expect("nodes array missing in summary");
     assert!(!nodes.is_empty(), "expected node metrics in summary");
+
+    Ok(())
+}
+
+#[test]
+fn run_local_emits_json_stream_events() -> Result<(), Box<dyn std::error::Error>> {
+    let output = Command::cargo_bin("flows")?
+        .args([
+            "run",
+            "local",
+            "--example",
+            "s2_site",
+            "--payload",
+            r#"{"site": "alpha"}"#,
+            "--stream",
+            "--json",
+        ])
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "flows run local --json --stream exited unsuccessfully: {:?}",
+        output
+    );
+
+    let stdout = String::from_utf8(output.stdout)?;
+    let payload: Value = serde_json::from_str(stdout.trim())?;
+
+    assert_eq!(
+        payload.get("example").and_then(Value::as_str),
+        Some("s2_site"),
+        "example name should be included"
+    );
+
+    let stream_events = payload
+        .get("stream_events")
+        .and_then(Value::as_array)
+        .expect("stream_events missing in JSON output");
+    assert!(
+        stream_events.len() >= 2,
+        "expected multiple streaming events, got {stream_events:?}"
+    );
+
+    let summary = payload
+        .get("summary")
+        .and_then(Value::as_object)
+        .expect("summary missing in JSON output");
+    assert_eq!(
+        summary
+            .get("stream_events")
+            .and_then(Value::as_u64)
+            .map(|count| count as usize),
+        Some(stream_events.len()),
+        "summary stream_events should match emitted events"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn run_local_accepts_checkpoint_dir_flag() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempdir()?;
+    let output = Command::cargo_bin("flows")?
+        .args(["run", "local", "--example", "s1_echo", "--checkpoint-dir"])
+        .arg(dir.path())
+        .args(["--payload", r#"{"value": "Hello"}"#])
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "flows run local --checkpoint-dir failed: {output:?}"
+    );
 
     Ok(())
 }

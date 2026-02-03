@@ -26,6 +26,7 @@ registry-client = { path = "../registry-client" }
 registry-cert = { path = "../registry-cert" }
 connector-spec = { path = "../connector-spec" }
 exporters = { path = "../exporters" }
+flow-bundle = { path = "../flow-bundle" }
 example-s1-echo = { path = "../../examples/s1_echo" }
 example-s2-site = { path = "../../examples/s2_site" }
 example-s3-branching = { path = "../../examples/s3_branching" }
@@ -34,6 +35,7 @@ example-s5-unsupported-surface = { path = "../../examples/s5_unsupported_surface
 example-s6-spill = { path = "../../examples/s6_spill" }
 host-inproc = { path = "../host-inproc" }
 anyhow.workspace = true
+async-trait.workspace = true
 clap.workspace = true
 axum.workspace = true
 serde.workspace = true
@@ -49,8 +51,10 @@ sha2 = "0.10"
 
 [dev-dependencies]
 assert_cmd = "2.0"
+predicates = "3.1"
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+tempfile = "3.12"
 tokio = { workspace = true }
 proptest.workspace = true

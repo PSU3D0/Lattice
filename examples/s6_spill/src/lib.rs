@@ -125,7 +125,13 @@ async fn capture(acks: Vec<Ack>) -> NodeResult<Vec<Ack>> {
 }
 
 mod bundle_def {
-    use super::{batch_trigger, capture, prepare_payload, slow_ack, store_blob};
+    use super::{
+        batch_trigger_register,
+        capture_register,
+        prepare_payload_register,
+        slow_ack_register,
+        store_blob_register,
+    };
     use dag_macros::node;
 
     dag_macros::flow! {

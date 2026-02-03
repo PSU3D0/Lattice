@@ -66,8 +66,20 @@ The manifest is the primary host-facing contract. It must be stable and self-des
   "bundle_version": "0.1",
   "abi": { "name": "latticeflow.wit", "version": "0.1" },
   "bundle_id": "sha256:...",
-  "code": { "kind": "wasm32-unknown-unknown", "hash": "sha256:...", "size_bytes": 123456 },
-  "flow": { "id": "flow://...", "version": "v0.1.0", "profile": "partial" },
+  "code": {
+    "target": "wasm32-unknown-unknown",
+    "file": "module.wasm",
+    "hash": "sha256:...",
+    "size_bytes": 123456
+  },
+  "artifacts": [
+    {
+      "target": "x86_64-unknown-linux-gnu",
+      "file": "artifacts/flow",
+      "hash": "sha256:..."
+    }
+  ],
+  "flow": { "id": "flow://...", "version": "v0.1.0", "profile": "wasm" },
   "flow_ir": { "artifact": "artifacts/flow_ir.json", "hash": "sha256:..." },
   "entrypoints": [
     {
@@ -106,11 +118,57 @@ The manifest is the primary host-facing contract. It must be stable and self-des
 
 Notes:
 
-- `bundle_id` is derived from the manifest + code hash. Hosts use it for caching and resume pinning.
+- `bundle_id` is derived from a canonical JSON form of the manifest. Canonicalization:
+  - Remove `bundle_id` and `signing`.
+  - Omit optional fields when they are `None` (for example `flow_ir`, `subflows`, `signing`,
+    and empty `artifacts`).
+  - Always include empty defaults for `entrypoints`, `nodes`, and `capabilities` (empty arrays
+    or empty objects) when those sections are missing.
+  - Sort object keys lexicographically; preserve array order.
+  Hosts use it for caching and resume pinning.
+- The bundling CLI extracts the manifest from the WASM custom section and emits
+  `manifest.json` from that data. The `bundle_manifest()` export is a runtime
+  host-facing interface (future) and is not required for bundling.
+- `code.target` declares the default execution target; `code.file` is the primary bundle artifact.
+- `artifacts` is optional and carries additional target-specific artifacts with their hashes.
 - `flow_ir` may be embedded as a file reference; hosts should verify the hash.
 - `entrypoints` are explicit; `route_aliases` are optional and non-authoritative.
 - `route_aliases` is the only alias field; `route_alias` is invalid in 0.1.x.
+- Entrypoint objects are closed; unknown fields are rejected by the schema.
 - `capabilities.required` declares binding names and capability kinds; credentials never live here.
+- `capabilities.*.constraints` is an object payload (no string forms).
+- `nodes.*.effects` and `nodes.*.determinism` use the Flow IR enums.
+- `subflows.mode` is `embedded` or `external`.
+- `subflows.entries` is required whenever `subflows` is present; it may be empty. Omit
+  `subflows` entirely when empty for brevity.
+- `capabilities.required`/`capabilities.optional` default to empty lists when omitted.
+- `nodes.*.bindings` defaults to an empty list when omitted.
+- All `sha256:` hashes use lowercase hex, matching the schema `[0-9a-f]{64}`.
+
+## Multi-target Emission (CLI)
+
+Bundle emitters MAY include multiple target artifacts in a single manifest. CLI flags:
+
+- `--wasm` emits a WASM artifact and records it under `code` (or `artifacts` when non-default).
+- `--native` emits a native artifact for the host target triple.
+- `--target <triple>` emits a native artifact for the specified target triple.
+
+When both WASM and native are emitted, the WASM artifact remains the default `code` entry, and
+native artifacts are appended to `artifacts`.
+
+## Host Selection Policy
+
+Hosts select an execution artifact via `exec` policy:
+
+- `exec=auto` selects the first compatible artifact, preferring native over WASM.
+- `exec=native` requires a compatible native artifact; otherwise execution fails.
+- `exec=wasm` requires a WASM artifact; otherwise execution fails.
+
+Compatibility rules:
+
+- Native artifacts are compatible only when the host target triple matches `artifacts[*].target`.
+- WASM artifacts are compatible when `code.target` (or a WASM entry in `artifacts`) is a WASM target.
+- If no compatible artifact exists for the selected policy, hosts must fail deterministically.
 
 ## ABI (WIT / Component Model)
 

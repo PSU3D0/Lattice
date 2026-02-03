@@ -1,0 +1,196 @@
+{
+  "$id": "https://lattice.dev/schemas/flow_bundle.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Lattice Flow Bundle Manifest",
+  "type": "object",
+  "definitions": {
+    "AbiRef": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" }
+      },
+      "required": ["name", "version"]
+    },
+    "CodeDescriptor": {
+      "type": "object",
+      "properties": {
+        "target": { "type": "string" },
+        "file": { "type": "string" },
+        "hash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "size_bytes": { "type": "integer", "minimum": 0 }
+      },
+      "required": ["target", "file", "hash", "size_bytes"]
+    },
+    "ArtifactDescriptor": {
+      "type": "object",
+      "properties": {
+        "target": { "type": "string" },
+        "file": { "type": "string" },
+        "hash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "required": ["target", "file", "hash"]
+    },
+    "FlowDescriptor": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "version": { "type": "string" },
+        "profile": { "type": "string" }
+      },
+      "required": ["id", "version", "profile"]
+    },
+    "FlowIrRef": {
+      "type": "object",
+      "properties": {
+        "artifact": { "type": "string" },
+        "hash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "required": ["artifact", "hash"]
+    },
+    "Entrypoint": {
+      "type": "object",
+      "properties": {
+        "trigger": { "type": "string" },
+        "capture": { "type": "string" },
+        "route_aliases": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "deadline_ms": { "type": "integer", "minimum": 0 }
+      },
+      "required": ["trigger", "capture"],
+      "additionalProperties": false
+    },
+    "NodeSpec": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "effects": { "type": "string", "enum": ["pure", "read_only", "effectful"] },
+        "determinism": {
+          "type": "string",
+          "enum": ["strict", "stable", "best_effort", "nondeterministic"]
+        },
+        "durability": {
+          "type": "object",
+          "properties": {
+            "checkpointable": { "type": "boolean" },
+            "replayable": { "type": "boolean" },
+            "halts": { "type": "boolean" }
+          },
+          "required": ["checkpointable", "replayable", "halts"]
+        },
+        "bindings": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "input_schema": { "type": "string" },
+        "output_schema": { "type": "string" }
+      },
+      "required": [
+        "id",
+        "effects",
+        "determinism",
+        "durability",
+        "input_schema",
+        "output_schema"
+      ]
+    },
+    "CapabilityBinding": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "kind": { "type": "string" },
+        "constraints": { "type": "object" }
+      },
+      "required": ["name", "kind"]
+    },
+    "Capabilities": {
+      "type": "object",
+      "properties": {
+        "required": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/CapabilityBinding" },
+          "default": []
+        },
+        "optional": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/CapabilityBinding" },
+          "default": []
+        }
+      },
+      "required": []
+    },
+    "SubflowEntry": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "bundle_id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "entrypoint": { "type": "string" },
+        "embedded": { "type": "boolean" }
+      },
+      "required": ["id", "bundle_id", "entrypoint", "embedded"]
+    },
+    "Subflows": {
+      "type": "object",
+      "properties": {
+        "mode": { "type": "string", "enum": ["embedded", "external"] },
+        "entries": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/SubflowEntry" },
+          "default": []
+        }
+      },
+      "required": ["mode", "entries"]
+    },
+    "Signing": {
+      "type": "object",
+      "properties": {
+        "algorithm": { "type": "string" },
+        "key_id": { "type": "string" },
+        "signed_at": { "type": "string" }
+      },
+      "required": ["algorithm", "key_id", "signed_at"]
+    }
+  },
+  "properties": {
+    "bundle_version": { "type": "string", "enum": ["0.1"] },
+    "abi": { "$ref": "#/definitions/AbiRef" },
+    "bundle_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "code": { "$ref": "#/definitions/CodeDescriptor" },
+    "artifacts": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/ArtifactDescriptor" },
+      "default": []
+    },
+    "flow": { "$ref": "#/definitions/FlowDescriptor" },
+    "flow_ir": { "$ref": "#/definitions/FlowIrRef" },
+    "entrypoints": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/Entrypoint" },
+      "default": []
+    },
+    "nodes": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/definitions/NodeSpec" },
+      "default": {}
+    },
+    "capabilities": { "$ref": "#/definitions/Capabilities" },
+    "subflows": { "$ref": "#/definitions/Subflows" },
+    "signing": { "$ref": "#/definitions/Signing" }
+  },
+  "required": ["bundle_version", "abi", "bundle_id", "code", "flow"]
+}

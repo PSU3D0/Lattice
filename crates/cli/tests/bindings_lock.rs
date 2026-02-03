@@ -46,7 +46,10 @@ fn generate_lock(
 
 #[test]
 fn run_local_succeeds_with_bindings_lock() -> Result<(), Box<dyn std::error::Error>> {
-    let lock_path = generate_lock("s4_preflight", &["resource::kv=memory"])?;
+    let lock_path = generate_lock(
+        "s4_preflight",
+        &["resource::kv=memory", "durability::checkpoint_store=memory"],
+    )?;
 
     let output = Command::cargo_bin("flows")?
         .args([
@@ -76,7 +79,10 @@ fn run_local_succeeds_with_bindings_lock() -> Result<(), Box<dyn std::error::Err
 
 #[test]
 fn run_local_rejects_bind_and_bindings_lock_together() -> Result<(), Box<dyn std::error::Error>> {
-    let lock_path = generate_lock("s4_preflight", &["resource::kv=memory"])?;
+    let lock_path = generate_lock(
+        "s4_preflight",
+        &["resource::kv=memory", "durability::checkpoint_store=memory"],
+    )?;
 
     let output = Command::cargo_bin("flows")?
         .args([
@@ -104,7 +110,10 @@ fn run_local_rejects_bind_and_bindings_lock_together() -> Result<(), Box<dyn std
 
 #[test]
 fn run_local_rejects_hash_mismatch_in_lock() -> Result<(), Box<dyn std::error::Error>> {
-    let lock_path = generate_lock("s4_preflight", &["resource::kv=memory"])?;
+    let lock_path = generate_lock(
+        "s4_preflight",
+        &["resource::kv=memory", "durability::checkpoint_store=memory"],
+    )?;
 
     let raw = std::fs::read_to_string(&lock_path)?;
     let mut json: Value = serde_json::from_str(&raw)?;

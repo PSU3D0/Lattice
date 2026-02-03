@@ -5,7 +5,7 @@ use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{ToTokens, format_ident, quote};
 use semver::Version;
 use std::collections::{HashMap, HashSet};
-use syn::braced;
+use syn::{braced, bracketed};
 use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
@@ -1241,7 +1241,7 @@ fn register_info_from_base_path(path: &Path) -> Result<(Path, String)> {
 }
 
 fn node_spec_path_from_path(path: &Path) -> Result<Path> {
-    let mut path = path.clone();
+    let mut path = qualify_type_path(path);
     let Some(segment) = path.segments.last_mut() else {
         return Err(syn::Error::new_spanned(
             path,
@@ -1257,6 +1257,18 @@ fn node_spec_path_from_path(path: &Path) -> Result<Path> {
     let base = segment.ident.to_string();
     segment.ident = format_ident!("{}_node_spec", base);
     Ok(path)
+}
+
+fn qualify_type_path(path: &Path) -> Path {
+    let Some(first) = path.segments.first() else {
+        return path.clone();
+    };
+    let ident = first.ident.to_string();
+    if path.segments.len() == 1 && !matches!(ident.as_str(), "crate" | "self" | "super") {
+        parse_quote!(crate::#path)
+    } else {
+        path.clone()
+    }
 }
 
 fn flow_fn_tokens_from_entrypoint(path: &Path) -> Result<TokenStream2> {
@@ -1420,7 +1432,7 @@ enum BindingTypeInfo {
 }
 
 fn type_path_with_suffix(path: &Path, suffix: &str) -> Path {
-    let mut path = path.clone();
+    let mut path = qualify_type_path(path);
     if let Some(last) = path.segments.last_mut() {
         last.ident = format_ident!("{}{}", last.ident, suffix);
     }
@@ -1437,7 +1449,11 @@ fn node_type_info_from_base_path(path: &Path) -> BindingTypeInfo {
 fn node_type_info_from_node_spec_path(path: &Path) -> Option<BindingTypeInfo> {
     let last = path.segments.last()?;
     let ident = last.ident.to_string();
-    let base = ident.strip_suffix("_node_spec")?;
+    let base = if let Some(base) = ident.strip_suffix("_stream_node_spec") {
+        base
+    } else {
+        ident.strip_suffix("_node_spec")?
+    };
     let mut base_path = path.clone();
     if let Some(last) = base_path.segments.last_mut() {
         last.ident = Ident::new(base, last.ident.span());
@@ -1637,7 +1653,7 @@ struct SwitchEntry {
 struct EntrypointEntry {
     trigger: LitStr,
     capture: LitStr,
-    route: Option<LitStr>,
+    route_aliases: Vec<LitStr>,
     method: Option<LitStr>,
     deadline_ms: Option<u64>,
 }
@@ -2165,7 +2181,7 @@ impl Parse for EntrypointEntry {
         let span = content.span();
         let mut trigger = None;
         let mut capture = None;
-        let mut route = None;
+        let mut route_aliases = Vec::new();
         let mut method = None;
         let mut deadline_ms = None;
 
@@ -2185,11 +2201,27 @@ impl Parse for EntrypointEntry {
                     }
                     capture = Some(content.parse()?);
                 }
-                "route" => {
-                    if route.is_some() {
-                        return Err(syn::Error::new(key.span(), "duplicate entrypoint route"));
+                "route_aliases" => {
+                    if !route_aliases.is_empty() {
+                        return Err(syn::Error::new(
+                            key.span(),
+                            "duplicate entrypoint route_aliases",
+                        ));
                     }
-                    route = Some(content.parse()?);
+                    let aliases_content;
+                    bracketed!(aliases_content in content);
+                    while !aliases_content.is_empty() {
+                        let alias: LitStr = aliases_content.parse()?;
+                        route_aliases.push(alias);
+                        if aliases_content.peek(Token![,]) {
+                            aliases_content.parse::<Token![,]>()?;
+                            if aliases_content.is_empty() {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
                 }
                 "method" => {
                     if method.is_some() {
@@ -2239,7 +2271,7 @@ impl Parse for EntrypointEntry {
         Ok(Self {
             trigger,
             capture,
-            route,
+            route_aliases,
             method,
             deadline_ms,
         })
@@ -4110,11 +4142,12 @@ impl WorkflowBundleInput {
 
             let trigger = &entry.trigger;
             let capture = &entry.capture;
-            let route = entry
-                .route
-                .as_ref()
-                .map(|route| quote!(Some(#route)))
-                .unwrap_or_else(|| quote!(None));
+            let route_aliases_slice = if entry.route_aliases.is_empty() {
+                quote!(&[])
+            } else {
+                let aliases = entry.route_aliases.iter();
+                quote!(&[#(#aliases),*])
+            };
             let method = entry
                 .method
                 .as_ref()
@@ -4133,7 +4166,7 @@ impl WorkflowBundleInput {
                         #version_literal,
                         #trigger,
                         #capture,
-                        #route,
+                        #route_aliases_slice,
                         #method,
                         #deadline,
                     );
@@ -4177,11 +4210,17 @@ impl WorkflowBundleInput {
         let entrypoints = self.entrypoints.iter().map(|entry| {
             let trigger = &entry.trigger;
             let capture = &entry.capture;
-            let route = entry
-                .route
-                .as_ref()
+            let route_path = entry
+                .route_aliases
+                .first()
                 .map(|route| quote!(Some(#route.to_string())))
                 .unwrap_or_else(|| quote!(None));
+            let route_aliases = if entry.route_aliases.is_empty() {
+                quote!(Vec::new())
+            } else {
+                let aliases = entry.route_aliases.iter();
+                quote!(vec![#(#aliases.to_string()),*])
+            };
             let method = entry
                 .method
                 .as_ref()
@@ -4196,9 +4235,10 @@ impl WorkflowBundleInput {
                 ::host_inproc::FlowEntrypoint {
                     trigger_alias: #trigger.to_string(),
                     capture_alias: #capture.to_string(),
-                    route_path: #route,
+                    route_path: #route_path,
                     method: #method,
                     deadline: #deadline,
+                    route_aliases: #route_aliases,
                 }
             }
         });
