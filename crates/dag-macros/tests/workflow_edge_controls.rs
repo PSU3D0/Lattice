@@ -1,42 +1,25 @@
 use dag_core::prelude::*;
-use dag_macros::workflow;
+use dag_core::EdgeTransformKind;
+use dag_macros::{def_node, node, workflow};
 use kernel_plan::validate;
 
-const TRIGGER_SPEC: NodeSpec = NodeSpec {
-    identifier: "tests::trigger",
-    name: "Trigger",
-    kind: NodeKind::Trigger,
-    summary: None,
-    in_schema: SchemaSpec::Opaque,
-    out_schema: SchemaSpec::Opaque,
-    effects: Effects::Pure,
-    determinism: Determinism::Strict,
-    determinism_hints: &[],
-    effect_hints: &[],
-    durability: DurabilityProfile {
-        checkpointable: true,
-        replayable: true,
-        halts: false,
-    },
-};
+#[def_node(trigger, name = "Trigger")]
+async fn trigger(_input: ()) -> NodeResult<()> {
+    Ok(())
+}
 
-const SINK_SPEC: NodeSpec = NodeSpec::inline(
-    "tests::sink",
-    "Sink",
-    SchemaSpec::Opaque,
-    SchemaSpec::Opaque,
-    Effects::Pure,
-    Determinism::Strict,
-    None,
-);
+#[def_node(name = "Sink")]
+async fn sink(_input: ()) -> NodeResult<()> {
+    Ok(())
+}
 
 workflow! {
     name: delivery_flow,
     version: "1.0.0",
     profile: Dev;
 
-    let trigger = &TRIGGER_SPEC;
-    let sink = &SINK_SPEC;
+    let trigger = node!(trigger);
+    let sink = node!(sink);
 
     connect!(trigger -> sink);
     delivery!(trigger -> sink, mode = exactly_once);
@@ -47,8 +30,8 @@ workflow! {
     version: "1.0.0",
     profile: Dev;
 
-    let trigger = &TRIGGER_SPEC;
-    let sink = &SINK_SPEC;
+    let trigger = node!(trigger);
+    let sink = node!(sink);
 
     connect!(trigger -> sink);
     buffer!(trigger -> sink, max_items = 10);
@@ -59,8 +42,8 @@ workflow! {
     version: "1.0.0",
     profile: Dev;
 
-    let trigger = &TRIGGER_SPEC;
-    let sink = &SINK_SPEC;
+    let trigger = node!(trigger);
+    let sink = node!(sink);
 
     connect!(trigger -> sink);
     buffer!(trigger -> sink, max_items = 10);
@@ -72,8 +55,8 @@ workflow! {
     version: "1.0.0",
     profile: Dev;
 
-    let trigger = &TRIGGER_SPEC;
-    let sink = &SINK_SPEC;
+    let trigger = node!(trigger);
+    let sink = node!(sink);
 
     connect!(trigger -> sink);
     spill!(trigger -> sink, tier = "local");
@@ -100,6 +83,16 @@ fn workflow_spill_emits_edge_spill_policy() {
     assert_eq!(flow.edges[0].buffer.max_items, Some(10));
     assert_eq!(flow.edges[0].buffer.spill_tier.as_deref(), Some("local"));
     assert_eq!(flow.edges[0].buffer.spill_threshold_bytes, Some(65536));
+}
+
+#[test]
+fn workflow_connect_emits_into_transform() {
+    let flow = buffer_flow();
+    assert_eq!(flow.edges.len(), 1);
+    assert_eq!(
+        flow.edges[0].transform.as_ref().map(|t| t.kind),
+        Some(EdgeTransformKind::Into)
+    );
 }
 
 #[test]

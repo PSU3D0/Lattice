@@ -394,6 +394,17 @@
             "null"
           ]
         },
+        "transform": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/EdgeTransformIR"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional transform metadata."
+        },
         "to": {
           "description": "Destination node alias.",
           "type": "string"
@@ -407,6 +418,35 @@
         "to"
       ],
       "type": "object"
+    },
+    "EdgeTransformIR": {
+      "description": "Edge transform metadata block.",
+      "properties": {
+        "kind": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/EdgeTransformKind"
+            }
+          ],
+          "description": "Transform kind."
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "EdgeTransformKind": {
+      "description": "Edge transform kind enumeration.",
+      "oneOf": [
+        {
+          "description": "Rust Into conversion.",
+          "enum": [
+            "into"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "Effects": {
       "description": "Effect lattice describing resource access.",

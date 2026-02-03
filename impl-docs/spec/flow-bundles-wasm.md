@@ -42,6 +42,21 @@ flow.bundle/
 `manifest.json` is authoritative. `module.wasm` is the compiled code bundle. Optional
 artifacts may include Flow IR JSON, DOT output, or derived schemas.
 
+## Build Matrix (0.1.x)
+
+FlowBundle packaging supports three build shapes:
+
+- **Single**: one flow packaged into one bundle/module.
+- **Monolith**: multiple flows compiled into one bundle/module.
+- **Split**: multiple bundles produced from one workspace (one bundle per flow or per shard).
+
+Sharding is a host deployment concern and is not encoded in bundle artifacts.
+
+Cargo metadata usage:
+
+- Optional for single/monolith builds.
+- Required for split builds to map flows to crate/module boundaries.
+
 ## Bundle Manifest (v0.1)
 
 The manifest is the primary host-facing contract. It must be stable and self-describing.

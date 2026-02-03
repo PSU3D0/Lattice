@@ -1,0 +1,5 @@
+error: connect! requires typed bindings; bind `source` and `sink` via node!(...) or <name>_node_spec()
+  --> tests/ui/workflow_connect_requires_typed_binding.rs:32:14
+   |
+32 |     connect!(source -> sink);
+   |              ^^^^^^

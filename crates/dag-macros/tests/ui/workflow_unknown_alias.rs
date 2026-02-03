@@ -1,3 +1,5 @@
+#![allow(unused_imports)]
+
 use dag_core::NodeResult;
 use dag_macros::{def_node, node, workflow};
 

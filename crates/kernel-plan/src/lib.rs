@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use dag_core::{Delivery, Diagnostic, DurabilityMode, Effects, FlowIR, SchemaRef, diagnostic_codes};
+use dag_core::{Delivery, Diagnostic, DurabilityMode, EdgeTransformKind, Effects, FlowIR, SchemaRef, diagnostic_codes};
 
 const MIN_EXACTLY_ONCE_TTL_MS: u64 = 300_000;
 const DEDUPE_HINT_PREFIX: &str = "resource::dedupe";
@@ -234,6 +234,11 @@ fn check_port_compatibility(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
             None => continue,
         };
         if !schemas_compatible(&source.out_schema, &target.in_schema) {
+            if matches!(edge.transform.as_ref().map(|t| t.kind), Some(EdgeTransformKind::Into)) {
+                // Validation intentionally allows Into transforms even though runtime adapters
+                // are not applied yet; incompatible schemas may still fail at runtime.
+                continue;
+            }
             diagnostics.push(diagnostic(
                 "DAG201",
                 format!(

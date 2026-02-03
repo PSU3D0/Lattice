@@ -68,13 +68,14 @@ Config shape (JSON object):
 
 Predicate:
 - The value at `selector_pointer` MUST be a JSON boolean.
+- The selector inspects the source node output **before** any adapter conversion on outgoing edges.
 
 Targets:
 - `ControlSurfaceIR.targets` MUST include at least: `source`, `then`, `else`.
 
 Structural requirements (implemented by validator/runtime):
 - `selector_pointer` MUST be a valid JSON Pointer string (empty or starting with `/`) (`CTRL120`).
-- For both `then` and `else`, an edge `source -> target` MUST exist (`CTRL121`).
+- For both `then` and `else`, an edge `source -> target` MUST exist (`CTRL121`), even when an adapter is applied on delivery.
 - `ControlSurfaceIR.targets` MUST include `source`, `then`, and `else` (`CTRL120`).
 - A flow MUST NOT define multiple if surfaces for the same `source` (`CTRL122`).
 
@@ -93,6 +94,7 @@ Config shape (JSON object):
 Selector:
 - The value at `selector_pointer` MUST be a JSON string.
 - Matching is exact string equality.
+- The selector inspects the source node output **before** any adapter conversion on outgoing edges.
 
 Routing semantics:
 - After `source` produces a value, the runtime selects exactly one target:
@@ -102,7 +104,7 @@ Routing semantics:
 
 Structural requirements (implemented by validator/runtime):
 - `selector_pointer` MUST be a valid JSON Pointer string (empty or starting with `/`) (`CTRL110`).
-- For every case target (and `default` when present), an edge `source -> target` MUST exist (`CTRL111`).
+- For every case target (and `default` when present), an edge `source -> target` MUST exist (`CTRL111`), even when an adapter is applied on delivery.
 - `ControlSurfaceIR.targets` MUST include `source`, every case target, and `default` when present (`CTRL110`).
 - A flow MUST NOT define multiple switch surfaces for the same `source` (`CTRL112`).
 

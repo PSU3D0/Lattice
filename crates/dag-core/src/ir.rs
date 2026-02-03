@@ -354,6 +354,9 @@ pub struct EdgeIR {
     /// Optional timeout in milliseconds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
+    /// Optional transform metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transform: Option<EdgeTransformIR>,
     /// Buffer policy.
     pub buffer: BufferPolicy,
 }
@@ -367,9 +370,25 @@ impl Default for EdgeIR {
             ordering: Ordering::Ordered,
             partition_key: None,
             timeout_ms: None,
+            transform: None,
             buffer: BufferPolicy::default(),
         }
     }
+}
+
+/// Edge transform metadata block.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct EdgeTransformIR {
+    /// Transform kind.
+    pub kind: EdgeTransformKind,
+}
+
+/// Edge transform kind enumeration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EdgeTransformKind {
+    /// Rust Into conversion.
+    Into,
 }
 
 /// Delivery semantics enumeration.

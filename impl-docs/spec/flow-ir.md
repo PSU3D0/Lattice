@@ -132,6 +132,18 @@ Notes:
 - In current code, `buffer` spill behavior is implemented by `kernel-exec` (spill tiers are runtime-configured).
 - `delivery=exactly_once` is validated by `kernel-plan` (dedupe + idempotency requirements).
 
+## Type Compatibility and Adapters (0.1.x)
+
+Type checking for edges uses a Level-2 rule:
+
+- An edge is compatible when the source output type satisfies `Out: Into<In>` for the target input.
+- This rule applies uniformly across node kinds (including subflows).
+
+Adapters are edge-native:
+
+- Adapters apply when delivering data across the edge and are not represented as nodes.
+- Edges MUST exist even when an adapter is applied; adapters do not replace edges.
+
 ## ControlSurfaceIR
 
 Control surfaces describe orchestration intent.

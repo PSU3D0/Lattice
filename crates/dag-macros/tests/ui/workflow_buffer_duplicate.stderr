@@ -1,5 +1,5 @@
 error: [DAG207] duplicate buffer! for edge `trigger` -> `sink`
-  --> tests/ui/workflow_buffer_duplicate.rs:42:5
+  --> tests/ui/workflow_buffer_duplicate.rs:37:5
    |
-42 |     buffer!(trigger -> sink, max_items = 12);
+37 |     buffer!(trigger -> sink, max_items = 12);
    |     ^^^^^^

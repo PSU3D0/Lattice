@@ -159,7 +159,7 @@ Nodes opt out via macro attribute or registry entry:
 
 **Rust macro**:
 ```rust
-#[node(checkpointable = false, reason = "holds open websocket")]
+#[def_node(checkpointable = false, reason = "holds open websocket")]
 async fn realtime_feed(input: FeedConfig) -> NodeResult<FeedStream> { ... }
 ```
 
@@ -659,7 +659,7 @@ Timer/wait nodes are **single logical nodes** that delegate to the host's `Resum
 ### 8.2 Timer Node (`std.timer.wait`)
 
 ```rust
-#[node(
+#[def_node(
     halts = true,
     effectful = false,
     deterministic = false,
@@ -710,7 +710,7 @@ implementation notes.
 ### 8.3 HITL Approval Node (`std.hitl.approval`)
 
 ```rust
-#[node(
+#[def_node(
     halts = true,
     effectful = true,  // sends notification
     deterministic = false,
@@ -756,7 +756,7 @@ Usage examples for HITL nodes live in the stdlib spec and the Epic 04 implementa
 ### 8.4 External Callback Node (`std.callback.wait`)
 
 ```rust
-#[node(
+#[def_node(
     halts = true,
     effectful = false,
     deterministic = false,
@@ -806,7 +806,7 @@ This keeps node logic portable.
 
 Timer/HITL/callback nodes can optionally select a scheduler by name. The scheduler alias is a **host
 configuration** concern, not part of Flow IR. The node input schema (derived from the Rust input struct
-via the `#[node]` macro) exposes an optional `scheduler` parameter when needed.
+via the `#[def_node]` macro) exposes an optional `scheduler` parameter when needed.
 
 **Resolution rules**:
 - If `scheduler` is omitted, the host uses its default scheduler.
@@ -818,7 +818,7 @@ defaults are defined in the Epic 04 implementation notes.
 
 ### 8.7 Standard Library Placement and Host Gating
 
-Standard library nodes are registered via node metadata (e.g., `#[node(...)]`) and compiled into hosts.
+Standard library nodes are registered via node metadata (e.g., `#[def_node(...)]`) and compiled into hosts.
 The stdlib is a logical registry; concrete code may live in a dedicated crate (e.g., `crates/stdlib`) or
 be embedded into host crates. Hosts may include/exclude stdlib node sets via feature flags, but the
 portable contract remains the same.

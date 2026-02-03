@@ -1,41 +1,36 @@
+#![allow(unused_imports)]
+
 use dag_core::prelude::*;
-use dag_macros::workflow;
+use dag_macros::{def_node, node, workflow};
 
-const TRIGGER_SPEC: NodeSpec = NodeSpec {
-    identifier: "tests::trigger",
-    name: "Trigger",
-    kind: NodeKind::Trigger,
-    summary: None,
-    in_schema: SchemaSpec::Opaque,
-    out_schema: SchemaSpec::Opaque,
-    effects: Effects::Pure,
-    determinism: Determinism::Strict,
-    determinism_hints: &[],
-    effect_hints: &[],
-    durability: DurabilityProfile {
-        checkpointable: true,
-        replayable: true,
-        halts: false,
-    },
-};
+#[def_node(
+    trigger,
+    name = "Trigger",
+    summary = "Trigger",
+    effects = "Pure",
+    determinism = "Strict"
+)]
+async fn trigger(_input: ()) -> NodeResult<()> {
+    Ok(())
+}
 
-const SINK_SPEC: NodeSpec = NodeSpec::inline(
-    "tests::sink",
-    "Sink",
-    SchemaSpec::Opaque,
-    SchemaSpec::Opaque,
-    Effects::Pure,
-    Determinism::Strict,
-    None,
-);
+#[def_node(
+    name = "Sink",
+    summary = "Sink",
+    effects = "Pure",
+    determinism = "Strict"
+)]
+async fn sink(_input: ()) -> NodeResult<()> {
+    Ok(())
+}
 
 workflow! {
     name: spill_missing_edge,
     version: "1.0.0",
     profile: Dev;
 
-    let trigger = &TRIGGER_SPEC;
-    let sink = &SINK_SPEC;
+    let trigger = node!(trigger);
+    let sink = node!(sink);
 
     spill!(trigger -> sink, tier = "local");
 }

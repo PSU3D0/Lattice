@@ -12,7 +12,7 @@ invoked as a node in another flow while preserving compile-time validation.
 
 - Enable composition and reuse of flow logic.
 - Preserve compile-time linking and validation.
-- Allow subflows to be distributed as crates or bundles.
+- Treat subflows as compile-time linked Rust dependencies.
 
 ## Non-goals
 
@@ -52,8 +52,16 @@ Subflows are represented as **nodes** in a parent flow:
 - Node identifier: `subflow::<subflow_id>::<entrypoint>`.
 - Node input/output schemas match the subflow entrypoint.
 
-During compilation, the parent bundle must include the referenced subflow bundle in its catalog. The
-subflow node handler is generated at build time, which ensures missing subflows are compile errors.
+During compilation, the parent crate links the subflow crate directly. The subflow node handler is
+generated at build time, which ensures missing subflows are compile errors.
+
+Canonical authoring pattern:
+
+```
+subflow!(crate::flow_mod::entrypoint)
+```
+
+There is no runtime `flows import` mechanism in 0.1.x.
 
 ## Execution Semantics
 
@@ -83,6 +91,7 @@ Parent flows should reference a specific version to ensure stability.
 ## Validation Rules
 
 - Subflow entrypoint schemas must match the parent node schemas.
+- Node-to-subflow type checking uses the Level-2 rule `Out: Into<In>` (matching EdgeIR).
 - Cycles through subflows are disallowed (no recursion) in 0.1.
 - If parent flow requires `durability=strong`, subflow must be fully checkpointable.
 - If subflow contains a halt node, the parent node is treated as a halt boundary.
@@ -90,13 +99,8 @@ Parent flows should reference a specific version to ensure stability.
 
 ## Packaging
 
-Subflows can be distributed as:
-
-- Rust crates with `workflow_bundle!` export and entrypoint schemas.
-- Bundles included in a host catalog (e.g., compiled into the binary).
-
-In both cases, compile-time linking is required for production builds. The FlowBundle should include
-a SubflowCatalog that maps subflow IDs to their bundles and descriptors.
+Subflows are compile-time linked Rust crates. A FlowBundle may include a SubflowCatalog that maps
+subflow IDs to their descriptors, but all subflow code is linked into the parent binary for 0.1.x.
 
 ## IR Representation
 

@@ -1,5 +1,5 @@
 error: [DAG206] delivery! references missing edge `trigger` -> `sink`
-  --> tests/ui/workflow_delivery_missing_edge.rs:40:5
+  --> tests/ui/workflow_delivery_missing_edge.rs:35:5
    |
-40 |     delivery!(trigger -> sink, mode = exactly_once);
+35 |     delivery!(trigger -> sink, mode = exactly_once);
    |     ^^^^^^^^

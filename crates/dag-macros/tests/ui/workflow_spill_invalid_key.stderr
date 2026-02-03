@@ -1,5 +1,5 @@
 error: spill! requires `tier = "..."`
-  --> tests/ui/workflow_spill_invalid_key.rs:41:29
+  --> tests/ui/workflow_spill_invalid_key.rs:36:29
    |
-41 |     spill!(trigger -> sink, bucket = "local");
+36 |     spill!(trigger -> sink, bucket = "local");
    |                             ^^^^^^

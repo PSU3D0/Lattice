@@ -12,6 +12,8 @@ fn ui_failures() {
     t.compile_fail("tests/ui/workflow_duplicate_alias.rs");
     t.compile_fail("tests/ui/flow_enum_not_enum.rs");
     t.compile_fail("tests/ui/workflow_unknown_alias.rs");
+    t.compile_fail("tests/ui/workflow_connect_requires_into.rs");
+    t.compile_fail("tests/ui/workflow_connect_requires_typed_binding.rs");
     t.compile_fail("tests/ui/workflow_timeout_missing_edge.rs");
     t.compile_fail("tests/ui/workflow_timeout_invalid_key.rs");
     t.compile_fail("tests/ui/workflow_delivery_missing_edge.rs");

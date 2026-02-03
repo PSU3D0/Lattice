@@ -1,5 +1,5 @@
 error: buffer! requires `max_items = <integer>`
-  --> tests/ui/workflow_buffer_max_items_string.rs:41:42
+  --> tests/ui/workflow_buffer_max_items_string.rs:36:42
    |
-41 |     buffer!(trigger -> sink, max_items = "10");
+36 |     buffer!(trigger -> sink, max_items = "10");
    |                                          ^^^^

@@ -133,6 +133,7 @@ impl FlowBuilder {
             ordering: Default::default(),
             partition_key: None,
             timeout_ms: None,
+            transform: None,
             buffer: BufferPolicy::default(),
         });
         EdgeHandle {

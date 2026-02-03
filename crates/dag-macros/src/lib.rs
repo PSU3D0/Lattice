@@ -4,7 +4,7 @@ use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{ToTokens, format_ident, quote};
 use semver::Version;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use syn::braced;
 use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream};
@@ -26,6 +26,16 @@ pub fn node(input: TokenStream) -> TokenStream {
     let path = parse_macro_input!(input as Path);
     match node_spec_path_from_path(&path) {
         Ok(path) => quote!(#path()).into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+/// Helper macro for binding subflow entrypoints in workflow specs.
+#[proc_macro]
+pub fn subflow(input: TokenStream) -> TokenStream {
+    let path = parse_macro_input!(input as Path);
+    match subflow_spec_from_path(&path) {
+        Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }
 }
@@ -515,9 +525,12 @@ fn node_impl(
         .unwrap_or_else(|| quote!(None));
 
     let (input_schema_expr, output_schema_expr) = infer_schemas(&function, &config)?;
+    let (input_ty, output_ty) = node_input_output_types(&function)?;
 
     let fn_name = &function.sig.ident;
     let spec_ident = format_ident!("{}_NODE_SPEC", fn_name.to_string().to_uppercase());
+    let input_type_ident = format_ident!("{}_Input", fn_name);
+    let output_type_ident = format_ident!("{}_Output", fn_name);
     let accessor_ident = format_ident!("{}_node_spec", fn_name);
     let register_ident = format_ident!("{}_register", fn_name);
 
@@ -567,6 +580,11 @@ fn node_impl(
     Ok(quote! {
         #function
         #warning_tokens
+
+        #[allow(non_camel_case_types)]
+        pub type #input_type_ident = #input_ty;
+        #[allow(non_camel_case_types)]
+        pub type #output_type_ident = #output_ty;
 
         #[allow(non_upper_case_globals)]
         pub const #spec_ident: ::dag_core::NodeSpec = ::dag_core::NodeSpec {
@@ -939,6 +957,52 @@ fn infer_schemas(function: &ItemFn, config: &NodeArgs) -> Result<(TokenStream2, 
     Ok((input_schema, output_schema))
 }
 
+fn node_input_output_types(function: &ItemFn) -> Result<(syn::Type, syn::Type)> {
+    let arg = function.sig.inputs.first().ok_or_else(|| {
+        syn::Error::new(
+            function.sig.span(),
+            "[DAG001] nodes must accept exactly one argument",
+        )
+    })?;
+    let input_ty = match arg {
+        syn::FnArg::Typed(pt) => (*pt.ty).clone(),
+        syn::FnArg::Receiver(_) => {
+            return Err(syn::Error::new(
+                arg.span(),
+                "[DAG001] first parameter must be typed (use `fn foo(input: T)`)",
+            ));
+        }
+    };
+
+    let output_ty = match &function.sig.output {
+        syn::ReturnType::Type(_, ty) => output_type_from_return(ty.as_ref())?,
+        syn::ReturnType::Default => {
+            return Err(syn::Error::new(
+                function.sig.output.span(),
+                "[DAG001] nodes must return dag_core::NodeResult<T>",
+            ));
+        }
+    };
+
+    Ok((input_ty, output_ty))
+}
+
+fn output_type_from_return(ty: &syn::Type) -> Result<syn::Type> {
+    if let syn::Type::Path(path) = ty
+        && let Some(last) = path.path.segments.last()
+        && last.ident == "NodeResult"
+        && let syn::PathArguments::AngleBracketed(args) = &last.arguments
+        && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
+    {
+        return Ok(inner.clone());
+    }
+
+    Err(syn::Error::new(
+        ty.span(),
+        "[DAG001] return type must be dag_core::NodeResult<Output>",
+    ))
+}
+
 fn schema_from_type(ty: &syn::Type) -> TokenStream2 {
     let ty_str = ty.to_token_stream().to_string();
     if ty_str == "()" {
@@ -1193,6 +1257,272 @@ fn node_spec_path_from_path(path: &Path) -> Result<Path> {
     let base = segment.ident.to_string();
     segment.ident = format_ident!("{}_node_spec", base);
     Ok(path)
+}
+
+fn flow_fn_tokens_from_entrypoint(path: &Path) -> Result<TokenStream2> {
+    if path.segments.is_empty() {
+        return Err(syn::Error::new_spanned(
+            path,
+            "subflow! expects a path to a flow entrypoint const",
+        ));
+    }
+
+    let mut flow_path = path.clone();
+    flow_path
+        .segments
+        .push(syn::PathSegment::from(Ident::new("flow", Span::call_site())));
+    Ok(quote!(#flow_path()))
+}
+
+fn subflow_spec_from_path(path: &Path) -> Result<TokenStream2> {
+    let flow_fn = flow_fn_tokens_from_entrypoint(path)?;
+
+    Ok(quote! {
+        {
+            struct SubflowDescriptor {
+                flow_id: &'static str,
+                entrypoint: &'static str,
+                effects: ::dag_core::Effects,
+                determinism: ::dag_core::Determinism,
+                determinism_hints: &'static [&'static str],
+                effect_hints: &'static [&'static str],
+                durability: ::dag_core::DurabilityProfile,
+            }
+
+            fn __subflow_schema_spec<T>() -> ::dag_core::SchemaSpec {
+                let name = ::core::any::type_name::<T>();
+                if name == "()" {
+                    ::dag_core::SchemaSpec::Opaque
+                } else {
+                    ::dag_core::SchemaSpec::Named(name)
+                }
+            }
+
+            fn __subflow_leak_hints(values: Vec<String>) -> &'static [&'static str] {
+                if values.is_empty() {
+                    return &[] as &[&'static str];
+                }
+                let leaked: Vec<&'static str> = values
+                    .into_iter()
+                    .map(|value| Box::leak(value.into_boxed_str()) as &'static str)
+                    .collect();
+                Box::leak(leaked.into_boxed_slice())
+            }
+
+            fn __subflow_aggregate(
+                flow: &::dag_core::FlowIR,
+            ) -> (
+                ::dag_core::Effects,
+                ::dag_core::Determinism,
+                ::dag_core::DurabilityProfile,
+                &'static [&'static str],
+                &'static [&'static str],
+            ) {
+                let mut effects = ::dag_core::Effects::Pure;
+                let mut determinism = ::dag_core::Determinism::Strict;
+                let mut checkpointable = true;
+                let mut replayable = true;
+                let mut halts = false;
+                let mut effect_hints = Vec::new();
+                let mut determinism_hints = Vec::new();
+                let mut effect_seen = ::std::collections::HashSet::new();
+                let mut determinism_seen = ::std::collections::HashSet::new();
+
+                for node in &flow.nodes {
+                    if node.effects.rank() > effects.rank() {
+                        effects = node.effects;
+                    }
+                    if node.determinism.rank() > determinism.rank() {
+                        determinism = node.determinism;
+                    }
+                    if !node.durability.checkpointable {
+                        checkpointable = false;
+                    }
+                    if !node.durability.replayable {
+                        replayable = false;
+                    }
+                    if node.durability.halts {
+                        halts = true;
+                    }
+                    for hint in &node.effect_hints {
+                        if effect_seen.insert(hint.clone()) {
+                            effect_hints.push(hint.clone());
+                        }
+                    }
+                    for hint in &node.determinism_hints {
+                        if determinism_seen.insert(hint.clone()) {
+                            determinism_hints.push(hint.clone());
+                        }
+                    }
+                }
+
+                let durability = ::dag_core::DurabilityProfile {
+                    checkpointable,
+                    replayable,
+                    halts,
+                };
+                let determinism_hints = __subflow_leak_hints(determinism_hints);
+                let effect_hints = __subflow_leak_hints(effect_hints);
+
+                (effects, determinism, durability, determinism_hints, effect_hints)
+            }
+
+            fn __subflow_node_spec<In, Out>(
+                entry: ::dag_core::FlowEntrypoint<In, Out>,
+            ) -> ::dag_core::NodeSpec {
+                let version = ::dag_core::prelude::Version::parse(entry.flow_version)
+                    .expect("subflow!: invalid semver literal");
+                let flow_id = ::dag_core::FlowId::new(entry.flow_name, &version);
+                let flow_id = Box::leak(flow_id.0.into_boxed_str());
+                let identifier = Box::leak(
+                    format!("subflow::{}::{}", flow_id, entry.trigger_alias).into_boxed_str(),
+                );
+                let name = Box::leak(
+                    format!("Subflow {}", entry.flow_name).into_boxed_str(),
+                );
+                let flow = #flow_fn;
+                let (effects, determinism, durability, determinism_hints, effect_hints) =
+                    __subflow_aggregate(&flow);
+                let descriptor = SubflowDescriptor {
+                    flow_id,
+                    entrypoint: entry.trigger_alias,
+                    effects,
+                    determinism,
+                    determinism_hints,
+                    effect_hints,
+                    durability,
+                };
+
+                ::dag_core::NodeSpec {
+                    identifier,
+                    name,
+                    kind: ::dag_core::NodeKind::Subflow,
+                    summary: None,
+                    in_schema: __subflow_schema_spec::<In>(),
+                    out_schema: __subflow_schema_spec::<Out>(),
+                    effects: descriptor.effects,
+                    determinism: descriptor.determinism,
+                    determinism_hints: descriptor.determinism_hints,
+                    effect_hints: descriptor.effect_hints,
+                    durability: descriptor.durability,
+                }
+            }
+
+            Box::leak(Box::new(__subflow_node_spec(#path)))
+        }
+    })
+}
+
+#[derive(Clone, Debug)]
+enum BindingTypeInfo {
+    Node { input: Path, output: Path },
+    Subflow { entrypoint: Path },
+}
+
+fn type_path_with_suffix(path: &Path, suffix: &str) -> Path {
+    let mut path = path.clone();
+    if let Some(last) = path.segments.last_mut() {
+        last.ident = format_ident!("{}{}", last.ident, suffix);
+    }
+    path
+}
+
+fn node_type_info_from_base_path(path: &Path) -> BindingTypeInfo {
+    BindingTypeInfo::Node {
+        input: type_path_with_suffix(path, "_Input"),
+        output: type_path_with_suffix(path, "_Output"),
+    }
+}
+
+fn node_type_info_from_node_spec_path(path: &Path) -> Option<BindingTypeInfo> {
+    let last = path.segments.last()?;
+    let ident = last.ident.to_string();
+    let base = ident.strip_suffix("_node_spec")?;
+    let mut base_path = path.clone();
+    if let Some(last) = base_path.segments.last_mut() {
+        last.ident = Ident::new(base, last.ident.span());
+    }
+    Some(node_type_info_from_base_path(&base_path))
+}
+
+fn binding_type_info(expr: &Expr) -> Option<BindingTypeInfo> {
+    match expr {
+        Expr::Reference(reference) => binding_type_info(reference.expr.as_ref()),
+        Expr::Macro(expr_mac) if expr_mac.mac.path.is_ident("node") => {
+            let path: Path = syn::parse2(expr_mac.mac.tokens.clone()).ok()?;
+            Some(node_type_info_from_base_path(&path))
+        }
+        Expr::Macro(expr_mac) if expr_mac.mac.path.is_ident("subflow") => {
+            let path: Path = syn::parse2(expr_mac.mac.tokens.clone()).ok()?;
+            Some(BindingTypeInfo::Subflow { entrypoint: path })
+        }
+        Expr::Call(call) => match call.func.as_ref() {
+            Expr::Path(path) => node_type_info_from_node_spec_path(&path.path),
+            _ => None,
+        },
+        Expr::Path(path) => node_type_info_from_node_spec_path(&path.path),
+        _ => None,
+    }
+}
+
+fn connect_type_assert(from_info: &BindingTypeInfo, to_info: &BindingTypeInfo) -> TokenStream2 {
+    match (from_info, to_info) {
+        (BindingTypeInfo::Node { output: from_out, .. }, BindingTypeInfo::Node { input: to_in, .. }) => {
+            quote! {
+                {
+                    fn __dag_connect_assert<Out, In>()
+                    where
+                        Out: Into<In>,
+                    {
+                    }
+                    let _ = __dag_connect_assert::<#from_out, #to_in>;
+                }
+            }
+        }
+        (BindingTypeInfo::Subflow { entrypoint: from_entry }, BindingTypeInfo::Node { input: to_in, .. }) => {
+            quote! {
+                {
+                    fn __dag_connect_assert_subflow_to_node<FromIn, FromOut>(
+                        _: ::dag_core::FlowEntrypoint<FromIn, FromOut>,
+                    )
+                    where
+                        FromOut: Into<#to_in>,
+                    {
+                    }
+                    let _ = __dag_connect_assert_subflow_to_node(#from_entry);
+                }
+            }
+        }
+        (BindingTypeInfo::Node { output: from_out, .. }, BindingTypeInfo::Subflow { entrypoint: to_entry }) => {
+            quote! {
+                {
+                    fn __dag_connect_assert_node_to_subflow<ToIn, ToOut>(
+                        _: ::dag_core::FlowEntrypoint<ToIn, ToOut>,
+                    )
+                    where
+                        #from_out: Into<ToIn>,
+                    {
+                    }
+                    let _ = __dag_connect_assert_node_to_subflow(#to_entry);
+                }
+            }
+        }
+        (BindingTypeInfo::Subflow { entrypoint: from_entry }, BindingTypeInfo::Subflow { entrypoint: to_entry }) => {
+            quote! {
+                {
+                    fn __dag_connect_assert_subflow_to_subflow<FromIn, FromOut, ToIn, ToOut>(
+                        _: ::dag_core::FlowEntrypoint<FromIn, FromOut>,
+                        _: ::dag_core::FlowEntrypoint<ToIn, ToOut>,
+                    )
+                    where
+                        FromOut: Into<ToIn>,
+                    {
+                    }
+                    let _ = __dag_connect_assert_subflow_to_subflow(#from_entry, #to_entry);
+                }
+            }
+        }
+    }
 }
 
 struct WorkflowInput {
@@ -2482,6 +2812,44 @@ impl WorkflowInput {
             }
         }
 
+        let mut type_map = HashMap::new();
+        for binding in &self.bindings {
+            if let Some(info) = binding_type_info(&binding.expr) {
+                type_map.insert(binding.alias.to_string(), info);
+            }
+        }
+
+        for connect in &self.connects {
+            let from = connect.from.to_string();
+            let to = connect.to.to_string();
+            let from_info = type_map.get(&from);
+            let to_info = type_map.get(&to);
+            if from_info.is_none() || to_info.is_none() {
+                let message = if from_info.is_none() && to_info.is_none() {
+                    format!(
+                        "connect! requires typed bindings; bind `{}` and `{}` via node!(...) or <name>_node_spec()",
+                        from, to
+                    )
+                } else if from_info.is_none() {
+                    format!(
+                        "connect! requires typed bindings; bind `{}` via node!(...) or <name>_node_spec()",
+                        from
+                    )
+                } else {
+                    format!(
+                        "connect! requires typed bindings; bind `{}` via node!(...) or <name>_node_spec()",
+                        to
+                    )
+                };
+                let span = if from_info.is_none() {
+                    connect.from.span()
+                } else {
+                    connect.to.span()
+                };
+                return Err(syn::Error::new(span, message));
+            }
+        }
+
         let mut connected_edges = HashSet::new();
         for connect in &self.connects {
             connected_edges.insert((connect.from.to_string(), connect.to.to_string()));
@@ -2783,14 +3151,22 @@ impl WorkflowInput {
                         "[DAG205] duplicate node alias `",
                         stringify!(#alias),
                         "`"
-                    ));
+                ));
             }
         });
 
         let connect_statements = self.connects.iter().map(|connect| {
             let from = &connect.from;
             let to = &connect.to;
+            let from_info = type_map
+                .get(&from.to_string())
+                .expect("connect! requires typed from binding");
+            let to_info = type_map
+                .get(&to.to_string())
+                .expect("connect! requires typed to binding");
+            let type_assert = connect_type_assert(from_info, to_info);
             quote! {
+                #type_assert
                 builder.connect(&#from, &#to);
             }
         });
@@ -3014,6 +3390,11 @@ impl WorkflowInput {
                 #(#timeout_statements)*
 
                 let mut flow = builder.build();
+                for edge in &mut flow.edges {
+                    edge.transform = Some(::dag_core::EdgeTransformIR {
+                        kind: ::dag_core::EdgeTransformKind::Into,
+                    });
+                }
                 #(#if_statements)*
                 #(#switch_statements)*
                 flow
@@ -3026,6 +3407,7 @@ impl WorkflowBundleInput {
     fn expand(&self) -> Result<TokenStream2> {
         let flow_name = self.name.to_string();
         let flow_name_lit = LitStr::new(&flow_name, self.name.span());
+        let flow_mod_ident = &self.name;
         let profile_ident = &self.profile;
         let version_literal = &self.version;
 
@@ -3078,6 +3460,44 @@ impl WorkflowBundleInput {
                     connect.to.span(),
                     format!("[DAG202] unknown node alias `{}`", connect.to),
                 ));
+            }
+        }
+
+        let mut type_map = HashMap::new();
+        for binding in &self.bindings {
+            if let Some(info) = binding_type_info(&binding.expr) {
+                type_map.insert(binding.alias.to_string(), info);
+            }
+        }
+
+        for connect in &self.connects {
+            let from = connect.from.to_string();
+            let to = connect.to.to_string();
+            let from_info = type_map.get(&from);
+            let to_info = type_map.get(&to);
+            if from_info.is_none() || to_info.is_none() {
+                let message = if from_info.is_none() && to_info.is_none() {
+                    format!(
+                        "connect! requires typed bindings; bind `{}` and `{}` via node!(...) or <name>_node_spec()",
+                        from, to
+                    )
+                } else if from_info.is_none() {
+                    format!(
+                        "connect! requires typed bindings; bind `{}` via node!(...) or <name>_node_spec()",
+                        from
+                    )
+                } else {
+                    format!(
+                        "connect! requires typed bindings; bind `{}` via node!(...) or <name>_node_spec()",
+                        to
+                    )
+                };
+                let span = if from_info.is_none() {
+                    connect.from.span()
+                } else {
+                    connect.to.span()
+                };
+                return Err(syn::Error::new(span, message));
             }
         }
 
@@ -3382,14 +3802,22 @@ impl WorkflowBundleInput {
                         "[DAG205] duplicate node alias `",
                         stringify!(#alias),
                         "`"
-                    ));
+                ));
             }
         });
 
         let connect_statements = self.connects.iter().map(|connect| {
             let from = &connect.from;
             let to = &connect.to;
+            let from_info = type_map
+                .get(&from.to_string())
+                .expect("connect! requires typed from binding");
+            let to_info = type_map
+                .get(&to.to_string())
+                .expect("connect! requires typed to binding");
+            let type_assert = connect_type_assert(from_info, to_info);
             quote! {
+                #type_assert
                 builder.connect(&#from, &#to);
             }
         });
@@ -3618,6 +4046,134 @@ impl WorkflowBundleInput {
             }
         });
 
+        let mut entrypoint_const_defs = Vec::new();
+        let mut entrypoint_flow_modules = Vec::new();
+        let mut entrypoint_names = HashSet::new();
+        let mut root_entrypoint = None::<(Ident, Path, Path)>;
+
+        for entry in &self.entrypoints {
+            let trigger_alias = entry.trigger.value();
+            let capture_alias = entry.capture.value();
+
+            let trigger_info = type_map.get(&trigger_alias).ok_or_else(|| {
+                syn::Error::new(
+                    entry.trigger.span(),
+                    format!(
+                        "entrypoint! requires typed bindings; bind `{}` via node!(...) or <name>_node_spec()",
+                        trigger_alias
+                    ),
+                )
+            })?;
+            let capture_info = type_map.get(&capture_alias).ok_or_else(|| {
+                syn::Error::new(
+                    entry.capture.span(),
+                    format!(
+                        "entrypoint! requires typed bindings; bind `{}` via node!(...) or <name>_node_spec()",
+                        capture_alias
+                    ),
+                )
+            })?;
+
+            if !entrypoint_names.insert(trigger_alias.clone()) {
+                return Err(syn::Error::new(
+                    entry.trigger.span(),
+                    format!(
+                        "duplicate entrypoint const name `{}`",
+                        trigger_alias
+                    ),
+                ));
+            }
+
+            let entry_ident = Ident::new_raw(&trigger_alias, entry.trigger.span());
+            let input_ty = match trigger_info {
+                BindingTypeInfo::Node { input, .. } => input.clone(),
+                BindingTypeInfo::Subflow { .. } => {
+                    return Err(syn::Error::new(
+                        entry.trigger.span(),
+                        "entrypoint! requires node bindings; subflow! is not supported",
+                    ));
+                }
+            };
+            let output_ty = match capture_info {
+                BindingTypeInfo::Node { output, .. } => output.clone(),
+                BindingTypeInfo::Subflow { .. } => {
+                    return Err(syn::Error::new(
+                        entry.capture.span(),
+                        "entrypoint! requires node bindings; subflow! is not supported",
+                    ));
+                }
+            };
+
+            if root_entrypoint.is_none() {
+                root_entrypoint = Some((entry_ident.clone(), input_ty.clone(), output_ty.clone()));
+            }
+
+            let trigger = &entry.trigger;
+            let capture = &entry.capture;
+            let route = entry
+                .route
+                .as_ref()
+                .map(|route| quote!(Some(#route)))
+                .unwrap_or_else(|| quote!(None));
+            let method = entry
+                .method
+                .as_ref()
+                .map(|method| quote!(Some(#method)))
+                .unwrap_or_else(|| quote!(None));
+            let deadline = entry
+                .deadline_ms
+                .map(|ms| quote!(Some(#ms)))
+                .unwrap_or_else(|| quote!(None));
+
+            entrypoint_const_defs.push(quote! {
+                #[allow(non_upper_case_globals)]
+                pub const #entry_ident: ::dag_core::FlowEntrypoint<#input_ty, #output_ty> =
+                    ::dag_core::FlowEntrypoint::new(
+                        #flow_name_lit,
+                        #version_literal,
+                        #trigger,
+                        #capture,
+                        #route,
+                        #method,
+                        #deadline,
+                    );
+            });
+
+            entrypoint_flow_modules.push(quote! {
+                pub mod #entry_ident {
+                    pub fn flow() -> ::dag_core::FlowIR {
+                        super::flow()
+                    }
+                }
+            });
+        }
+
+        let entrypoint_module = quote! {
+            pub mod #flow_mod_ident {
+                #(#entrypoint_const_defs)*
+
+                pub fn flow() -> ::dag_core::FlowIR {
+                    super::flow()
+                }
+
+                #(#entrypoint_flow_modules)*
+            }
+        };
+
+        let root_entrypoint_const = if self.entrypoints.len() == 1 {
+            if let Some((entry_ident, input_ty, output_ty)) = root_entrypoint {
+                quote! {
+                    #[allow(non_upper_case_globals)]
+                    pub const #flow_mod_ident: ::dag_core::FlowEntrypoint<#input_ty, #output_ty> =
+                        #flow_mod_ident::#entry_ident;
+                }
+            } else {
+                quote!()
+            }
+        } else {
+            quote!()
+        };
+
         let entrypoints = self.entrypoints.iter().map(|entry| {
             let trigger = &entry.trigger;
             let capture = &entry.capture;
@@ -3648,6 +4204,9 @@ impl WorkflowBundleInput {
         });
 
         Ok(quote! {
+            #entrypoint_module
+            #root_entrypoint_const
+
             pub fn flow() -> ::dag_core::FlowIR {
                 let version = ::dag_core::prelude::Version::parse(#version_literal)
                     .expect("flow!: invalid semver literal");
@@ -3666,6 +4225,11 @@ impl WorkflowBundleInput {
                 #(#timeout_statements)*
 
                 let mut flow = builder.build();
+                for edge in &mut flow.edges {
+                    edge.transform = Some(::dag_core::EdgeTransformIR {
+                        kind: ::dag_core::EdgeTransformKind::Into,
+                    });
+                }
                 #(#if_statements)*
                 #(#switch_statements)*
                 flow

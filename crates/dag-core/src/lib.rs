@@ -13,6 +13,43 @@ pub use diagnostics::{diagnostic_codes, Diagnostic, DiagnosticCode, Severity, DI
 pub use effects::{Determinism, Effects, NodeError, NodeResult};
 pub use ir::*;
 pub use serde_json;
+use std::marker::PhantomData;
+
+/// Typed entrypoint metadata emitted by `flow!`.
+#[derive(Clone, Copy, Debug)]
+pub struct FlowEntrypoint<In, Out> {
+    pub flow_name: &'static str,
+    pub flow_version: &'static str,
+    pub trigger_alias: &'static str,
+    pub capture_alias: &'static str,
+    pub route: Option<&'static str>,
+    pub method: Option<&'static str>,
+    pub deadline_ms: Option<u64>,
+    _marker: PhantomData<fn(In) -> Out>,
+}
+
+impl<In, Out> FlowEntrypoint<In, Out> {
+    pub const fn new(
+        flow_name: &'static str,
+        flow_version: &'static str,
+        trigger_alias: &'static str,
+        capture_alias: &'static str,
+        route: Option<&'static str>,
+        method: Option<&'static str>,
+        deadline_ms: Option<u64>,
+    ) -> Self {
+        Self {
+            flow_name,
+            flow_version,
+            trigger_alias,
+            capture_alias,
+            route,
+            method,
+            deadline_ms,
+            _marker: PhantomData,
+        }
+    }
+}
 
 /// Convenient prelude re-exporting the most commonly used items.
 pub mod prelude {

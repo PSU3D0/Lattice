@@ -68,11 +68,17 @@ When authoring, `node!(...)` is the canonical helper for binding generated node 
 
 Hosts MUST reject Flow IR whose identifiers are not in `node_contracts`.
 
+### Flow Entrypoint Constants
+
+`flow!` emits typed entrypoint constants scoped to the module that defines the flow. For flows with a
+single entrypoint, a root alias may be exposed for convenience in addition to the module-scoped const.
+
 ## Entrypoints and Triggers
 
 - Triggers are `NodeKind::Trigger` nodes that represent ingress boundaries.
 - Entrypoints are explicit bundle metadata binding `trigger_alias` + `capture_alias`.
 - Entrypoints may include `route_aliases` for UX, but hosts derive canonical routes deterministically.
+  `route_aliases` are not authoritative and do not replace canonical routing.
 - `#[def_node(trigger)]` is the shorthand for defining trigger nodes.
 
 ## Standard Library Packaging
