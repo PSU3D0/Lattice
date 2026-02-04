@@ -408,6 +408,27 @@ impl NodeRegistry {
     }
 }
 
+pub trait NodeResolver: MaybeSync + MaybeSend {
+    fn resolve(&self, identifier: &str) -> Option<Arc<dyn NodeHandler>>;
+}
+
+#[derive(Clone)]
+pub struct RegistryResolver {
+    registry: Arc<NodeRegistry>,
+}
+
+impl RegistryResolver {
+    pub fn new(registry: Arc<NodeRegistry>) -> Self {
+        Self { registry }
+    }
+}
+
+impl NodeResolver for RegistryResolver {
+    fn resolve(&self, identifier: &str) -> Option<Arc<dyn NodeHandler>> {
+        self.registry.handler(identifier)
+    }
+}
+
 /// Errors produced when registering node handlers.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum RegistryError {
@@ -1436,7 +1457,7 @@ fn profile_label(profile: Profile) -> &'static str {
 /// High-level executor responsible for instantiating graph runs.
 #[derive(Clone)]
 pub struct FlowExecutor {
-    registry: Arc<NodeRegistry>,
+    resolver: Arc<dyn NodeResolver>,
     edge_capacity: usize,
     trigger_capacity: usize,
     capture_capacity: usize,
@@ -1446,9 +1467,14 @@ pub struct FlowExecutor {
 impl FlowExecutor {
     /// Construct a new executor backed by the supplied registry.
     pub fn new(registry: Arc<NodeRegistry>) -> Self {
+        Self::new_with_resolver(Arc::new(RegistryResolver::new(registry)))
+    }
+
+    /// Construct a new executor backed by a resolver implementation.
+    pub fn new_with_resolver(resolver: Arc<dyn NodeResolver>) -> Self {
         let default_resources: Arc<ResourceBag> = Arc::new(ResourceBag::new());
         Self {
-            registry,
+            resolver,
             edge_capacity: DEFAULT_EDGE_CAPACITY,
             trigger_capacity: DEFAULT_TRIGGER_CAPACITY,
             capture_capacity: DEFAULT_CAPTURE_CAPACITY,
@@ -1496,8 +1522,8 @@ impl FlowExecutor {
         for node in &flow.nodes {
             let identifier = node.identifier.clone();
             let handler = self
-                .registry
-                .handler(&identifier)
+                .resolver
+                .resolve(&identifier)
                 .ok_or_else(|| ExecutionError::UnregisteredNode { identifier })?;
             handlers.insert(node.alias.clone(), handler);
         }

@@ -20,3 +20,7 @@ serde_json.workspace = true
 tokio.workspace = true
 futures.workspace = true
 async-stream = "0.3"
+
+[features]
+default = ["host-bundle"]
+host-bundle = []

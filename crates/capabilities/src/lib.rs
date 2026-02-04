@@ -235,14 +235,25 @@ pub mod context {
     use std::future::Future;
     use std::sync::Arc;
 
+    #[cfg(not(target_arch = "wasm32"))]
     use tokio::task_local;
+    #[cfg(target_arch = "wasm32")]
+    use std::cell::RefCell;
 
+    #[cfg(not(target_arch = "wasm32"))]
     task_local! {
         static CURRENT_RESOURCES: Arc<dyn ResourceAccess>;
         static CURRENT_CHECKPOINT: Option<CheckpointHandle>;
     }
 
+    #[cfg(target_arch = "wasm32")]
+    thread_local! {
+        static CURRENT_RESOURCES: RefCell<Option<Arc<dyn ResourceAccess>>> = RefCell::new(None);
+        static CURRENT_CHECKPOINT: RefCell<Option<CheckpointHandle>> = RefCell::new(None);
+    }
+
     /// Execute `future` with the provided resource access scoped to the current task.
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn with_resources<Fut, R>(resources: Arc<dyn ResourceAccess>, future: Fut) -> R
     where
         Fut: Future<Output = R>,
@@ -250,7 +261,19 @@ pub mod context {
         CURRENT_RESOURCES.scope(resources, future).await
     }
 
+    #[cfg(target_arch = "wasm32")]
+    pub async fn with_resources<Fut, R>(resources: Arc<dyn ResourceAccess>, future: Fut) -> R
+    where
+        Fut: Future<Output = R>,
+    {
+        let prev = CURRENT_RESOURCES.with(|cell| cell.replace(Some(resources)));
+        let result = future.await;
+        CURRENT_RESOURCES.with(|cell| cell.replace(prev));
+        result
+    }
+
     /// Execute `future` with the provided checkpoint handle scoped to the current task.
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn with_checkpoint_handle<Fut, R>(handle: CheckpointHandle, future: Fut) -> R
     where
         Fut: Future<Output = R>,
@@ -258,7 +281,19 @@ pub mod context {
         CURRENT_CHECKPOINT.scope(Some(handle), future).await
     }
 
+    #[cfg(target_arch = "wasm32")]
+    pub async fn with_checkpoint_handle<Fut, R>(handle: CheckpointHandle, future: Fut) -> R
+    where
+        Fut: Future<Output = R>,
+    {
+        let prev = CURRENT_CHECKPOINT.with(|cell| cell.replace(Some(handle)));
+        let result = future.await;
+        CURRENT_CHECKPOINT.with(|cell| cell.replace(prev));
+        result
+    }
+
     /// Invoke the callback with the currently scoped resource access, if present.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn with_current<F, R>(callback: F) -> Option<R>
     where
         F: FnOnce(&dyn ResourceAccess) -> R,
@@ -268,7 +303,19 @@ pub mod context {
             .ok()
     }
 
+    #[cfg(target_arch = "wasm32")]
+    pub fn with_current<F, R>(callback: F) -> Option<R>
+    where
+        F: FnOnce(&dyn ResourceAccess) -> R,
+    {
+        CURRENT_RESOURCES.with(|cell| {
+            let borrow = cell.borrow();
+            borrow.as_ref().map(|resources| callback(resources.as_ref()))
+        })
+    }
+
     /// Invoke the async callback with the currently scoped resource access, if present.
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn with_current_async<F, Fut, R>(callback: F) -> Option<R>
     where
         F: FnOnce(Arc<dyn ResourceAccess>) -> Fut,
@@ -278,17 +325,39 @@ pub mod context {
         Some(callback(resources).await)
     }
 
+    #[cfg(target_arch = "wasm32")]
+    pub async fn with_current_async<F, Fut, R>(callback: F) -> Option<R>
+    where
+        F: FnOnce(Arc<dyn ResourceAccess>) -> Fut,
+        Fut: Future<Output = R>,
+    {
+        let resources = CURRENT_RESOURCES.with(|cell| cell.borrow().as_ref().cloned())?;
+        Some(callback(resources).await)
+    }
+
     /// Clone the currently scoped resource access handle, if any.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn current_handle() -> Option<Arc<dyn ResourceAccess>> {
         CURRENT_RESOURCES.try_with(Arc::clone).ok()
     }
 
+    #[cfg(target_arch = "wasm32")]
+    pub fn current_handle() -> Option<Arc<dyn ResourceAccess>> {
+        CURRENT_RESOURCES.with(|cell| cell.borrow().as_ref().cloned())
+    }
+
     /// Clone the currently scoped checkpoint handle, if any.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn current_checkpoint_handle() -> Option<CheckpointHandle> {
         CURRENT_CHECKPOINT
             .try_with(|handle| handle.clone())
             .ok()
             .flatten()
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn current_checkpoint_handle() -> Option<CheckpointHandle> {
+        CURRENT_CHECKPOINT.with(|cell| cell.borrow().clone())
     }
 }
 

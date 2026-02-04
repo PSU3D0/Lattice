@@ -1,4 +1,6 @@
+use std::cmp::Reverse;
 use std::collections::BTreeMap;
+use std::fmt;
 
 use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
@@ -18,6 +20,11 @@ pub enum BundleError {
     ManifestUtf8,
     #[error("wasm parse error: {0}")]
     WasmParse(String),
+    #[error("no artifact matches exec policy {policy} for host target `{host_target}`")]
+    MissingArtifact {
+        policy: ExecPolicy,
+        host_target: String,
+    },
 }
 
 pub const BUNDLE_VERSION: &str = "0.1";
@@ -230,6 +237,168 @@ pub enum NodeDeterminism {
     Nondeterministic,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecPolicy {
+    Auto,
+    Native,
+    Wasm,
+}
+
+impl fmt::Display for ExecPolicy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ExecPolicy::Auto => f.write_str("auto"),
+            ExecPolicy::Native => f.write_str("native"),
+            ExecPolicy::Wasm => f.write_str("wasm"),
+        }
+    }
+}
+
+fn is_wasm_target(target: &str) -> bool {
+    target.starts_with("wasm32-")
+}
+
+#[derive(Debug, Clone)]
+struct ManifestArtifact {
+    descriptor: ArtifactDescriptor,
+    is_primary: bool,
+}
+
+/// Returns primary code first, then deterministically sorted artifacts.
+fn manifest_artifacts(manifest: &Manifest) -> Vec<ManifestArtifact> {
+    let mut artifacts = Vec::with_capacity(manifest.artifacts.len() + 1);
+    artifacts.push(ManifestArtifact {
+        descriptor: ArtifactDescriptor {
+            target: manifest.code.target.clone(),
+            file: manifest.code.file.clone(),
+            hash: manifest.code.hash.clone(),
+        },
+        is_primary: true,
+    });
+    artifacts.extend(
+        manifest
+            .artifacts
+            .iter()
+            .cloned()
+            .map(|descriptor| ManifestArtifact {
+                descriptor,
+                is_primary: false,
+            }),
+    );
+    artifacts.sort_by(|left, right| {
+        let left_key = (
+            Reverse(left.is_primary),
+            left.descriptor.target.as_str(),
+            left.descriptor.file.as_str(),
+            left.descriptor.hash.as_str(),
+        );
+        let right_key = (
+            Reverse(right.is_primary),
+            right.descriptor.target.as_str(),
+            right.descriptor.file.as_str(),
+            right.descriptor.hash.as_str(),
+        );
+        left_key.cmp(&right_key)
+    });
+    artifacts
+}
+
+fn pick_preferred(mut candidates: Vec<&ManifestArtifact>) -> Option<ArtifactDescriptor> {
+    if candidates.is_empty() {
+        return None;
+    }
+    candidates.sort_by(|left, right| {
+        let left_key = (
+            Reverse(left.is_primary),
+            left.descriptor.file.as_str(),
+            left.descriptor.hash.as_str(),
+        );
+        let right_key = (
+            Reverse(right.is_primary),
+            right.descriptor.file.as_str(),
+            right.descriptor.hash.as_str(),
+        );
+        left_key.cmp(&right_key)
+    });
+    Some(candidates[0].descriptor.clone())
+}
+
+fn pick_deterministic(mut candidates: Vec<&ManifestArtifact>) -> Option<ArtifactDescriptor> {
+    if candidates.is_empty() {
+        return None;
+    }
+    candidates.sort_by(|left, right| {
+        let left_key = (
+            left.descriptor.target.as_str(),
+            left.descriptor.file.as_str(),
+            left.descriptor.hash.as_str(),
+            Reverse(left.is_primary),
+        );
+        let right_key = (
+            right.descriptor.target.as_str(),
+            right.descriptor.file.as_str(),
+            right.descriptor.hash.as_str(),
+            Reverse(right.is_primary),
+        );
+        left_key.cmp(&right_key)
+    });
+    Some(candidates[0].descriptor.clone())
+}
+
+pub fn select_artifact(
+    manifest: &Manifest,
+    policy: ExecPolicy,
+    host_target: &str,
+) -> Result<ArtifactDescriptor, BundleError> {
+    let artifacts = manifest_artifacts(manifest);
+    let native = pick_preferred(
+        artifacts
+            .iter()
+            .filter(|artifact| {
+                !is_wasm_target(&artifact.descriptor.target)
+                    && artifact.descriptor.target == host_target
+            })
+            .collect(),
+    );
+    let wasm_candidates: Vec<&ManifestArtifact> = artifacts
+        .iter()
+        .filter(|artifact| is_wasm_target(&artifact.descriptor.target))
+        .collect();
+    let wasm = if wasm_candidates.is_empty() {
+        None
+    } else if is_wasm_target(host_target) {
+        pick_preferred(
+            wasm_candidates
+                .iter()
+                .copied()
+                .filter(|artifact| artifact.descriptor.target == host_target)
+                .collect(),
+        )
+        .or_else(|| pick_deterministic(wasm_candidates))
+    } else {
+        pick_preferred(
+            wasm_candidates
+                .iter()
+                .copied()
+                .filter(|artifact| artifact.descriptor.target == "wasm32-unknown-unknown")
+                .collect(),
+        )
+        .or_else(|| pick_deterministic(wasm_candidates))
+    };
+
+    let selected = match policy {
+        ExecPolicy::Auto => native.or(wasm),
+        ExecPolicy::Native => native,
+        ExecPolicy::Wasm => wasm,
+    };
+
+    selected.ok_or(BundleError::MissingArtifact {
+        policy,
+        host_target: host_target.to_string(),
+    })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Subflows {
     pub mode: SubflowsMode,
@@ -305,6 +474,38 @@ pub fn compute_bundle_id(manifest: &Manifest) -> Result<String, BundleError> {
     let Some(obj) = value.as_object_mut() else {
         return Err(BundleError::ManifestNotObject);
     };
+    if let Some(artifacts) = obj
+        .get_mut("artifacts")
+        .and_then(|value| value.as_array_mut())
+    {
+        artifacts.sort_by(|left, right| {
+            let left_target = left
+                .get("target")
+                .and_then(JsonValue::as_str)
+                .unwrap_or_default();
+            let left_file = left
+                .get("file")
+                .and_then(JsonValue::as_str)
+                .unwrap_or_default();
+            let left_hash = left
+                .get("hash")
+                .and_then(JsonValue::as_str)
+                .unwrap_or_default();
+            let right_target = right
+                .get("target")
+                .and_then(JsonValue::as_str)
+                .unwrap_or_default();
+            let right_file = right
+                .get("file")
+                .and_then(JsonValue::as_str)
+                .unwrap_or_default();
+            let right_hash = right
+                .get("hash")
+                .and_then(JsonValue::as_str)
+                .unwrap_or_default();
+            (left_target, left_file, left_hash).cmp(&(right_target, right_file, right_hash))
+        });
+    }
     obj.remove("bundle_id");
     obj.remove("signing");
     Ok(sha256_prefixed(canonical_json(&value).as_bytes()))

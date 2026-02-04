@@ -219,7 +219,9 @@ fn bundle_with_policies() -> FlowBundle {
     let mut registry = NodeRegistry::new();
     register_nodes(&mut registry);
 
-    let resolver: Arc<dyn host_inproc::NodeResolver> = Arc::new(registry);
+    let registry = Arc::new(registry);
+    let resolver: Arc<dyn kernel_exec::NodeResolver> =
+        Arc::new(kernel_exec::RegistryResolver::new(registry.clone()));
     let entrypoints = vec![
         FlowEntrypoint {
             trigger_alias: "health".to_string(),

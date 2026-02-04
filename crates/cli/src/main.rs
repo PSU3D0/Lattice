@@ -36,7 +36,7 @@ use example_s2_site as s2_site;
 use example_s3_branching as s3_branching;
 use example_s4_preflight as s4_preflight;
 use example_s5_unsupported_surface as s5_unsupported_surface;
-use example_s6_spill as s6_spill;
+use example_s6_spill_host as s6_spill;
 
 mod bundle;
 mod local_durability;

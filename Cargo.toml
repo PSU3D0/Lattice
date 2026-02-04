@@ -48,6 +48,7 @@ members = [
   "examples/s4_preflight",
   "examples/s5_unsupported_surface",
   "examples/s6_spill",
+  "examples/s6_spill/host",
   "examples/s7_cloudflare_idem"
 ]
 
@@ -84,6 +85,8 @@ tokio-util = "0.7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 futures = "0.3"
+futures-util = "0.3"
+futures-timer = "3.0"
 hyper = { version = "1", features = ["full"] }
 proc-macro2 = "1"
 quote = "1"

@@ -1,0 +1,20 @@
+[package]
+name = "example-s6-spill-host"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Host harness for the S6 spill workflow example."
+
+[dependencies]
+example-s6-spill = { path = "..", default-features = false, features = ["host-bundle"] }
+host-inproc = { path = "../../../crates/host-inproc" }
+kernel-exec = { path = "../../../crates/kernel-exec" }
+
+[dev-dependencies]
+capabilities = { path = "../../../crates/capabilities" }
+serde_json.workspace = true
+tokio.workspace = true

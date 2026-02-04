@@ -26,6 +26,10 @@ serde_bytes = "0.11"
 serde_json.workspace = true
 sha2 = "0.10"
 uuid.workspace = true
+
+[features]
+default = ["host-bundle"]
+host-bundle = []
  
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 kernel-exec = { path = "../../crates/kernel-exec" }

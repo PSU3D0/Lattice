@@ -1870,10 +1870,22 @@ dependencies = [
  "capabilities",
  "dag-core",
  "dag-macros",
+ "futures-timer",
  "host-inproc",
  "kernel-exec",
  "kernel-plan",
  "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "example-s6-spill-host"
+version = "0.1.0"
+dependencies = [
+ "capabilities",
+ "example-s6-spill",
+ "host-inproc",
+ "kernel-exec",
  "serde_json",
  "tokio",
 ]
@@ -2059,7 +2071,7 @@ dependencies = [
  "example-s3-branching",
  "example-s4-preflight",
  "example-s5-unsupported-surface",
- "example-s6-spill",
+ "example-s6-spill-host",
  "exporters",
  "flow-bundle",
  "futures",

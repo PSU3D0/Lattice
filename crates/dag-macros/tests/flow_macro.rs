@@ -8,8 +8,6 @@ use std::time::Duration;
 
 pub trait EnvironmentPlugin {}
 
-pub trait NodeResolver {}
-
 #[derive(Clone, Debug)]
 pub enum NodeSource {
     Local,
@@ -35,12 +33,10 @@ pub struct FlowEntrypoint {
 pub struct FlowBundle {
     pub validated_ir: kernel_plan::ValidatedIR,
     pub entrypoints: Vec<FlowEntrypoint>,
-    pub resolver: Arc<dyn NodeResolver>,
+    pub resolver: Arc<dyn kernel_exec::NodeResolver>,
     pub node_contracts: Vec<NodeContract>,
     pub environment_plugins: Vec<Arc<dyn EnvironmentPlugin>>,
 }
-
-impl NodeResolver for kernel_exec::NodeRegistry {}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct EntryInput;

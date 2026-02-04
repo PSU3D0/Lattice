@@ -1296,7 +1296,9 @@ pub fn bundle() -> FlowBundle {
     snapshot_get_register(&mut registry).expect("register snapshot_get");
     stream_events_stream_register(&mut registry).expect("register stream_events");
 
-    let resolver: Arc<dyn host_inproc::NodeResolver> = Arc::new(registry);
+    let registry = Arc::new(registry);
+    let resolver: Arc<dyn kernel_exec::NodeResolver> =
+        Arc::new(kernel_exec::RegistryResolver::new(registry.clone()));
     let entrypoints = vec![
         FlowEntrypoint {
             trigger_alias: "trigger_http_ingest".to_string(),

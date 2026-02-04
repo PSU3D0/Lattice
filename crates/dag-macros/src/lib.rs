@@ -610,6 +610,7 @@ fn node_impl(
             &#spec_ident
         }
 
+        #[cfg(feature = "host-bundle")]
         #[allow(dead_code)]
         pub fn #register_ident(
             registry: &mut ::kernel_exec::NodeRegistry,
@@ -4281,16 +4282,19 @@ impl WorkflowBundleInput {
                     .expect("flow!: flow validation failed")
             }
 
+            #[cfg(feature = "host-bundle")]
             fn __register_nodes(registry: &mut ::kernel_exec::NodeRegistry) {
                 #(#register_statements)*
             }
 
+            #[cfg(feature = "host-bundle")]
             pub fn bundle() -> ::host_inproc::FlowBundle {
                 let validated_ir = validated_ir();
                 let mut registry = ::kernel_exec::NodeRegistry::new();
                 __register_nodes(&mut registry);
-                let resolver: ::std::sync::Arc<dyn ::host_inproc::NodeResolver> =
-                    ::std::sync::Arc::new(registry);
+                let registry = ::std::sync::Arc::new(registry);
+                let resolver: ::std::sync::Arc<dyn ::kernel_exec::NodeResolver> =
+                    ::std::sync::Arc::new(::kernel_exec::RegistryResolver::new(registry.clone()));
                 let entrypoints = vec![#(#entrypoints),*];
                 let node_contracts = vec![#(#node_contracts),*];
                 ::host_inproc::FlowBundle {
