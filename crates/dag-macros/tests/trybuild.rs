@@ -1,7 +1,8 @@
 #[test]
 fn ui_failures() {
     let t = trybuild::TestCases::new();
-    t.compile_fail("tests/ui/node_missing_name.rs");
+    t.pass("tests/ui/node_missing_name.rs");
+    t.compile_fail("tests/ui/node_missing_metadata.rs");
     t.compile_fail("tests/ui/node_invalid_effect.rs");
     t.compile_fail("tests/ui/node_effect_hint_conflict.rs");
     t.compile_fail("tests/ui/node_determinism_hint_conflict.rs");
@@ -11,6 +12,8 @@ fn ui_failures() {
     t.compile_fail("tests/ui/workflow_duplicate_alias.rs");
     t.compile_fail("tests/ui/flow_enum_not_enum.rs");
     t.compile_fail("tests/ui/workflow_unknown_alias.rs");
+    t.compile_fail("tests/ui/workflow_connect_requires_into.rs");
+    t.compile_fail("tests/ui/workflow_connect_requires_typed_binding.rs");
     t.compile_fail("tests/ui/workflow_timeout_missing_edge.rs");
     t.compile_fail("tests/ui/workflow_timeout_invalid_key.rs");
     t.compile_fail("tests/ui/workflow_delivery_missing_edge.rs");
@@ -34,6 +37,9 @@ fn ui_failures() {
     t.compile_fail("tests/ui/workflow_switch_case_target_not_ident.rs");
     t.compile_fail("tests/ui/workflow_switch_default_not_ident.rs");
     t.pass("tests/ui/workflow_switch_trailing_comma.rs");
+    if !cfg!(feature = "flow-registry") {
+        t.pass("tests/ui/flow_bundle_host_gated.rs");
+    }
 
     t.compile_fail("tests/ui/workflow_if_missing_edge.rs");
     t.compile_fail("tests/ui/workflow_if_duplicate_source.rs");

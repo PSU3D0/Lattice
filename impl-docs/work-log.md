@@ -141,6 +141,40 @@ Acceptance gates:
 Compatibility/contract notes:
 - New host-level durability binding requirements and scheduler selection semantics for wait/HITL nodes.
 
+## 2026-02-03 — Multi-flow bundle manifest + expanded IR (Epic 02.4)
+
+- Updated FlowBundle schema to `flows[]` plus top-level `subflows[]`, added `default_flow`, and optional `flow_ir_expanded` references (`schemas/flow_bundle.schema.json`, `crates/flow-bundle/src/lib.rs`).
+- Added optional `subflow_ir` to Flow IR nodes for analysis-only expansion, with schema updates (`crates/dag-core/src/ir.rs`, `schemas/flow_ir.schema.json`).
+- Implemented expanded IR generation with subflow cycle detection (`crates/flow-bundle/src/lib.rs`, `crates/flow-bundle/tests/expanded_ir.rs`).
+- CLI bundling now consumes explicit `manifest.json`, computes IR hashes, and writes IR artifacts; added `--expanded-ir` and path validation (`crates/cli/src/bundle.rs`).
+- Updated bundle tests and schema fixtures to match multi-flow manifest semantics (`crates/flow-bundle/tests/*`, `crates/cli/tests/bundle.rs`).
+
+Acceptance gates:
+- `cargo test -p flow-bundle --tests`
+- `cargo test -p flows-cli --test bundle`
+
+Compatibility/contract notes:
+- FlowBundle manifest is now multi-flow; legacy `subflows.mode`/`subflows.entries` removed.
+- Flow IR adds optional `subflow_ir` on subflow nodes (analysis-only).
+- Bundling requires an explicit manifest sidecar (no WASM custom section extraction).
+
+## 2026-02-03 — Flow registry exporter + bundle harness (Epic 02.4)
+
+- Added `flow-registry` to dag-core with inventory-backed registrations and tests; `flow!` now registers flows under that feature (`crates/dag-core/*`, `crates/dag-macros/*`).
+- Introduced shared bundle exporter + harness for manifest/IR emission (`crates/exporters/src/bundle.rs`, `crates/exporters/src/harness.rs`).
+- CLI bundler now auto-generates manifests when `--manifest` is omitted, using Cargo metadata and the exporter harness (`crates/cli/src/bundle.rs`).
+- Added flow metadata to `example-s6-spill` and validated registry-driven bundling; tightened stdlib/host-inproc test wiring for host-bundle registration (`examples/s6_spill/Cargo.toml`, `crates/stdlib/*`, `crates/host-inproc/Cargo.toml`).
+- Updated kernel-exec tests to handle the new `ExecutionResult::Halt` / `CaptureResult::Halt` variants.
+
+Acceptance gates:
+- `cargo test --workspace`
+- `cargo run -p flows-cli -- bundle -p example-s6-spill --wasm --native --dev`
+- `cargo run -p flows-cli -- run local --example s6_spill --bind resource::blob=memory --payload '{"batch_id":"b1","items":["a","b"]}'`
+
+Compatibility/contract notes:
+- Bundling can derive manifest + IR from registry when `flow-registry` is enabled; manifest remains the runtime contract.
+- stdlib register helpers are available only when `host-bundle` is enabled.
+
 - ✅ Workspace scaffold, shared dependency management, MSRV pin (`Phase 0`).
 - ✅ Diagnostic registry & sync checks (`Phase 0`).
 - ✅ Core Flow IR types, builder utilities, and serde support (`Phase 1`).

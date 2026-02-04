@@ -17,3 +17,7 @@ kernel-exec = { path = "../../crates/kernel-exec" }
 kernel-plan = { path = "../../crates/kernel-plan" }
 serde.workspace = true
 serde_json.workspace = true
+
+[features]
+default = ["host-bundle"]
+host-bundle = []

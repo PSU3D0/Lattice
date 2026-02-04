@@ -7,10 +7,10 @@ pub mod timer;
 use kernel_exec::{NodeRegistry, RegistryError};
 
 pub fn register_all(registry: &mut NodeRegistry) -> Result<(), RegistryError> {
-    #[cfg(feature = "timer")]
+    #[cfg(all(feature = "timer", feature = "host-bundle"))]
     timer::timer_wait_register(registry)?;
 
-    #[cfg(feature = "callback")]
+    #[cfg(all(feature = "callback", feature = "host-bundle"))]
     callback::callback_wait_register(registry)?;
 
     Ok(())

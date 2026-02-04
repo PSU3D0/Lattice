@@ -1,4 +1,3 @@
-use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -6,7 +5,9 @@ use std::time::Duration;
 use capabilities::{ResourceAccess, ResourceBag};
 use dag_core::DurabilityMode;
 use capabilities::durability::FlowFrontier;
-use kernel_exec::{ExecutionError, ExecutionResult, FlowExecutor, NodeHandler, NodeRegistry};
+use kernel_exec::{
+    ExecutionError, ExecutionResult, FlowExecutor, NodeRegistry, NodeResolver, RegistryResolver,
+};
 use kernel_plan::ValidatedIR;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
@@ -28,24 +29,8 @@ impl FlowBundle {
     pub fn executor(&self) -> FlowExecutor {
         self.validate_allowlist()
             .unwrap_or_else(|err| panic!("FlowBundle allowlist validation failed: {err}"));
-        #[cfg(not(target_arch = "wasm32"))]
-        let registry = {
-            let resolver_any: Arc<dyn Any + Send + Sync> = self.resolver.clone();
-            Arc::downcast::<NodeRegistry>(resolver_any)
-                .expect("FlowBundle resolver must be a NodeRegistry to build a FlowExecutor")
-        };
-
-        #[cfg(target_arch = "wasm32")]
-        let registry = {
-            let registry = self
-                .resolver
-                .as_any()
-                .downcast_ref::<NodeRegistry>()
-                .expect("FlowBundle resolver must be a NodeRegistry to build a FlowExecutor")
-                .clone();
-            Arc::new(registry)
-        };
-        FlowExecutor::new(registry)
+        // TODO: swap in a wasm-backed resolver when available.
+        FlowExecutor::new_with_resolver(self.resolver.clone())
     }
 
     pub fn validate_allowlist(&self) -> Result<(), BundleError> {
@@ -71,48 +56,7 @@ pub struct FlowEntrypoint {
     pub route_path: Option<String>,
     pub method: Option<String>,
     pub deadline: Option<Duration>,
-}
-
-#[cfg(target_arch = "wasm32")]
-pub trait MaybeSend {}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub trait MaybeSend: Send {}
-
-#[cfg(target_arch = "wasm32")]
-impl<T> MaybeSend for T {}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl<T: Send> MaybeSend for T {}
-
-#[cfg(target_arch = "wasm32")]
-pub trait MaybeSync {}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub trait MaybeSync: Sync {}
-
-#[cfg(target_arch = "wasm32")]
-impl<T> MaybeSync for T {}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl<T: Sync> MaybeSync for T {}
-
-pub trait NodeResolver: Any + MaybeSend + MaybeSync {
-    fn resolve(&self, identifier: &str) -> Option<Arc<dyn NodeHandler>>;
-    fn as_any(&self) -> &dyn Any;
-    fn known_identifiers(&self) -> Vec<String> {
-        Vec::new()
-    }
-}
-
-impl NodeResolver for NodeRegistry {
-    fn resolve(&self, identifier: &str) -> Option<Arc<dyn NodeHandler>> {
-        self.handler(identifier)
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
+    pub route_aliases: Vec<String>,
 }
 
 pub struct NodeContract {
@@ -2145,7 +2089,7 @@ mod tests {
         let bundle = FlowBundle {
             validated_ir: build_bundle_ir(),
             entrypoints: Vec::new(),
-            resolver: Arc::new(registry),
+            resolver: Arc::new(RegistryResolver::new(Arc::new(registry))),
             node_contracts: vec![
                 NodeContract {
                     identifier: "tests::trigger".to_string(),
@@ -2185,7 +2129,7 @@ mod tests {
         let bundle = FlowBundle {
             validated_ir: build_bundle_ir(),
             entrypoints: Vec::new(),
-            resolver: Arc::new(NodeRegistry::new()),
+            resolver: Arc::new(RegistryResolver::new(Arc::new(NodeRegistry::new()))),
             node_contracts: vec![
                 NodeContract {
                     identifier: "tests::trigger".to_string(),
@@ -2211,7 +2155,7 @@ mod tests {
         let bundle = FlowBundle {
             validated_ir: build_bundle_ir(),
             entrypoints: Vec::new(),
-            resolver: Arc::new(NodeRegistry::new()),
+            resolver: Arc::new(RegistryResolver::new(Arc::new(NodeRegistry::new()))),
             node_contracts: vec![NodeContract {
                 identifier: "tests::trigger".to_string(),
                 contract_hash: None,

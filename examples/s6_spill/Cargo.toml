@@ -9,13 +9,25 @@ repository.workspace = true
 homepage.workspace = true
 description = "S6 example demonstrating buffer and spill behavior."
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 dag-core = { path = "../../crates/dag-core" }
 dag-macros = { path = "../../crates/dag-macros" }
-host-inproc = { path = "../../crates/host-inproc" }
-kernel-exec = { path = "../../crates/kernel-exec" }
+kernel-exec = { path = "../../crates/kernel-exec", optional = true }
 kernel-plan = { path = "../../crates/kernel-plan" }
+host-inproc = { path = "../../crates/host-inproc", optional = true }
 capabilities = { path = "../../crates/capabilities" }
 serde.workspace = true
 serde_json.workspace = true
-tokio.workspace = true
+futures-timer.workspace = true
+
+[features]
+default = ["host-bundle"]
+host-bundle = ["kernel-exec", "host-inproc"]
+flow-registry = ["dag-core/flow-registry", "dag-macros/flow-registry"]
+
+[package.metadata.latticeflow]
+flows = ["s6_spill_flow"]
+default_flow = "s6_spill_flow"

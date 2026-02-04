@@ -1,8 +1,8 @@
 use dag_core::NodeResult;
-use dag_macros::{node, trigger};
+use dag_macros::{def_node, node};
 use serde_json::Value as JsonValue;
 
-#[trigger(
+#[def_node(trigger,
     name = "HttpTrigger",
     summary = "Ingress trigger for preflight example"
 )]
@@ -10,7 +10,7 @@ async fn http_trigger(payload: JsonValue) -> NodeResult<JsonValue> {
     Ok(payload)
 }
 
-#[node(
+#[def_node(
     name = "KvRead",
     summary = "Declares a KV read requirement to trigger CAP101 when unbound",
     effects = "ReadOnly",
@@ -21,7 +21,7 @@ async fn kv_read(payload: JsonValue) -> NodeResult<JsonValue> {
     Ok(payload)
 }
 
-#[node(
+#[def_node(
     name = "Capture",
     summary = "Capture terminal output",
     effects = "Pure",
@@ -31,15 +31,15 @@ async fn capture(payload: JsonValue) -> NodeResult<JsonValue> {
     Ok(payload)
 }
 
-dag_macros::workflow_bundle! {
+dag_macros::flow! {
     name: s4_preflight_flow,
     version: "1.0.0",
     profile: Web,
     summary: "Demonstrates CAP101 preflight failures when required capabilities are missing";
 
-    let trigger = http_trigger_node_spec();
-    let kv_read = kv_read_node_spec();
-    let capture = capture_node_spec();
+    let trigger = node!(http_trigger);
+    let kv_read = node!(kv_read);
+    let capture = node!(capture);
 
     connect!(trigger -> kv_read);
     connect!(kv_read -> capture);
@@ -47,7 +47,7 @@ dag_macros::workflow_bundle! {
     entrypoint!({
         trigger: "trigger",
         capture: "capture",
-        route: "/preflight",
+        route_aliases: ["/preflight"],
         method: "POST",
         deadline_ms: 250,
     });

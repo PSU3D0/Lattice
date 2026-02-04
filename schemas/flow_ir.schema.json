@@ -394,6 +394,17 @@
             "null"
           ]
         },
+        "transform": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/EdgeTransformIR"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional transform metadata."
+        },
         "to": {
           "description": "Destination node alias.",
           "type": "string"
@@ -407,6 +418,35 @@
         "to"
       ],
       "type": "object"
+    },
+    "EdgeTransformIR": {
+      "description": "Edge transform metadata block.",
+      "properties": {
+        "kind": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/EdgeTransformKind"
+            }
+          ],
+          "description": "Transform kind."
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "EdgeTransformKind": {
+      "description": "Edge transform kind enumeration.",
+      "oneOf": [
+        {
+          "description": "Rust Into conversion.",
+          "enum": [
+            "into"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "Effects": {
       "description": "Effect lattice describing resource access.",
@@ -434,9 +474,57 @@
         }
       ]
     },
+    "EntrypointMetadata": {
+      "description": "Entrypoint metadata describing external ingress wiring.",
+      "properties": {
+        "capture_alias": {
+          "description": "Capture node alias for response/egress.",
+          "type": "string"
+        },
+        "method": {
+          "description": "Optional HTTP method for HTTP-capable hosts.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "route_aliases": {
+          "default": [],
+          "description": "Optional non-authoritative aliases for the canonical route.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "route_path": {
+          "description": "Optional canonical route path (host-derived when omitted).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "trigger_alias": {
+          "description": "Trigger node alias for ingress.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "capture_alias",
+        "trigger_alias"
+      ],
+      "type": "object"
+    },
     "FlowMetadata": {
       "description": "Arbitrary metadata describing the workflow.",
       "properties": {
+        "entrypoints": {
+          "default": [],
+          "description": "Optional entrypoint metadata provided by hosts or tooling.",
+          "items": {
+            "$ref": "#/definitions/EntrypointMetadata"
+          },
+          "type": "array"
+        },
         "tags": {
           "default": [],
           "description": "Optional tags associated with the workflow.",
@@ -656,6 +744,14 @@
             "string",
             "null"
           ]
+        },
+        "subflow_ir": {
+          "allOf": [
+            {
+              "$ref": "#"
+            }
+          ],
+          "description": "Expanded subflow IR attached for analysis-only views."
         }
       },
       "required": [
@@ -668,6 +764,25 @@
         "kind",
         "name",
         "out_schema"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "subflow"
+              }
+            }
+          },
+          "then": {},
+          "else": {
+            "not": {
+              "required": [
+                "subflow_ir"
+              ]
+            }
+          }
+        }
       ],
       "type": "object"
     },

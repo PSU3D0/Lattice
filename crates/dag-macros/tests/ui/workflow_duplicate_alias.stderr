@@ -1,5 +1,54 @@
 error: [DAG205] duplicate node alias `first_alias`
-  --> tests/ui/workflow_duplicate_alias.rs:21:9
+  --> tests/ui/workflow_duplicate_alias.rs:23:9
    |
-21 |     let first_alias = second_node_spec();
+23 |     let first_alias = node!(second);
    |         ^^^^^^^^^^^
+
+warning: use of deprecated function `_::__dag_macro_missing_metadata_warning`: #[def_node] `first` missing `summary` metadata
+ --> tests/ui/workflow_duplicate_alias.rs:6:1
+  |
+6 | #[def_node(name = "First")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(deprecated)]` on by default
+  = note: this warning originates in the attribute macro `def_node` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated function `_::__dag_macro_missing_metadata_warning`: #[def_node] `first` missing `effects` metadata
+ --> tests/ui/workflow_duplicate_alias.rs:6:1
+  |
+6 | #[def_node(name = "First")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this warning originates in the attribute macro `def_node` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated function `_::__dag_macro_missing_metadata_warning`: #[def_node] `first` missing `determinism` metadata
+ --> tests/ui/workflow_duplicate_alias.rs:6:1
+  |
+6 | #[def_node(name = "First")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this warning originates in the attribute macro `def_node` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated function `_::__dag_macro_missing_metadata_warning`: #[def_node] `second` missing `summary` metadata
+  --> tests/ui/workflow_duplicate_alias.rs:12:1
+   |
+12 | #[def_node(name = "Second")]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: this warning originates in the attribute macro `def_node` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated function `_::__dag_macro_missing_metadata_warning`: #[def_node] `second` missing `effects` metadata
+  --> tests/ui/workflow_duplicate_alias.rs:12:1
+   |
+12 | #[def_node(name = "Second")]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: this warning originates in the attribute macro `def_node` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated function `_::__dag_macro_missing_metadata_warning`: #[def_node] `second` missing `determinism` metadata
+  --> tests/ui/workflow_duplicate_alias.rs:12:1
+   |
+12 | #[def_node(name = "Second")]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: this warning originates in the attribute macro `def_node` (in Nightly builds, run with -Z macro-backtrace for more info)

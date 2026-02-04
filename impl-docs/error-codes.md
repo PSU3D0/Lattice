@@ -37,6 +37,7 @@ ensure the registry stays in sync with the implementation.
 | DAG331    | Validation     | Error   | Provider scopes fall outside declared policy. |
 | DAG340    | Validation     | Error   | Variable shadowing detected in workflow definition. |
 | DAG341    | Validation     | Error   | Variable binding has incompatible type. |
+| DAG350    | Lint           | Warn    | Missing summary on node or flow metadata. |
 | DAG-CKPT-001 | Validation  | Error   | Node not checkpointable; cannot use durability=strong. |
 | DAG-CKPT-002 | Validation  | Error   | Halt node requires durability != off. |
 | DAG-CKPT-003 | Runtime     | Error   | Halt node requires CheckpointStore capability. |

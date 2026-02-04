@@ -35,6 +35,7 @@ pub struct RouteConfig {
     pub deadline: Option<Duration>,
     pub resources: ResourceBag,
     pub environment_plugins: Vec<Arc<dyn EnvironmentPlugin>>,
+    pub route_aliases: Vec<String>,
 }
 
 impl RouteConfig {
@@ -47,6 +48,7 @@ impl RouteConfig {
             deadline: None,
             resources: ResourceBag::new(),
             environment_plugins: Vec::new(),
+            route_aliases: Vec::new(),
         }
     }
 
@@ -77,6 +79,11 @@ impl RouteConfig {
 
     pub fn with_environment_plugin(mut self, plugin: Arc<dyn EnvironmentPlugin>) -> Self {
         self.environment_plugins.push(plugin);
+        self
+    }
+
+    pub fn with_route_aliases(mut self, aliases: Vec<String>) -> Self {
+        self.route_aliases = aliases;
         self
     }
 }
@@ -349,6 +356,7 @@ fn try_build_router(
         deadline,
         resources,
         environment_plugins,
+        route_aliases,
     } = config;
 
     validate_entrypoint(&ir, &trigger_alias, &capture_alias)?;
@@ -360,8 +368,13 @@ fn try_build_router(
     }
     .with_resource_bag(resources);
 
+    let canonical_path = normalize_route_path(&path);
     let flow_name = ir.flow().name.clone();
-    let metrics = Arc::new(HostMetrics::new("web_axum", path.clone(), flow_name));
+    let metrics = Arc::new(HostMetrics::new(
+        "web_axum",
+        canonical_path.clone(),
+        flow_name,
+    ));
     let state = SharedState {
         runtime,
         trigger_alias,
@@ -370,10 +383,44 @@ fn try_build_router(
         metrics: metrics.clone(),
     };
 
-    let route = method_router(&method);
-    Ok(Router::<SharedState>::new()
-        .route(&path, route)
-        .with_state::<()>(state))
+    let alias_paths = normalize_route_aliases(route_aliases, &canonical_path);
+    let mut router = Router::<SharedState>::new().route(&canonical_path, method_router(&method));
+    for alias in alias_paths {
+        router = router.route(&alias, method_router(&method));
+    }
+    Ok(router.with_state::<()>(state))
+}
+
+fn normalize_route_path(path: &str) -> String {
+    if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    }
+}
+
+fn normalize_route_aliases(
+    route_aliases: Vec<String>,
+    canonical: &str,
+) -> Vec<String> {
+    let mut normalized = Vec::new();
+    let mut push_alias = |alias: String| {
+        let trimmed = alias.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        let alias = normalize_route_path(trimmed);
+        if alias == canonical {
+            return;
+        }
+        if !normalized.iter().any(|existing| existing == &alias) {
+            normalized.push(alias);
+        }
+    };
+    for alias in route_aliases {
+        push_alias(alias);
+    }
+    normalized
 }
 
 fn method_router(method: &Method) -> MethodRouter<SharedState> {
@@ -935,6 +982,7 @@ mod tests {
             deadline,
             resources,
             environment_plugins,
+            route_aliases: _,
         } = config;
 
         let runtime = if environment_plugins.is_empty() {

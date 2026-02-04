@@ -22,5 +22,4 @@ dag-core = { path = "../dag-core" }
 tokio.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-tokio = { version = "1", default-features = false, features = ["macros", "rt", "sync"] }
 instant = { version = "0.1", features = ["wasm-bindgen"] }

@@ -1,16 +1,15 @@
-use std::collections::HashMap;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io::{self, Read};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, anyhow};
 use axum::http::Method;
-use clap::{Args, Parser, Subcommand};
-use dag_core::{Diagnostic, Severity};
+use clap::{Args, Parser, Subcommand, ValueEnum};
+use dag_core::{Diagnostic, DurabilityMode, Severity};
 use exporters::{to_dot, to_json_value};
 use futures::StreamExt;
 use host_web_axum::{HostHandle, RouteConfig};
@@ -23,7 +22,11 @@ use tokio::net::TcpListener;
 use tokio::runtime::Builder as RuntimeBuilder;
 use tokio::signal;
 
-use capabilities::ResourceBag;
+use capabilities::{ResourceAccess, ResourceBag};
+use capabilities::Capability;
+use capabilities::durability::{
+    CheckpointError, CheckpointFilter, CheckpointHandle, CheckpointRecord, CheckpointStore, Lease,
+};
 use host_inproc::{EnvironmentPlugin, HostRuntime, Invocation};
 
 use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
@@ -33,7 +36,11 @@ use example_s2_site as s2_site;
 use example_s3_branching as s3_branching;
 use example_s4_preflight as s4_preflight;
 use example_s5_unsupported_surface as s5_unsupported_surface;
-use example_s6_spill as s6_spill;
+use example_s6_spill_host as s6_spill;
+
+mod bundle;
+mod local_durability;
+mod resume;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -61,6 +68,11 @@ enum Command {
     /// Resource bindings tooling.
     #[command(subcommand)]
     Bindings(BindingsCommand),
+    /// Build a FlowBundle for wasm targets.
+    Bundle(bundle::BundleArgs),
+    /// Resume checkpoints from local durability store.
+    #[command(subcommand)]
+    Resume(resume::ResumeCommand),
 }
 
 #[derive(Subcommand, Debug)]
@@ -148,6 +160,18 @@ struct LocalArgs {
     /// Invoke the trigger multiple times against a single instance.
     #[arg(long, default_value_t = 1)]
     burst: usize,
+    /// Checkpoint store implementation (fs or memory).
+    #[arg(long, value_enum)]
+    checkpoint_store: Option<CheckpointStoreKind>,
+    /// Root directory for filesystem checkpoints (used with --checkpoint-store fs).
+    #[arg(long)]
+    checkpoint_dir: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, ValueEnum)]
+enum CheckpointStoreKind {
+    Fs,
+    Memory,
 }
 
 #[derive(Args, Debug)]
@@ -220,6 +244,8 @@ fn main() -> Result<()> {
         Command::Bindings(BindingsCommand::Lock(LockCommand::Generate(args))) => {
             run_bindings_lock_generate(args)
         }
+        Command::Bundle(args) => bundle::run_bundle(args),
+        Command::Resume(command) => resume::run_resume(command),
     }
 }
 
@@ -468,9 +494,6 @@ fn run_local(args: LocalArgs) -> Result<()> {
     let stream_mode = args.stream;
     let json_mode = args.json;
     let burst = args.burst.max(1);
-    if json_mode && stream_mode {
-        return Err(anyhow!("--json cannot be combined with --stream"));
-    }
     let payload = parse_payload(&args)?;
     if args.bindings_lock.is_some() && !args.bindings.is_empty() {
         return Err(anyhow!("--bindings-lock cannot be combined with --bind"));
@@ -500,11 +523,27 @@ fn run_local(args: LocalArgs) -> Result<()> {
         executor
     };
 
-    let resources = if let Some(lock_path) = &args.bindings_lock {
+    let mut resources = if let Some(lock_path) = &args.bindings_lock {
         resource_bag_from_bindings_lock(lock_path.as_path(), ir.flow().id.as_str())?
     } else {
         resource_bag_from_bindings(&args.bindings)?
     };
+
+    let checkpoint_override = args.checkpoint_store.is_some() || args.checkpoint_dir.is_some();
+    let has_checkpoint_store = resources.checkpoint_store().is_some();
+    if checkpoint_override {
+        let store_kind = args.checkpoint_store.unwrap_or(CheckpointStoreKind::Fs);
+        if store_kind != CheckpointStoreKind::Fs && args.checkpoint_dir.is_some() {
+            return Err(anyhow!(
+                "--checkpoint-dir can only be used with --checkpoint-store fs"
+            ));
+        }
+        resources = attach_checkpoint_store(resources, store_kind, args.checkpoint_dir.as_deref());
+    } else if !has_checkpoint_store {
+        resources = attach_checkpoint_store(resources, CheckpointStoreKind::Fs, None);
+    } else if resources.max_durability_mode() == DurabilityMode::Off {
+        resources = resources.with_max_durability_mode(DurabilityMode::Partial);
+    }
 
     let flow_name = ir.flow().name.clone();
     let capture_alias_str = capture_alias.to_string();
@@ -600,6 +639,9 @@ fn run_local(args: LocalArgs) -> Result<()> {
                 Some(Ok(kernel_exec::CaptureResult::Value(value))) => {
                     results.push(value);
                 }
+                Some(Ok(kernel_exec::CaptureResult::Halt { .. })) => {
+                    return Err(anyhow!("halted execution not supported in burst mode"));
+                }
                 Some(Ok(kernel_exec::CaptureResult::Stream(_))) => {
                     return Err(anyhow!("streaming capture not supported in burst mode"));
                 }
@@ -668,11 +710,17 @@ fn run_serve(args: ServeArgs) -> Result<()> {
         return Err(anyhow!("--bindings-lock cannot be combined with --bind"));
     }
 
-    let resources = if let Some(lock_path) = bindings_lock {
+    let mut resources = if let Some(lock_path) = bindings_lock {
         resource_bag_from_bindings_lock(lock_path.as_path(), ir.flow().id.as_str())?
     } else {
         resource_bag_from_bindings(&bindings)?
     };
+
+    if resources.checkpoint_store().is_none() {
+        resources = attach_checkpoint_store(resources, CheckpointStoreKind::Fs, None);
+    } else if resources.max_durability_mode() == DurabilityMode::Off {
+        resources = resources.with_max_durability_mode(DurabilityMode::Partial);
+    }
 
     let runtime = RuntimeBuilder::new_multi_thread()
         .enable_all()
@@ -908,6 +956,89 @@ fn normalize_binding_key(raw: &str) -> String {
     .to_string()
 }
 
+#[derive(Default)]
+struct MemoryCheckpointStore {
+    records: Mutex<HashMap<String, CheckpointRecord>>,
+}
+
+impl Capability for MemoryCheckpointStore {
+    fn name(&self) -> &'static str {
+        "checkpoint_store.memory"
+    }
+}
+
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+impl CheckpointStore for MemoryCheckpointStore {
+    async fn put(&self, record: CheckpointRecord) -> Result<CheckpointHandle, CheckpointError> {
+        let handle = CheckpointHandle {
+            checkpoint_id: record.checkpoint_id.clone(),
+            flow_id: record.flow_id.clone(),
+            run_id: record.run_id.clone(),
+        };
+        let mut records = self.records.lock().expect("checkpoint store lock");
+        records.insert(record.checkpoint_id.clone(), record);
+        Ok(handle)
+    }
+
+    async fn get(&self, handle: &CheckpointHandle) -> Result<CheckpointRecord, CheckpointError> {
+        let records = self.records.lock().expect("checkpoint store lock");
+        records
+            .get(&handle.checkpoint_id)
+            .cloned()
+            .ok_or(CheckpointError::NotFound)
+    }
+
+    async fn ack(&self, handle: &CheckpointHandle) -> Result<(), CheckpointError> {
+        let mut records = self.records.lock().expect("checkpoint store lock");
+        records.remove(&handle.checkpoint_id);
+        Ok(())
+    }
+
+    async fn lease(&self, handle: &CheckpointHandle, ttl: Duration) -> Result<Lease, CheckpointError> {
+        let records = self.records.lock().expect("checkpoint store lock");
+        if !records.contains_key(&handle.checkpoint_id) {
+            return Err(CheckpointError::NotFound);
+        }
+        let now_ms = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let expires_at_ms = now_ms.saturating_add(ttl.as_millis() as u64);
+        Ok(Lease {
+            lease_id: format!("lease-{}-{expires_at_ms}", handle.checkpoint_id),
+            expires_at_ms,
+        })
+    }
+
+    async fn release_lease(&self, _lease: Lease) -> Result<(), CheckpointError> {
+        Ok(())
+    }
+
+    async fn list(&self, filter: CheckpointFilter) -> Result<Vec<CheckpointHandle>, CheckpointError> {
+        let records = self.records.lock().expect("checkpoint store lock");
+        let mut handles = Vec::new();
+        for record in records.values() {
+            if let Some(flow_id) = &filter.flow_id {
+                if flow_id != &record.flow_id {
+                    continue;
+                }
+            }
+            if let Some(run_id) = &filter.run_id {
+                if run_id != &record.run_id {
+                    continue;
+                }
+            }
+            handles.push(CheckpointHandle {
+                checkpoint_id: record.checkpoint_id.clone(),
+                flow_id: record.flow_id.clone(),
+                run_id: record.run_id.clone(),
+            });
+        }
+        Ok(handles)
+    }
+}
+
 fn resource_bag_from_bindings(bindings: &[String]) -> Result<ResourceBag> {
     let mut bag = ResourceBag::new();
 
@@ -925,6 +1056,13 @@ fn resource_bag_from_bindings(bindings: &[String]) -> Result<ResourceBag> {
             ("resource::blob" | "resource::blob::read" | "resource::blob::write", "memory") => {
                 bag = bag.with_blob(Arc::new(capabilities::blob::MemoryBlobStore::new()));
             }
+            ("durability::checkpoint_store", "memory") => {
+                bag = attach_checkpoint_store(
+                    bag,
+                    CheckpointStoreKind::Memory,
+                    None,
+                );
+            }
             ("resource::http", "reqwest") => {
                 let client = Arc::new(cap_http_reqwest::ReqwestHttpClient::default());
                 bag = bag.with_http_read(Arc::clone(&client));
@@ -938,7 +1076,7 @@ fn resource_bag_from_bindings(bindings: &[String]) -> Result<ResourceBag> {
             }
             _ => {
                 return Err(anyhow!(
-                    "unsupported binding `{binding}`; supported: resource::kv=memory, resource::blob=memory, resource::http::read=reqwest, resource::http::write=reqwest"
+                    "unsupported binding `{binding}`; supported: resource::kv=memory, resource::blob=memory, resource::http::read=reqwest, resource::http::write=reqwest, durability::checkpoint_store=memory"
                 ));
             }
         }
@@ -1048,12 +1186,15 @@ fn provider_kind_from_binding(key: &str, token: &str) -> Option<&'static str> {
                 Some("kv.memory")
             } else if key.starts_with("resource::blob") {
                 Some("blob.memory")
+            } else if key == "durability::checkpoint_store" {
+                Some("checkpoint_store.memory")
             } else {
                 None
             }
         }
         "kv.memory" => Some("kv.memory"),
         "blob.memory" => Some("blob.memory"),
+        "checkpoint_store.memory" => Some("checkpoint_store.memory"),
         "reqwest" | "http.reqwest" => Some("http.reqwest"),
         _ => None,
     }
@@ -1087,16 +1228,16 @@ fn parse_bindings_for_lock(bindings: &[String]) -> Result<Vec<(String, String)>>
             anyhow!("invalid --bind `{binding}`; expected `<resource::hint>=<provider>`")
         })?;
         let key = normalize_binding_key(raw_key.trim());
-        if !key.starts_with("resource::") {
+        if !key.starts_with("resource::") && !key.starts_with("durability::") {
             return Err(anyhow!(
-                "invalid --bind `{binding}`; expected `resource::*` key after normalization"
+                "invalid --bind `{binding}`; expected `resource::*` or `durability::*` key after normalization"
             ));
         }
 
         let token = raw_value.trim();
         let provider_kind = provider_kind_from_binding(&key, token).ok_or_else(|| {
             anyhow!(
-                "unsupported provider `{token}` in --bind `{binding}`; supported: memory, kv.memory, blob.memory, reqwest"
+                "unsupported provider `{token}` in --bind `{binding}`; supported: memory, kv.memory, blob.memory, checkpoint_store.memory, reqwest"
             )
         })?;
 
@@ -1110,6 +1251,7 @@ fn lock_instance_for_provider_kind(provider_kind: &str) -> Result<LockInstance> 
     let provides = match provider_kind {
         "kv.memory" => vec!["resource::kv".to_string()],
         "blob.memory" => vec!["resource::blob".to_string()],
+        "checkpoint_store.memory" => vec!["durability::checkpoint_store".to_string()],
         "http.reqwest" => vec!["resource::http".to_string()],
         other => {
             return Err(anyhow!(
@@ -1176,8 +1318,11 @@ fn run_bindings_lock_generate(args: LockGenerateArgs) -> Result<()> {
     let flow = handle.ir.flow();
     let flow_id = flow.id.as_str().to_string();
 
-    let required = required_resource_hints(flow);
     let overrides = parse_bindings_for_lock(&args.bindings)?;
+    let mut required = required_resource_hints(flow);
+    for (key, _) in &overrides {
+        required.insert(key.clone());
+    }
 
     let mut use_map: BTreeMap<String, String> = BTreeMap::new();
     let mut instances: BTreeMap<String, LockInstance> = BTreeMap::new();
@@ -1278,9 +1423,9 @@ fn instance_provides(instance: &LockInstance, required: &str) -> bool {
 
 fn validate_lock_instance_well_formed(name: &str, instance: &LockInstance) -> Result<()> {
     for provided in &instance.provides {
-        if !provided.starts_with("resource::") {
+        if !provided.starts_with("resource::") && !provided.starts_with("durability::") {
             return Err(anyhow!(
-                "bindings.lock instance `{name}` has non-resource provides entry `{provided}`"
+                "bindings.lock instance `{name}` has unsupported provides entry `{provided}`"
             ));
         }
     }
@@ -1316,9 +1461,9 @@ fn resource_bag_from_bindings_lock(path: &Path, flow_id: &str) -> Result<Resourc
 
     let mut instance_names: BTreeSet<&str> = BTreeSet::new();
     for (resource_key, instance_name) in &flow.use_map {
-        if !resource_key.starts_with("resource::") {
+        if !resource_key.starts_with("resource::") && !resource_key.starts_with("durability::") {
             return Err(anyhow!(
-                "bindings.lock flow `{flow_id}` contains non-resource key `{resource_key}`"
+                "bindings.lock flow `{flow_id}` contains unsupported key `{resource_key}`"
             ));
         }
 
@@ -1347,6 +1492,9 @@ fn resource_bag_from_bindings_lock(path: &Path, flow_id: &str) -> Result<Resourc
             "blob.memory" => {
                 bag = bag.with_blob(Arc::new(capabilities::blob::MemoryBlobStore::new()));
             }
+            "checkpoint_store.memory" => {
+                bag = attach_checkpoint_store(bag, CheckpointStoreKind::Memory, None);
+            }
             "http.reqwest" => {
                 let client = Arc::new(cap_http_reqwest::ReqwestHttpClient::default());
                 bag = bag.with_http_read(Arc::clone(&client));
@@ -1361,6 +1509,30 @@ fn resource_bag_from_bindings_lock(path: &Path, flow_id: &str) -> Result<Resourc
     }
 
     Ok(bag)
+}
+
+fn attach_checkpoint_store(
+    bag: ResourceBag,
+    kind: CheckpointStoreKind,
+    checkpoint_dir: Option<&Path>,
+) -> ResourceBag {
+    let bag = match kind {
+        CheckpointStoreKind::Fs => {
+            let root = checkpoint_dir
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from(".flow").join("checkpoints"));
+            bag.with_checkpoint_store(Arc::new(local_durability::FsCheckpointStore::with_root(root)))
+        }
+        CheckpointStoreKind::Memory => {
+            bag.with_checkpoint_store(Arc::new(MemoryCheckpointStore::default()))
+        }
+    };
+
+    if bag.max_durability_mode() == DurabilityMode::Off {
+        bag.with_max_durability_mode(DurabilityMode::Partial)
+    } else {
+        bag
+    }
 }
 
 fn parse_payload(args: &LocalArgs) -> Result<JsonValue> {

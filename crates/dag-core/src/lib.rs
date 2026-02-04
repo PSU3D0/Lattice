@@ -5,6 +5,8 @@ pub mod determinism;
 mod diagnostics;
 mod effects;
 pub mod effects_registry;
+#[cfg(feature = "flow-registry")]
+pub mod flow_registry;
 mod ir;
 pub mod schema;
 
@@ -13,6 +15,43 @@ pub use diagnostics::{diagnostic_codes, Diagnostic, DiagnosticCode, Severity, DI
 pub use effects::{Determinism, Effects, NodeError, NodeResult};
 pub use ir::*;
 pub use serde_json;
+use std::marker::PhantomData;
+
+/// Typed entrypoint metadata emitted by `flow!`.
+#[derive(Clone, Copy, Debug)]
+pub struct FlowEntrypoint<In, Out> {
+    pub flow_name: &'static str,
+    pub flow_version: &'static str,
+    pub trigger_alias: &'static str,
+    pub capture_alias: &'static str,
+    pub route_aliases: &'static [&'static str],
+    pub method: Option<&'static str>,
+    pub deadline_ms: Option<u64>,
+    _marker: PhantomData<fn(In) -> Out>,
+}
+
+impl<In, Out> FlowEntrypoint<In, Out> {
+    pub const fn new(
+        flow_name: &'static str,
+        flow_version: &'static str,
+        trigger_alias: &'static str,
+        capture_alias: &'static str,
+        route_aliases: &'static [&'static str],
+        method: Option<&'static str>,
+        deadline_ms: Option<u64>,
+    ) -> Self {
+        Self {
+            flow_name,
+            flow_version,
+            trigger_alias,
+            capture_alias,
+            route_aliases,
+            method,
+            deadline_ms,
+            _marker: PhantomData,
+        }
+    }
+}
 
 /// Convenient prelude re-exporting the most commonly used items.
 pub mod prelude {

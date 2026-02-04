@@ -1,61 +1,37 @@
 use dag_core::prelude::*;
 use dag_core::ControlSurfaceKind;
-use dag_macros::workflow;
+use dag_macros::{def_node, node, workflow};
 
-const TRIGGER_SPEC: NodeSpec = NodeSpec {
-    identifier: "tests::trigger",
-    name: "Trigger",
-    kind: NodeKind::Trigger,
-    summary: None,
-    in_schema: SchemaSpec::Opaque,
-    out_schema: SchemaSpec::Opaque,
-    effects: Effects::Pure,
-    determinism: Determinism::Strict,
-    determinism_hints: &[],
-    effect_hints: &[],
-    durability: DurabilityProfile::default(),
-};
+#[def_node(trigger, name = "Trigger")]
+async fn trigger(_input: ()) -> NodeResult<()> {
+    Ok(())
+}
 
-const ROUTE_SPEC: NodeSpec = NodeSpec::inline(
-    "tests::route",
-    "Route",
-    SchemaSpec::Opaque,
-    SchemaSpec::Opaque,
-    Effects::Pure,
-    Determinism::Strict,
-    None,
-);
+#[def_node(name = "Route")]
+async fn route(_input: ()) -> NodeResult<()> {
+    Ok(())
+}
 
-const BRANCH_SPEC: NodeSpec = NodeSpec::inline(
-    "tests::branch",
-    "Branch",
-    SchemaSpec::Opaque,
-    SchemaSpec::Opaque,
-    Effects::Pure,
-    Determinism::Strict,
-    None,
-);
+#[def_node(name = "Branch")]
+async fn branch(_input: ()) -> NodeResult<()> {
+    Ok(())
+}
 
-const CAPTURE_SPEC: NodeSpec = NodeSpec::inline(
-    "tests::capture",
-    "Capture",
-    SchemaSpec::Opaque,
-    SchemaSpec::Opaque,
-    Effects::Pure,
-    Determinism::Strict,
-    None,
-);
+#[def_node(name = "Capture")]
+async fn capture(_input: ()) -> NodeResult<()> {
+    Ok(())
+}
 
 workflow! {
     name: if_flow,
     version: "1.0.0",
     profile: Dev;
 
-    let trigger = &TRIGGER_SPEC;
-    let route = &ROUTE_SPEC;
-    let then_branch = &BRANCH_SPEC;
-    let else_branch = &BRANCH_SPEC;
-    let capture = &CAPTURE_SPEC;
+    let trigger = node!(trigger);
+    let route = node!(route);
+    let then_branch = node!(branch);
+    let else_branch = node!(branch);
+    let capture = node!(capture);
 
     connect!(trigger -> route);
     connect!(route -> then_branch);

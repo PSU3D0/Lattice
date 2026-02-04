@@ -1,5 +1,5 @@
 error: switch! cases must map to node aliases (e.g. `"k" => target`)
-  --> tests/ui/workflow_switch_case_target_not_ident.rs:37:26
+  --> tests/ui/workflow_switch_case_target_not_ident.rs:39:26
    |
-37 |         cases = { "a" => "a" }
+39 |         cases = { "a" => "a" }
    |                          ^^^

@@ -91,6 +91,7 @@ Key fields:
 - `idempotency`: optional idempotency spec (`key`, `scope`, `ttlMs`).
 - `effectHints[]` / `determinismHints[]`: canonical resource hints inferred at compile-time.
 - `durability`: optional durability profile (`checkpointable`, `replayable`, `halts`).
+- `subflow_ir`: optional embedded `FlowIR` for analysis-only expansion (only valid on `kind = subflow`).
 
 Notes:
 - In 0.1, schemas are primarily for validation/UX and are not enforced as structural JSON schema compatibility.
@@ -99,13 +100,16 @@ Notes:
 
 ## Triggers & Entrypoints (0.1.x)
 
-- A trigger is a `NodeIR` with `kind = trigger`.
-- A host/deployment selects which trigger alias to run via the invocation boundary (`trigger_alias`), not via Flow IR fields (see `impl-docs/spec/invocation-abi.md`).
-- Route wiring (HTTP paths/methods, queue subscriptions, cron schedules), auth, and rate limits are deployment concerns and are intentionally out-of-band in 0.1.
+- A trigger is a `NodeIR` with `kind = trigger` and represents an ingress boundary.
+- Entrypoints are **explicit** and live in bundle/host metadata (not in `FlowIR`).
+- Entrypoints are never inferred from trigger nodes; hosts MUST require explicit entrypoints for ingress.
+- An entrypoint binds a `trigger_alias` and `capture_alias`, plus optional `route_aliases` for UX.
+- `route_aliases` is the only alias field; `route_alias` is invalid in 0.1.x.
+- Hosts derive a canonical route deterministically (for example `/.lf/<bundle_id>/<trigger_alias>`).
+  `route_aliases` are friendly overrides and are not authoritative.
 
-Policy guardrail (recommended for agent-authored flows):
-- By default, validators reject multiple trigger nodes in a single flow.
-- Opt-in with `policies.lint.allow_multiple_triggers=true` when a flow intentionally supports multiple ingress shapes.
+Multiple triggers are allowed, but hosts MUST require explicit entrypoints for each ingress.
+Validators SHOULD reject entrypoints that reference missing aliases or a non-trigger `trigger_alias`.
 
 ## EdgeIR
 
@@ -128,6 +132,18 @@ Key fields:
 Notes:
 - In current code, `buffer` spill behavior is implemented by `kernel-exec` (spill tiers are runtime-configured).
 - `delivery=exactly_once` is validated by `kernel-plan` (dedupe + idempotency requirements).
+
+## Type Compatibility and Adapters (0.1.x)
+
+Type checking for edges uses a Level-2 rule:
+
+- An edge is compatible when the source output type satisfies `Out: Into<In>` for the target input.
+- This rule applies uniformly across node kinds (including subflows).
+
+Adapters are edge-native:
+
+- Adapters apply when delivering data across the edge and are not represented as nodes.
+- Edges MUST exist even when an adapter is applied; adapters do not replace edges.
 
 ## ControlSurfaceIR
 

@@ -6,7 +6,7 @@
 
 Lattice is a Rust-first workflow automation platform designed to give human and AI authors a typed, policy-aware alternative to low-code orchestrators such as n8n or Temporal JSON definitions. Authors express flows through a macro DSL that expands to:
 
-- Native Rust execution units (`#[node]`, `#[trigger]`, `workflow!`)
+- Native Rust execution units (`#[def_node]`, `flow!`)
 - A canonical Flow Intermediate Representation (Flow IR) captured as JSON
 - Validation diagnostics with stable error codes (e.g. `DAG201`, `IDEM020`)
 - Execution plans that target multiple hosts (Tokio/Web, Redis queue, Temporal, WASM, Python gRPC)
@@ -29,7 +29,7 @@ The workspace provides everything needed to go from macro-authored code to runni
 /schemas/                         # Flow IR JSON Schema + reference artifacts
 /crates/                          # Primary library, runtime, tooling, and adapters
   dag-core/                       # Flow IR types, diagnostics, builder utilities
-  dag-macros/                     # Authoring DSL (`#[node]`, `workflow!`, control surfaces)
+  dag-macros/                     # Authoring DSL (`#[def_node]`, `flow!`, control surfaces)
   kernel-plan/                    # Flow IR validators + lowering scaffolding
   kernel-exec/                    # (Scaffold) runtime for execution plans
   capabilities/, cap-*            # Capability typestates + concrete providers
@@ -57,7 +57,7 @@ The workspace provides everything needed to go from macro-authored code to runni
 | Crate | Purpose |
 |-------|---------|
 | `dag-core` | Canonical types: Flow IR structs, builder helpers, diagnostics, effects/determinism. |
-| `dag-macros` | Procedural macros expanding Rust nodes/triggers/workflows and emitting Flow IR. Includes trybuild suites for diagnostics. |
+| `dag-macros` | Procedural macros expanding Rust nodes/triggers/flows and emitting Flow IR. Includes trybuild suites for diagnostics. |
 | `kernel-plan` | Validation engine enforcing DAG rules, port compatibility, cycle detection, and idempotency preconditions. Produces `ValidatedIR`. |
 | `kernel-exec` | (Scaffold) in-process executor with scheduling, backpressure, and cancellation hooks. |
 | `exporters` | Flow IR exporters (`to_json_value`, `to_dot`) consumed by CLI and Studio. |
@@ -73,10 +73,13 @@ The workspace provides everything needed to go from macro-authored code to runni
 
 1. **Define nodes & triggers** using macros in your crate:
    ```rust
-   #[node(name = "Normalize", effects = "Pure", determinism = "Strict")]
+   #[def_node(name = "Normalize", effects = "Pure", determinism = "Strict")]
    async fn normalize(event: Order) -> NodeResult<SanitisedOrder> { ... }
+
+   #[def_node(trigger, name = "Webhook")]
+   async fn webhook(req: HttpRequest) -> NodeResult<WebhookEvent> { ... }
    ```
-2. **Assemble workflows** with `workflow!` or attribute sugar for control surfaces. The macro emits both Rust wiring and Flow IR JSON artefacts.
+2. **Assemble flows** with `flow!`, using `node!(...)` helpers for bindings. The macro emits both Rust wiring and Flow IR JSON artefacts.
 3. **Inspect Flow IR** using the CLI:
    ```bash
    cargo run -p flows-cli -- graph check --input flow_ir.json --emit-dot

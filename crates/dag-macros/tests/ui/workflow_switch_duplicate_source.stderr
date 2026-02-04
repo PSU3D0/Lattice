@@ -1,5 +1,5 @@
 error: [DAG207] duplicate switch! for source `route`
-  --> tests/ui/workflow_switch_duplicate_source.rs:40:5
+  --> tests/ui/workflow_switch_duplicate_source.rs:42:5
    |
-40 |     switch!(
+42 |     switch!(
    |     ^^^^^^

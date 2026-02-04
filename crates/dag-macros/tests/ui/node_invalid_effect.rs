@@ -1,7 +1,7 @@
 use dag_core::NodeResult;
-use dag_macros::node;
+use dag_macros::def_node;
 
-#[node(name = "Invalid", effects = "Unknown")]
+#[def_node(name = "Invalid", effects = "Unknown")]
 async fn invalid(input: ()) -> NodeResult<()> {
     let _ = input;
     Ok(())

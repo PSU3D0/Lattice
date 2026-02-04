@@ -1,5 +1,5 @@
 use dag_core::{NodeError, NodeResult};
-use dag_macros::node;
+use dag_macros::def_node;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::time::Duration;
@@ -21,7 +21,7 @@ pub struct CallbackWaitOutput {
     pub context: JsonValue,
 }
 
-#[node(
+#[def_node(
     name = "CallbackWait",
     summary = "Pause execution until an external resume signal arrives",
     identifier = "std.callback.wait",

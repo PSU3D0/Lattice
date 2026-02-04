@@ -1,34 +1,36 @@
+#![allow(unused_imports)]
+
 use dag_core::prelude::*;
-use dag_macros::workflow;
+use dag_macros::{def_node, node, workflow};
 
-const ROUTE_SPEC: NodeSpec = NodeSpec::inline(
-    "tests::route",
-    "Route",
-    SchemaSpec::Opaque,
-    SchemaSpec::Opaque,
-    Effects::Pure,
-    Determinism::Strict,
-    None,
-);
+#[def_node(
+    name = "Route",
+    summary = "Route",
+    effects = "Pure",
+    determinism = "Strict"
+)]
+async fn route(_input: ()) -> NodeResult<()> {
+    Ok(())
+}
 
-const BRANCH_SPEC: NodeSpec = NodeSpec::inline(
-    "tests::branch",
-    "Branch",
-    SchemaSpec::Opaque,
-    SchemaSpec::Opaque,
-    Effects::Pure,
-    Determinism::Strict,
-    None,
-);
+#[def_node(
+    name = "Branch",
+    summary = "Branch",
+    effects = "Pure",
+    determinism = "Strict"
+)]
+async fn branch(_input: ()) -> NodeResult<()> {
+    Ok(())
+}
 
 workflow! {
     name: if_missing_edge,
     version: "1.0.0",
     profile: Dev;
 
-    let route = &ROUTE_SPEC;
-    let then_branch = &BRANCH_SPEC;
-    let else_branch = &BRANCH_SPEC;
+    let route = node!(route);
+    let then_branch = node!(branch);
+    let else_branch = node!(branch);
 
     connect!(route -> then_branch);
 

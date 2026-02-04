@@ -15,6 +15,7 @@ Source of truth:
 ## Invocation
 
 In 0.1.x, **flow selection** (which `FlowIR`) is a host/deployment concern and is out-of-band.
+Hosts SHOULD expose explicit entrypoints defined in the bundle metadata (trigger + capture).
 
 An invocation identifies (within the selected flow):
 - which trigger node to run (`trigger_alias`)
@@ -23,13 +24,26 @@ An invocation identifies (within the selected flow):
 - optional deadline (`deadline`)
 - arbitrary metadata (`metadata`)
 
+Entrypoints are explicit and bind `trigger_alias` + `capture_alias`. Hosts MUST validate entrypoints
+before routing invocations.
+
 Canonical shape: `host_inproc::InvocationParts`.
 
 Semantics:
-- `trigger_alias` MUST exist in the `ValidatedIR` nodes list.
+- `trigger_alias` MUST exist in the `ValidatedIR` nodes list and MUST be a trigger node.
 - `capture_alias` MUST exist in the `ValidatedIR` nodes list.
 - `payload` is JSON and is passed as the trigger node input.
 - `deadline` is an optional time budget for reaching the capture node.
+
+## Routing (derived)
+
+Hosts derive canonical routes deterministically from bundle identity. A recommended shape is:
+
+`/.lf/<bundle_id>/<trigger_alias>`
+
+Bundle metadata may include optional `route_aliases` (list of strings) for UX or friendly URLs.
+`route_aliases` are not authoritative and MUST NOT replace the canonical derived route; the legacy
+`route_alias` field is invalid in 0.1.x.
 
 ## Metadata
 

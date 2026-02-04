@@ -4,8 +4,8 @@ use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{ToTokens, format_ident, quote};
 use semver::Version;
-use std::collections::HashSet;
-use syn::braced;
+use std::collections::{HashMap, HashSet};
+use syn::{braced, bracketed};
 use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
@@ -16,14 +16,28 @@ use syn::{
 
 /// Attribute macro for defining workflow nodes.
 #[proc_macro_attribute]
-pub fn node(attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn def_node(attr: TokenStream, item: TokenStream) -> TokenStream {
     expand_node(attr, item, NodeDefaults::node())
 }
 
-/// Attribute macro for defining workflow triggers.
-#[proc_macro_attribute]
-pub fn trigger(attr: TokenStream, item: TokenStream) -> TokenStream {
-    expand_node(attr, item, NodeDefaults::trigger())
+/// Helper macro for binding nodes in workflow specs.
+#[proc_macro]
+pub fn node(input: TokenStream) -> TokenStream {
+    let path = parse_macro_input!(input as Path);
+    match node_spec_path_from_path(&path) {
+        Ok(path) => quote!(#path()).into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+/// Helper macro for binding subflow entrypoints in workflow specs.
+#[proc_macro]
+pub fn subflow(input: TokenStream) -> TokenStream {
+    let path = parse_macro_input!(input as Path);
+    match subflow_spec_from_path(&path) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
 }
 
 /// Declarative workflow macro producing Flow IR at compile time.
@@ -38,7 +52,7 @@ pub fn workflow(input: TokenStream) -> TokenStream {
 
 /// Declarative workflow macro producing Flow bundles at compile time.
 #[proc_macro]
-pub fn workflow_bundle(input: TokenStream) -> TokenStream {
+pub fn flow(input: TokenStream) -> TokenStream {
     let parsed = parse_macro_input!(input as WorkflowBundleInput);
     match parsed.expand() {
         Ok(tokens) => tokens.into(),
@@ -266,6 +280,8 @@ struct NodeArgs {
     summary: Option<LitStr>,
     effects: Option<ParsedEffects>,
     determinism: Option<ParsedDeterminism>,
+    effects_provided: bool,
+    determinism_provided: bool,
     kind: Option<TokenStream2>,
     input_schema: Option<LitStr>,
     output_schema: Option<LitStr>,
@@ -277,12 +293,18 @@ struct NodeArgs {
 
 impl NodeArgs {
     fn parse(args: Punctuated<Meta, Token![,]>, defaults: &NodeDefaults) -> Result<Self> {
+        let mut defaults_kind = defaults.kind;
+        let mut defaults_effects = defaults.effects;
+        let mut defaults_determinism = defaults.determinism;
+        let mut trigger_shorthand = false;
         let mut parsed = NodeArgs {
             identifier: None,
             name: None,
             summary: None,
             effects: None,
             determinism: None,
+            effects_provided: false,
+            determinism_provided: false,
             kind: None,
             input_schema: None,
             output_schema: None,
@@ -330,9 +352,23 @@ impl NodeArgs {
                                 ));
                             }
                         },
-                        "effects" => parsed.effects = Some(parse_effects(&lit)?),
-                        "determinism" => parsed.determinism = Some(parse_determinism(&lit)?),
-                        "kind" => parsed.kind = Some(parse_node_kind(&lit)?),
+                        "effects" => {
+                            parsed.effects = Some(parse_effects(&lit)?);
+                            parsed.effects_provided = true;
+                        }
+                        "determinism" => {
+                            parsed.determinism = Some(parse_determinism(&lit)?);
+                            parsed.determinism_provided = true;
+                        }
+                        "kind" => {
+                            if parsed.kind.is_some() {
+                                return Err(syn::Error::new(
+                                    lit.span(),
+                                    "node kind already set",
+                                ));
+                            }
+                            parsed.kind = Some(parse_node_kind(&lit)?);
+                        }
                         "in" => match lit {
                             Lit::Str(s) => parsed.input_schema = Some(s),
                             _ => {
@@ -405,25 +441,49 @@ impl NodeArgs {
                     }
                 }
                 Meta::Path(path) => {
-                    return Err(syn::Error::new(
-                        path.span(),
-                        "expected key = \"value\" pairs in attribute",
-                    ));
+                    let ident = path
+                        .get_ident()
+                        .ok_or_else(|| syn::Error::new(path.span(), "expected identifier"))?;
+                    match ident.to_string().as_str() {
+                        "trigger" => {
+                            if parsed.kind.is_some() {
+                                return Err(syn::Error::new(
+                                    path.span(),
+                                    "node kind already set",
+                                ));
+                            }
+                            parsed.kind = Some(enum_expr("NodeKind", "Trigger", path.span()));
+                            trigger_shorthand = true;
+                        }
+                        _ => {
+                            return Err(syn::Error::new(
+                                path.span(),
+                                "expected key = \"value\" pairs in attribute",
+                            ));
+                        }
+                    }
                 }
             }
         }
 
+        if trigger_shorthand {
+            let trigger_defaults = NodeDefaults::trigger();
+            defaults_kind = trigger_defaults.kind;
+            defaults_effects = trigger_defaults.effects;
+            defaults_determinism = trigger_defaults.determinism;
+        }
+
         if parsed.effects.is_none() {
-            parsed.effects = Some(ParsedEffects::new(defaults.effects, Span::call_site()));
+            parsed.effects = Some(ParsedEffects::new(defaults_effects, Span::call_site()));
         }
         if parsed.determinism.is_none() {
             parsed.determinism = Some(ParsedDeterminism::new(
-                defaults.determinism,
+                defaults_determinism,
                 Span::call_site(),
             ));
         }
         if parsed.kind.is_none() {
-            parsed.kind = Some(enum_expr("NodeKind", defaults.kind, Span::call_site()));
+            parsed.kind = Some(enum_expr("NodeKind", defaults_kind, Span::call_site()));
         }
 
         Ok(parsed)
@@ -447,17 +507,17 @@ fn node_impl(
     if function.sig.asyncness.is_none() {
         return Err(syn::Error::new(
             function.sig.span(),
-            "[DAG001] #[node] requires an async function",
+            "[DAG001] #[def_node] requires an async function",
         ));
     }
 
     let config = NodeArgs::parse(args, &defaults)?;
-    let name_lit = config.name.as_ref().cloned().ok_or_else(|| {
-        syn::Error::new(
-            function.sig.span(),
-            "[DAG001] #[node] requires `name = \"...\"`",
-        )
-    })?;
+    let warning_tokens = metadata_warning_tokens(&config, &function.sig.ident);
+    let name_lit = config
+        .name
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| default_node_name(&function.sig.ident));
     let summary_expr = config
         .summary
         .as_ref()
@@ -465,9 +525,12 @@ fn node_impl(
         .unwrap_or_else(|| quote!(None));
 
     let (input_schema_expr, output_schema_expr) = infer_schemas(&function, &config)?;
+    let (input_ty, output_ty) = node_input_output_types(&function)?;
 
     let fn_name = &function.sig.ident;
     let spec_ident = format_ident!("{}_NODE_SPEC", fn_name.to_string().to_uppercase());
+    let input_type_ident = format_ident!("{}_Input", fn_name);
+    let output_type_ident = format_ident!("{}_Output", fn_name);
     let accessor_ident = format_ident!("{}_node_spec", fn_name);
     let register_ident = format_ident!("{}_register", fn_name);
 
@@ -516,6 +579,12 @@ fn node_impl(
 
     Ok(quote! {
         #function
+        #warning_tokens
+
+        #[allow(non_camel_case_types)]
+        pub type #input_type_ident = #input_ty;
+        #[allow(non_camel_case_types)]
+        pub type #output_type_ident = #output_ty;
 
         #[allow(non_upper_case_globals)]
         pub const #spec_ident: ::dag_core::NodeSpec = ::dag_core::NodeSpec {
@@ -541,6 +610,7 @@ fn node_impl(
             &#spec_ident
         }
 
+        #[cfg(feature = "host-bundle")]
         #[allow(dead_code)]
         pub fn #register_ident(
             registry: &mut ::kernel_exec::NodeRegistry,
@@ -558,6 +628,54 @@ fn node_impl(
             }
         }
     })
+}
+
+fn metadata_warning_tokens(config: &NodeArgs, fn_name: &Ident) -> TokenStream2 {
+    let mut tokens = TokenStream2::new();
+    if config.summary.is_none() {
+        tokens.extend(deprecated_warning_tokens(fn_name, "summary"));
+    }
+    if !config.effects_provided {
+        tokens.extend(deprecated_warning_tokens(fn_name, "effects"));
+    }
+    if !config.determinism_provided {
+        tokens.extend(deprecated_warning_tokens(fn_name, "determinism"));
+    }
+    tokens
+}
+
+fn deprecated_warning_tokens(fn_name: &Ident, field: &str) -> TokenStream2 {
+    let message = format!("#[def_node] `{}` missing `{}` metadata", fn_name, field);
+    let note = LitStr::new(&message, Span::call_site());
+    quote! {
+        const _: () = {
+            #[deprecated(note = #note)]
+            const fn __dag_macro_missing_metadata_warning() {}
+            __dag_macro_missing_metadata_warning();
+        };
+    }
+}
+
+fn default_node_name(ident: &Ident) -> LitStr {
+    let raw = ident.to_string();
+    let mut name = String::with_capacity(raw.len());
+    let mut capitalize = true;
+    for ch in raw.chars() {
+        if ch == '_' {
+            capitalize = true;
+            continue;
+        }
+        if capitalize {
+            name.push(ch.to_ascii_uppercase());
+            capitalize = false;
+        } else {
+            name.push(ch);
+        }
+    }
+    if name.is_empty() {
+        name = raw;
+    }
+    LitStr::new(&name, ident.span())
 }
 
 struct HintSpec {
@@ -840,6 +958,52 @@ fn infer_schemas(function: &ItemFn, config: &NodeArgs) -> Result<(TokenStream2, 
     Ok((input_schema, output_schema))
 }
 
+fn node_input_output_types(function: &ItemFn) -> Result<(syn::Type, syn::Type)> {
+    let arg = function.sig.inputs.first().ok_or_else(|| {
+        syn::Error::new(
+            function.sig.span(),
+            "[DAG001] nodes must accept exactly one argument",
+        )
+    })?;
+    let input_ty = match arg {
+        syn::FnArg::Typed(pt) => (*pt.ty).clone(),
+        syn::FnArg::Receiver(_) => {
+            return Err(syn::Error::new(
+                arg.span(),
+                "[DAG001] first parameter must be typed (use `fn foo(input: T)`)",
+            ));
+        }
+    };
+
+    let output_ty = match &function.sig.output {
+        syn::ReturnType::Type(_, ty) => output_type_from_return(ty.as_ref())?,
+        syn::ReturnType::Default => {
+            return Err(syn::Error::new(
+                function.sig.output.span(),
+                "[DAG001] nodes must return dag_core::NodeResult<T>",
+            ));
+        }
+    };
+
+    Ok((input_ty, output_ty))
+}
+
+fn output_type_from_return(ty: &syn::Type) -> Result<syn::Type> {
+    if let syn::Type::Path(path) = ty
+        && let Some(last) = path.path.segments.last()
+        && last.ident == "NodeResult"
+        && let syn::PathArguments::AngleBracketed(args) = &last.arguments
+        && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
+    {
+        return Ok(inner.clone());
+    }
+
+    Err(syn::Error::new(
+        ty.span(),
+        "[DAG001] return type must be dag_core::NodeResult<Output>",
+    ))
+}
+
 fn schema_from_type(ty: &syn::Type) -> TokenStream2 {
     let ty_str = ty.to_token_stream().to_string();
     if ty_str == "()" {
@@ -994,30 +1158,49 @@ fn lit_to_string(lit: &Lit) -> Result<String> {
 }
 
 fn register_info_for_binding(expr: &Expr) -> Result<(Path, String)> {
-    let call = match expr {
-        Expr::Call(call) => call,
-        _ => {
-            return Err(syn::Error::new_spanned(
-                expr,
-                "workflow_bundle! bindings must call <name>_node_spec()",
-            ));
-        }
-    };
+    match expr {
+        Expr::Call(call) => register_info_for_call(call),
+        Expr::Macro(mac) => register_info_for_node_macro(&mac.mac),
+        _ => Err(syn::Error::new_spanned(
+            expr,
+            "flow! bindings must call <name>_node_spec()",
+        )),
+    }
+}
 
+fn register_info_for_call(call: &syn::ExprCall) -> Result<(Path, String)> {
     let path = match call.func.as_ref() {
         Expr::Path(path) => path,
         _ => {
             return Err(syn::Error::new_spanned(
                 call.func.as_ref(),
-                "workflow_bundle! bindings must call <name>_node_spec()",
+                "flow! bindings must call <name>_node_spec()",
             ));
         }
     };
 
+    register_info_from_node_spec_path(path)
+}
+
+fn register_info_for_node_macro(mac: &Macro) -> Result<(Path, String)> {
+    if !mac.path.is_ident("node") {
+        return Err(syn::Error::new_spanned(
+            mac.path.clone(),
+            "flow! bindings must call <name>_node_spec()",
+        ));
+    }
+
+    let path: Path = syn::parse2(mac.tokens.clone()).map_err(|err| {
+        syn::Error::new(err.span(), "node! expects a path identifier")
+    })?;
+    register_info_from_base_path(&path)
+}
+
+fn register_info_from_node_spec_path(path: &syn::ExprPath) -> Result<(Path, String)> {
     let Some(segment) = path.path.segments.last() else {
         return Err(syn::Error::new_spanned(
             path,
-            "workflow_bundle! bindings must call <name>_node_spec()",
+            "flow! bindings must call <name>_node_spec()",
         ));
     };
 
@@ -1025,7 +1208,7 @@ fn register_info_for_binding(expr: &Expr) -> Result<(Path, String)> {
     let base = fn_name.strip_suffix("_node_spec").ok_or_else(|| {
         syn::Error::new(
             segment.ident.span(),
-            "workflow_bundle! bindings must call <name>_node_spec()",
+            "flow! bindings must call <name>_node_spec()",
         )
     })?;
     let mut register_path = path.path.clone();
@@ -1033,6 +1216,330 @@ fn register_info_for_binding(expr: &Expr) -> Result<(Path, String)> {
         last.ident = format_ident!("{}_register", base);
     }
     Ok((register_path, base.to_string()))
+}
+
+fn register_info_from_base_path(path: &Path) -> Result<(Path, String)> {
+    let Some(segment) = path.segments.last() else {
+        return Err(syn::Error::new_spanned(
+            path,
+            "flow! bindings must call <name>_node_spec()",
+        ));
+    };
+
+    if !matches!(segment.arguments, syn::PathArguments::None) {
+        return Err(syn::Error::new(
+            segment.span(),
+            "node! expects a path identifier",
+        ));
+    }
+
+    let base = segment.ident.to_string();
+    let mut register_path = path.clone();
+    if let Some(last) = register_path.segments.last_mut() {
+        last.ident = format_ident!("{}_register", base);
+    }
+    Ok((register_path, base))
+}
+
+fn node_spec_path_from_path(path: &Path) -> Result<Path> {
+    let mut path = qualify_type_path(path);
+    let Some(segment) = path.segments.last_mut() else {
+        return Err(syn::Error::new_spanned(
+            path,
+            "node! expects a path identifier",
+        ));
+    };
+    if !matches!(segment.arguments, syn::PathArguments::None) {
+        return Err(syn::Error::new(
+            segment.span(),
+            "node! expects a path identifier",
+        ));
+    }
+    let base = segment.ident.to_string();
+    segment.ident = format_ident!("{}_node_spec", base);
+    Ok(path)
+}
+
+fn qualify_type_path(path: &Path) -> Path {
+    let Some(first) = path.segments.first() else {
+        return path.clone();
+    };
+    let ident = first.ident.to_string();
+    if path.segments.len() == 1 && !matches!(ident.as_str(), "crate" | "self" | "super") {
+        parse_quote!(crate::#path)
+    } else {
+        path.clone()
+    }
+}
+
+fn flow_fn_tokens_from_entrypoint(path: &Path) -> Result<TokenStream2> {
+    if path.segments.is_empty() {
+        return Err(syn::Error::new_spanned(
+            path,
+            "subflow! expects a path to a flow entrypoint const",
+        ));
+    }
+
+    let mut flow_path = path.clone();
+    flow_path
+        .segments
+        .push(syn::PathSegment::from(Ident::new("flow", Span::call_site())));
+    Ok(quote!(#flow_path()))
+}
+
+fn subflow_spec_from_path(path: &Path) -> Result<TokenStream2> {
+    let flow_fn = flow_fn_tokens_from_entrypoint(path)?;
+
+    Ok(quote! {
+        {
+            struct SubflowDescriptor {
+                flow_id: &'static str,
+                entrypoint: &'static str,
+                effects: ::dag_core::Effects,
+                determinism: ::dag_core::Determinism,
+                determinism_hints: &'static [&'static str],
+                effect_hints: &'static [&'static str],
+                durability: ::dag_core::DurabilityProfile,
+            }
+
+            fn __subflow_schema_spec<T>() -> ::dag_core::SchemaSpec {
+                let name = ::core::any::type_name::<T>();
+                if name == "()" {
+                    ::dag_core::SchemaSpec::Opaque
+                } else {
+                    ::dag_core::SchemaSpec::Named(name)
+                }
+            }
+
+            fn __subflow_leak_hints(values: Vec<String>) -> &'static [&'static str] {
+                if values.is_empty() {
+                    return &[] as &[&'static str];
+                }
+                let leaked: Vec<&'static str> = values
+                    .into_iter()
+                    .map(|value| Box::leak(value.into_boxed_str()) as &'static str)
+                    .collect();
+                Box::leak(leaked.into_boxed_slice())
+            }
+
+            fn __subflow_aggregate(
+                flow: &::dag_core::FlowIR,
+            ) -> (
+                ::dag_core::Effects,
+                ::dag_core::Determinism,
+                ::dag_core::DurabilityProfile,
+                &'static [&'static str],
+                &'static [&'static str],
+            ) {
+                let mut effects = ::dag_core::Effects::Pure;
+                let mut determinism = ::dag_core::Determinism::Strict;
+                let mut checkpointable = true;
+                let mut replayable = true;
+                let mut halts = false;
+                let mut effect_hints = Vec::new();
+                let mut determinism_hints = Vec::new();
+                let mut effect_seen = ::std::collections::HashSet::new();
+                let mut determinism_seen = ::std::collections::HashSet::new();
+
+                for node in &flow.nodes {
+                    if node.effects.rank() > effects.rank() {
+                        effects = node.effects;
+                    }
+                    if node.determinism.rank() > determinism.rank() {
+                        determinism = node.determinism;
+                    }
+                    if !node.durability.checkpointable {
+                        checkpointable = false;
+                    }
+                    if !node.durability.replayable {
+                        replayable = false;
+                    }
+                    if node.durability.halts {
+                        halts = true;
+                    }
+                    for hint in &node.effect_hints {
+                        if effect_seen.insert(hint.clone()) {
+                            effect_hints.push(hint.clone());
+                        }
+                    }
+                    for hint in &node.determinism_hints {
+                        if determinism_seen.insert(hint.clone()) {
+                            determinism_hints.push(hint.clone());
+                        }
+                    }
+                }
+
+                let durability = ::dag_core::DurabilityProfile {
+                    checkpointable,
+                    replayable,
+                    halts,
+                };
+                let determinism_hints = __subflow_leak_hints(determinism_hints);
+                let effect_hints = __subflow_leak_hints(effect_hints);
+
+                (effects, determinism, durability, determinism_hints, effect_hints)
+            }
+
+            fn __subflow_node_spec<In, Out>(
+                entry: ::dag_core::FlowEntrypoint<In, Out>,
+            ) -> ::dag_core::NodeSpec {
+                let version = ::dag_core::prelude::Version::parse(entry.flow_version)
+                    .expect("subflow!: invalid semver literal");
+                let flow_id = ::dag_core::FlowId::new(entry.flow_name, &version);
+                let flow_id = Box::leak(flow_id.0.into_boxed_str());
+                let identifier = Box::leak(
+                    format!("subflow::{}::{}", flow_id, entry.trigger_alias).into_boxed_str(),
+                );
+                let name = Box::leak(
+                    format!("Subflow {}", entry.flow_name).into_boxed_str(),
+                );
+                let flow = #flow_fn;
+                let (effects, determinism, durability, determinism_hints, effect_hints) =
+                    __subflow_aggregate(&flow);
+                let descriptor = SubflowDescriptor {
+                    flow_id,
+                    entrypoint: entry.trigger_alias,
+                    effects,
+                    determinism,
+                    determinism_hints,
+                    effect_hints,
+                    durability,
+                };
+
+                ::dag_core::NodeSpec {
+                    identifier,
+                    name,
+                    kind: ::dag_core::NodeKind::Subflow,
+                    summary: None,
+                    in_schema: __subflow_schema_spec::<In>(),
+                    out_schema: __subflow_schema_spec::<Out>(),
+                    effects: descriptor.effects,
+                    determinism: descriptor.determinism,
+                    determinism_hints: descriptor.determinism_hints,
+                    effect_hints: descriptor.effect_hints,
+                    durability: descriptor.durability,
+                }
+            }
+
+            Box::leak(Box::new(__subflow_node_spec(#path)))
+        }
+    })
+}
+
+#[derive(Clone, Debug)]
+enum BindingTypeInfo {
+    Node { input: Path, output: Path },
+    Subflow { entrypoint: Path },
+}
+
+fn type_path_with_suffix(path: &Path, suffix: &str) -> Path {
+    let mut path = qualify_type_path(path);
+    if let Some(last) = path.segments.last_mut() {
+        last.ident = format_ident!("{}{}", last.ident, suffix);
+    }
+    path
+}
+
+fn node_type_info_from_base_path(path: &Path) -> BindingTypeInfo {
+    BindingTypeInfo::Node {
+        input: type_path_with_suffix(path, "_Input"),
+        output: type_path_with_suffix(path, "_Output"),
+    }
+}
+
+fn node_type_info_from_node_spec_path(path: &Path) -> Option<BindingTypeInfo> {
+    let last = path.segments.last()?;
+    let ident = last.ident.to_string();
+    let base = if let Some(base) = ident.strip_suffix("_stream_node_spec") {
+        base
+    } else {
+        ident.strip_suffix("_node_spec")?
+    };
+    let mut base_path = path.clone();
+    if let Some(last) = base_path.segments.last_mut() {
+        last.ident = Ident::new(base, last.ident.span());
+    }
+    Some(node_type_info_from_base_path(&base_path))
+}
+
+fn binding_type_info(expr: &Expr) -> Option<BindingTypeInfo> {
+    match expr {
+        Expr::Reference(reference) => binding_type_info(reference.expr.as_ref()),
+        Expr::Macro(expr_mac) if expr_mac.mac.path.is_ident("node") => {
+            let path: Path = syn::parse2(expr_mac.mac.tokens.clone()).ok()?;
+            Some(node_type_info_from_base_path(&path))
+        }
+        Expr::Macro(expr_mac) if expr_mac.mac.path.is_ident("subflow") => {
+            let path: Path = syn::parse2(expr_mac.mac.tokens.clone()).ok()?;
+            Some(BindingTypeInfo::Subflow { entrypoint: path })
+        }
+        Expr::Call(call) => match call.func.as_ref() {
+            Expr::Path(path) => node_type_info_from_node_spec_path(&path.path),
+            _ => None,
+        },
+        Expr::Path(path) => node_type_info_from_node_spec_path(&path.path),
+        _ => None,
+    }
+}
+
+fn connect_type_assert(from_info: &BindingTypeInfo, to_info: &BindingTypeInfo) -> TokenStream2 {
+    match (from_info, to_info) {
+        (BindingTypeInfo::Node { output: from_out, .. }, BindingTypeInfo::Node { input: to_in, .. }) => {
+            quote! {
+                {
+                    fn __dag_connect_assert<Out, In>()
+                    where
+                        Out: Into<In>,
+                    {
+                    }
+                    let _ = __dag_connect_assert::<#from_out, #to_in>;
+                }
+            }
+        }
+        (BindingTypeInfo::Subflow { entrypoint: from_entry }, BindingTypeInfo::Node { input: to_in, .. }) => {
+            quote! {
+                {
+                    fn __dag_connect_assert_subflow_to_node<FromIn, FromOut>(
+                        _: ::dag_core::FlowEntrypoint<FromIn, FromOut>,
+                    )
+                    where
+                        FromOut: Into<#to_in>,
+                    {
+                    }
+                    let _ = __dag_connect_assert_subflow_to_node(#from_entry);
+                }
+            }
+        }
+        (BindingTypeInfo::Node { output: from_out, .. }, BindingTypeInfo::Subflow { entrypoint: to_entry }) => {
+            quote! {
+                {
+                    fn __dag_connect_assert_node_to_subflow<ToIn, ToOut>(
+                        _: ::dag_core::FlowEntrypoint<ToIn, ToOut>,
+                    )
+                    where
+                        #from_out: Into<ToIn>,
+                    {
+                    }
+                    let _ = __dag_connect_assert_node_to_subflow(#to_entry);
+                }
+            }
+        }
+        (BindingTypeInfo::Subflow { entrypoint: from_entry }, BindingTypeInfo::Subflow { entrypoint: to_entry }) => {
+            quote! {
+                {
+                    fn __dag_connect_assert_subflow_to_subflow<FromIn, FromOut, ToIn, ToOut>(
+                        _: ::dag_core::FlowEntrypoint<FromIn, FromOut>,
+                        _: ::dag_core::FlowEntrypoint<ToIn, ToOut>,
+                    )
+                    where
+                        FromOut: Into<ToIn>,
+                    {
+                    }
+                    let _ = __dag_connect_assert_subflow_to_subflow(#from_entry, #to_entry);
+                }
+            }
+        }
+    }
 }
 
 struct WorkflowInput {
@@ -1147,7 +1654,7 @@ struct SwitchEntry {
 struct EntrypointEntry {
     trigger: LitStr,
     capture: LitStr,
-    route: Option<LitStr>,
+    route_aliases: Vec<LitStr>,
     method: Option<LitStr>,
     deadline_ms: Option<u64>,
 }
@@ -1675,7 +2182,7 @@ impl Parse for EntrypointEntry {
         let span = content.span();
         let mut trigger = None;
         let mut capture = None;
-        let mut route = None;
+        let mut route_aliases = Vec::new();
         let mut method = None;
         let mut deadline_ms = None;
 
@@ -1695,11 +2202,27 @@ impl Parse for EntrypointEntry {
                     }
                     capture = Some(content.parse()?);
                 }
-                "route" => {
-                    if route.is_some() {
-                        return Err(syn::Error::new(key.span(), "duplicate entrypoint route"));
+                "route_aliases" => {
+                    if !route_aliases.is_empty() {
+                        return Err(syn::Error::new(
+                            key.span(),
+                            "duplicate entrypoint route_aliases",
+                        ));
                     }
-                    route = Some(content.parse()?);
+                    let aliases_content;
+                    bracketed!(aliases_content in content);
+                    while !aliases_content.is_empty() {
+                        let alias: LitStr = aliases_content.parse()?;
+                        route_aliases.push(alias);
+                        if aliases_content.peek(Token![,]) {
+                            aliases_content.parse::<Token![,]>()?;
+                            if aliases_content.is_empty() {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
                 }
                 "method" => {
                     if method.is_some() {
@@ -1749,7 +2272,7 @@ impl Parse for EntrypointEntry {
         Ok(Self {
             trigger,
             capture,
-            route,
+            route_aliases,
             method,
             deadline_ms,
         })
@@ -2089,7 +2612,7 @@ impl Parse for WorkflowBundleInput {
             {
                 return Err(syn::Error::new(
                     input.span(),
-                    "workflow_bundle! does not support Rust control-flow statements; use the flow::switch/for_each helpers",
+                    "flow! does not support Rust control-flow statements; use the flow::switch/for_each helpers",
                 ));
             }
 
@@ -2251,19 +2774,19 @@ impl Parse for WorkflowBundleInput {
 
             return Err(syn::Error::new(
                 mac.span(),
-                "workflow_bundle! body currently supports only `let` bindings, `connect!`, `timeout!`, `delivery!`, `buffer!`, `spill!`, `if_!`, `switch!`, and `entrypoint!` statements",
+                "flow! body currently supports only `let` bindings, `connect!`, `timeout!`, `delivery!`, `buffer!`, `spill!`, `if_!`, `switch!`, and `entrypoint!` statements",
             ));
         }
 
         Ok(WorkflowBundleInput {
             name: name.ok_or_else(|| {
-                syn::Error::new(Span::call_site(), "workflow_bundle! requires `name`")
+                syn::Error::new(Span::call_site(), "flow! requires `name`")
             })?,
             version: version.ok_or_else(|| {
-                syn::Error::new(Span::call_site(), "workflow_bundle! requires `version`")
+                syn::Error::new(Span::call_site(), "flow! requires `version`")
             })?,
             profile: profile.ok_or_else(|| {
-                syn::Error::new(Span::call_site(), "workflow_bundle! requires `profile`")
+                syn::Error::new(Span::call_site(), "flow! requires `profile`")
             })?,
             summary,
             bindings,
@@ -2319,6 +2842,44 @@ impl WorkflowInput {
                     connect.to.span(),
                     format!("[DAG202] unknown node alias `{}`", connect.to),
                 ));
+            }
+        }
+
+        let mut type_map = HashMap::new();
+        for binding in &self.bindings {
+            if let Some(info) = binding_type_info(&binding.expr) {
+                type_map.insert(binding.alias.to_string(), info);
+            }
+        }
+
+        for connect in &self.connects {
+            let from = connect.from.to_string();
+            let to = connect.to.to_string();
+            let from_info = type_map.get(&from);
+            let to_info = type_map.get(&to);
+            if from_info.is_none() || to_info.is_none() {
+                let message = if from_info.is_none() && to_info.is_none() {
+                    format!(
+                        "connect! requires typed bindings; bind `{}` and `{}` via node!(...) or <name>_node_spec()",
+                        from, to
+                    )
+                } else if from_info.is_none() {
+                    format!(
+                        "connect! requires typed bindings; bind `{}` via node!(...) or <name>_node_spec()",
+                        from
+                    )
+                } else {
+                    format!(
+                        "connect! requires typed bindings; bind `{}` via node!(...) or <name>_node_spec()",
+                        to
+                    )
+                };
+                let span = if from_info.is_none() {
+                    connect.from.span()
+                } else {
+                    connect.to.span()
+                };
+                return Err(syn::Error::new(span, message));
             }
         }
 
@@ -2623,14 +3184,22 @@ impl WorkflowInput {
                         "[DAG205] duplicate node alias `",
                         stringify!(#alias),
                         "`"
-                    ));
+                ));
             }
         });
 
         let connect_statements = self.connects.iter().map(|connect| {
             let from = &connect.from;
             let to = &connect.to;
+            let from_info = type_map
+                .get(&from.to_string())
+                .expect("connect! requires typed from binding");
+            let to_info = type_map
+                .get(&to.to_string())
+                .expect("connect! requires typed to binding");
+            let type_assert = connect_type_assert(from_info, to_info);
             quote! {
+                #type_assert
                 builder.connect(&#from, &#to);
             }
         });
@@ -2854,6 +3423,11 @@ impl WorkflowInput {
                 #(#timeout_statements)*
 
                 let mut flow = builder.build();
+                for edge in &mut flow.edges {
+                    edge.transform = Some(::dag_core::EdgeTransformIR {
+                        kind: ::dag_core::EdgeTransformKind::Into,
+                    });
+                }
                 #(#if_statements)*
                 #(#switch_statements)*
                 flow
@@ -2866,6 +3440,7 @@ impl WorkflowBundleInput {
     fn expand(&self) -> Result<TokenStream2> {
         let flow_name = self.name.to_string();
         let flow_name_lit = LitStr::new(&flow_name, self.name.span());
+        let flow_mod_ident = &self.name;
         let profile_ident = &self.profile;
         let version_literal = &self.version;
 
@@ -2918,6 +3493,44 @@ impl WorkflowBundleInput {
                     connect.to.span(),
                     format!("[DAG202] unknown node alias `{}`", connect.to),
                 ));
+            }
+        }
+
+        let mut type_map = HashMap::new();
+        for binding in &self.bindings {
+            if let Some(info) = binding_type_info(&binding.expr) {
+                type_map.insert(binding.alias.to_string(), info);
+            }
+        }
+
+        for connect in &self.connects {
+            let from = connect.from.to_string();
+            let to = connect.to.to_string();
+            let from_info = type_map.get(&from);
+            let to_info = type_map.get(&to);
+            if from_info.is_none() || to_info.is_none() {
+                let message = if from_info.is_none() && to_info.is_none() {
+                    format!(
+                        "connect! requires typed bindings; bind `{}` and `{}` via node!(...) or <name>_node_spec()",
+                        from, to
+                    )
+                } else if from_info.is_none() {
+                    format!(
+                        "connect! requires typed bindings; bind `{}` via node!(...) or <name>_node_spec()",
+                        from
+                    )
+                } else {
+                    format!(
+                        "connect! requires typed bindings; bind `{}` via node!(...) or <name>_node_spec()",
+                        to
+                    )
+                };
+                let span = if from_info.is_none() {
+                    connect.from.span()
+                } else {
+                    connect.to.span()
+                };
+                return Err(syn::Error::new(span, message));
             }
         }
 
@@ -3222,14 +3835,22 @@ impl WorkflowBundleInput {
                         "[DAG205] duplicate node alias `",
                         stringify!(#alias),
                         "`"
-                    ));
+                ));
             }
         });
 
         let connect_statements = self.connects.iter().map(|connect| {
             let from = &connect.from;
             let to = &connect.to;
+            let from_info = type_map
+                .get(&from.to_string())
+                .expect("connect! requires typed from binding");
+            let to_info = type_map
+                .get(&to.to_string())
+                .expect("connect! requires typed to binding");
+            let type_assert = connect_type_assert(from_info, to_info);
             quote! {
+                #type_assert
                 builder.connect(&#from, &#to);
             }
         });
@@ -3458,14 +4079,187 @@ impl WorkflowBundleInput {
             }
         });
 
+        let mut entrypoint_const_defs = Vec::new();
+        let mut entrypoint_flow_modules = Vec::new();
+        let mut entrypoint_names = HashSet::new();
+        let mut root_entrypoint = None::<(Ident, Path, Path)>;
+
+        for entry in &self.entrypoints {
+            let trigger_alias = entry.trigger.value();
+            let capture_alias = entry.capture.value();
+
+            let trigger_info = type_map.get(&trigger_alias).ok_or_else(|| {
+                syn::Error::new(
+                    entry.trigger.span(),
+                    format!(
+                        "entrypoint! requires typed bindings; bind `{}` via node!(...) or <name>_node_spec()",
+                        trigger_alias
+                    ),
+                )
+            })?;
+            let capture_info = type_map.get(&capture_alias).ok_or_else(|| {
+                syn::Error::new(
+                    entry.capture.span(),
+                    format!(
+                        "entrypoint! requires typed bindings; bind `{}` via node!(...) or <name>_node_spec()",
+                        capture_alias
+                    ),
+                )
+            })?;
+
+            if !entrypoint_names.insert(trigger_alias.clone()) {
+                return Err(syn::Error::new(
+                    entry.trigger.span(),
+                    format!(
+                        "duplicate entrypoint const name `{}`",
+                        trigger_alias
+                    ),
+                ));
+            }
+
+            let entry_ident = Ident::new_raw(&trigger_alias, entry.trigger.span());
+            let input_ty = match trigger_info {
+                BindingTypeInfo::Node { input, .. } => input.clone(),
+                BindingTypeInfo::Subflow { .. } => {
+                    return Err(syn::Error::new(
+                        entry.trigger.span(),
+                        "entrypoint! requires node bindings; subflow! is not supported",
+                    ));
+                }
+            };
+            let output_ty = match capture_info {
+                BindingTypeInfo::Node { output, .. } => output.clone(),
+                BindingTypeInfo::Subflow { .. } => {
+                    return Err(syn::Error::new(
+                        entry.capture.span(),
+                        "entrypoint! requires node bindings; subflow! is not supported",
+                    ));
+                }
+            };
+
+            if root_entrypoint.is_none() {
+                root_entrypoint = Some((entry_ident.clone(), input_ty.clone(), output_ty.clone()));
+            }
+
+            let trigger = &entry.trigger;
+            let capture = &entry.capture;
+            let route_aliases_slice = if entry.route_aliases.is_empty() {
+                quote!(&[])
+            } else {
+                let aliases = entry.route_aliases.iter();
+                quote!(&[#(#aliases),*])
+            };
+            let method = entry
+                .method
+                .as_ref()
+                .map(|method| quote!(Some(#method)))
+                .unwrap_or_else(|| quote!(None));
+            let deadline = entry
+                .deadline_ms
+                .map(|ms| quote!(Some(#ms)))
+                .unwrap_or_else(|| quote!(None));
+
+            entrypoint_const_defs.push(quote! {
+                #[allow(non_upper_case_globals)]
+                pub const #entry_ident: ::dag_core::FlowEntrypoint<#input_ty, #output_ty> =
+                    ::dag_core::FlowEntrypoint::new(
+                        #flow_name_lit,
+                        #version_literal,
+                        #trigger,
+                        #capture,
+                        #route_aliases_slice,
+                        #method,
+                        #deadline,
+                    );
+            });
+
+            entrypoint_flow_modules.push(quote! {
+                pub mod #entry_ident {
+                    pub fn flow() -> ::dag_core::FlowIR {
+                        super::flow()
+                    }
+                }
+            });
+        }
+
+        let entrypoint_module = quote! {
+            pub mod #flow_mod_ident {
+                #(#entrypoint_const_defs)*
+
+                pub fn flow() -> ::dag_core::FlowIR {
+                    super::flow()
+                }
+
+                #(#entrypoint_flow_modules)*
+            }
+        };
+
+        let root_entrypoint_const = if self.entrypoints.len() == 1 {
+            if let Some((entry_ident, input_ty, output_ty)) = root_entrypoint {
+                quote! {
+                    #[allow(non_upper_case_globals)]
+                    pub const #flow_mod_ident: ::dag_core::FlowEntrypoint<#input_ty, #output_ty> =
+                        #flow_mod_ident::#entry_ident;
+                }
+            } else {
+                quote!()
+            }
+        } else {
+            quote!()
+        };
+
+        let flow_registry_entrypoints_ident =
+            format_ident!("__{}_FLOW_ENTRYPOINTS", flow_mod_ident.to_string().to_uppercase());
+        let flow_registry_entrypoints = if self.entrypoints.is_empty() {
+            quote!(&[] as &[::dag_core::flow_registry::EntrypointSpec])
+        } else {
+            let entrypoints = self.entrypoints.iter().map(|entry| {
+                let trigger = &entry.trigger;
+                let capture = &entry.capture;
+                let route_aliases = if entry.route_aliases.is_empty() {
+                    quote!(&[] as &[&'static str])
+                } else {
+                    let aliases = entry.route_aliases.iter();
+                    quote!(&[#(#aliases),*] as &[&'static str])
+                };
+                let method = entry
+                    .method
+                    .as_ref()
+                    .map(|method| quote!(Some(#method)))
+                    .unwrap_or_else(|| quote!(None));
+                let deadline = entry
+                    .deadline_ms
+                    .map(|ms| quote!(Some(#ms)))
+                    .unwrap_or_else(|| quote!(None));
+
+                quote! {
+                    ::dag_core::flow_registry::EntrypointSpec {
+                        trigger: #trigger,
+                        capture: #capture,
+                        route_aliases: #route_aliases,
+                        method: #method,
+                        deadline_ms: #deadline,
+                    }
+                }
+            });
+
+            quote!(&[#(#entrypoints),*] as &[::dag_core::flow_registry::EntrypointSpec])
+        };
+
         let entrypoints = self.entrypoints.iter().map(|entry| {
             let trigger = &entry.trigger;
             let capture = &entry.capture;
-            let route = entry
-                .route
-                .as_ref()
+            let route_path = entry
+                .route_aliases
+                .first()
                 .map(|route| quote!(Some(#route.to_string())))
                 .unwrap_or_else(|| quote!(None));
+            let route_aliases = if entry.route_aliases.is_empty() {
+                quote!(Vec::new())
+            } else {
+                let aliases = entry.route_aliases.iter();
+                quote!(vec![#(#aliases.to_string()),*])
+            };
             let method = entry
                 .method
                 .as_ref()
@@ -3480,17 +4274,21 @@ impl WorkflowBundleInput {
                 ::host_inproc::FlowEntrypoint {
                     trigger_alias: #trigger.to_string(),
                     capture_alias: #capture.to_string(),
-                    route_path: #route,
+                    route_path: #route_path,
                     method: #method,
                     deadline: #deadline,
+                    route_aliases: #route_aliases,
                 }
             }
         });
 
         Ok(quote! {
+            #entrypoint_module
+            #root_entrypoint_const
+
             pub fn flow() -> ::dag_core::FlowIR {
                 let version = ::dag_core::prelude::Version::parse(#version_literal)
-                    .expect("workflow_bundle!: invalid semver literal");
+                    .expect("flow!: invalid semver literal");
                 let mut builder = ::dag_core::FlowBuilder::new(
                     #flow_name_lit,
                     version,
@@ -3506,27 +4304,50 @@ impl WorkflowBundleInput {
                 #(#timeout_statements)*
 
                 let mut flow = builder.build();
+                for edge in &mut flow.edges {
+                    edge.transform = Some(::dag_core::EdgeTransformIR {
+                        kind: ::dag_core::EdgeTransformKind::Into,
+                    });
+                }
                 #(#if_statements)*
                 #(#switch_statements)*
                 flow
             }
 
+            #[cfg(feature = "flow-registry")]
+            const #flow_registry_entrypoints_ident: &[::dag_core::flow_registry::EntrypointSpec] =
+                #flow_registry_entrypoints;
+
+            #[cfg(feature = "flow-registry")]
+            ::dag_core::flow_registry::submit! {
+                ::dag_core::flow_registry::FlowRegistration {
+                    name: #flow_name_lit,
+                    version: #version_literal,
+                    profile: ::dag_core::Profile::#profile_ident,
+                    entrypoints: #flow_registry_entrypoints_ident,
+                    flow_ir: flow,
+                }
+            }
+
             pub fn validated_ir() -> ::kernel_plan::ValidatedIR {
                 let flow = flow();
                 ::kernel_plan::validate(&flow)
-                    .expect("workflow_bundle!: flow validation failed")
+                    .expect("flow!: flow validation failed")
             }
 
+            #[cfg(feature = "host-bundle")]
             fn __register_nodes(registry: &mut ::kernel_exec::NodeRegistry) {
                 #(#register_statements)*
             }
 
+            #[cfg(feature = "host-bundle")]
             pub fn bundle() -> ::host_inproc::FlowBundle {
                 let validated_ir = validated_ir();
                 let mut registry = ::kernel_exec::NodeRegistry::new();
                 __register_nodes(&mut registry);
-                let resolver: ::std::sync::Arc<dyn ::host_inproc::NodeResolver> =
-                    ::std::sync::Arc::new(registry);
+                let registry = ::std::sync::Arc::new(registry);
+                let resolver: ::std::sync::Arc<dyn ::kernel_exec::NodeResolver> =
+                    ::std::sync::Arc::new(::kernel_exec::RegistryResolver::new(registry.clone()));
                 let entrypoints = vec![#(#entrypoints),*];
                 let node_contracts = vec![#(#node_contracts),*];
                 ::host_inproc::FlowBundle {

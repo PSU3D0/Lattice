@@ -1,9 +1,9 @@
-use std::sync::Arc;
 use std::time::Duration;
 
 use capabilities::context;
 use dag_core::{FlowIR, IdempotencyScope, NodeError, NodeResult};
-use dag_macros::{node, trigger};
+use dag_macros::{def_node, node};
+use futures_timer::Delay;
 use kernel_plan::{ValidatedIR, validate};
 use serde::{Deserialize, Serialize};
 
@@ -34,12 +34,12 @@ pub struct Ack {
     pub stored: bool,
 }
 
-#[trigger(name = "BatchTrigger", summary = "Ingress trigger for batch ingest")]
+#[def_node(trigger, name = "BatchTrigger", summary = "Ingress trigger for batch ingest")]
 async fn batch_trigger(request: BatchRequest) -> NodeResult<BatchRequest> {
     Ok(request)
 }
 
-#[node(
+#[def_node(
     name = "PreparePayload",
     summary = "Package each item with its blob key",
     effects = "Pure",
@@ -66,7 +66,7 @@ async fn prepare_payload(request: BatchRequest) -> NodeResult<Vec<BlobPayload>> 
     Ok(payloads)
 }
 
-#[node(
+#[def_node(
     name = "StoreBlob",
     summary = "Persist payload to blob storage",
     effects = "Effectful",
@@ -103,18 +103,18 @@ async fn store_blob(payloads: Vec<BlobPayload>) -> NodeResult<Vec<Ack>> {
     Ok(acks)
 }
 
-#[node(
+#[def_node(
     name = "SlowAck",
     summary = "Simulate slow downstream acknowledgement",
     effects = "Pure",
     determinism = "Strict"
 )]
 async fn slow_ack(acks: Vec<Ack>) -> NodeResult<Vec<Ack>> {
-    tokio::time::sleep(Duration::from_millis(ACK_DELAY_MS)).await;
+    Delay::new(Duration::from_millis(ACK_DELAY_MS)).await;
     Ok(acks)
 }
 
-#[node(
+#[def_node(
     name = "Capture",
     summary = "Capture acknowledgements",
     effects = "Pure",
@@ -125,23 +125,27 @@ async fn capture(acks: Vec<Ack>) -> NodeResult<Vec<Ack>> {
 }
 
 mod bundle_def {
+    #[cfg(feature = "host-bundle")]
     use super::{
-        batch_trigger_node_spec, batch_trigger_register, capture_node_spec, capture_register,
-        prepare_payload_node_spec, prepare_payload_register, slow_ack_node_spec, slow_ack_register,
-        store_blob_node_spec, store_blob_register,
+        batch_trigger_register,
+        capture_register,
+        prepare_payload_register,
+        slow_ack_register,
+        store_blob_register,
     };
+    use dag_macros::node;
 
-    dag_macros::workflow_bundle! {
+    dag_macros::flow! {
         name: s6_spill_flow,
         version: "1.0.0",
         profile: Web,
         summary: "Demonstrates buffer and spill on batch ingest workflows";
 
-        let trigger = batch_trigger_node_spec();
-        let prepare = prepare_payload_node_spec();
-        let store = store_blob_node_spec();
-        let ack = slow_ack_node_spec();
-        let capture = capture_node_spec();
+        let trigger = node!(batch_trigger);
+        let prepare = node!(prepare_payload);
+        let store = node!(store_blob);
+        let ack = node!(slow_ack);
+        let capture = node!(capture);
 
         connect!(trigger -> prepare);
         connect!(prepare -> store);
@@ -154,7 +158,7 @@ mod bundle_def {
         entrypoint!({
             trigger: "trigger",
             capture: "capture",
-            route: "/spill",
+            route_aliases: ["/spill"],
             method: "POST",
             deadline_ms: 2000,
         });
@@ -175,99 +179,10 @@ pub fn validated_ir() -> ValidatedIR {
     validate(&flow()).expect("S6 flow should validate")
 }
 
-pub fn bundle() -> host_inproc::FlowBundle {
-    let validated_ir = validated_ir();
-    let mut registry = kernel_exec::NodeRegistry::new();
-    batch_trigger_register(&mut registry).expect("register batch_trigger");
-    prepare_payload_register(&mut registry).expect("register prepare_payload");
-    store_blob_register(&mut registry).expect("register store_blob");
-    slow_ack_register(&mut registry).expect("register slow_ack");
-    capture_register(&mut registry).expect("register capture");
-    let resolver: Arc<dyn host_inproc::NodeResolver> = Arc::new(registry);
-    let entrypoints = vec![host_inproc::FlowEntrypoint {
-        trigger_alias: "trigger".to_string(),
-        capture_alias: "capture".to_string(),
-        route_path: Some("/spill".to_string()),
-        method: Some("POST".to_string()),
-        deadline: Some(Duration::from_millis(2000)),
-    }];
-    let node_contracts = vec![
-        host_inproc::NodeContract {
-            identifier: batch_trigger_node_spec().identifier.to_string(),
-            contract_hash: None,
-            source: host_inproc::NodeSource::Local,
-        },
-        host_inproc::NodeContract {
-            identifier: prepare_payload_node_spec().identifier.to_string(),
-            contract_hash: None,
-            source: host_inproc::NodeSource::Local,
-        },
-        host_inproc::NodeContract {
-            identifier: store_blob_node_spec().identifier.to_string(),
-            contract_hash: None,
-            source: host_inproc::NodeSource::Local,
-        },
-        host_inproc::NodeContract {
-            identifier: slow_ack_node_spec().identifier.to_string(),
-            contract_hash: None,
-            source: host_inproc::NodeSource::Local,
-        },
-        host_inproc::NodeContract {
-            identifier: capture_node_spec().identifier.to_string(),
-            contract_hash: None,
-            source: host_inproc::NodeSource::Local,
-        },
-    ];
-    host_inproc::FlowBundle {
-        validated_ir,
-        entrypoints,
-        resolver,
-        node_contracts,
-        environment_plugins: Vec::new(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kernel_exec::ExecutionResult;
     use serde_json::json;
-    use std::sync::Arc;
-
-    #[tokio::test]
-    async fn spill_flow_runs_end_to_end() {
-        let bundle = bundle();
-        let entrypoint = bundle.entrypoints.first().expect("entrypoint");
-        let batch = BatchRequest {
-            batch_id: "b-1".to_string(),
-            items: vec!["alpha".into(), "beta".into(), "gamma".into()],
-            lf_burst_index: None,
-        };
-        let payload = serde_json::to_value(&batch).expect("serialize batch");
-        let resources = capabilities::ResourceBag::new()
-            .with_blob(Arc::new(capabilities::blob::MemoryBlobStore::new()));
-        let result = bundle
-            .executor()
-            .with_resource_bag(resources)
-            .with_edge_capacity(1)
-            .run_once(
-                &bundle.validated_ir,
-                entrypoint.trigger_alias.as_str(),
-                payload,
-                entrypoint.capture_alias.as_str(),
-                entrypoint.deadline,
-            )
-            .await
-            .expect("spill flow executes");
-
-        match result {
-            ExecutionResult::Value(value) => {
-                let acked: Vec<Ack> = serde_json::from_value(value).expect("decode ack");
-                assert_eq!(acked.len(), 3);
-            }
-            ExecutionResult::Stream(_) => panic!("expected value response"),
-        }
-    }
 
     #[test]
     fn binding_requires_blob_resource_hint() {

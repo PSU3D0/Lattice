@@ -1,0 +1,23 @@
+[package]
+name = "flow-bundle"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+description = "FlowBundle manifest types and hashing helpers."
+
+[dependencies]
+dag-core = { path = "../dag-core" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+sha2 = "0.10"
+hex = "0.4"
+wasmparser = "0.211"
+
+[dev-dependencies]
+jsonschema = { version = "0.18", features = ["draft202012"] }
+semver.workspace = true

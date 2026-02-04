@@ -1,0 +1,29 @@
+error: use of deprecated function `_::__dag_macro_missing_metadata_warning`: #[def_node] `missing_metadata` missing `summary` metadata
+ --> tests/ui/node_missing_metadata.rs:6:1
+  |
+6 | #[def_node(name = "MissingMetadata")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+note: the lint level is defined here
+ --> tests/ui/node_missing_metadata.rs:1:9
+  |
+1 | #![deny(warnings)]
+  |         ^^^^^^^^
+  = note: `#[deny(deprecated)]` implied by `#[deny(warnings)]`
+  = note: this error originates in the attribute macro `def_node` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: use of deprecated function `_::__dag_macro_missing_metadata_warning`: #[def_node] `missing_metadata` missing `effects` metadata
+ --> tests/ui/node_missing_metadata.rs:6:1
+  |
+6 | #[def_node(name = "MissingMetadata")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `def_node` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: use of deprecated function `_::__dag_macro_missing_metadata_warning`: #[def_node] `missing_metadata` missing `determinism` metadata
+ --> tests/ui/node_missing_metadata.rs:6:1
+  |
+6 | #[def_node(name = "MissingMetadata")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `def_node` (in Nightly builds, run with -Z macro-backtrace for more info)

@@ -1,9 +1,9 @@
 use dag_core::{ControlSurfaceIR, ControlSurfaceKind, FlowIR, NodeResult};
-use dag_macros::{node, trigger};
+use dag_macros::{def_node, node};
 use kernel_plan::{ValidatedIR, validate};
 use serde_json::{Value as JsonValue, json};
 
-#[trigger(
+#[def_node(trigger,
     name = "HttpTrigger",
     summary = "Ingress trigger for unsupported surface example"
 )]
@@ -11,7 +11,7 @@ async fn http_trigger(payload: JsonValue) -> NodeResult<JsonValue> {
     Ok(payload)
 }
 
-#[node(
+#[def_node(
     name = "PassThrough",
     summary = "Pass through value to capture",
     effects = "Pure",
@@ -21,7 +21,7 @@ async fn passthrough(payload: JsonValue) -> NodeResult<JsonValue> {
     Ok(payload)
 }
 
-#[node(
+#[def_node(
     name = "Capture",
     summary = "Capture terminal output",
     effects = "Pure",
@@ -32,20 +32,18 @@ async fn capture(payload: JsonValue) -> NodeResult<JsonValue> {
 }
 
 mod bundle_def {
-    use super::{
-        capture_node_spec, capture_register, http_trigger_node_spec, http_trigger_register,
-        passthrough_node_spec, passthrough_register,
-    };
+    use super::{capture_register, http_trigger_register, passthrough_register};
+    use dag_macros::node;
 
-    dag_macros::workflow_bundle! {
+    dag_macros::flow! {
         name: s5_unsupported_surface_flow,
         version: "1.0.0",
         profile: Web,
         summary: "Demonstrates CTRL901 when a reserved surface is present but unimplemented";
 
-        let trigger = http_trigger_node_spec();
-        let passthrough = passthrough_node_spec();
-        let capture = capture_node_spec();
+        let trigger = node!(http_trigger);
+        let passthrough = node!(passthrough);
+        let capture = node!(capture);
 
         connect!(trigger -> passthrough);
         connect!(passthrough -> capture);
@@ -53,7 +51,7 @@ mod bundle_def {
         entrypoint!({
             trigger: "trigger",
             capture: "capture",
-            route: "/unsupported",
+            route_aliases: ["/unsupported"],
             method: "POST",
             deadline_ms: 250,
         });

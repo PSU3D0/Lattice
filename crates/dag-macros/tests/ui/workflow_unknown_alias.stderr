@@ -1,5 +1,54 @@
 error: [DAG202] unknown node alias `missing`
-  --> tests/ui/workflow_unknown_alias.rs:20:22
+  --> tests/ui/workflow_unknown_alias.rs:22:22
    |
-20 |     connect!(prod -> missing);
+22 |     connect!(prod -> missing);
    |                      ^^^^^^^
+
+warning: use of deprecated function `_::__dag_macro_missing_metadata_warning`: #[def_node] `producer` missing `summary` metadata
+ --> tests/ui/workflow_unknown_alias.rs:6:1
+  |
+6 | #[def_node(name = "Producer")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(deprecated)]` on by default
+  = note: this warning originates in the attribute macro `def_node` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated function `_::__dag_macro_missing_metadata_warning`: #[def_node] `producer` missing `effects` metadata
+ --> tests/ui/workflow_unknown_alias.rs:6:1
+  |
+6 | #[def_node(name = "Producer")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this warning originates in the attribute macro `def_node` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated function `_::__dag_macro_missing_metadata_warning`: #[def_node] `producer` missing `determinism` metadata
+ --> tests/ui/workflow_unknown_alias.rs:6:1
+  |
+6 | #[def_node(name = "Producer")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this warning originates in the attribute macro `def_node` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated function `_::__dag_macro_missing_metadata_warning`: #[def_node] `consumer` missing `summary` metadata
+  --> tests/ui/workflow_unknown_alias.rs:11:1
+   |
+11 | #[def_node(name = "Consumer")]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: this warning originates in the attribute macro `def_node` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated function `_::__dag_macro_missing_metadata_warning`: #[def_node] `consumer` missing `effects` metadata
+  --> tests/ui/workflow_unknown_alias.rs:11:1
+   |
+11 | #[def_node(name = "Consumer")]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: this warning originates in the attribute macro `def_node` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: use of deprecated function `_::__dag_macro_missing_metadata_warning`: #[def_node] `consumer` missing `determinism` metadata
+  --> tests/ui/workflow_unknown_alias.rs:11:1
+   |
+11 | #[def_node(name = "Consumer")]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: this warning originates in the attribute macro `def_node` (in Nightly builds, run with -Z macro-backtrace for more info)

@@ -308,6 +308,9 @@ pub struct NodeIR {
     /// Effect hints recorded during macro expansion.
     #[serde(rename = "effectHints", default)]
     pub effect_hints: Vec<String>,
+    /// Optional expanded subflow IR for analysis-only views.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subflow_ir: Option<Box<FlowIR>>,
 }
 
 /// Durability profile used for checkpoint validation.
@@ -354,6 +357,9 @@ pub struct EdgeIR {
     /// Optional timeout in milliseconds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
+    /// Optional transform metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transform: Option<EdgeTransformIR>,
     /// Buffer policy.
     pub buffer: BufferPolicy,
 }
@@ -367,9 +373,25 @@ impl Default for EdgeIR {
             ordering: Ordering::Ordered,
             partition_key: None,
             timeout_ms: None,
+            transform: None,
             buffer: BufferPolicy::default(),
         }
     }
+}
+
+/// Edge transform metadata block.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct EdgeTransformIR {
+    /// Transform kind.
+    pub kind: EdgeTransformKind,
+}
+
+/// Edge transform kind enumeration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EdgeTransformKind {
+    /// Rust Into conversion.
+    Into,
 }
 
 /// Delivery semantics enumeration.
@@ -548,6 +570,54 @@ pub struct FlowMetadata {
     /// Optional tags associated with the workflow.
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Optional entrypoint metadata provided by hosts or tooling.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(default, schema_with = "schema_vec_entrypoints")]
+    pub entrypoints: Vec<EntrypointMetadata>,
+}
+
+/// Entrypoint metadata describing external ingress wiring.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+pub struct EntrypointMetadata {
+    /// Trigger node alias for ingress.
+    pub trigger_alias: String,
+    /// Capture node alias for response/egress.
+    pub capture_alias: String,
+    /// Optional canonical route path (host-derived when omitted).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route_path: Option<String>,
+    /// Optional HTTP method for HTTP-capable hosts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    /// Optional non-authoritative aliases for the canonical route.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(default, schema_with = "schema_vec_strings_with_default")]
+    pub route_aliases: Vec<String>,
+}
+
+fn schema_vec_entrypoints(
+    schema_gen: &mut schemars::r#gen::SchemaGenerator,
+) -> schemars::schema::Schema {
+    let mut schema = <Vec<EntrypointMetadata>>::json_schema(schema_gen);
+    set_schema_default(&mut schema, serde_json::json!([]));
+    schema
+}
+
+fn schema_vec_strings_with_default(
+    schema_gen: &mut schemars::r#gen::SchemaGenerator,
+) -> schemars::schema::Schema {
+    let mut schema = <Vec<String>>::json_schema(schema_gen);
+    set_schema_default(&mut schema, serde_json::json!([]));
+    schema
+}
+
+fn set_schema_default(schema: &mut schemars::schema::Schema, value: serde_json::Value) {
+    if let schemars::schema::Schema::Object(schema_obj) = schema {
+        let metadata = schema_obj
+            .metadata
+            .get_or_insert_with(|| Box::new(schemars::schema::Metadata::default()));
+        metadata.default = Some(value);
+    }
 }
 
 /// Artifact reference bundled alongside Flow IR.

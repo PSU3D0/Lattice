@@ -1,34 +1,36 @@
+#![allow(unused_imports)]
+
 use dag_core::prelude::*;
-use dag_macros::workflow;
+use dag_macros::{def_node, node, workflow};
 
-const ROUTE_SPEC: NodeSpec = NodeSpec::inline(
-    "tests::route",
-    "Route",
-    SchemaSpec::Opaque,
-    SchemaSpec::Opaque,
-    Effects::Pure,
-    Determinism::Strict,
-    None,
-);
+#[def_node(
+    name = "Route",
+    summary = "Route",
+    effects = "Pure",
+    determinism = "Strict"
+)]
+async fn route(_input: ()) -> NodeResult<()> {
+    Ok(())
+}
 
-const BRANCH_SPEC: NodeSpec = NodeSpec::inline(
-    "tests::branch",
-    "Branch",
-    SchemaSpec::Opaque,
-    SchemaSpec::Opaque,
-    Effects::Pure,
-    Determinism::Strict,
-    None,
-);
+#[def_node(
+    name = "Branch",
+    summary = "Branch",
+    effects = "Pure",
+    determinism = "Strict"
+)]
+async fn branch(_input: ()) -> NodeResult<()> {
+    Ok(())
+}
 
 workflow! {
     name: if_invalid_key,
     version: "1.0.0",
     profile: Dev;
 
-    let route = &ROUTE_SPEC;
-    let a = &BRANCH_SPEC;
-    let b = &BRANCH_SPEC;
+    let route = node!(route);
+    let a = node!(branch);
+    let b = node!(branch);
 
     connect!(route -> a);
     connect!(route -> b);

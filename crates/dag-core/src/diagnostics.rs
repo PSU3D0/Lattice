@@ -148,6 +148,12 @@ pub static DIAGNOSTIC_CODES: Lazy<Vec<DiagnosticCode>> = Lazy::new(|| {
             summary: "Duplicate node alias encountered in workflow",
         },
         DiagnosticCode {
+            code: "DAG350",
+            subsystem: "lint",
+            default_severity: Severity::Warn,
+            summary: "Node summary missing; add a short description",
+        },
+        DiagnosticCode {
             code: "DAG-CKPT-001",
             subsystem: "validation",
             default_severity: Severity::Error,

@@ -1,6 +1,13 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use async_trait::async_trait;
+use capabilities::{Capability, ResourceBag};
+use capabilities::durability::{
+    CheckpointError, CheckpointFilter, CheckpointHandle, CheckpointRecord, CheckpointStore, Lease,
+};
+use dag_core::{DurabilityMode, FlowId};
 use example_s1_echo as s1_echo;
 use example_s2_site as s2_site;
 use host_web_axum::{HostHandle, RouteConfig};
@@ -8,6 +15,103 @@ use serde_json::json;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
+
+#[derive(Default)]
+struct TestCheckpointStore {
+    records: Mutex<HashMap<(FlowId, String, String), CheckpointRecord>>,
+}
+
+impl Capability for TestCheckpointStore {
+    fn name(&self) -> &'static str {
+        "test_checkpoint_store"
+    }
+}
+
+#[async_trait]
+impl CheckpointStore for TestCheckpointStore {
+    async fn put(&self, record: CheckpointRecord) -> Result<CheckpointHandle, CheckpointError> {
+        let handle = CheckpointHandle {
+            checkpoint_id: record.checkpoint_id.clone(),
+            flow_id: record.flow_id.clone(),
+            run_id: record.run_id.clone(),
+        };
+        let key = (
+            record.flow_id.clone(),
+            record.run_id.clone(),
+            record.checkpoint_id.clone(),
+        );
+        self.records.lock().unwrap().insert(key, record);
+        Ok(handle)
+    }
+
+    async fn get(&self, handle: &CheckpointHandle) -> Result<CheckpointRecord, CheckpointError> {
+        let key = (
+            handle.flow_id.clone(),
+            handle.run_id.clone(),
+            handle.checkpoint_id.clone(),
+        );
+        self.records
+            .lock()
+            .unwrap()
+            .get(&key)
+            .cloned()
+            .ok_or(CheckpointError::NotFound)
+    }
+
+    async fn ack(&self, handle: &CheckpointHandle) -> Result<(), CheckpointError> {
+        let key = (
+            handle.flow_id.clone(),
+            handle.run_id.clone(),
+            handle.checkpoint_id.clone(),
+        );
+        self.records.lock().unwrap().remove(&key);
+        Ok(())
+    }
+
+    async fn lease(&self, handle: &CheckpointHandle, _ttl: Duration) -> Result<Lease, CheckpointError> {
+        Ok(Lease {
+            lease_id: format!(
+                "{}:{}:{}",
+                handle.flow_id.as_str(),
+                handle.run_id.as_str(),
+                handle.checkpoint_id.as_str(),
+            ),
+            expires_at_ms: 0,
+        })
+    }
+
+    async fn release_lease(&self, _lease: Lease) -> Result<(), CheckpointError> {
+        Ok(())
+    }
+
+    async fn list(&self, filter: CheckpointFilter) -> Result<Vec<CheckpointHandle>, CheckpointError> {
+        let mut handles = Vec::new();
+        for record in self.records.lock().unwrap().values() {
+            if let Some(flow_id) = &filter.flow_id {
+                if &record.flow_id != flow_id {
+                    continue;
+                }
+            }
+            if let Some(run_id) = &filter.run_id {
+                if &record.run_id != run_id {
+                    continue;
+                }
+            }
+            handles.push(CheckpointHandle {
+                checkpoint_id: record.checkpoint_id.clone(),
+                flow_id: record.flow_id.clone(),
+                run_id: record.run_id.clone(),
+            });
+        }
+        Ok(handles)
+    }
+}
+
+fn test_resources() -> ResourceBag {
+    ResourceBag::default()
+        .with_checkpoint_store(Arc::new(TestCheckpointStore::default()))
+        .with_max_durability_mode(DurabilityMode::Partial)
+}
 
 #[tokio::test]
 async fn serve_echo_route_round_trips_json() -> Result<(), Box<dyn std::error::Error>> {
@@ -25,6 +129,7 @@ async fn serve_echo_route_round_trips_json() -> Result<(), Box<dyn std::error::E
     for plugin in s1_echo::environment_plugins() {
         config = config.with_environment_plugin(plugin);
     }
+    config = config.with_resources(test_resources());
 
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
@@ -90,6 +195,7 @@ async fn serve_streaming_route_emits_sse() -> Result<(), Box<dyn std::error::Err
     if let Some(deadline) = entrypoint.deadline {
         config = config.with_deadline(deadline);
     }
+    config = config.with_resources(test_resources());
 
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
