@@ -1,8 +1,14 @@
 error[E0277]: the trait bound `u8: From<std::string::String>` is not satisfied
-  --> tests/ui/workflow_connect_requires_into.rs:31:26
+  --> tests/ui/workflow_connect_requires_into.rs:26:1
    |
-31 |     let producer = node!(produce_string);
-   |                          ^^^^^^^^^^^^^^ the trait `From<std::string::String>` is not implemented for `u8`
+26 | / workflow! {
+27 | |     name: connect_requires_into,
+28 | |     version: "1.0.0",
+29 | |     profile: Dev;
+...  |
+34 | |     connect!(producer -> consumer);
+35 | | }
+   | |_^ the trait `From<std::string::String>` is not implemented for `u8`
    |
 help: the following other types implement trait `From<T>`
   --> $RUST/core/src/convert/num.rs
@@ -26,4 +32,4 @@ note: required by a bound in `__dag_connect_assert`
 34 | |     connect!(producer -> consumer);
 35 | | }
    | |_^ required by this bound in `__dag_connect_assert`
-   = note: this error originates in the macro `impl_from` which comes from the expansion of the macro `workflow` (in Nightly builds, run with -Z macro-backtrace for more info)
+   = note: this error originates in the macro `workflow` (in Nightly builds, run with -Z macro-backtrace for more info)

@@ -118,6 +118,7 @@ impl FlowBuilder {
                 .iter()
                 .map(|hint| hint.to_string())
                 .collect(),
+            subflow_ir: None,
         };
         self.flow.nodes.push(node_ir);
         self.alias_map.insert(alias.clone(), node_id);

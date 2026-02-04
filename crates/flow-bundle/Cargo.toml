@@ -10,6 +10,7 @@ publish = false
 description = "FlowBundle manifest types and hashing helpers."
 
 [dependencies]
+dag-core = { path = "../dag-core" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -19,3 +20,4 @@ wasmparser = "0.211"
 
 [dev-dependencies]
 jsonschema = { version = "0.18", features = ["draft202012"] }
+semver.workspace = true

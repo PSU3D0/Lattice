@@ -26,7 +26,7 @@ kernel-exec = { path = "../kernel-exec" }
 kernel-exec = { path = "../kernel-exec", default-features = false, features = ["wasm"] }
 
 [dev-dependencies]
-stdlib = { path = "../stdlib" }
+stdlib = { path = "../stdlib", features = ["host-bundle"] }
 serde_json.workspace = true
 async-trait.workspace = true
 tokio = { workspace = true, features = ["full"] }

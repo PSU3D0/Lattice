@@ -11,6 +11,7 @@ description = "Standard library nodes for Lattice flows."
 
 [features]
 default = ["timer", "callback"]
+host-bundle = ["dag-macros/host-bundle"]
 timer = []
 callback = []
 

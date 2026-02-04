@@ -9,11 +9,19 @@ repository.workspace = true
 homepage.workspace = true
 description = "Export pipelines for Flow IR artifacts (JSON, DOT, OpenAPI, WIT)."
 
+[features]
+flow-registry = ["dag-core/flow-registry"]
+
 [dependencies]
 dag-core = { path = "../dag-core" }
+flow-bundle = { path = "../flow-bundle" }
 anyhow.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+semver.workspace = true
+tempfile.workspace = true

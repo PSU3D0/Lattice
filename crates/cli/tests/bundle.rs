@@ -6,7 +6,7 @@ use serde_json::json;
 use tempfile::tempdir;
 
 #[test]
-fn bundle_rejects_uppercase_artifact_hash_in_manifest() -> Result<(), Box<dyn std::error::Error>> {
+fn bundle_rejects_invalid_flow_ir_path() -> Result<(), Box<dyn std::error::Error>> {
     let temp = tempdir()?;
     let manifest_path = temp.path().join("manifest.json");
     let out_dir = temp.path().join("flow.bundle");
@@ -25,18 +25,17 @@ fn bundle_rejects_uppercase_artifact_hash_in_manifest() -> Result<(), Box<dyn st
             "hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
             "size_bytes": 48
         },
-        "artifacts": [
+        "flows": [
             {
-                "target": "x86_64-unknown-linux-gnu",
-                "file": "flow",
-                "hash": "sha256:222222222222222222222222222222222222222222222222222222222222222A"
+                "id": "flow://demo",
+                "version": "v0.1.0",
+                "profile": "wasm",
+                "flow_ir": {
+                    "artifact": "../flow_ir.json",
+                    "hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+                }
             }
-        ],
-        "flow": {
-            "id": "flow://demo",
-            "version": "v0.1.0",
-            "profile": "wasm"
-        }
+        ]
     });
 
     fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest_json)?)?;
@@ -50,6 +49,7 @@ fn bundle_rejects_uppercase_artifact_hash_in_manifest() -> Result<(), Box<dyn st
             manifest_path.to_str().expect("manifest path"),
             "--out-dir",
             out_dir.to_str().expect("bundle output path"),
+            "--dev",
         ])
         .env("CARGO_TARGET_DIR", &target_dir)
         .output()?;
@@ -61,13 +61,38 @@ fn bundle_rejects_uppercase_artifact_hash_in_manifest() -> Result<(), Box<dyn st
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("manifest validation"),
-        "stderr missing validation context: {stderr}"
+        stderr.contains("flow_ir artifact path must not traverse"),
+        "stderr missing path validation detail: {stderr}"
     );
+
+    Ok(())
+}
+
+#[test]
+fn bundle_generates_manifest_when_missing() -> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempdir()?;
+    let out_dir = temp.path().join("flow.bundle");
+    let target_dir = temp.path().join("target");
+
+    let output = Command::cargo_bin("flows")?
+        .args([
+            "bundle",
+            "-p",
+            "example-s6-spill",
+            "--native",
+            "--dev",
+            "--out-dir",
+            out_dir.to_str().expect("bundle output path"),
+        ])
+        .env("CARGO_TARGET_DIR", &target_dir)
+        .output()?;
+
     assert!(
-        stderr.contains("artifacts[].hash"),
-        "stderr missing hash detail: {stderr}"
+        output.status.success(),
+        "expected bundle to succeed without --manifest: {output:?}"
     );
+    assert!(out_dir.join("manifest.json").exists());
+    assert!(out_dir.join("flows/s6_spill_flow/flow_ir.json").exists());
 
     Ok(())
 }

@@ -1,26 +1,34 @@
 use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{anyhow, Context, Result};
+use cargo_metadata::MetadataCommand;
+use dag_core::FlowIR;
+use exporters::harness::HarnessConfig;
 use flow_bundle::{
-    compute_bundle_id, read_manifest_from_custom_section, sha256_prefixed, validate_manifest,
-    Manifest,
+    compute_bundle_id, expand_subflow_ir, sha256_prefixed, validate_manifest, Manifest,
 };
+use serde::Deserialize;
+use tempfile::tempdir;
 
 #[derive(clap::Args, Debug)]
 pub struct BundleArgs {
     /// Cargo package to build.
     #[arg(long, short = 'p')]
     pub package: String,
-    /// Optional manifest.json path (exported).
+    /// Manifest.json path (optional).
     #[arg(long)]
     pub manifest: Option<PathBuf>,
     /// Output directory (default: flow.bundle).
     #[arg(long, default_value = "flow.bundle")]
     pub out_dir: PathBuf,
+    /// Emit expanded flow IR artifacts.
+    #[arg(long)]
+    pub expanded_ir: bool,
     /// Release build (default; runs wasm-opt).
     #[arg(long)]
     pub release: bool,
@@ -63,24 +71,12 @@ pub fn run_bundle(args: BundleArgs) -> Result<()> {
     }
 
     let targets = resolve_targets(&args, None)?;
-    let has_wasm = targets.iter().any(|target| is_wasm_target(target));
-    if !has_wasm && args.manifest.is_none() {
-        return Err(anyhow!(
-            "--manifest is required when building without a wasm target (manifest extraction needs wasm)"
-        ));
-    }
-
-    let mut manifest_from_flag = if let Some(path) = &args.manifest {
-        let data = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
-        let manifest = serde_json::from_slice::<Manifest>(&data)
-            .with_context(|| format!("{} is not valid manifest JSON", path.display()))?;
-        validate_manifest(&manifest)
-            .map_err(|err| anyhow!(err))
-            .with_context(|| format!("{} failed manifest validation", path.display()))?;
-        Some(manifest)
-    } else {
-        None
-    };
+    let (manifest_path, _export_temp) = resolve_manifest(&args)?;
+    let manifest_dir = manifest_path.parent().unwrap_or_else(|| Path::new("."));
+    let data = fs::read(&manifest_path)
+        .with_context(|| format!("failed to read {}", manifest_path.display()))?;
+    let mut manifest = serde_json::from_slice::<Manifest>(&data)
+        .with_context(|| format!("{} is not valid manifest JSON", manifest_path.display()))?;
 
     let profile = resolve_build_profile(&args);
     let mut outputs = Vec::with_capacity(targets.len());
@@ -105,16 +101,15 @@ pub fn run_bundle(args: BundleArgs) -> Result<()> {
         });
     }
 
-    let mut manifest = if let Some(manifest) = manifest_from_flag.take() {
-        manifest
-    } else {
-        let wasm_output = outputs
-            .iter()
-            .find(|output| is_wasm_target(&output.target))
-            .context("missing wasm target for embedded manifest")?;
-        read_manifest_from_custom_section(&wasm_output.bytes)
-            .context("missing embedded manifest custom section")?
-    };
+    let mut ir_outputs = BTreeMap::new();
+    let mut ir_cache = HashMap::new();
+    update_ir_refs(
+        &mut manifest,
+        manifest_dir,
+        args.expanded_ir,
+        &mut ir_cache,
+        &mut ir_outputs,
+    )?;
 
     let primary_index = select_primary_artifact_index(&outputs);
     let primary = &outputs[primary_index];
@@ -139,10 +134,212 @@ pub fn run_bundle(args: BundleArgs) -> Result<()> {
         })
         .collect();
     manifest.bundle_id = compute_bundle_id(&manifest)?;
+    validate_manifest(&manifest).map_err(|err| anyhow!(err))?;
 
-    write_bundle(&args.out_dir, &manifest, &outputs)?;
+    write_bundle(&args.out_dir, &manifest, &outputs, &ir_outputs)?;
     println!("{}", args.out_dir.display());
     Ok(())
+}
+
+#[derive(Clone)]
+struct CachedIr {
+    bytes: Vec<u8>,
+    hash: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct PackageMetadata {
+    #[serde(default)]
+    latticeflow: Option<LatticeflowMetadata>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct LatticeflowMetadata {
+    #[serde(default)]
+    flows: Option<Vec<String>>,
+    #[serde(default)]
+    default_flow: Option<String>,
+}
+
+fn resolve_manifest(args: &BundleArgs) -> Result<(PathBuf, Option<tempfile::TempDir>)> {
+    if let Some(path) = args.manifest.as_ref() {
+        return Ok((path.clone(), None));
+    }
+
+    let (package_dir, config) = resolve_export_config(&args.package)?;
+    let export_temp = tempdir().context("failed to create exporter temp dir")?;
+    let export_crate_dir = export_temp.path().join("exporter");
+    let export_out_dir = export_temp.path().join("bundle");
+    let export_manifest_path = exporters::harness::write_exporter_crate(
+        &export_crate_dir,
+        &package_dir,
+        &args.package,
+        &config,
+    )?;
+
+    let status = Command::new("cargo")
+        .arg("run")
+        .arg("--quiet")
+        .arg("--manifest-path")
+        .arg(&export_manifest_path)
+        .arg("--")
+        .arg("--out-dir")
+        .arg(&export_out_dir)
+        .status()
+        .context("failed to run exporter harness")?;
+    if !status.success() {
+        return Err(anyhow!("exporter harness failed with status {}", status));
+    }
+
+    let manifest_path = export_out_dir.join("manifest.json");
+    if !manifest_path.exists() {
+        return Err(anyhow!(
+            "exporter harness did not emit {}",
+            manifest_path.display()
+        ));
+    }
+
+    Ok((manifest_path, Some(export_temp)))
+}
+
+fn resolve_export_config(package_name: &str) -> Result<(PathBuf, HarnessConfig)> {
+    let metadata = MetadataCommand::new()
+        .no_deps()
+        .exec()
+        .context("failed to load cargo metadata")?;
+    let package = metadata
+        .packages
+        .iter()
+        .find(|candidate| candidate.name == package_name)
+        .ok_or_else(|| anyhow!("package not found in workspace: {package_name}"))?;
+    let manifest_dir = package
+        .manifest_path
+        .parent()
+        .ok_or_else(|| anyhow!("missing manifest path for {package_name}"))?;
+
+    let metadata: PackageMetadata =
+        serde_json::from_value(package.metadata.clone()).unwrap_or_default();
+    let latticeflow = metadata.latticeflow.unwrap_or_default();
+    let config = HarnessConfig {
+        default_flow: latticeflow.default_flow,
+        flows: latticeflow.flows,
+    };
+
+    Ok((manifest_dir.to_path_buf().into(), config))
+}
+
+fn update_ir_refs(
+    manifest: &mut Manifest,
+    manifest_dir: &Path,
+    expanded_ir: bool,
+    cache: &mut HashMap<String, CachedIr>,
+    outputs: &mut BTreeMap<PathBuf, Vec<u8>>,
+) -> Result<()> {
+    for flow in &mut manifest.flows {
+        if let Some(flow_ir) = flow.flow_ir.as_mut() {
+            let cached = cache_ir_artifact(manifest_dir, &flow_ir.artifact, cache, outputs)?;
+            flow_ir.hash = cached.hash.clone();
+        }
+        if !expanded_ir {
+            if let Some(flow_ir) = flow.flow_ir_expanded.as_mut() {
+                let cached = cache_ir_artifact(manifest_dir, &flow_ir.artifact, cache, outputs)?;
+                flow_ir.hash = cached.hash.clone();
+            }
+        }
+    }
+
+    for subflow in &mut manifest.subflows {
+        if let Some(flow_ir) = subflow.flow_ir.as_mut() {
+            let cached = cache_ir_artifact(manifest_dir, &flow_ir.artifact, cache, outputs)?;
+            flow_ir.hash = cached.hash.clone();
+        }
+    }
+
+    if expanded_ir {
+        let mut subflow_map = BTreeMap::new();
+        for subflow in &manifest.subflows {
+            let flow_ir = subflow.flow_ir.as_ref().ok_or_else(|| {
+                anyhow!(
+                    "--expanded-ir requires subflows[].flow_ir for {}",
+                    subflow.id
+                )
+            })?;
+            let cached = cache_ir_artifact(manifest_dir, &flow_ir.artifact, cache, outputs)?;
+            let ir: FlowIR = serde_json::from_slice(&cached.bytes).with_context(|| {
+                format!(
+                    "failed to parse subflow IR {} for {}",
+                    flow_ir.artifact, subflow.id
+                )
+            })?;
+            subflow_map.insert(subflow.id.clone(), ir);
+        }
+
+        for flow in &mut manifest.flows {
+            let flow_ir = flow
+                .flow_ir
+                .as_ref()
+                .ok_or_else(|| anyhow!("--expanded-ir requires flows[].flow_ir for {}", flow.id))?;
+            let expanded_ref = flow.flow_ir_expanded.as_mut().ok_or_else(|| {
+                anyhow!(
+                    "--expanded-ir requires flows[].flow_ir_expanded for {}",
+                    flow.id
+                )
+            })?;
+            let cached = cache_ir_artifact(manifest_dir, &flow_ir.artifact, cache, outputs)?;
+            let ir: FlowIR = serde_json::from_slice(&cached.bytes).with_context(|| {
+                format!(
+                    "failed to parse flow IR {} for {}",
+                    flow_ir.artifact, flow.id
+                )
+            })?;
+            let expanded = expand_subflow_ir(&ir, &subflow_map).map_err(|err| anyhow!(err))?;
+            let bytes = serde_json::to_vec_pretty(&expanded)
+                .context("failed to serialize expanded flow IR")?;
+            expanded_ref.hash = sha256_prefixed(&bytes);
+            let rel_path = validate_ir_path(&expanded_ref.artifact)?;
+            outputs.insert(rel_path, bytes);
+        }
+    }
+
+    Ok(())
+}
+
+fn cache_ir_artifact(
+    manifest_dir: &Path,
+    artifact: &str,
+    cache: &mut HashMap<String, CachedIr>,
+    outputs: &mut BTreeMap<PathBuf, Vec<u8>>,
+) -> Result<CachedIr> {
+    if let Some(cached) = cache.get(artifact) {
+        return Ok(cached.clone());
+    }
+    let rel_path = validate_ir_path(artifact)?;
+    let full_path = manifest_dir.join(&rel_path);
+    let bytes =
+        fs::read(&full_path).with_context(|| format!("failed to read {}", full_path.display()))?;
+    let hash = sha256_prefixed(&bytes);
+    outputs.entry(rel_path).or_insert_with(|| bytes.clone());
+    let cached = CachedIr { bytes, hash };
+    cache.insert(artifact.to_string(), cached.clone());
+    Ok(cached)
+}
+
+fn validate_ir_path(artifact: &str) -> Result<PathBuf> {
+    let rel_path = PathBuf::from(artifact);
+    if rel_path.is_absolute() {
+        return Err(anyhow!(
+            "manifest flow_ir artifact path must be relative: {artifact}"
+        ));
+    }
+    if rel_path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(anyhow!(
+            "manifest flow_ir artifact path must not traverse: {artifact}"
+        ));
+    }
+    Ok(rel_path)
 }
 
 fn run_cargo_build(
@@ -340,7 +537,12 @@ fn run_wasm_opt(input: &[u8]) -> Result<Vec<u8>> {
     fs::read(&output_path).context("failed to read wasm-opt output")
 }
 
-fn write_bundle(out_dir: &Path, manifest: &Manifest, outputs: &[BuiltArtifact]) -> Result<()> {
+fn write_bundle(
+    out_dir: &Path,
+    manifest: &Manifest,
+    outputs: &[BuiltArtifact],
+    extra_files: &BTreeMap<PathBuf, Vec<u8>>,
+) -> Result<()> {
     if out_dir.exists() {
         fs::remove_dir_all(out_dir)
             .with_context(|| format!("failed to clear {}", out_dir.display()))?;
@@ -351,6 +553,14 @@ fn write_bundle(out_dir: &Path, manifest: &Manifest, outputs: &[BuiltArtifact]) 
         let path = out_dir.join(&output.file_name);
         fs::write(&path, &output.bytes)
             .with_context(|| format!("failed to write {}", path.display()))?;
+    }
+    for (relative, bytes) in extra_files {
+        let path = out_dir.join(relative);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        fs::write(&path, bytes).with_context(|| format!("failed to write {}", path.display()))?;
     }
     let json = serde_json::to_vec_pretty(manifest).context("failed to serialize manifest")?;
     fs::write(out_dir.join("manifest.json"), json)
@@ -425,10 +635,11 @@ mod tests {
     fn resolve_build_profile_defaults_to_release() {
         let args = BundleArgs {
             package: "example-s6-spill".to_string(),
-            manifest: None,
+            manifest: Some(PathBuf::from("manifest.json")),
             out_dir: PathBuf::from("flow.bundle"),
             release: false,
             dev: false,
+            expanded_ir: false,
             wasm: false,
             native: false,
             target: Vec::new(),
@@ -441,10 +652,11 @@ mod tests {
     fn resolve_build_profile_uses_debug_when_dev() {
         let args = BundleArgs {
             package: "example-s6-spill".to_string(),
-            manifest: None,
+            manifest: Some(PathBuf::from("manifest.json")),
             out_dir: PathBuf::from("flow.bundle"),
             release: false,
             dev: true,
+            expanded_ir: false,
             wasm: false,
             native: false,
             target: Vec::new(),
@@ -544,10 +756,11 @@ cp "$in" "$out"
     fn resolves_default_to_wasm() {
         let args = BundleArgs {
             package: "example-s6-spill".to_string(),
-            manifest: None,
+            manifest: Some(PathBuf::from("manifest.json")),
             out_dir: PathBuf::from("flow.bundle"),
             release: false,
             dev: false,
+            expanded_ir: false,
             wasm: false,
             native: false,
             target: Vec::new(),
@@ -561,10 +774,11 @@ cp "$in" "$out"
     fn resolves_wasm_and_native() {
         let args = BundleArgs {
             package: "example-s6-spill".to_string(),
-            manifest: None,
+            manifest: Some(PathBuf::from("manifest.json")),
             out_dir: PathBuf::from("flow.bundle"),
             release: false,
             dev: false,
+            expanded_ir: false,
             wasm: true,
             native: true,
             target: Vec::new(),

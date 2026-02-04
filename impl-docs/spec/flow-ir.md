@@ -91,6 +91,7 @@ Key fields:
 - `idempotency`: optional idempotency spec (`key`, `scope`, `ttlMs`).
 - `effectHints[]` / `determinismHints[]`: canonical resource hints inferred at compile-time.
 - `durability`: optional durability profile (`checkpointable`, `replayable`, `halts`).
+- `subflow_ir`: optional embedded `FlowIR` for analysis-only expansion (only valid on `kind = subflow`).
 
 Notes:
 - In 0.1, schemas are primarily for validation/UX and are not enforced as structural JSON schema compatibility.

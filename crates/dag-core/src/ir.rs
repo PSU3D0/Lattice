@@ -308,6 +308,9 @@ pub struct NodeIR {
     /// Effect hints recorded during macro expansion.
     #[serde(rename = "effectHints", default)]
     pub effect_hints: Vec<String>,
+    /// Optional expanded subflow IR for analysis-only views.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subflow_ir: Option<Box<FlowIR>>,
 }
 
 /// Durability profile used for checkpoint validation.

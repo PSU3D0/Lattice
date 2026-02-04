@@ -33,9 +33,12 @@ flows across native hosts (wasmtime) and Workers runtimes. It extends:
 ```
 flow.bundle/
   manifest.json
-  manifest.sig
+  manifest.sig (optional)
   module.wasm
-  module.sig (optional)
+  module.<target> (optional)
+  flows/<flow_id>/flow_ir.json
+  flows/<flow_id>/flow_ir_expanded.json (optional)
+  subflows/<subflow_id>/flow_ir.json (optional)
   artifacts/ (optional)
 ```
 
@@ -79,39 +82,56 @@ The manifest is the primary host-facing contract. It must be stable and self-des
       "hash": "sha256:..."
     }
   ],
-  "flow": { "id": "flow://...", "version": "v0.1.0", "profile": "wasm" },
-  "flow_ir": { "artifact": "artifacts/flow_ir.json", "hash": "sha256:..." },
-  "entrypoints": [
+  "flows": [
     {
-      "trigger": "trigger",
-      "capture": "responder",
-      "route_aliases": ["/echo"],
-      "deadline_ms": 250
+      "id": "flow://...",
+      "version": "v0.1.0",
+      "profile": "wasm",
+      "flow_ir": { "artifact": "flows/echo/flow_ir.json", "hash": "sha256:..." },
+      "flow_ir_expanded": {
+        "artifact": "flows/echo/flow_ir_expanded.json",
+        "hash": "sha256:..."
+      },
+      "entrypoints": [
+        {
+          "trigger": "trigger",
+          "capture": "responder",
+          "route_aliases": ["/echo"],
+          "deadline_ms": 250
+        }
+      ],
+      "nodes": {
+        "std.timer.wait": {
+          "id": "node://...",
+          "effects": "effectful",
+          "determinism": "nondeterministic",
+          "durability": { "checkpointable": true, "replayable": true, "halts": true },
+          "bindings": ["resume_scheduler"],
+          "input_schema": "...",
+          "output_schema": "..."
+        }
+      },
+      "capabilities": {
+        "required": [
+          { "name": "resume_scheduler", "kind": "scheduler", "constraints": { "resolution_ms": 1000 } }
+        ],
+        "optional": []
+      },
+      "subflows": ["subflow.alpha@v1.0.0"]
     }
   ],
-  "nodes": {
-    "std.timer.wait": {
-      "id": "node://...",
+  "subflows": [
+    {
+      "id": "subflow.alpha",
+      "version": "v1.0.0",
+      "entrypoints": [],
       "effects": "effectful",
       "determinism": "nondeterministic",
-      "durability": { "checkpointable": true, "replayable": true, "halts": true },
-      "bindings": ["resume_scheduler"],
-      "input_schema": "...",
-      "output_schema": "..."
+      "durability": { "checkpointable": true, "replayable": true, "halts": false },
+      "flow_ir": { "artifact": "subflows/alpha/flow_ir.json", "hash": "sha256:..." }
     }
-  },
-  "capabilities": {
-    "required": [
-      { "name": "resume_scheduler", "kind": "scheduler", "constraints": { "resolution_ms": 1000 } }
-    ],
-    "optional": []
-  },
-  "subflows": {
-    "mode": "embedded|external",
-    "entries": [
-      { "id": "flow://subflow", "bundle_id": "sha256:...", "entrypoint": "main", "embedded": true }
-    ]
-  },
+  ],
+  "default_flow": "flow://...",
   "signing": { "algorithm": "ed25519", "key_id": "...", "signed_at": "..." }
 }
 ```
@@ -120,29 +140,32 @@ Notes:
 
 - `bundle_id` is derived from a canonical JSON form of the manifest. Canonicalization:
   - Remove `bundle_id` and `signing`.
-  - Omit optional fields when they are `None` (for example `flow_ir`, `subflows`, `signing`,
-    and empty `artifacts`).
-  - Always include empty defaults for `entrypoints`, `nodes`, and `capabilities` (empty arrays
-    or empty objects) when those sections are missing.
-  - Sort object keys lexicographically; preserve array order.
+  - Omit optional fields when they are `None` (for example `flow_ir`, `flow_ir_expanded`,
+    `subflows`, `signing`, and empty `artifacts`).
+  - Always include empty defaults for `flows[].entrypoints`, `flows[].nodes`, and
+    `flows[].capabilities` (empty arrays or empty objects) when those sections are missing.
+  - Sort object keys lexicographically.
+  - Sort arrays for `artifacts`, `flows`, `subflows`, and `flows[].subflows`; preserve other
+    array order.
   Hosts use it for caching and resume pinning.
-- The bundling CLI extracts the manifest from the WASM custom section and emits
-  `manifest.json` from that data. The `bundle_manifest()` export is a runtime
-  host-facing interface (future) and is not required for bundling.
+- The bundling CLI requires an explicit `manifest.json` sidecar; embedded WASM custom sections
+  are not required for bundling.
 - `code.target` declares the default execution target; `code.file` is the primary bundle artifact.
 - `artifacts` is optional and carries additional target-specific artifacts with their hashes.
-- `flow_ir` may be embedded as a file reference; hosts should verify the hash.
-- `entrypoints` are explicit; `route_aliases` are optional and non-authoritative.
+- `flows[].flow_ir` and `flows[].flow_ir_expanded` are optional file references; hosts should verify
+  hashes when they are present.
+- `entrypoints` are explicit per flow; `route_aliases` are optional and non-authoritative.
 - `route_aliases` is the only alias field; `route_alias` is invalid in 0.1.x.
 - Entrypoint objects are closed; unknown fields are rejected by the schema.
-- `capabilities.required` declares binding names and capability kinds; credentials never live here.
-- `capabilities.*.constraints` is an object payload (no string forms).
-- `nodes.*.effects` and `nodes.*.determinism` use the Flow IR enums.
-- `subflows.mode` is `embedded` or `external`.
-- `subflows.entries` is required whenever `subflows` is present; it may be empty. Omit
-  `subflows` entirely when empty for brevity.
-- `capabilities.required`/`capabilities.optional` default to empty lists when omitted.
-- `nodes.*.bindings` defaults to an empty list when omitted.
+- `flows[].capabilities.required` declares binding names and capability kinds; credentials never
+  live here.
+- `flows[].capabilities.*.constraints` is an object payload (no string forms).
+- `flows[].nodes.*.effects` and `flows[].nodes.*.determinism` use the Flow IR enums.
+- `subflows` is a catalog of subflow descriptors; each flow lists referenced subflow ids.
+- `subflows[].flow_ir` is optional and intended for analysis/UX (not execution).
+- `flows[].capabilities.required`/`flows[].capabilities.optional` default to empty lists when
+  omitted.
+- `flows[].nodes.*.bindings` defaults to an empty list when omitted.
 - All `sha256:` hashes use lowercase hex, matching the schema `[0-9a-f]{64}`.
 
 ## Multi-target Emission (CLI)

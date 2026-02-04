@@ -2,6 +2,11 @@
 use dag_core::FlowIR;
 use serde_json::Value;
 
+#[cfg(feature = "flow-registry")]
+pub mod bundle;
+
+pub mod harness;
+
 /// Serialise a Flow IR into a `serde_json::Value` helper.
 pub fn to_json_value(flow: &FlowIR) -> Value {
     serde_json::to_value(flow).expect("Flow IR serialisation should not fail")

@@ -744,6 +744,14 @@
             "string",
             "null"
           ]
+        },
+        "subflow_ir": {
+          "allOf": [
+            {
+              "$ref": "#"
+            }
+          ],
+          "description": "Expanded subflow IR attached for analysis-only views."
         }
       },
       "required": [
@@ -756,6 +764,25 @@
         "kind",
         "name",
         "out_schema"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "subflow"
+              }
+            }
+          },
+          "then": {},
+          "else": {
+            "not": {
+              "required": [
+                "subflow_ir"
+              ]
+            }
+          }
+        }
       ],
       "type": "object"
     },

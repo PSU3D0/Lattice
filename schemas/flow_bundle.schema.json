@@ -37,12 +37,30 @@
       },
       "required": ["target", "file", "hash"]
     },
-    "FlowDescriptor": {
+    "FlowEntry": {
       "type": "object",
       "properties": {
         "id": { "type": "string" },
         "version": { "type": "string" },
-        "profile": { "type": "string" }
+        "profile": { "type": "string" },
+        "flow_ir": { "$ref": "#/definitions/FlowIrRef" },
+        "flow_ir_expanded": { "$ref": "#/definitions/FlowIrRef" },
+        "entrypoints": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/Entrypoint" },
+          "default": []
+        },
+        "nodes": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/definitions/NodeSpec" },
+          "default": {}
+        },
+        "capabilities": { "$ref": "#/definitions/Capabilities" },
+        "subflows": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        }
       },
       "required": ["id", "version", "profile"]
     },
@@ -128,30 +146,33 @@
       },
       "required": []
     },
-    "SubflowEntry": {
+    "SubflowDescriptor": {
       "type": "object",
       "properties": {
         "id": { "type": "string" },
-        "bundle_id": {
-          "type": "string",
-          "pattern": "^sha256:[0-9a-f]{64}$"
-        },
-        "entrypoint": { "type": "string" },
-        "embedded": { "type": "boolean" }
-      },
-      "required": ["id", "bundle_id", "entrypoint", "embedded"]
-    },
-    "Subflows": {
-      "type": "object",
-      "properties": {
-        "mode": { "type": "string", "enum": ["embedded", "external"] },
-        "entries": {
+        "version": { "type": "string" },
+        "entrypoints": {
           "type": "array",
-          "items": { "$ref": "#/definitions/SubflowEntry" },
+          "items": { "$ref": "#/definitions/Entrypoint" },
           "default": []
-        }
+        },
+        "effects": { "type": "string", "enum": ["pure", "read_only", "effectful"] },
+        "determinism": {
+          "type": "string",
+          "enum": ["strict", "stable", "best_effort", "nondeterministic"]
+        },
+        "durability": {
+          "type": "object",
+          "properties": {
+            "checkpointable": { "type": "boolean" },
+            "replayable": { "type": "boolean" },
+            "halts": { "type": "boolean" }
+          },
+          "required": ["checkpointable", "replayable", "halts"]
+        },
+        "flow_ir": { "$ref": "#/definitions/FlowIrRef" }
       },
-      "required": ["mode", "entries"]
+      "required": ["id", "version", "effects", "determinism", "durability"]
     },
     "Signing": {
       "type": "object",
@@ -176,21 +197,18 @@
       "items": { "$ref": "#/definitions/ArtifactDescriptor" },
       "default": []
     },
-    "flow": { "$ref": "#/definitions/FlowDescriptor" },
-    "flow_ir": { "$ref": "#/definitions/FlowIrRef" },
-    "entrypoints": {
+    "flows": {
       "type": "array",
-      "items": { "$ref": "#/definitions/Entrypoint" },
+      "items": { "$ref": "#/definitions/FlowEntry" },
+      "minItems": 1
+    },
+    "subflows": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/SubflowDescriptor" },
       "default": []
     },
-    "nodes": {
-      "type": "object",
-      "additionalProperties": { "$ref": "#/definitions/NodeSpec" },
-      "default": {}
-    },
-    "capabilities": { "$ref": "#/definitions/Capabilities" },
-    "subflows": { "$ref": "#/definitions/Subflows" },
+    "default_flow": { "type": "string" },
     "signing": { "$ref": "#/definitions/Signing" }
   },
-  "required": ["bundle_version", "abi", "bundle_id", "code", "flow"]
+  "required": ["bundle_version", "abi", "bundle_id", "code", "flows"]
 }

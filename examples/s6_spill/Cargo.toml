@@ -26,3 +26,8 @@ futures-timer.workspace = true
 [features]
 default = ["host-bundle"]
 host-bundle = ["kernel-exec", "host-inproc"]
+flow-registry = ["dag-core/flow-registry", "dag-macros/flow-registry"]
+
+[package.metadata.latticeflow]
+flows = ["s6_spill_flow"]
+default_flow = "s6_spill_flow"

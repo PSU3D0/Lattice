@@ -5,6 +5,8 @@ pub mod determinism;
 mod diagnostics;
 mod effects;
 pub mod effects_registry;
+#[cfg(feature = "flow-registry")]
+pub mod flow_registry;
 mod ir;
 pub mod schema;
 

@@ -4208,6 +4208,44 @@ impl WorkflowBundleInput {
             quote!()
         };
 
+        let flow_registry_entrypoints_ident =
+            format_ident!("__{}_FLOW_ENTRYPOINTS", flow_mod_ident.to_string().to_uppercase());
+        let flow_registry_entrypoints = if self.entrypoints.is_empty() {
+            quote!(&[] as &[::dag_core::flow_registry::EntrypointSpec])
+        } else {
+            let entrypoints = self.entrypoints.iter().map(|entry| {
+                let trigger = &entry.trigger;
+                let capture = &entry.capture;
+                let route_aliases = if entry.route_aliases.is_empty() {
+                    quote!(&[] as &[&'static str])
+                } else {
+                    let aliases = entry.route_aliases.iter();
+                    quote!(&[#(#aliases),*] as &[&'static str])
+                };
+                let method = entry
+                    .method
+                    .as_ref()
+                    .map(|method| quote!(Some(#method)))
+                    .unwrap_or_else(|| quote!(None));
+                let deadline = entry
+                    .deadline_ms
+                    .map(|ms| quote!(Some(#ms)))
+                    .unwrap_or_else(|| quote!(None));
+
+                quote! {
+                    ::dag_core::flow_registry::EntrypointSpec {
+                        trigger: #trigger,
+                        capture: #capture,
+                        route_aliases: #route_aliases,
+                        method: #method,
+                        deadline_ms: #deadline,
+                    }
+                }
+            });
+
+            quote!(&[#(#entrypoints),*] as &[::dag_core::flow_registry::EntrypointSpec])
+        };
+
         let entrypoints = self.entrypoints.iter().map(|entry| {
             let trigger = &entry.trigger;
             let capture = &entry.capture;
@@ -4274,6 +4312,21 @@ impl WorkflowBundleInput {
                 #(#if_statements)*
                 #(#switch_statements)*
                 flow
+            }
+
+            #[cfg(feature = "flow-registry")]
+            const #flow_registry_entrypoints_ident: &[::dag_core::flow_registry::EntrypointSpec] =
+                #flow_registry_entrypoints;
+
+            #[cfg(feature = "flow-registry")]
+            ::dag_core::flow_registry::submit! {
+                ::dag_core::flow_registry::FlowRegistration {
+                    name: #flow_name_lit,
+                    version: #version_literal,
+                    profile: ::dag_core::Profile::#profile_ident,
+                    entrypoints: #flow_registry_entrypoints_ident,
+                    flow_ir: flow,
+                }
             }
 
             pub fn validated_ir() -> ::kernel_plan::ValidatedIR {

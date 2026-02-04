@@ -1,6 +1,6 @@
 use flow_bundle::{
     compute_bundle_id, select_artifact, AbiRef, ArtifactDescriptor, Capabilities, CodeDescriptor,
-    ExecPolicy, FlowDescriptor, Manifest,
+    ExecPolicy, FlowEntry, Manifest,
 };
 use jsonschema::{Draft, JSONSchema};
 use serde_json::json;
@@ -38,16 +38,19 @@ fn sample_manifest_with_artifacts() -> Manifest {
                     .to_string(),
             },
         ],
-        flow: FlowDescriptor {
+        flows: vec![FlowEntry {
             id: "flow://demo".to_string(),
             version: "v0.1.0".to_string(),
             profile: "wasm".to_string(),
-        },
-        flow_ir: None,
-        entrypoints: Vec::new(),
-        nodes: BTreeMap::new(),
-        capabilities: Capabilities::default(),
-        subflows: None,
+            flow_ir: None,
+            flow_ir_expanded: None,
+            entrypoints: Vec::new(),
+            nodes: BTreeMap::new(),
+            capabilities: Capabilities::default(),
+            subflows: Vec::new(),
+        }],
+        subflows: Vec::new(),
+        default_flow: None,
         signing: None,
     }
 }
@@ -185,21 +188,23 @@ fn manifest_schema_accepts_multitarget_artifacts_and_constraints() {
                 "hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
             }
         ],
-        "capabilities": {
-            "required": [
-                {
-                    "name": "runtime",
-                    "kind": "scheduler",
-                    "constraints": { "resolution_ms": 1000 }
+        "flows": [
+            {
+                "id": "flow://demo",
+                "version": "v0.1.0",
+                "profile": "wasm",
+                "capabilities": {
+                    "required": [
+                        {
+                            "name": "runtime",
+                            "kind": "scheduler",
+                            "constraints": { "resolution_ms": 1000 }
+                        }
+                    ],
+                    "optional": []
                 }
-            ],
-            "optional": []
-        },
-        "flow": {
-            "id": "flow://demo",
-            "version": "v0.1.0",
-            "profile": "wasm"
-        }
+            }
+        ]
     });
 
     let schema_json = serde_json::from_str(FLOW_BUNDLE_SCHEMA).expect("schema json");
@@ -231,6 +236,78 @@ fn manifest_schema_accepts_multitarget_artifacts_and_constraints() {
         round_trip["artifacts"][0]["hash"],
         "sha256:2222222222222222222222222222222222222222222222222222222222222222"
     );
+}
+
+#[test]
+fn manifest_schema_accepts_multiflow_with_subflow_catalog() {
+    let manifest_json = json!({
+        "bundle_version": "0.1",
+        "abi": {
+            "name": "latticeflow.wit",
+            "version": "0.1"
+        },
+        "bundle_id": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "code": {
+            "target": "wasm32-unknown-unknown",
+            "file": "flow.wasm",
+            "hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "size_bytes": 48
+        },
+        "artifacts": [
+            {
+                "target": "x86_64-unknown-linux-gnu",
+                "file": "flow",
+                "hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+            },
+            {
+                "target": "flow_ir",
+                "file": "flows/alpha/flow_ir.json",
+                "hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+            }
+        ],
+        "flows": [
+            {
+                "id": "flow://alpha",
+                "version": "v1.0.0",
+                "profile": "wasm",
+                "flow_ir": {
+                    "artifact": "flows/alpha/flow_ir.json",
+                    "hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+                },
+                "subflows": ["subflow.beta@v1.0.0"]
+            },
+            {
+                "id": "flow://beta",
+                "version": "v1.0.0",
+                "profile": "wasm"
+            }
+        ],
+        "subflows": [
+            {
+                "id": "subflow.beta",
+                "version": "v1.0.0",
+                "entrypoints": [],
+                "effects": "effectful",
+                "determinism": "nondeterministic",
+                "durability": {
+                    "checkpointable": true,
+                    "replayable": true,
+                    "halts": false
+                }
+            }
+        ],
+        "default_flow": "flow://alpha"
+    });
+
+    let schema_json = serde_json::from_str(FLOW_BUNDLE_SCHEMA).expect("schema json");
+    let validator = JSONSchema::options()
+        .with_draft(Draft::Draft202012)
+        .compile(&schema_json)
+        .expect("schema validator");
+    if let Err(mut errors) = validator.validate(&manifest_json) {
+        let first = errors.next().expect("schema error");
+        panic!("manifest schema validation failed: {first}");
+    }
 }
 
 #[test]
@@ -287,21 +364,23 @@ fn manifest_schema_rejects_string_capability_constraints() {
             "hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
             "size_bytes": 48
         },
-        "capabilities": {
-            "required": [
-                {
-                    "name": "runtime",
-                    "kind": "scheduler",
-                    "constraints": "per-second"
+        "flows": [
+            {
+                "id": "flow://demo",
+                "version": "v0.1.0",
+                "profile": "wasm",
+                "capabilities": {
+                    "required": [
+                        {
+                            "name": "runtime",
+                            "kind": "scheduler",
+                            "constraints": "per-second"
+                        }
+                    ],
+                    "optional": []
                 }
-            ],
-            "optional": []
-        },
-        "flow": {
-            "id": "flow://demo",
-            "version": "v0.1.0",
-            "profile": "wasm"
-        }
+            }
+        ]
     });
 
     let schema_json = serde_json::from_str(FLOW_BUNDLE_SCHEMA).expect("schema json");
@@ -330,11 +409,13 @@ fn manifest_schema_rejects_uppercase_hashes() {
             "hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
             "size_bytes": 48
         },
-        "flow": {
-            "id": "flow://demo",
-            "version": "v0.1.0",
-            "profile": "wasm"
-        }
+        "flows": [
+            {
+                "id": "flow://demo",
+                "version": "v0.1.0",
+                "profile": "wasm"
+            }
+        ]
     });
 
     let schema_json = serde_json::from_str(FLOW_BUNDLE_SCHEMA).expect("schema json");
@@ -363,21 +444,23 @@ fn manifest_deserialize_rejects_null_capability_constraints() {
             "hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
             "size_bytes": 48
         },
-        "capabilities": {
-            "required": [
-                {
-                    "name": "runtime",
-                    "kind": "scheduler",
-                    "constraints": null
+        "flows": [
+            {
+                "id": "flow://demo",
+                "version": "v0.1.0",
+                "profile": "wasm",
+                "capabilities": {
+                    "required": [
+                        {
+                            "name": "runtime",
+                            "kind": "scheduler",
+                            "constraints": null
+                        }
+                    ],
+                    "optional": []
                 }
-            ],
-            "optional": []
-        },
-        "flow": {
-            "id": "flow://demo",
-            "version": "v0.1.0",
-            "profile": "wasm"
-        }
+            }
+        ]
     });
 
     let manifest = serde_json::from_value::<Manifest>(manifest_json);
@@ -402,12 +485,14 @@ fn manifest_deserialize_rejects_null_flow_ir() {
             "hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
             "size_bytes": 48
         },
-        "flow": {
-            "id": "flow://demo",
-            "version": "v0.1.0",
-            "profile": "wasm"
-        },
-        "flow_ir": null
+        "flows": [
+            {
+                "id": "flow://demo",
+                "version": "v0.1.0",
+                "profile": "wasm",
+                "flow_ir": null
+            }
+        ]
     });
 
     let manifest = serde_json::from_value::<Manifest>(manifest_json);
@@ -432,11 +517,13 @@ fn manifest_deserialize_rejects_null_subflows() {
             "hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
             "size_bytes": 48
         },
-        "flow": {
-            "id": "flow://demo",
-            "version": "v0.1.0",
-            "profile": "wasm"
-        },
+        "flows": [
+            {
+                "id": "flow://demo",
+                "version": "v0.1.0",
+                "profile": "wasm"
+            }
+        ],
         "subflows": null
     });
 
@@ -462,11 +549,13 @@ fn manifest_deserialize_rejects_null_signing() {
             "hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
             "size_bytes": 48
         },
-        "flow": {
-            "id": "flow://demo",
-            "version": "v0.1.0",
-            "profile": "wasm"
-        },
+        "flows": [
+            {
+                "id": "flow://demo",
+                "version": "v0.1.0",
+                "profile": "wasm"
+            }
+        ],
         "signing": null
     });
 
@@ -492,17 +581,19 @@ fn manifest_deserialize_rejects_null_entrypoint_deadline_ms() {
             "hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
             "size_bytes": 48
         },
-        "flow": {
-            "id": "flow://demo",
-            "version": "v0.1.0",
-            "profile": "wasm"
-        },
-        "entrypoints": [
+        "flows": [
             {
-                "trigger": "ingress",
-                "capture": "out",
-                "route_aliases": [],
-                "deadline_ms": null
+                "id": "flow://demo",
+                "version": "v0.1.0",
+                "profile": "wasm",
+                "entrypoints": [
+                    {
+                        "trigger": "ingress",
+                        "capture": "out",
+                        "route_aliases": [],
+                        "deadline_ms": null
+                    }
+                ]
             }
         ]
     });
@@ -515,7 +606,7 @@ fn manifest_deserialize_rejects_null_entrypoint_deadline_ms() {
 }
 
 #[test]
-fn manifest_deserialize_rejects_subflows_without_entries() {
+fn manifest_schema_rejects_subflow_catalog_missing_fields() {
     let manifest_json = json!({
         "bundle_version": "0.1",
         "abi": {
@@ -529,25 +620,35 @@ fn manifest_deserialize_rejects_subflows_without_entries() {
             "hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
             "size_bytes": 48
         },
-        "flow": {
-            "id": "flow://demo",
-            "version": "v0.1.0",
-            "profile": "wasm"
-        },
-        "subflows": {
-            "mode": "embedded"
-        }
+        "flows": [
+            {
+                "id": "flow://demo",
+                "version": "v0.1.0",
+                "profile": "wasm"
+            }
+        ],
+        "subflows": [
+            {
+                "id": "subflow.alpha",
+                "version": "v1.0.0"
+            }
+        ]
     });
 
-    let manifest = serde_json::from_value::<Manifest>(manifest_json);
+    let schema_json = serde_json::from_str(FLOW_BUNDLE_SCHEMA).expect("schema json");
+    let validator = JSONSchema::options()
+        .with_draft(Draft::Draft202012)
+        .compile(&schema_json)
+        .expect("schema validator");
+    let manifest = validator.validate(&manifest_json);
     assert!(
         manifest.is_err(),
-        "manifest deserialization accepted subflows without entries"
+        "schema accepted subflows without required fields"
     );
 }
 
 #[test]
-fn manifest_schema_rejects_invalid_node_effects_determinism_and_subflows_mode() {
+fn manifest_schema_rejects_invalid_node_effects_and_subflow_metadata() {
     let manifest_json = json!({
         "bundle_version": "0.1",
         "abi": {
@@ -561,29 +662,41 @@ fn manifest_schema_rejects_invalid_node_effects_determinism_and_subflows_mode() 
             "hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
             "size_bytes": 48
         },
-        "flow": {
-            "id": "flow://demo",
-            "version": "v0.1.0",
-            "profile": "wasm"
-        },
-        "nodes": {
-            "std.timer.wait": {
-                "id": "node://std.timer.wait",
+        "flows": [
+            {
+                "id": "flow://demo",
+                "version": "v0.1.0",
+                "profile": "wasm",
+                "nodes": {
+                    "std.timer.wait": {
+                        "id": "node://std.timer.wait",
+                        "effects": "side_effects",
+                        "determinism": "chaotic",
+                        "durability": {
+                            "checkpointable": true,
+                            "replayable": true,
+                            "halts": true
+                        },
+                        "input_schema": "schema://input",
+                        "output_schema": "schema://output"
+                    }
+                }
+            }
+        ],
+        "subflows": [
+            {
+                "id": "subflow.alpha",
+                "version": "v1.0.0",
+                "entrypoints": [],
                 "effects": "side_effects",
                 "determinism": "chaotic",
                 "durability": {
                     "checkpointable": true,
                     "replayable": true,
-                    "halts": true
-                },
-                "input_schema": "schema://input",
-                "output_schema": "schema://output"
+                    "halts": false
+                }
             }
-        },
-        "subflows": {
-            "mode": "dynamic",
-            "entries": []
-        }
+        ]
     });
 
     let schema_json = serde_json::from_str(FLOW_BUNDLE_SCHEMA).expect("schema json");
@@ -612,16 +725,18 @@ fn manifest_schema_rejects_unknown_entrypoint_fields() {
             "hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
             "size_bytes": 48
         },
-        "flow": {
-            "id": "flow://demo",
-            "version": "v0.1.0",
-            "profile": "wasm"
-        },
-        "entrypoints": [
+        "flows": [
             {
-                "trigger": "webhook",
-                "capture": "responder",
-                "route_alias": "/echo"
+                "id": "flow://demo",
+                "version": "v0.1.0",
+                "profile": "wasm",
+                "entrypoints": [
+                    {
+                        "trigger": "webhook",
+                        "capture": "responder",
+                        "route_alias": "/echo"
+                    }
+                ]
             }
         ]
     });
@@ -652,26 +767,28 @@ fn manifest_schema_allows_missing_capability_lists_and_node_bindings() {
             "hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
             "size_bytes": 48
         },
-        "flow": {
-            "id": "flow://demo",
-            "version": "v0.1.0",
-            "profile": "wasm"
-        },
-        "capabilities": {},
-        "nodes": {
-            "std.timer.wait": {
-                "id": "node://std.timer.wait",
-                "effects": "effectful",
-                "determinism": "nondeterministic",
-                "durability": {
-                    "checkpointable": true,
-                    "replayable": true,
-                    "halts": true
-                },
-                "input_schema": "schema://input",
-                "output_schema": "schema://output"
+        "flows": [
+            {
+                "id": "flow://demo",
+                "version": "v0.1.0",
+                "profile": "wasm",
+                "capabilities": {},
+                "nodes": {
+                    "std.timer.wait": {
+                        "id": "node://std.timer.wait",
+                        "effects": "effectful",
+                        "determinism": "nondeterministic",
+                        "durability": {
+                            "checkpointable": true,
+                            "replayable": true,
+                            "halts": true
+                        },
+                        "input_schema": "schema://input",
+                        "output_schema": "schema://output"
+                    }
+                }
             }
-        }
+        ]
     });
 
     let schema_json = serde_json::from_str(FLOW_BUNDLE_SCHEMA).expect("schema json");
@@ -685,9 +802,10 @@ fn manifest_schema_allows_missing_capability_lists_and_node_bindings() {
     }
 
     let manifest: Manifest = serde_json::from_value(manifest_json).expect("manifest");
-    assert!(manifest.capabilities.required.is_empty());
-    assert!(manifest.capabilities.optional.is_empty());
-    let node = manifest.nodes.get("std.timer.wait").expect("node spec");
+    let flow = manifest.flows.first().expect("flow entry");
+    assert!(flow.capabilities.required.is_empty());
+    assert!(flow.capabilities.optional.is_empty());
+    let node = flow.nodes.get("std.timer.wait").expect("node spec");
     assert!(node.bindings.is_empty());
 }
 
@@ -706,11 +824,13 @@ fn manifest_schema_defaults_optional_arrays_when_omitted() {
             "hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
             "size_bytes": 48
         },
-        "flow": {
-            "id": "flow://demo",
-            "version": "v0.1.0",
-            "profile": "wasm"
-        }
+        "flows": [
+            {
+                "id": "flow://demo",
+                "version": "v0.1.0",
+                "profile": "wasm"
+            }
+        ]
     });
 
     let schema_json = serde_json::from_str(FLOW_BUNDLE_SCHEMA).expect("schema json");
@@ -724,8 +844,9 @@ fn manifest_schema_defaults_optional_arrays_when_omitted() {
     }
 
     let manifest: Manifest = serde_json::from_value(manifest_json).expect("manifest");
-    assert!(manifest.entrypoints.is_empty());
-    assert!(manifest.nodes.is_empty());
-    assert!(manifest.capabilities.required.is_empty());
-    assert!(manifest.capabilities.optional.is_empty());
+    let flow = manifest.flows.first().expect("flow entry");
+    assert!(flow.entrypoints.is_empty());
+    assert!(flow.nodes.is_empty());
+    assert!(flow.capabilities.required.is_empty());
+    assert!(flow.capabilities.optional.is_empty());
 }

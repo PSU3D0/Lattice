@@ -2,6 +2,7 @@ use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::fmt;
 
+use dag_core::{FlowIR, NodeKind};
 use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use sha2::Digest;
@@ -27,6 +28,16 @@ pub enum BundleError {
     },
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum ExpandError {
+    #[error("subflow cycle detected: {chain:?}")]
+    SubflowCycle { chain: Vec<String> },
+    #[error("missing subflow IR for {id}")]
+    MissingSubflow { id: String },
+    #[error("invalid subflow identifier {identifier}")]
+    InvalidSubflowIdentifier { identifier: String },
+}
+
 pub const BUNDLE_VERSION: &str = "0.1";
 pub const DEFAULT_ABI_NAME: &str = "latticeflow.wit";
 pub const DEFAULT_ABI_VERSION: &str = "0.1";
@@ -40,25 +51,15 @@ pub struct Manifest {
     pub code: CodeDescriptor,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<ArtifactDescriptor>,
-    pub flow: FlowDescriptor,
+    pub flows: Vec<FlowEntry>,
     #[serde(
         default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_flow_ir"
-    )]
-    pub flow_ir: Option<FlowIrRef>,
-    #[serde(default)]
-    pub entrypoints: Vec<Entrypoint>,
-    #[serde(default)]
-    pub nodes: BTreeMap<String, NodeSpec>,
-    #[serde(default)]
-    pub capabilities: Capabilities,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
+        skip_serializing_if = "Vec::is_empty",
         deserialize_with = "deserialize_subflows"
     )]
-    pub subflows: Option<Subflows>,
+    pub subflows: Vec<SubflowDescriptor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_flow: Option<String>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -89,10 +90,30 @@ pub struct ArtifactDescriptor {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FlowDescriptor {
+pub struct FlowEntry {
     pub id: String,
     pub version: String,
     pub profile: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_flow_ir"
+    )]
+    pub flow_ir: Option<FlowIrRef>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_flow_ir_expanded"
+    )]
+    pub flow_ir_expanded: Option<FlowIrRef>,
+    #[serde(default)]
+    pub entrypoints: Vec<Entrypoint>,
+    #[serde(default)]
+    pub nodes: BTreeMap<String, NodeSpec>,
+    #[serde(default)]
+    pub capabilities: Capabilities,
+    #[serde(default)]
+    pub subflows: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -155,6 +176,23 @@ pub struct CapabilityBinding {
     pub constraints: Option<JsonMap<String, JsonValue>>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubflowDescriptor {
+    pub id: String,
+    pub version: String,
+    #[serde(default)]
+    pub entrypoints: Vec<Entrypoint>,
+    pub effects: NodeEffects,
+    pub determinism: NodeDeterminism,
+    pub durability: DurabilityProfile,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_flow_ir"
+    )]
+    pub flow_ir: Option<FlowIrRef>,
+}
+
 fn deserialize_constraints<'de, D>(
     deserializer: D,
 ) -> Result<Option<JsonMap<String, JsonValue>>, D::Error>
@@ -199,11 +237,28 @@ where
     }
 }
 
-fn deserialize_subflows<'de, D>(deserializer: D) -> Result<Option<Subflows>, D::Error>
+fn deserialize_flow_ir_expanded<'de, D>(deserializer: D) -> Result<Option<FlowIrRef>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    deserialize_non_null_option(deserializer, "subflows")
+    let value = JsonValue::deserialize(deserializer)?;
+    match value {
+        JsonValue::Null => Err(serde::de::Error::custom("flow_ir_expanded cannot be null")),
+        other => serde_json::from_value(other)
+            .map(Some)
+            .map_err(serde::de::Error::custom),
+    }
+}
+
+fn deserialize_subflows<'de, D>(deserializer: D) -> Result<Vec<SubflowDescriptor>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = JsonValue::deserialize(deserializer)?;
+    match value {
+        JsonValue::Null => Err(serde::de::Error::custom("subflows cannot be null")),
+        other => serde_json::from_value(other).map_err(serde::de::Error::custom),
+    }
 }
 
 fn deserialize_signing<'de, D>(deserializer: D) -> Result<Option<Signing>, D::Error>
@@ -400,27 +455,6 @@ pub fn select_artifact(
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Subflows {
-    pub mode: SubflowsMode,
-    pub entries: Vec<SubflowEntry>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum SubflowsMode {
-    Embedded,
-    External,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SubflowEntry {
-    pub id: String,
-    pub bundle_id: String,
-    pub entrypoint: String,
-    pub embedded: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Signing {
     pub algorithm: String,
     pub key_id: String,
@@ -506,6 +540,71 @@ pub fn compute_bundle_id(manifest: &Manifest) -> Result<String, BundleError> {
             (left_target, left_file, left_hash).cmp(&(right_target, right_file, right_hash))
         });
     }
+    if let Some(flows) = obj.get_mut("flows").and_then(|value| value.as_array_mut()) {
+        for flow in flows.iter_mut() {
+            if let Some(subflows) = flow
+                .get_mut("subflows")
+                .and_then(|value| value.as_array_mut())
+            {
+                subflows.sort_by(|left, right| {
+                    let left_id = left.as_str().unwrap_or_default();
+                    let right_id = right.as_str().unwrap_or_default();
+                    left_id.cmp(right_id)
+                });
+            }
+        }
+        flows.sort_by(|left, right| {
+            let left_id = left
+                .get("id")
+                .and_then(JsonValue::as_str)
+                .unwrap_or_default();
+            let left_version = left
+                .get("version")
+                .and_then(JsonValue::as_str)
+                .unwrap_or_default();
+            let left_profile = left
+                .get("profile")
+                .and_then(JsonValue::as_str)
+                .unwrap_or_default();
+            let right_id = right
+                .get("id")
+                .and_then(JsonValue::as_str)
+                .unwrap_or_default();
+            let right_version = right
+                .get("version")
+                .and_then(JsonValue::as_str)
+                .unwrap_or_default();
+            let right_profile = right
+                .get("profile")
+                .and_then(JsonValue::as_str)
+                .unwrap_or_default();
+            (left_id, left_version, left_profile).cmp(&(right_id, right_version, right_profile))
+        });
+    }
+    if let Some(subflows) = obj
+        .get_mut("subflows")
+        .and_then(|value| value.as_array_mut())
+    {
+        subflows.sort_by(|left, right| {
+            let left_id = left
+                .get("id")
+                .and_then(JsonValue::as_str)
+                .unwrap_or_default();
+            let left_version = left
+                .get("version")
+                .and_then(JsonValue::as_str)
+                .unwrap_or_default();
+            let right_id = right
+                .get("id")
+                .and_then(JsonValue::as_str)
+                .unwrap_or_default();
+            let right_version = right
+                .get("version")
+                .and_then(JsonValue::as_str)
+                .unwrap_or_default();
+            (left_id, left_version).cmp(&(right_id, right_version))
+        });
+    }
     obj.remove("bundle_id");
     obj.remove("signing");
     Ok(sha256_prefixed(canonical_json(&value).as_bytes()))
@@ -537,11 +636,20 @@ pub fn validate_manifest(manifest: &Manifest) -> Result<(), BundleError> {
             "code.hash must be sha256:<hex>".to_string(),
         ));
     }
-    if let Some(flow_ir) = manifest.flow_ir.as_ref() {
-        if !is_sha256_prefixed(&flow_ir.hash) {
-            return Err(BundleError::ManifestValidation(
-                "flow_ir.hash must be sha256:<hex>".to_string(),
-            ));
+    for flow in &manifest.flows {
+        if let Some(flow_ir) = flow.flow_ir.as_ref() {
+            if !is_sha256_prefixed(&flow_ir.hash) {
+                return Err(BundleError::ManifestValidation(
+                    "flows[].flow_ir.hash must be sha256:<hex>".to_string(),
+                ));
+            }
+        }
+        if let Some(flow_ir) = flow.flow_ir_expanded.as_ref() {
+            if !is_sha256_prefixed(&flow_ir.hash) {
+                return Err(BundleError::ManifestValidation(
+                    "flows[].flow_ir_expanded.hash must be sha256:<hex>".to_string(),
+                ));
+            }
         }
     }
     for artifact in &manifest.artifacts {
@@ -551,13 +659,20 @@ pub fn validate_manifest(manifest: &Manifest) -> Result<(), BundleError> {
             ));
         }
     }
-    if let Some(subflows) = manifest.subflows.as_ref() {
-        for entry in &subflows.entries {
-            if !is_sha256_prefixed(&entry.bundle_id) {
+    for entry in &manifest.subflows {
+        if let Some(flow_ir) = entry.flow_ir.as_ref() {
+            if !is_sha256_prefixed(&flow_ir.hash) {
                 return Err(BundleError::ManifestValidation(
-                    "subflows.entries[].bundle_id must be sha256:<hex>".to_string(),
+                    "subflows[].flow_ir.hash must be sha256:<hex>".to_string(),
                 ));
             }
+        }
+    }
+    if let Some(default_flow) = manifest.default_flow.as_ref() {
+        if !manifest.flows.iter().any(|flow| flow.id == *default_flow) {
+            return Err(BundleError::ManifestValidation(
+                "default_flow must match a flow id".to_string(),
+            ));
         }
     }
     let expected = compute_bundle_id(manifest)?;
@@ -567,6 +682,54 @@ pub fn validate_manifest(manifest: &Manifest) -> Result<(), BundleError> {
         ));
     }
     Ok(())
+}
+
+pub fn expand_subflow_ir(
+    flow: &FlowIR,
+    subflows: &BTreeMap<String, FlowIR>,
+) -> Result<FlowIR, ExpandError> {
+    let mut stack = Vec::new();
+    expand_flow_ir(flow, subflows, &mut stack)
+}
+
+fn expand_flow_ir(
+    flow: &FlowIR,
+    subflows: &BTreeMap<String, FlowIR>,
+    stack: &mut Vec<String>,
+) -> Result<FlowIR, ExpandError> {
+    let mut expanded = flow.clone();
+    for node in &mut expanded.nodes {
+        if node.kind == NodeKind::Subflow {
+            let subflow_id = parse_subflow_id(&node.identifier).ok_or_else(|| {
+                ExpandError::InvalidSubflowIdentifier {
+                    identifier: node.identifier.clone(),
+                }
+            })?;
+            if stack.iter().any(|id| id == subflow_id) {
+                let mut chain = stack.clone();
+                chain.push(subflow_id.to_string());
+                return Err(ExpandError::SubflowCycle { chain });
+            }
+            let subflow = subflows
+                .get(subflow_id)
+                .ok_or_else(|| ExpandError::MissingSubflow {
+                    id: subflow_id.to_string(),
+                })?;
+            stack.push(subflow_id.to_string());
+            let expanded_subflow = expand_flow_ir(subflow, subflows, stack)?;
+            stack.pop();
+            node.subflow_ir = Some(Box::new(expanded_subflow));
+        }
+    }
+    Ok(expanded)
+}
+
+fn parse_subflow_id(identifier: &str) -> Option<&str> {
+    let mut parts = identifier.split("::");
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some("subflow"), Some(id), Some(_)) => Some(id),
+        _ => None,
+    }
 }
 
 pub fn read_manifest_from_custom_section(bytes: &[u8]) -> Result<Manifest, BundleError> {
@@ -636,11 +799,13 @@ mod tests {
                 "hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
                 "size_bytes": 4
             },
-            "flow": {
-                "id": "flow://demo",
-                "version": "v0.1.0",
-                "profile": "wasm"
-            }
+            "flows": [
+                {
+                    "id": "flow://demo",
+                    "version": "v0.1.0",
+                    "profile": "wasm"
+                }
+            ]
         })
     }
 
@@ -668,16 +833,19 @@ mod tests {
                 size_bytes: 4,
             },
             artifacts: Vec::new(),
-            flow: FlowDescriptor {
+            flows: vec![FlowEntry {
                 id: "flow://demo".to_string(),
                 version: "v0.1.0".to_string(),
                 profile: "wasm".to_string(),
-            },
-            flow_ir: None,
-            entrypoints: Vec::new(),
-            nodes: std::collections::BTreeMap::new(),
-            capabilities: Capabilities::default(),
-            subflows: None,
+                flow_ir: None,
+                flow_ir_expanded: None,
+                entrypoints: Vec::new(),
+                nodes: std::collections::BTreeMap::new(),
+                capabilities: Capabilities::default(),
+                subflows: Vec::new(),
+            }],
+            subflows: Vec::new(),
+            default_flow: None,
             signing: None,
         };
 
@@ -705,16 +873,19 @@ mod tests {
                 size_bytes: 4,
             },
             artifacts: Vec::new(),
-            flow: FlowDescriptor {
+            flows: vec![FlowEntry {
                 id: "flow://demo".to_string(),
                 version: "v0.1.0".to_string(),
                 profile: "wasm".to_string(),
-            },
-            flow_ir: None,
-            entrypoints: Vec::new(),
-            nodes: std::collections::BTreeMap::new(),
-            capabilities: Capabilities::default(),
-            subflows: None,
+                flow_ir: None,
+                flow_ir_expanded: None,
+                entrypoints: Vec::new(),
+                nodes: std::collections::BTreeMap::new(),
+                capabilities: Capabilities::default(),
+                subflows: Vec::new(),
+            }],
+            subflows: Vec::new(),
+            default_flow: None,
             signing: None,
         };
 
@@ -747,16 +918,19 @@ mod tests {
                 size_bytes: 4,
             },
             artifacts: Vec::new(),
-            flow: FlowDescriptor {
+            flows: vec![FlowEntry {
                 id: "flow://demo".to_string(),
                 version: "v0.1.0".to_string(),
                 profile: "wasm".to_string(),
-            },
-            flow_ir: None,
-            entrypoints: Vec::new(),
-            nodes: std::collections::BTreeMap::new(),
-            capabilities: Capabilities::default(),
-            subflows: None,
+                flow_ir: None,
+                flow_ir_expanded: None,
+                entrypoints: Vec::new(),
+                nodes: std::collections::BTreeMap::new(),
+                capabilities: Capabilities::default(),
+                subflows: Vec::new(),
+            }],
+            subflows: Vec::new(),
+            default_flow: None,
             signing: None,
         };
 
@@ -788,16 +962,19 @@ mod tests {
                 size_bytes: 4,
             },
             artifacts: Vec::new(),
-            flow: FlowDescriptor {
+            flows: vec![FlowEntry {
                 id: "flow://demo".to_string(),
                 version: "v0.1.0".to_string(),
                 profile: "wasm".to_string(),
-            },
-            flow_ir: None,
-            entrypoints: Vec::new(),
-            nodes: std::collections::BTreeMap::new(),
-            capabilities: Capabilities::default(),
-            subflows: None,
+                flow_ir: None,
+                flow_ir_expanded: None,
+                entrypoints: Vec::new(),
+                nodes: std::collections::BTreeMap::new(),
+                capabilities: Capabilities::default(),
+                subflows: Vec::new(),
+            }],
+            subflows: Vec::new(),
+            default_flow: None,
             signing: None,
         };
 
@@ -814,7 +991,7 @@ mod tests {
     #[test]
     fn manifest_rejects_unknown_entrypoint_fields() {
         let mut manifest = base_manifest_json();
-        manifest["entrypoints"] = json!([
+        manifest["flows"][0]["entrypoints"] = json!([
             {
                 "trigger": "ingress",
                 "capture": "out",
@@ -862,7 +1039,7 @@ mod tests {
     #[test]
     fn manifest_rejects_non_object_capability_constraints() {
         let mut manifest = base_manifest_json();
-        manifest["capabilities"] = json!({
+        manifest["flows"][0]["capabilities"] = json!({
             "required": [
                 {
                     "name": "dedupe",
@@ -879,7 +1056,7 @@ mod tests {
     #[test]
     fn manifest_rejects_invalid_node_effects() {
         let mut manifest = base_manifest_json();
-        manifest["nodes"] = json!({
+        manifest["flows"][0]["nodes"] = json!({
             "Normalize": {
                 "id": "node://normalize",
                 "effects": "unstable",
@@ -901,7 +1078,7 @@ mod tests {
     #[test]
     fn manifest_rejects_invalid_node_determinism() {
         let mut manifest = base_manifest_json();
-        manifest["nodes"] = json!({
+        manifest["flows"][0]["nodes"] = json!({
             "Normalize": {
                 "id": "node://normalize",
                 "effects": "pure",
@@ -923,10 +1100,11 @@ mod tests {
     #[test]
     fn manifest_rejects_invalid_subflows_mode() {
         let mut manifest = base_manifest_json();
-        manifest["subflows"] = json!({
-            "mode": "local",
-            "entries": []
-        });
+        manifest["subflows"] = json!([
+            {
+                "id": "subflow.alpha"
+            }
+        ]);
 
         let result: Result<Manifest, _> = serde_json::from_value(manifest);
         assert!(result.is_err());

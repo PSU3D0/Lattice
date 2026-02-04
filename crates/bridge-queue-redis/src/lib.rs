@@ -652,7 +652,8 @@ mod tests {
 
     use anyhow::Result;
     use dag_core::{
-        Determinism, Effects, FlowBuilder, NodeError, NodeKind, NodeSpec, Profile, SchemaSpec,
+        Determinism, DurabilityProfile, Effects, FlowBuilder, NodeError, NodeKind, NodeSpec,
+        Profile, SchemaSpec,
     };
     use kernel_exec::{FlowExecutor, NodeRegistry};
     use kernel_plan::validate;

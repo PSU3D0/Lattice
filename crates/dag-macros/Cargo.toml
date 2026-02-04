@@ -12,6 +12,10 @@ description = "Procedural macros and DSL surface for authoring Lattice workflows
 [lib]
 proc-macro = true
 
+[features]
+flow-registry = ["dag-core/flow-registry"]
+host-bundle = []
+
 [dependencies]
 dag-core = { path = "../dag-core" }
 capabilities = { path = "../capabilities" }

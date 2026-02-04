@@ -2446,6 +2446,9 @@ mod tests {
         match result {
             ExecutionResult::Value(value) => assert_eq!(value, payload),
             ExecutionResult::Stream(_) => panic!("expected non-streaming result"),
+            ExecutionResult::Halt { alias, payload } => {
+                panic!("unexpected halt from {alias}: {payload}")
+            }
         }
 
         let mut saw_latency = false;
@@ -2593,6 +2596,12 @@ mod tests {
                             CaptureResult::Stream(_) => {
                                 prop_assert!(false, "unexpected stream capture during drain cycle");
                             }
+                            CaptureResult::Halt { alias, payload } => {
+                                prop_assert!(
+                                    false,
+                                    "unexpected halt capture from {alias}: {payload}"
+                                );
+                            }
                         }
 
                         tokio::time::timeout(
@@ -2624,6 +2633,12 @@ mod tests {
                                 prop_assert!(
                                     false,
                                     "unexpected stream capture while draining tail"
+                                );
+                            }
+                            CaptureResult::Halt { alias, payload } => {
+                                prop_assert!(
+                                    false,
+                                    "unexpected halt capture from {alias}: {payload}"
                                 );
                             }
                         }
@@ -2921,6 +2936,9 @@ mod tests {
             Some(Ok(CaptureResult::Stream(_))) => {
                 panic!("unexpected streaming capture result for first payload")
             }
+            Some(Ok(CaptureResult::Halt { alias, payload })) => {
+                panic!("unexpected halt capture from {alias}: {payload}")
+            }
             Some(Err(err)) => panic!("capture failed: {err}"),
             None => panic!("capture channel closed unexpectedly"),
         };
@@ -2930,6 +2948,9 @@ mod tests {
             Some(Ok(CaptureResult::Value(value))) => value,
             Some(Ok(CaptureResult::Stream(_))) => {
                 panic!("unexpected streaming capture result for second payload")
+            }
+            Some(Ok(CaptureResult::Halt { alias, payload })) => {
+                panic!("unexpected halt capture from {alias}: {payload}")
             }
             Some(Err(err)) => panic!("capture failed: {err}"),
             None => panic!("capture channel closed unexpectedly"),
@@ -3166,6 +3187,9 @@ mod tests {
         match result {
             ExecutionResult::Value(value) => assert_eq!(value, payload),
             ExecutionResult::Stream(_) => panic!("unexpected stream"),
+            ExecutionResult::Halt { alias, payload } => {
+                panic!("unexpected halt from {alias}: {payload}")
+            }
         }
 
         assert_eq!(branch_a_count.load(std::sync::atomic::Ordering::SeqCst), 1);
@@ -3319,6 +3343,9 @@ mod tests {
         match result {
             ExecutionResult::Value(value) => assert_eq!(value, payload),
             ExecutionResult::Stream(_) => panic!("unexpected stream"),
+            ExecutionResult::Halt { alias, payload } => {
+                panic!("unexpected halt from {alias}: {payload}")
+            }
         }
 
         assert_eq!(branch_a_count.load(std::sync::atomic::Ordering::SeqCst), 1);
@@ -4028,6 +4055,9 @@ mod tests {
         match result {
             ExecutionResult::Value(value) => assert_eq!(value, payload),
             ExecutionResult::Stream(_) => panic!("unexpected stream"),
+            ExecutionResult::Halt { alias, payload } => {
+                panic!("unexpected halt from {alias}: {payload}")
+            }
         }
 
         assert_eq!(then_count.load(std::sync::atomic::Ordering::SeqCst), 1);
@@ -4181,6 +4211,9 @@ mod tests {
         match result {
             ExecutionResult::Value(value) => assert_eq!(value, payload),
             ExecutionResult::Stream(_) => panic!("unexpected stream"),
+            ExecutionResult::Halt { alias, payload } => {
+                panic!("unexpected halt from {alias}: {payload}")
+            }
         }
 
         assert_eq!(then_count.load(std::sync::atomic::Ordering::SeqCst), 0);
@@ -4814,6 +4847,9 @@ mod tests {
         let mut stream = match result {
             ExecutionResult::Stream(handle) => handle,
             ExecutionResult::Value(_) => panic!("expected streaming response"),
+            ExecutionResult::Halt { alias, payload } => {
+                panic!("unexpected halt from {alias}: {payload}")
+            }
         };
 
         let mut collected = Vec::new();
@@ -4884,6 +4920,9 @@ mod tests {
         let handle = match result {
             ExecutionResult::Stream(stream) => stream,
             ExecutionResult::Value(_) => panic!("expected streaming response"),
+            ExecutionResult::Halt { alias, payload } => {
+                panic!("unexpected halt from {alias}: {payload}")
+            }
         };
         let cancel_token = handle.cancellation_token();
         drop(handle);
