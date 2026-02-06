@@ -5,15 +5,16 @@ Last reviewed: 2025-12-12
 
 # impl-docs index (DRAFT)
 
-This folder is the canonical home for Lattice implementation documentation.
+This folder contains the canonical, public-facing implementation contracts for Lattice.
 
-Doc hygiene rules (lightweight, so we can iterate fast):
+Doc hygiene rules:
 
 - **Spec** docs are normative (0.1 contract): tooling/tests/hosts/importers can rely on them.
 - **ADRs** capture decisions we don't want to relitigate; ADRs constrain/override specs when they conflict.
-- **Roadmap** docs are planning artifacts (epics/phases); they do not define contract semantics.
 - **Scenarios** are acceptance targets (what must work; backed by fixtures/tests).
-- Older/superseded material moves under `archive/` (never deleted, just marked).
+
+Planning/ideation/strategy docs are intentionally **not committed**. If you have local
+private planning notes, they live under `private/` (gitignored).
 
 Source-of-truth rule (Flow IR shape):
 
@@ -23,7 +24,6 @@ Source-of-truth rule (Flow IR shape):
 
 ## Start Here
 
-- Roadmap (epics + phases): `roadmap/epics.md`
 - 0.1 contract specs:
   - `spec/flow-ir.md`
   - `spec/invocation-abi.md`
@@ -38,38 +38,15 @@ Source-of-truth rule (Flow IR shape):
 - ADRs (forever decisions): `adrs/`
 - Scenario specs (acceptance targets): `user-stories.md`
 
-## Current Canonical Docs
-
-- Workspace layout + layering rules (canonical subset): `surface-and-buildout.md`
-- RFC umbrella: `rust-workflow-tdd-rfc.md`
-- Roadmap: `roadmap/epics.md`
-
-Superseded:
-- Monolithic plan: `impl-plan.md` (use `roadmap/` instead)
-
-Notes:
-- `schemas/examples/etl_logs.flow_ir.json` is a representative example Flow IR fixture.
-
 ## Stable / Mostly-Append-Only
 
 - Error taxonomy: `error-taxonomy.md`
 - Error codes: `error-codes.md`
-- Metrics conventions: `metrics.md`
 
-## Active Design Tracks
+## Private Docs (Local-only)
 
-- Host/runtime refactor notes: `phase3-host-runtime-refactor.md`
-- OpenDAL capability rollout: `opendal-capability-plan.md`
-- Cloudflare Workers notes: `cloudflare/` (canonical epics live in `roadmap/`)
-- Archived MCP notes: `archive/mcp/`
+The following paths are intentionally gitignored and may not exist in public clones:
 
-## Consolidation Status
-
-- 0.1 contract specs are landing under `spec/` (draft; expect to mark canonical once aligned + implemented).
-- ADRs are landing under `adrs/` (draft; expect to accept as we implement epics).
-
-Next:
-- Review/accept the 0.1 contract specs under `spec/` and promote the ones we agree are canonical.
-- Review/accept the first ADR batch under `adrs/`.
-- Decompose `cloudflare/` docs into epic phase tickets (keep notes, reduce duplicate plans).
-- MCP is currently archived (`archive/mcp/`); if revived, rewrite against the 0.1 specs + ADRs.
+- `private/impl-docs/roadmap/`
+- `private/impl-docs/tickets/`
+- `private/docs/plans/`

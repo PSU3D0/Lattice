@@ -6,7 +6,7 @@ If you're starting fresh (human or agent), read these in order:
 
 - `README.md`
 - `impl-docs/README.md`
-- `impl-docs/roadmap/epics.md`
+- Private planning notes (if available locally): `private/impl-docs/roadmap/epics.md`
 - 0.1 contract specs (canonical target surfaces):
   - `impl-docs/spec/flow-ir.md`
   - `impl-docs/spec/invocation-abi.md`
@@ -22,10 +22,12 @@ If you're starting fresh (human or agent), read these in order:
 
 - `impl-docs/spec/`: normative semantics (0.1 contract targets)
 - `impl-docs/adrs/`: irreversible decisions ("forever" choices)
-- `impl-docs/roadmap/`: epics + phase ticket docs (implementation plan)
 - `impl-docs/user-stories.md`: scenario/acceptance targets
 - `impl-docs/work-log.md`: running log; add entries for shipped milestones/epic completions
-- `impl-docs/archive/`: historical snapshots/notes (not canonical)
+
+Strategic/ideation/planning docs are intentionally not committed:
+
+- Local-only (gitignored): `private/impl-docs/roadmap/`, `private/impl-docs/tickets/`, `private/docs/plans/`
 
 ## Private Docs (Encrypted)
 
@@ -55,19 +57,19 @@ When you complete a meaningful subphase (e.g., an epic phase acceptance gate), a
 
 Avoid:
 - Re-stating the entire roadmap.
-- Writing speculative future intent in the work-log; put that in `impl-docs/roadmap/*`.
+- Writing speculative future intent in the work-log; put that in local-only planning notes.
 
 ## Roadmap Learnings (Required)
 
 When you learn something that will affect future implementation choices:
-- Add it under the corresponding epic phase in `impl-docs/roadmap/<epic>.md` as a `Learnings / notes (<phase>)` block colocated with that phase.
+- Add it under the corresponding epic phase in `private/impl-docs/roadmap/<epic>.md` as a `Learnings / notes (<phase>)` block colocated with that phase.
 - Keep it prescriptive and stable: 2–6 bullets about boundaries, invariants, and “don’t do X”.
 - If a learning implies a contract change (IR/ABI/envelope/diagnostic codes), update `impl-docs/spec/*` and/or `impl-docs/error-codes.md` and call it out in the work-log.
 
 ## Project Structure & Module Organization
 
 - Core crates live under `crates/` (e.g., `dag-core`, `dag-macros`, `kernel-plan`, `kernel-exec`).
-- Capability adapters (`cap-*`), hosts (`host-*`), plugins (`plugin-*`), registry tooling, and CLI (`crates/cli`) follow the workspace layout defined in `impl-docs/surface-and-buildout.md`.
+- Capability adapters (`cap-*`), hosts (`host-*`), plugins (`plugin-*`), registry tooling, and CLI (`crates/cli`) follow the workspace layout defined by the workspace `Cargo.toml` and crate READMEs.
 - Specs and RFC umbrella reside in `impl-docs/`; Flow IR schema lives in `schemas/`.
 
 ## Build, Test, and Development Commands

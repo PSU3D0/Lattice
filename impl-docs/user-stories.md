@@ -19,7 +19,7 @@ This file contains two layers:
 Story format (used below for 0.1 pack; recommended for backlog too):
 
 - Status: Implemented | 0.1 Target | Future
-- Epic: `impl-docs/roadmap/*`
+- Epic: local-only planning notes (may not exist in public clones)
 - Preconditions: host profile(s), required capability domains, required bindings/secrets
 - Inputs/Outputs: schemas or `opaque`, required `lf.*` metadata
 - Acceptance gates: concrete commands/tests/artifacts
@@ -726,4 +726,3 @@ if any fails: reject publish
 * [ ] CacheSpec for Strict/Stable segments
 * [ ] HITL TTL & escalation policy defined
 * [ ] Temporal thresholds set (if Temporal)
-

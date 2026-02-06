@@ -17,22 +17,18 @@ Implemented (high-level):
 - Capability hint registry + multiple capability providers (HTTP, KV/blob via OpenDAL, Redis queue/dedupe/cache), plus queue bridge.
 - Metrics catalog + runtime/host/CLI instrumentation; property/fuzz coverage for key invariants.
 
-Roadmap-of-record:
-- `impl-docs/roadmap/epics.md`.
-- Older “phase plan” references in this log are historical pointers only (the monolithic plan is superseded).
+Roadmap / planning notes:
+- Planning docs are intentionally not committed. If available locally, see `private/impl-docs/roadmap/`.
+- Older “phase plan” references in this log are historical pointers only.
 
 Deferred / mostly-stubbed:
 - Registry/certification system, policy engine, importer (n8n), Temporal host, marketplace surfaces.
 
 ## Week 0 — Workspace Scaffolding & Documentation
 
-- Created the Cargo workspace (`Cargo.toml`) with MSRV 1.90, shared dependency table, and member list matching the layout defined in `impl-docs/surface-and-buildout.md` (§A).
-- Added crate stubs across `crates/` with README overviews describing intended scope, next steps, and dependencies. Each README mirrors the expectations laid out in the RFC (`impl-docs/rust-workflow-tdd-rfc.md`) and implementation plan (`impl-docs/impl-plan.md` §Phase 0).
-- Generated initial documentation set in `impl-docs/`: 
-  - `surface-and-buildout.md`: Authoritative workspace layout and layering rules.
-  - `impl-plan.md`: Phase roadmap from macro/IR foundations through plugins, importer, and Studio.
-  - `rust-workflow-tdd-rfc.md`: Full technical design for macro DSL, Flow IR, kernel runtime, capabilities, plugins, policy, importer, registry, and testing strategy.
-  - `user-stories.md`: Scenario-driven requirements (S1–S8) with acceptance criteria and test hooks.
+- Created the Cargo workspace (`Cargo.toml`) with MSRV 1.90 and shared dependency table.
+- Added crate stubs across `crates/` with README overviews describing intended scope, next steps, and dependencies.
+- Generated initial documentation set in `impl-docs/`.
 - Added `schemas/flow_ir.schema.json` and `schemas/examples/etl_logs.flow_ir.json` to anchor Flow IR serialization contracts.
 - Prepared `AGENTS.md` with contributor guidance.
 
@@ -70,8 +66,8 @@ Deferred / mostly-stubbed:
   - Edge references to unknown nodes (`DAG201`).
   - Cycle detection via DFS (`DAG200`).
   - Schema compatibility checks for connected ports (`DAG201`).
-  - Effectful nodes missing idempotency specs (`DAG004`).
-  - Unit tests for happy path, schema mismatch, cycle detection, and idempotency enforcement.
+  - Malformed idempotency declarations (`DAG004`).
+  - Unit tests for happy path, schema mismatch, cycle detection, and idempotency declarations.
 - Added `exporters` crate with:
   - `to_json_value` for pretty-printing Flow IR.
   - DOT graph exporter (`to_dot`) for visual inspection and Studio integration.
@@ -105,7 +101,7 @@ Deferred / mostly-stubbed:
   - Accepts Flow IR JSON via file or stdin.
   - Runs `kernel-plan::validate` and prints diagnostics with registry codes.
   - Optional DOT output to stdout or file, and pretty-printed JSON output.
-  - Future CLI subcommands will layer onto this structure (per `impl-docs/impl-plan.md` Phase 1 & 2).
+  - Future CLI subcommands will layer onto this structure.
 - Created `examples/s1_echo` crate implementing the S1 webhook scenario from `impl-docs/user-stories.md`:
   - Trigger, normalize, and responder nodes using macros.
   - `workflow!` definition matching the story.
@@ -117,7 +113,7 @@ Deferred / mostly-stubbed:
 
 ## Current Status
 
-Completed scope aligns with early contract/runtime milestones; references to `impl-docs/impl-plan.md` below are historical (roadmap-of-record is `impl-docs/roadmap/epics.md`):
+Completed scope aligns with early contract/runtime milestones; older planning references below are historical:
 
 ## 2026-01-28 — Cloudflare idempotent ingest example (Epic 04.1)
 

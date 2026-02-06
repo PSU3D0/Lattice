@@ -25,7 +25,7 @@ The workspace provides everything needed to go from macro-authored code to runni
 
 ```
 /Cargo.toml                       # Workspace manifest (MSRV 1.90, shared deps)
-/impl-docs/                       # RFC, implementation plan, surface layout, user stories
+/impl-docs/                       # Contract specs, ADRs, diagnostics, and acceptance stories
 /schemas/                         # Flow IR JSON Schema + reference artifacts
 /crates/                          # Primary library, runtime, tooling, and adapters
   dag-core/                       # Flow IR types, diagnostics, builder utilities
@@ -45,10 +45,8 @@ The workspace provides everything needed to go from macro-authored code to runni
 ```
 
 ### Authoritative References
-- **Macro & DSL spec:** `impl-docs/rust-workflow-tdd-rfc.md` (§4)
+- **0.1 contract specs:** `impl-docs/spec/`
 - **Flow IR schema:** `schemas/flow_ir.schema.json`
-- **Implementation plan:** `impl-docs/impl-plan.md`
-- **Workspace layout rationale:** `impl-docs/surface-and-buildout.md`
 - **User stories & acceptance criteria:** `impl-docs/user-stories.md`
 - **Diagnostic registry:** `impl-docs/error-codes.md`
 
@@ -103,13 +101,13 @@ Validation highlights implemented in `kernel-plan::validate`:
 - Edge references to unknown nodes (`DAG201`)
 - Cycle detection via DFS (`DAG200`)
 - Port schema compatibility (named schema equality)
-- Effectful nodes lacking idempotency metadata (`DAG004`)
+- Malformed idempotency declarations (`DAG004`)
 
 Additional rules (delivery requirements, capability overlap, policy waivers) are outlined in the RFC and queued for future phases.
 
 ## Runtime, Bridges & Hosts (Scaffold)
 
-- **kernel-exec:** Will host the async scheduler, cancellation tokens, partition routing, backpressure, and spill-to-blob logic. Targets the Web, Queue, Temporal, WASM profiles enumerated in `impl-docs/impl-plan.md`.
+- **kernel-exec:** Will host the async scheduler, cancellation tokens, partition routing, backpressure, and spill-to-blob logic. Targets the Web, Queue, Temporal, and WASM profiles defined by the contract specs under `impl-docs/spec/`.
 - **host-inproc:** Shared runtime harness used by all bridges to execute validated flows within the current process.
 - **host-web-axum:** Axum adapter that mounts HTTP triggers, handles SSE streaming, request facet injection, deadlines, and cancellation propagation.
 - **bridge-queue-redis:** Redis-based queue bridge managing visibility timeouts, dedupe integration (`cap-dedupe-redis`), rate limits, and fairness scheduling before delegating to `host-inproc`.
