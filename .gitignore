@@ -2,6 +2,10 @@ target/
 .target/
 .worktrees/
 
+# Local planning / issue trackers (never commit)
+.hive/
+docs/plans/
+
 # Decrypted private docs (never commit plaintext)
 private/
 ref-libs/
