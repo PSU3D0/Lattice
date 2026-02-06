@@ -274,6 +274,19 @@ impl Parse for ResourceList {
     }
 }
 
+struct MetaList {
+    entries: Vec<Meta>,
+}
+
+impl Parse for MetaList {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let punctuated = Punctuated::<Meta, Token![,]>::parse_terminated(input)?;
+        Ok(MetaList {
+            entries: punctuated.into_iter().collect(),
+        })
+    }
+}
+
 struct NodeArgs {
     identifier: Option<LitStr>,
     name: Option<LitStr>,
@@ -289,6 +302,9 @@ struct NodeArgs {
     checkpointable: Option<LitBool>,
     replayable: Option<LitBool>,
     halts: Option<LitBool>,
+    idempotency_key: Option<LitStr>,
+    idempotency_scope: Option<LitStr>,
+    idempotency_ttl_ms: Option<Expr>,
 }
 
 impl NodeArgs {
@@ -312,6 +328,9 @@ impl NodeArgs {
             checkpointable: None,
             replayable: None,
             halts: None,
+            idempotency_key: None,
+            idempotency_scope: None,
+            idempotency_ttl_ms: None,
         };
 
         for meta in args {
@@ -431,6 +450,61 @@ impl NodeArgs {
                         "resources" => {
                             let entries = syn::parse2::<ResourceList>(list.tokens.clone())?.entries;
                             parsed.resources.extend(entries.into_iter());
+                        }
+                        "idempotency" => {
+                            let args = syn::parse2::<MetaList>(list.tokens.clone())?.entries;
+                            for meta in args {
+                                match meta {
+                                    Meta::NameValue(MetaNameValue { path, value, .. }) => {
+                                        let ident = path.get_ident().ok_or_else(|| {
+                                            syn::Error::new(path.span(), "expected identifier")
+                                        })?;
+                                        match ident.to_string().as_str() {
+                                            "key" => match value {
+                                                Expr::Lit(ExprLit {
+                                                    lit: Lit::Str(s),
+                                                    ..
+                                                }) => parsed.idempotency_key = Some(s),
+                                                other => {
+                                                    return Err(syn::Error::new(
+                                                        other.span(),
+                                                        "idempotency key must be string literal",
+                                                    ));
+                                                }
+                                            },
+                                            "scope" => match value {
+                                                Expr::Lit(ExprLit {
+                                                    lit: Lit::Str(s),
+                                                    ..
+                                                }) => parsed.idempotency_scope = Some(s),
+                                                other => {
+                                                    return Err(syn::Error::new(
+                                                        other.span(),
+                                                        "idempotency scope must be string literal",
+                                                    ));
+                                                }
+                                            },
+                                            "ttl_ms" | "ttlMs" => {
+                                                parsed.idempotency_ttl_ms = Some(value)
+                                            }
+                                            other => {
+                                                return Err(syn::Error::new(
+                                                    ident.span(),
+                                                    format!(
+                                                        "[DAG003] unknown idempotency attribute `{other}`"
+                                                    ),
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    _ => {
+                                        return Err(syn::Error::new(
+                                            meta.span(),
+                                            "idempotency(...) expects key = value pairs",
+                                        ))
+                                    }
+                                }
+                            }
                         }
                         other => {
                             return Err(syn::Error::new(
@@ -577,6 +651,54 @@ fn node_impl(
     let replayable_expr = if replayable { quote!(true) } else { quote!(false) };
     let halts_expr = if halts { quote!(true) } else { quote!(false) };
 
+    let idempotency_expr = {
+        let key = config.idempotency_key.as_ref();
+        let scope = config.idempotency_scope.as_ref();
+        let ttl = config.idempotency_ttl_ms.as_ref();
+
+        if key.is_none() && (scope.is_some() || ttl.is_some()) {
+            return Err(syn::Error::new(
+                function.sig.ident.span(),
+                "[DAG004] idempotency(...) requires key",
+            ));
+        }
+
+        let scope_variant = if let Some(scope) = scope {
+            let raw = scope.value();
+            let normalized = raw.to_lowercase();
+            let variant = match normalized.as_str() {
+                "node" => quote!(::dag_core::IdempotencyScope::Node),
+                "edge" => quote!(::dag_core::IdempotencyScope::Edge),
+                "partition" => quote!(::dag_core::IdempotencyScope::Partition),
+                _ => {
+                    return Err(syn::Error::new(
+                        scope.span(),
+                        "idempotency scope must be one of: Node, Edge, Partition",
+                    ))
+                }
+            };
+            quote!(Some(#variant))
+        } else if key.is_some() {
+            quote!(Some(::dag_core::IdempotencyScope::Node))
+        } else {
+            quote!(None)
+        };
+
+        let key_expr = if let Some(key) = key {
+            quote!(Some(#key))
+        } else {
+            quote!(None)
+        };
+
+        let ttl_expr = if let Some(ttl) = ttl {
+            quote!(Some((#ttl) as u64))
+        } else {
+            quote!(None)
+        };
+
+        quote!(::dag_core::IdempotencySpecStatic { key: #key_expr, scope: #scope_variant, ttl_ms: #ttl_expr })
+    };
+
     Ok(quote! {
         #function
         #warning_tokens
@@ -603,6 +725,7 @@ fn node_impl(
                 replayable: #replayable_expr,
                 halts: #halts_expr,
             },
+            idempotency: #idempotency_expr,
         };
 
         #[allow(dead_code)]
@@ -1418,6 +1541,7 @@ fn subflow_spec_from_path(path: &Path) -> Result<TokenStream2> {
                     determinism_hints: descriptor.determinism_hints,
                     effect_hints: descriptor.effect_hints,
                     durability: descriptor.durability,
+                    idempotency: ::dag_core::IdempotencySpecStatic::empty(),
                 }
             }
 
@@ -1460,6 +1584,37 @@ fn node_type_info_from_node_spec_path(path: &Path) -> Option<BindingTypeInfo> {
         last.ident = Ident::new(base, last.ident.span());
     }
     Some(node_type_info_from_base_path(&base_path))
+}
+
+fn node_base_path_from_node_spec_path(path: &Path) -> Option<Path> {
+    let last = path.segments.last()?;
+    let ident = last.ident.to_string();
+    let base = if let Some(base) = ident.strip_suffix("_stream_node_spec") {
+        base
+    } else {
+        ident.strip_suffix("_node_spec")?
+    };
+    let mut base_path = path.clone();
+    if let Some(last) = base_path.segments.last_mut() {
+        last.ident = Ident::new(base, last.ident.span());
+    }
+    Some(base_path)
+}
+
+fn binding_node_base_path(expr: &Expr) -> Option<Path> {
+    match expr {
+        Expr::Reference(reference) => binding_node_base_path(reference.expr.as_ref()),
+        Expr::Macro(expr_mac) if expr_mac.mac.path.is_ident("node") => {
+            let path: Path = syn::parse2(expr_mac.mac.tokens.clone()).ok()?;
+            Some(qualify_type_path(&path))
+        }
+        Expr::Call(call) => match call.func.as_ref() {
+            Expr::Path(path) => node_base_path_from_node_spec_path(&qualify_type_path(&path.path)),
+            _ => None,
+        },
+        Expr::Path(path) => node_base_path_from_node_spec_path(&qualify_type_path(&path.path)),
+        _ => None,
+    }
 }
 
 fn binding_type_info(expr: &Expr) -> Option<BindingTypeInfo> {
@@ -4282,6 +4437,181 @@ impl WorkflowBundleInput {
             }
         });
 
+        let mut wasm_node_dispatch_entries: Vec<TokenStream2> = Vec::new();
+        let mut wasm_node_spec_entries: Vec<TokenStream2> = Vec::new();
+
+        for binding in &self.bindings {
+            let Some(base_path) = binding_node_base_path(&binding.expr) else {
+                continue;
+            };
+            let Some(info) = binding_type_info(&binding.expr) else {
+                continue;
+            };
+            let BindingTypeInfo::Node { input, output } = info else {
+                continue;
+            };
+            let Ok(node_spec_path) = node_spec_path_from_path(&base_path) else {
+                continue;
+            };
+            wasm_node_spec_entries.push(quote!(#node_spec_path()));
+            wasm_node_dispatch_entries.push(quote! {
+                if identifier == #node_spec_path().identifier {
+                    let typed: #input = ::dag_core::serde_json::from_slice(input_bytes)
+                        .map_err(|err| format!("failed to deserialize node input: {err}"))?;
+                    let output: #output = #base_path(typed)
+                        .await
+                        .map_err(|err| err.to_string())?;
+                    let payload = ::dag_core::serde_json::to_vec(&output)
+                        .map_err(|err| format!("failed to serialize node output: {err}"))?;
+                    return Ok(payload);
+                }
+            });
+        }
+
+        let wasm_guest_exports = if wasm_node_dispatch_entries.is_empty() {
+            quote!()
+        } else {
+            quote! {
+                #[cfg(all(target_arch = "wasm32", not(feature = "host-bundle")))]
+                mod __lattice_wasm_guest {
+                    use super::*;
+
+                    use ::core::future::Future;
+                    use ::core::pin::Pin;
+                    use ::core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+                    use ::std::sync::Arc;
+
+                    const INVOKE_OK: u8 = 0;
+                    const INVOKE_ERR: u8 = 2;
+
+                    fn noop_raw_waker() -> RawWaker {
+                        fn clone(_: *const ()) -> RawWaker {
+                            noop_raw_waker()
+                        }
+                        fn wake(_: *const ()) {}
+                        fn wake_by_ref(_: *const ()) {}
+                        fn drop(_: *const ()) {}
+                        static VTABLE: RawWakerVTable =
+                            RawWakerVTable::new(clone, wake, wake_by_ref, drop);
+                        RawWaker::new(::core::ptr::null(), &VTABLE)
+                    }
+
+                    fn block_on<F: Future>(mut fut: F) -> F::Output {
+                        // Minimal single-future executor. This is sufficient for the
+                        // 0.1 dynamic bundle path where host capability imports are
+                        // synchronous from the guest's perspective.
+                        let waker = unsafe { Waker::from_raw(noop_raw_waker()) };
+                        let mut cx = Context::from_waker(&waker);
+                        // Safety: we do not move `fut` after pinning.
+                        let mut fut = unsafe { Pin::new_unchecked(&mut fut) };
+                        loop {
+                            match fut.as_mut().poll(&mut cx) {
+                                Poll::Ready(val) => return val,
+                                Poll::Pending => ::core::hint::spin_loop(),
+                            }
+                        }
+                    }
+
+                    fn pack_ptr(ptr: u32, len: u32) -> u64 {
+                        ((len as u64) << 32) | (ptr as u64)
+                    }
+
+                    unsafe fn bytes_from(ptr: u32, len: u32) -> &'static [u8] {
+                        ::core::slice::from_raw_parts(ptr as *const u8, len as usize)
+                    }
+
+                    fn encode_ok(payload: &[u8]) -> Vec<u8> {
+                        let mut out = Vec::with_capacity(1 + payload.len());
+                        out.push(INVOKE_OK);
+                        out.extend_from_slice(payload);
+                        out
+                    }
+
+                    fn encode_err(message: &str) -> Vec<u8> {
+                        let bytes = message.as_bytes();
+                        let mut out = Vec::with_capacity(1 + bytes.len());
+                        out.push(INVOKE_ERR);
+                        out.extend_from_slice(bytes);
+                        out
+                    }
+
+                    async fn invoke_node_inner(
+                        identifier: &str,
+                        input_bytes: &[u8],
+                    ) -> Result<Vec<u8>, String> {
+                        // Provide a "remote" resource bag for wasm guests.
+                        // Only attach remote providers that this flow actually declares.
+                        let mut bag = ::capabilities::ResourceBag::new();
+
+                        let needs_blob = [#(#wasm_node_spec_entries),*]
+                            .iter()
+                            .any(|spec| {
+                                spec.effect_hints
+                                    .iter()
+                                    .any(|hint| hint.starts_with(::capabilities::blob::HINT_BLOB))
+                            });
+                        if needs_blob {
+                            bag = bag.with_blob(Arc::new(
+                                ::capabilities::blob::RemoteBlobStore::new(),
+                            ));
+                        }
+
+                        let resources: Arc<dyn ::capabilities::ResourceAccess> = Arc::new(bag);
+
+                        ::capabilities::context::with_resources(resources, async move {
+                            #(#wasm_node_dispatch_entries)*
+                            Err(format!("unregistered node `{identifier}`"))
+                        })
+                        .await
+                    }
+
+                    #[unsafe(no_mangle)]
+                    pub extern "C" fn lf_guest_alloc(len: u32) -> u32 {
+                        let mut buf = Vec::<u8>::with_capacity(len as usize);
+                        let ptr = buf.as_mut_ptr();
+                        ::core::mem::forget(buf);
+                        ptr as u32
+                    }
+
+                    #[unsafe(no_mangle)]
+                    pub unsafe extern "C" fn lf_guest_free(ptr: u32, len: u32) {
+                        let _ = Vec::from_raw_parts(ptr as *mut u8, len as usize, len as usize);
+                    }
+
+                    #[unsafe(no_mangle)]
+                    pub unsafe extern "C" fn lf_invoke_node(
+                        id_ptr: u32,
+                        id_len: u32,
+                        input_ptr: u32,
+                        input_len: u32,
+                    ) -> u64 {
+                        let identifier_bytes = bytes_from(id_ptr, id_len);
+                        let identifier = match ::core::str::from_utf8(identifier_bytes) {
+                            Ok(value) => value,
+                            Err(_) => {
+                                let response = encode_err("invalid identifier utf-8");
+                                let len = response.len() as u32;
+                                let ptr = response.as_ptr() as u32;
+                                ::core::mem::forget(response);
+                                return pack_ptr(ptr, len);
+                            }
+                        };
+                        let input_bytes = bytes_from(input_ptr, input_len);
+
+                        let response = match block_on(invoke_node_inner(identifier, input_bytes)) {
+                            Ok(payload) => encode_ok(&payload),
+                            Err(message) => encode_err(&message),
+                        };
+
+                        let len = response.len() as u32;
+                        let ptr = response.as_ptr() as u32;
+                        ::core::mem::forget(response);
+                        pack_ptr(ptr, len)
+                    }
+                }
+            }
+        };
+
         Ok(quote! {
             #entrypoint_module
             #root_entrypoint_const
@@ -4358,6 +4688,8 @@ impl WorkflowBundleInput {
                     environment_plugins: Vec::new(),
                 }
             }
+
+            #wasm_guest_exports
         })
     }
 }

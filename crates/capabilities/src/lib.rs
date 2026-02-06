@@ -6,10 +6,35 @@ use std::time::{Duration, SystemTime};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 #[cfg(target_arch = "wasm32")]
-use instant::Instant;
+use time::Instant;
 
 pub mod hints;
 pub mod durability;
+
+#[cfg(target_arch = "wasm32")]
+mod wasm_transport;
+
+#[cfg(target_arch = "wasm32")]
+mod time {
+    use std::time::Duration;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+    pub struct Instant(u64);
+
+    impl Instant {
+        pub fn now() -> Self {
+            Instant(0)
+        }
+    }
+
+    impl std::ops::Add<Duration> for Instant {
+        type Output = Instant;
+
+        fn add(self, _rhs: Duration) -> Self::Output {
+            self
+        }
+    }
+}
 
 /// Marker trait implemented by all capability providers.
 pub trait Capability: Send + Sync + 'static {
@@ -1557,6 +1582,139 @@ pub mod blob {
         async fn delete(&self, key: &str) -> Result<(), BlobError> {
             let mut objects = self.objects.lock().expect("blob mutex poisoned");
             objects.remove(key).map(|_| ()).ok_or(BlobError::NotFound)
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // WASM guest transport (dynamic bundles)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Opcode family id reserved for blob operations.
+    ///
+    /// Encoding: `(family << 16) | op_id`.
+    pub const OP_FAMILY_BLOB: u32 = 1;
+
+    pub const OP_BLOB_GET: u32 = (OP_FAMILY_BLOB << 16) | 1;
+    pub const OP_BLOB_PUT: u32 = (OP_FAMILY_BLOB << 16) | 2;
+    pub const OP_BLOB_DELETE: u32 = (OP_FAMILY_BLOB << 16) | 3;
+
+    #[cfg(target_arch = "wasm32")]
+    const RESP_OK: u8 = 0;
+    #[cfg(target_arch = "wasm32")]
+    const RESP_NOT_FOUND: u8 = 1;
+    #[cfg(target_arch = "wasm32")]
+    const RESP_ERR: u8 = 2;
+
+    #[cfg(target_arch = "wasm32")]
+    fn encode_key_request(key: &str) -> Vec<u8> {
+        let bytes = key.as_bytes();
+        let mut out = Vec::with_capacity(4 + bytes.len());
+        out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+        out.extend_from_slice(bytes);
+        out
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn encode_put_request(key: &str, contents: &[u8]) -> Vec<u8> {
+        let mut out = encode_key_request(key);
+        out.extend_from_slice(contents);
+        out
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn decode_status(bytes: &[u8]) -> Result<(u8, &[u8]), BlobError> {
+        if bytes.is_empty() {
+            return Err(BlobError::Other("invalid blob response: empty".to_string()));
+        }
+        Ok((bytes[0], &bytes[1..]))
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn decode_error_message(bytes: &[u8]) -> String {
+        if bytes.is_empty() {
+            return "capability error".to_string();
+        }
+        match std::str::from_utf8(bytes) {
+            Ok(msg) => msg.to_string(),
+            Err(_) => "capability error (non-utf8)".to_string(),
+        }
+    }
+
+    /// Remote blob store implementation that delegates to a host-provided import.
+    ///
+    /// This is intended for dynamic bundle guests: the host fulfills blob IO.
+    #[cfg(target_arch = "wasm32")]
+    pub struct RemoteBlobStore {
+        _private: (),
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    impl RemoteBlobStore {
+        pub fn new() -> Self {
+            ensure_registered();
+            Self { _private: () }
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    impl Default for RemoteBlobStore {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    impl Capability for RemoteBlobStore {
+        fn name(&self) -> &'static str {
+            "blob.remote"
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[async_trait]
+    impl BlobStore for RemoteBlobStore {
+        async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, BlobError> {
+            let req = encode_key_request(key);
+            let resp = crate::wasm_transport::cap_call(OP_BLOB_GET, &req)
+                .map_err(|err| BlobError::Other(err.to_string()))?;
+            let (status, payload) = decode_status(&resp)?;
+            match status {
+                RESP_OK => Ok(Some(payload.to_vec())),
+                RESP_NOT_FOUND => Ok(None),
+                RESP_ERR => Err(BlobError::Other(decode_error_message(payload))),
+                other => Err(BlobError::Other(format!(
+                    "invalid blob response status {other}"
+                ))),
+            }
+        }
+
+        async fn put(&self, key: &str, contents: &[u8]) -> Result<(), BlobError> {
+            let req = encode_put_request(key, contents);
+            let resp = crate::wasm_transport::cap_call(OP_BLOB_PUT, &req)
+                .map_err(|err| BlobError::Other(err.to_string()))?;
+            let (status, payload) = decode_status(&resp)?;
+            match status {
+                RESP_OK => Ok(()),
+                RESP_ERR => Err(BlobError::Other(decode_error_message(payload))),
+                other => Err(BlobError::Other(format!(
+                    "invalid blob response status {other}"
+                ))),
+            }
+        }
+
+        async fn delete(&self, key: &str) -> Result<(), BlobError> {
+            let req = encode_key_request(key);
+            let resp = crate::wasm_transport::cap_call(OP_BLOB_DELETE, &req)
+                .map_err(|err| BlobError::Other(err.to_string()))?;
+            let (status, payload) = decode_status(&resp)?;
+            match status {
+                RESP_OK => Ok(()),
+                RESP_NOT_FOUND => Err(BlobError::NotFound),
+                RESP_ERR => Err(BlobError::Other(decode_error_message(payload))),
+                other => Err(BlobError::Other(format!(
+                    "invalid blob response status {other}"
+                ))),
+            }
         }
     }
 

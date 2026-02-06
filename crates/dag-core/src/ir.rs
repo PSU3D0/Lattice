@@ -167,6 +167,8 @@ pub struct NodeSpec {
     pub effect_hints: &'static [&'static str],
     /// Durability profile metadata (checkpoint/halts).
     pub durability: DurabilityProfile,
+    /// Optional idempotency declaration.
+    pub idempotency: IdempotencySpecStatic,
 }
 
 impl NodeSpec {
@@ -222,6 +224,7 @@ impl NodeSpec {
                 replayable: true,
                 halts: false,
             },
+            idempotency: IdempotencySpecStatic::empty(),
         }
     }
 }
@@ -647,7 +650,7 @@ pub struct IdempotencySpec {
 }
 
 /// Supported idempotency scopes.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum IdempotencyScope {
     /// Key applies to a specific node.
@@ -656,4 +659,30 @@ pub enum IdempotencyScope {
     Edge,
     /// Key applies to a partition.
     Partition,
+}
+
+/// Compile-time idempotency declaration produced by macros.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct IdempotencySpecStatic {
+    pub key: Option<&'static str>,
+    pub scope: Option<IdempotencyScope>,
+    pub ttl_ms: Option<u64>,
+}
+
+impl IdempotencySpecStatic {
+    pub const fn empty() -> Self {
+        Self {
+            key: None,
+            scope: None,
+            ttl_ms: None,
+        }
+    }
+
+    pub fn into_owned(self) -> IdempotencySpec {
+        IdempotencySpec {
+            key: self.key.map(|value| value.to_string()),
+            scope: self.scope,
+            ttl_ms: self.ttl_ms,
+        }
+    }
 }

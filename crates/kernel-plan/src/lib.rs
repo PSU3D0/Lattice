@@ -32,7 +32,7 @@ pub fn validate(flow: &FlowIR) -> Result<ValidatedIR, Vec<Diagnostic>> {
     check_edge_references(flow, &mut diagnostics);
     check_cycles(flow, &mut diagnostics);
     check_port_compatibility(flow, &mut diagnostics);
-    check_effectful_idempotency(flow, &mut diagnostics);
+    check_idempotency_declarations(flow, &mut diagnostics);
     check_effect_conflicts(flow, &mut diagnostics);
     check_determinism_conflicts(flow, &mut diagnostics);
     check_node_metadata(flow, &mut diagnostics);
@@ -257,12 +257,13 @@ fn schemas_compatible(source: &SchemaRef, target: &SchemaRef) -> bool {
     }
 }
 
-fn check_effectful_idempotency(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+fn check_idempotency_declarations(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
     for node in &flow.nodes {
-        if node.effects == Effects::Effectful && node.idempotency.key.is_none() {
+        let spec = &node.idempotency;
+        if spec.key.is_none() && (spec.scope.is_some() || spec.ttl_ms.is_some()) {
             diagnostics.push(diagnostic(
                 "DAG004",
-                format!("effectful node `{}` missing idempotency key", node.alias),
+                format!("node `{}` declares idempotency but is missing a key", node.alias),
             ));
         }
     }
@@ -2590,11 +2591,29 @@ mod tests {
     }
 
     #[test]
-    fn detect_missing_idempotency() {
+    fn effectful_nodes_may_be_non_idempotent_by_default() {
         let mut flow = build_sample_flow();
         if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "consumer") {
             node.effects = Effects::Effectful;
             node.idempotency.key = None;
+            node.idempotency.scope = None;
+            node.idempotency.ttl_ms = None;
+        }
+        let result = validate(&flow);
+        if let Err(diagnostics) = result {
+            assert!(
+                !diagnostics.iter().any(|d| d.code.code == "DAG004"),
+                "unexpected DAG004 diagnostic: {diagnostics:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn idempotency_declaration_requires_key() {
+        let mut flow = build_sample_flow();
+        if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "consumer") {
+            node.idempotency.key = None;
+            node.idempotency.scope = Some(dag_core::IdempotencyScope::Node);
         }
         let diagnostics = validate(&flow).expect_err("expected idempotency diagnostic");
         assert!(diagnostics.iter().any(|d| d.code.code == "DAG004"));

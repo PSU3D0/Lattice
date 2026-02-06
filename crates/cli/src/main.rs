@@ -11,8 +11,10 @@ use axum::http::Method;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use dag_core::{Diagnostic, DurabilityMode, Severity};
 use exporters::{to_dot, to_json_value};
+use flow_bundle::ExecPolicy;
 use futures::StreamExt;
 use host_web_axum::{HostHandle, RouteConfig};
+use host_wasmtime::load_flow_bundle;
 use kernel_exec::{ExecutionResult, FlowExecutor};
 use kernel_plan::{ValidatedIR, validate};
 use serde::{Deserialize, Serialize};
@@ -93,6 +95,8 @@ enum RunCommand {
     Local(LocalArgs),
     /// Serve a workflow example over HTTP using the Axum host.
     Serve(ServeArgs),
+    /// Execute a FlowBundle from a bundle directory.
+    Bundle(BundleArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -191,6 +195,46 @@ struct ServeArgs {
 }
 
 #[derive(Args, Debug)]
+struct BundleArgs {
+    /// Path to a bundle directory containing manifest.json and artifacts.
+    #[arg(long)]
+    bundle: PathBuf,
+    /// Flow id to execute when the bundle contains multiple flows.
+    #[arg(long)]
+    flow: Option<String>,
+    /// Trigger alias to execute (defaults to first entrypoint).
+    #[arg(long)]
+    trigger_alias: Option<String>,
+    /// Capture alias to execute (defaults to entrypoint capture).
+    #[arg(long)]
+    capture_alias: Option<String>,
+    /// Bind capability providers for required `resource::*` domains.
+    #[arg(long = "bind")]
+    bindings: Vec<String>,
+    /// Path to a machine-generated `bindings.lock.json` file.
+    #[arg(long)]
+    bindings_lock: Option<PathBuf>,
+    /// Inline JSON payload to feed the trigger input.
+    #[arg(long)]
+    payload: Option<String>,
+    /// Path to a JSON file used as trigger payload (mutually exclusive with --payload).
+    #[arg(long)]
+    payload_file: Option<PathBuf>,
+    /// Stream incremental results to stdout when supported by the workflow.
+    #[arg(long)]
+    stream: bool,
+    /// Emit structured JSON containing the result and metrics summary.
+    #[arg(long)]
+    json: bool,
+    /// Checkpoint store implementation (fs or memory).
+    #[arg(long, value_enum)]
+    checkpoint_store: Option<CheckpointStoreKind>,
+    /// Root directory for filesystem checkpoints (used with --checkpoint-store fs).
+    #[arg(long)]
+    checkpoint_dir: Option<PathBuf>,
+}
+
+#[derive(Args, Debug)]
 struct GraphCheckArgs {
     /// Path to a Flow IR JSON document. Reads stdin when omitted.
     #[arg(long)]
@@ -241,6 +285,7 @@ fn main() -> Result<()> {
         Command::Entrypoints(EntrypointsCommand::Check(args)) => run_entrypoints_check(args),
         Command::Run(RunCommand::Local(args)) => run_local(args),
         Command::Run(RunCommand::Serve(args)) => run_serve(args),
+        Command::Run(RunCommand::Bundle(args)) => run_bundle(args),
         Command::Bindings(BindingsCommand::Lock(LockCommand::Generate(args))) => {
             run_bindings_lock_generate(args)
         }
@@ -685,6 +730,237 @@ fn run_local(args: LocalArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn run_bundle(args: BundleArgs) -> Result<()> {
+    if args.bindings_lock.is_some() && !args.bindings.is_empty() {
+        return Err(anyhow!("--bindings-lock cannot be combined with --bind"));
+    }
+
+    let payload = parse_payload_sources(args.payload.as_deref(), args.payload_file.as_deref())?;
+    let flow_id_for_lock = if args.bindings_lock.is_some() {
+        Some(resolve_bundle_flow_id(&args.bundle, args.flow.as_deref())?)
+    } else {
+        None
+    };
+
+    let mut resources = if let Some(lock_path) = &args.bindings_lock {
+        let flow_id = flow_id_for_lock
+            .as_deref()
+            .context("missing flow id for bindings lock")?;
+        resource_bag_from_bindings_lock(lock_path.as_path(), flow_id)?
+    } else {
+        resource_bag_from_bindings(&args.bindings)?
+    };
+
+    let checkpoint_override = args.checkpoint_store.is_some() || args.checkpoint_dir.is_some();
+    let has_checkpoint_store = resources.checkpoint_store().is_some();
+    if checkpoint_override {
+        let store_kind = args
+            .checkpoint_store
+            .unwrap_or(CheckpointStoreKind::Fs);
+        if store_kind != CheckpointStoreKind::Fs && args.checkpoint_dir.is_some() {
+            return Err(anyhow!(
+                "--checkpoint-dir can only be used with --checkpoint-store fs"
+            ));
+        }
+        resources = attach_checkpoint_store(resources, store_kind, args.checkpoint_dir.as_deref());
+    } else if !has_checkpoint_store {
+        resources = attach_checkpoint_store(resources, CheckpointStoreKind::Fs, None);
+    } else if resources.max_durability_mode() == DurabilityMode::Off {
+        resources = resources.with_max_durability_mode(DurabilityMode::Partial);
+    }
+
+    let bundle = load_flow_bundle(
+        &args.bundle,
+        ExecPolicy::Wasm,
+        args.flow.as_deref(),
+        Arc::new(resources.clone()),
+    )?;
+    let entrypoint = select_bundle_entrypoint(
+        &bundle,
+        args.trigger_alias.as_deref(),
+        args.capture_alias.as_deref(),
+    )?;
+    let trigger_alias = entrypoint.trigger_alias.clone();
+    let capture_alias = entrypoint.capture_alias.clone();
+    let deadline = entrypoint.deadline;
+
+    let flow_name = bundle.validated_ir.flow().name.clone();
+    let capture_alias_str = capture_alias.clone();
+    let flow_label = bundle.validated_ir.flow().id.as_str().to_string();
+    let stream_mode = args.stream;
+    let json_mode = args.json;
+
+    let runtime = RuntimeBuilder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("failed to initialise Tokio runtime")?;
+
+    let snapshotter = cli_metrics_snapshotter();
+    let _ = snapshotter.snapshot();
+    let start = Instant::now();
+
+    let outcome: RunOutcome = runtime.block_on(async move {
+        let host_runtime = HostRuntime::with_plugins(
+            bundle.executor(),
+            Arc::new(bundle.validated_ir.clone()),
+            bundle.environment_plugins,
+        )
+        .with_resource_bag(resources);
+
+        let invocation = Invocation::new(
+            trigger_alias.as_str(),
+            capture_alias.as_str(),
+            payload,
+        )
+        .with_deadline(deadline);
+
+        let execution = host_runtime
+            .execute(invocation)
+            .await
+            .map_err(|err| match &err {
+                kernel_exec::ExecutionError::MissingCapabilities { hints } => {
+                    anyhow!("[CAP101] missing required capabilities: {hints:?}")
+                }
+                _ => anyhow::Error::new(err),
+            })?;
+
+        match execution {
+            ExecutionResult::Value(value) => Ok(RunOutcome {
+                result: Some(value),
+                stream_events: Vec::new(),
+                stream_count: 0,
+            }),
+            ExecutionResult::Halt { alias, payload } => Ok(RunOutcome {
+                result: Some(json!({
+                    "halted": true,
+                    "node": alias,
+                    "payload": payload,
+                })),
+                stream_events: Vec::new(),
+                stream_count: 0,
+            }),
+            ExecutionResult::Stream(mut stream) => {
+                if !stream_mode {
+                    return Err(anyhow!(
+                        "bundle execution returned a stream; re-run with --stream"
+                    ));
+                }
+                let mut events = Vec::new();
+                let mut count = 0usize;
+                while let Some(event) = stream.next().await {
+                    let payload = event.map_err(anyhow::Error::from)?;
+                    if json_mode {
+                        events.push(payload.clone());
+                    } else {
+                        println!("{}", serde_json::to_string(&payload)?);
+                    }
+                    count += 1;
+                }
+                Ok(RunOutcome {
+                    result: None,
+                    stream_events: events,
+                    stream_count: count,
+                })
+            }
+        }
+    })?;
+
+    let duration = start.elapsed();
+    let snapshot = snapshotter.snapshot();
+    let summary = build_run_summary(duration, snapshot, outcome.stream_count);
+
+    record_cli_metrics(&flow_name, &flow_label, &capture_alias_str, &summary);
+
+    if json_mode {
+        let output = LocalJsonOutput {
+            example: flow_label,
+            result: outcome.result,
+            stream_events: if outcome.stream_events.is_empty() {
+                None
+            } else {
+                Some(outcome.stream_events)
+            },
+            summary,
+        };
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        if let Some(result) = outcome.result {
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        print_text_summary(&summary);
+    }
+
+    Ok(())
+}
+
+fn resolve_bundle_flow_id(bundle_dir: &Path, flow_id: Option<&str>) -> Result<String> {
+    let manifest_path = bundle_dir.join("manifest.json");
+    let bytes = fs::read(&manifest_path)
+        .with_context(|| format!("failed to read {}", manifest_path.display()))?;
+    let manifest: flow_bundle::Manifest = serde_json::from_slice(&bytes)
+        .context("manifest.json is not valid bundle manifest JSON")?;
+    flow_bundle::validate_manifest(&manifest)?;
+
+    if let Some(id) = flow_id {
+        if manifest.flows.iter().any(|flow| flow.id == id) {
+            return Ok(id.to_string());
+        }
+        return Err(anyhow!("bundle missing flow id {id}"));
+    }
+
+    if let Some(default_flow) = manifest.default_flow.as_ref() {
+        if manifest.flows.iter().any(|flow| flow.id == *default_flow) {
+            return Ok(default_flow.clone());
+        }
+    }
+
+    manifest
+        .flows
+        .first()
+        .map(|flow| flow.id.clone())
+        .context("bundle has no flow entries")
+}
+
+fn select_bundle_entrypoint<'a>(
+    bundle: &'a host_inproc::FlowBundle,
+    trigger_alias: Option<&str>,
+    capture_alias: Option<&str>,
+) -> Result<&'a host_inproc::FlowEntrypoint> {
+    if let Some(trigger_alias) = trigger_alias {
+        if let Some(capture_alias) = capture_alias {
+            return bundle
+                .entrypoints
+                .iter()
+                .find(|entry| {
+                    entry.trigger_alias == trigger_alias && entry.capture_alias == capture_alias
+                })
+                .with_context(|| {
+                    format!(
+                        "no entrypoint matching trigger {trigger_alias} and capture {capture_alias}"
+                    )
+                });
+        }
+        return bundle
+            .entrypoints
+            .iter()
+            .find(|entry| entry.trigger_alias == trigger_alias)
+            .with_context(|| format!("no entrypoint matching trigger {trigger_alias}"));
+    }
+
+    if let Some(capture_alias) = capture_alias {
+        return bundle
+            .entrypoints
+            .iter()
+            .find(|entry| entry.capture_alias == capture_alias)
+            .with_context(|| format!("no entrypoint matching capture {capture_alias}"));
+    }
+
+    bundle
+        .entrypoints
+        .first()
+        .context("bundle has no entrypoints")
 }
 
 fn run_serve(args: ServeArgs) -> Result<()> {
@@ -1535,19 +1811,19 @@ fn attach_checkpoint_store(
     }
 }
 
-fn parse_payload(args: &LocalArgs) -> Result<JsonValue> {
-    if args.payload.is_some() && args.payload_file.is_some() {
+fn parse_payload_sources(payload: Option<&str>, payload_file: Option<&Path>) -> Result<JsonValue> {
+    if payload.is_some() && payload_file.is_some() {
         return Err(anyhow!(
             "--payload and --payload-file cannot be supplied together"
         ));
     }
 
-    if let Some(raw) = &args.payload {
+    if let Some(raw) = payload {
         let value = serde_json::from_str(raw).context("payload is not valid JSON")?;
         return Ok(value);
     }
 
-    if let Some(path) = &args.payload_file {
+    if let Some(path) = payload_file {
         let data = fs::read_to_string(path)
             .with_context(|| format!("failed to read {}", path.display()))?;
         let value = serde_json::from_str(&data)
@@ -1556,6 +1832,10 @@ fn parse_payload(args: &LocalArgs) -> Result<JsonValue> {
     }
 
     Ok(json!({}))
+}
+
+fn parse_payload(args: &LocalArgs) -> Result<JsonValue> {
+    parse_payload_sources(args.payload.as_deref(), args.payload_file.as_deref())
 }
 
 fn load_example(name: &str) -> Result<ExampleHandle> {

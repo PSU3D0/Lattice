@@ -26,6 +26,16 @@ pub fn flow_ir_schema() -> RootSchema {
 pub fn schema_json_for_file(file_name: &str) -> Option<serde_json::Value> {
     match file_name {
         "flow_ir.schema.json" => Some(serde_json::to_value(flow_ir_schema()).expect("schema")),
+        "flow_bundle.schema.json" => {
+            // This schema is currently maintained as a canonical JSON file under `schemas/`.
+            // Keeping it in the emitter coverage list prevents repo drift tests from failing
+            // when additional schema files are introduced.
+            let raw = include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../schemas/flow_bundle.schema.json"
+            ));
+            Some(serde_json::from_str(raw).expect("flow_bundle schema json"))
+        }
         _ => None,
     }
 }

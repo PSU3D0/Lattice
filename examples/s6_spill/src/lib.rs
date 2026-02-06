@@ -1,8 +1,9 @@
 use std::time::Duration;
 
 use capabilities::context;
-use dag_core::{FlowIR, IdempotencyScope, NodeError, NodeResult};
+use dag_core::{FlowIR, NodeError, NodeResult};
 use dag_macros::{def_node, node};
+#[cfg(feature = "host-bundle")]
 use futures_timer::Delay;
 use kernel_plan::{ValidatedIR, validate};
 use serde::{Deserialize, Serialize};
@@ -71,6 +72,7 @@ async fn prepare_payload(request: BatchRequest) -> NodeResult<Vec<BlobPayload>> 
     summary = "Persist payload to blob storage",
     effects = "Effectful",
     determinism = "BestEffort",
+    idempotency(key = "batch_id", scope = "Node", ttl_ms = IDEMPOTENCY_TTL_MS),
     resources(blob_store(capabilities::blob::BlobStore))
 )]
 async fn store_blob(payloads: Vec<BlobPayload>) -> NodeResult<Vec<Ack>> {
@@ -109,8 +111,20 @@ async fn store_blob(payloads: Vec<BlobPayload>) -> NodeResult<Vec<Ack>> {
     effects = "Pure",
     determinism = "Strict"
 )]
+#[cfg(feature = "host-bundle")]
 async fn slow_ack(acks: Vec<Ack>) -> NodeResult<Vec<Ack>> {
     Delay::new(Duration::from_millis(ACK_DELAY_MS)).await;
+    Ok(acks)
+}
+
+#[def_node(
+    name = "SlowAck",
+    summary = "Simulate slow downstream acknowledgement",
+    effects = "Pure",
+    determinism = "Strict"
+)]
+#[cfg(not(feature = "host-bundle"))]
+async fn slow_ack(acks: Vec<Ack>) -> NodeResult<Vec<Ack>> {
     Ok(acks)
 }
 
@@ -166,13 +180,7 @@ mod bundle_def {
 }
 
 pub fn flow() -> FlowIR {
-    let mut flow = bundle_def::flow();
-    if let Some(node) = flow.nodes.iter_mut().find(|node| node.alias == "store") {
-        node.idempotency.key = Some("batch_id".to_string());
-        node.idempotency.scope = Some(IdempotencyScope::Node);
-        node.idempotency.ttl_ms = Some(IDEMPOTENCY_TTL_MS);
-    }
-    flow
+    bundle_def::flow()
 }
 
 pub fn validated_ir() -> ValidatedIR {
@@ -209,6 +217,15 @@ mod tests {
             edge.buffer.spill_threshold_bytes,
             Some(SPILL_THRESHOLD_BYTES)
         );
+    }
+
+    #[test]
+    fn store_node_declares_idempotency() {
+        let ir = flow();
+        let node = ir.node("store").expect("store node");
+        assert_eq!(node.idempotency.key.as_deref(), Some("batch_id"));
+        assert_eq!(node.idempotency.scope, Some(dag_core::IdempotencyScope::Node));
+        assert_eq!(node.idempotency.ttl_ms, Some(IDEMPOTENCY_TTL_MS));
     }
 
     #[test]

@@ -1,0 +1,23 @@
+[package]
+name = "host-wasmtime"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Wasmtime-based host for running Lattice wasm bundle guests."
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+capabilities = { path = "../capabilities" }
+dag-core = { path = "../dag-core" }
+flow-bundle = { path = "../flow-bundle" }
+futures.workspace = true
+host-inproc = { path = "../host-inproc" }
+kernel-exec = { path = "../kernel-exec" }
+kernel-plan = { path = "../kernel-plan" }
+serde_json.workspace = true
+wasmtime.workspace = true

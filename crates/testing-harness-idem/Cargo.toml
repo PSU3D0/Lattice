@@ -25,5 +25,5 @@ cap-dedupe-redis = { path = "../contrib/redis/cap-dedupe-redis" }
 cap-redis = { path = "../contrib/redis/cap-redis" }
 redis.workspace = true
 testcontainers = { version = "0.18", features = ["blocking"] }
-uuid.workspace = true
+uuid = { workspace = true, features = ["v4"] }
 reqwest = { workspace = true, features = ["native-tls-vendored"] }

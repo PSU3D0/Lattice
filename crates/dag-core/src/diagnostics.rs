@@ -85,7 +85,7 @@ pub static DIAGNOSTIC_CODES: Lazy<Vec<DiagnosticCode>> = Lazy::new(|| {
             code: "DAG004",
             subsystem: "validation",
             default_severity: Severity::Error,
-            summary: "Effectful node lacks a valid idempotency declaration",
+            summary: "Malformed idempotency declaration",
         },
         DiagnosticCode {
             code: "DAG005",

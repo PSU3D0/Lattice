@@ -23,6 +23,7 @@ kernel-exec = { path = "../kernel-exec" }
 capabilities = { path = "../capabilities" }
 cap-http-reqwest = { path = "../cap-http-reqwest" }
 host-web-axum = { path = "../host-web-axum" }
+host-wasmtime = { path = "../host-wasmtime" }
 registry-client = { path = "../registry-client" }
 registry-cert = { path = "../registry-cert" }
 connector-spec = { path = "../connector-spec" }

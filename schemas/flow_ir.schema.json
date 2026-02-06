@@ -347,6 +347,29 @@
       },
       "type": "object"
     },
+    "DurabilityProfile": {
+      "description": "Durability profile used for checkpoint validation.",
+      "properties": {
+        "checkpointable": {
+          "description": "Node state can be serialized and resumed.",
+          "type": "boolean"
+        },
+        "halts": {
+          "description": "Node is a halting boundary requiring suspend + resume.",
+          "type": "boolean"
+        },
+        "replayable": {
+          "description": "Streaming outputs can be replayed on resume.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "checkpointable",
+        "halts",
+        "replayable"
+      ],
+      "type": "object"
+    },
     "EdgeIR": {
       "description": "Edge entry within the Flow IR.",
       "properties": {
@@ -394,6 +417,10 @@
             "null"
           ]
         },
+        "to": {
+          "description": "Destination node alias.",
+          "type": "string"
+        },
         "transform": {
           "anyOf": [
             {
@@ -404,10 +431,6 @@
             }
           ],
           "description": "Optional transform metadata."
-        },
-        "to": {
-          "description": "Destination node alias.",
-          "type": "string"
         }
       },
       "required": [
@@ -511,6 +534,112 @@
       "required": [
         "capture_alias",
         "trigger_alias"
+      ],
+      "type": "object"
+    },
+    "FlowIR": {
+      "description": "Canonical Flow IR structure serialised to JSON/dot/etc.",
+      "properties": {
+        "artifacts": {
+          "default": [],
+          "description": "Associated artifact references (DOT, WIT, etc.).",
+          "items": {
+            "$ref": "#/definitions/ArtifactRef"
+          },
+          "type": "array"
+        },
+        "checkpoints": {
+          "default": [],
+          "description": "Declared checkpoints.",
+          "items": {
+            "$ref": "#/definitions/CheckpointIR"
+          },
+          "type": "array"
+        },
+        "control_surfaces": {
+          "default": [],
+          "description": "Control surface metadata (branching/loops/etc).",
+          "items": {
+            "$ref": "#/definitions/ControlSurfaceIR"
+          },
+          "type": "array"
+        },
+        "edges": {
+          "default": [],
+          "description": "Edges describing the DAG.",
+          "items": {
+            "$ref": "#/definitions/EdgeIR"
+          },
+          "type": "array"
+        },
+        "id": {
+          "description": "Unique workflow identifier.",
+          "type": "string"
+        },
+        "metadata": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/FlowMetadata"
+            }
+          ],
+          "default": {
+            "tags": []
+          },
+          "description": "Documentation and tag metadata."
+        },
+        "name": {
+          "description": "Workflow display name.",
+          "type": "string"
+        },
+        "nodes": {
+          "default": [],
+          "description": "Nodes contained in the workflow.",
+          "items": {
+            "$ref": "#/definitions/NodeIR"
+          },
+          "type": "array"
+        },
+        "policies": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/FlowPolicies"
+            }
+          ],
+          "default": {
+            "durability": {
+              "mode": "partial"
+            },
+            "lint": {
+              "require_control_hints": false
+            }
+          },
+          "description": "Policy metadata."
+        },
+        "profile": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/Profile"
+            }
+          ],
+          "description": "Target profile."
+        },
+        "summary": {
+          "description": "Optional human readable summary.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "description": "Semantic version.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "profile",
+        "version"
       ],
       "type": "object"
     },
@@ -623,43 +752,12 @@
       },
       "type": "object"
     },
-    "DurabilityProfile": {
-      "description": "Durability profile used for checkpoint validation.",
-      "properties": {
-        "checkpointable": {
-          "description": "Node state can be serialized and resumed.",
-          "type": "boolean"
-        },
-        "halts": {
-          "description": "Node is a halting boundary requiring suspend + resume.",
-          "type": "boolean"
-        },
-        "replayable": {
-          "description": "Streaming outputs can be replayed on resume.",
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "checkpointable",
-        "halts",
-        "replayable"
-      ],
-      "type": "object"
-    },
     "NodeIR": {
       "description": "Node entry within the Flow IR.",
       "properties": {
         "alias": {
           "description": "Alias used within the workflow definition.",
           "type": "string"
-        },
-        "durability": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/DurabilityProfile"
-            }
-          ],
-          "description": "Optional durability profile (checkpoint/halts metadata)."
         },
         "determinism": {
           "allOf": [
@@ -676,6 +774,14 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "durability": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/DurabilityProfile"
+            }
+          ],
+          "description": "Optional durability profile (checkpoint/halts metadata)."
         },
         "effectHints": {
           "default": [],
@@ -738,20 +844,23 @@
           ],
           "description": "Output schema reference."
         },
+        "subflow_ir": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/FlowIR"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional expanded subflow IR for analysis-only views."
+        },
         "summary": {
           "description": "Optional summary/description.",
           "type": [
             "string",
             "null"
           ]
-        },
-        "subflow_ir": {
-          "allOf": [
-            {
-              "$ref": "#"
-            }
-          ],
-          "description": "Expanded subflow IR attached for analysis-only views."
         }
       },
       "required": [
@@ -764,25 +873,6 @@
         "kind",
         "name",
         "out_schema"
-      ],
-      "allOf": [
-        {
-          "if": {
-            "properties": {
-              "kind": {
-                "const": "subflow"
-              }
-            }
-          },
-          "then": {},
-          "else": {
-            "not": {
-              "required": [
-                "subflow_ir"
-              ]
-            }
-          }
-        }
       ],
       "type": "object"
     },

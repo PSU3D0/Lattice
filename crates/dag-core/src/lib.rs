@@ -195,6 +195,7 @@ mod tests {
             determinism_hints: &[],
             effect_hints: &[],
             durability: DurabilityProfile::default(),
+            idempotency: IdempotencySpecStatic::empty(),
         };
 
         let normalize_spec = NodeSpec::inline(

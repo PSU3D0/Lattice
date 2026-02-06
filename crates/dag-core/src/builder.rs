@@ -106,7 +106,7 @@ impl FlowBuilder {
             out_schema: spec.out_schema.into_ref(),
             effects: spec.effects,
             determinism: spec.determinism,
-            idempotency: Default::default(),
+            idempotency: spec.idempotency.into_owned(),
             durability: spec.durability.clone(),
             determinism_hints: spec
                 .determinism_hints

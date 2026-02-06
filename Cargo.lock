@@ -976,7 +976,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "dag-core",
- "instant",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -2115,6 +2114,7 @@ dependencies = [
  "flow-bundle",
  "futures",
  "host-inproc",
+ "host-wasmtime",
  "host-web-axum",
  "kernel-exec",
  "kernel-plan",
@@ -2637,6 +2637,23 @@ dependencies = [
  "tokio",
  "tonic",
  "tracing",
+]
+
+[[package]]
+name = "host-wasmtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "capabilities",
+ "dag-core",
+ "flow-bundle",
+ "futures",
+ "host-inproc",
+ "kernel-exec",
+ "kernel-plan",
+ "serde_json",
+ "wasmtime",
 ]
 
 [[package]]

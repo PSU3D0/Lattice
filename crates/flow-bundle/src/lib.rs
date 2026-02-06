@@ -752,6 +752,10 @@ pub fn read_manifest_from_custom_section(bytes: &[u8]) -> Result<Manifest, Bundl
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dag_core::prelude::Version;
+    use dag_core::{
+        Determinism, Effects, FlowBuilder, IdempotencyScope, NodeSpec, Profile, SchemaSpec,
+    };
     use serde_json::json;
 
     fn push_leb_u32(out: &mut Vec<u8>, mut value: u32) {
@@ -807,6 +811,71 @@ mod tests {
                 }
             ]
         })
+    }
+
+    #[test]
+    fn expand_subflow_ir_preserves_node_idempotency_metadata() {
+        let mut subflow_builder = FlowBuilder::new("subflow", Version::new(1, 0, 0), Profile::Web);
+        let writer_spec = NodeSpec::inline(
+            "tests::writer",
+            "Writer",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Effectful,
+            Determinism::BestEffort,
+            Some("writer"),
+        );
+        subflow_builder
+            .add_node("writer", &writer_spec)
+            .expect("writer node");
+        let mut subflow = subflow_builder.build();
+        let writer = subflow
+            .nodes
+            .iter_mut()
+            .find(|node| node.alias == "writer")
+            .expect("writer");
+        writer.idempotency.key = Some("tenant_id".to_string());
+        writer.idempotency.scope = Some(IdempotencyScope::Node);
+
+        let mut parent_builder = FlowBuilder::new("parent", Version::new(1, 0, 0), Profile::Web);
+        let mut subflow_node_spec = NodeSpec::inline(
+            "subflow::flow://subflow::trigger",
+            "Subflow",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            Some("subflow"),
+        );
+        subflow_node_spec.kind = NodeKind::Subflow;
+        let handle = parent_builder
+            .add_node("sf", &subflow_node_spec)
+            .expect("subflow node");
+        let _ = handle;
+        let mut parent = parent_builder.build();
+        let sf = parent
+            .nodes
+            .iter_mut()
+            .find(|node| node.alias == "sf")
+            .expect("sf");
+        // Must match parse_subflow_id("subflow::<id>::<entry>") => id.
+        sf.identifier = "subflow::flow://subflow::trigger".to_string();
+
+        let mut subflows = BTreeMap::new();
+        subflows.insert("flow://subflow".to_string(), subflow);
+
+        let expanded = expand_subflow_ir(&parent, &subflows).expect("expanded");
+        let sf_node = expanded.node("sf").expect("sf node");
+        let embedded = sf_node.subflow_ir.as_ref().expect("embedded subflow");
+        let embedded_writer = embedded.node("writer").expect("writer");
+        assert_eq!(
+            embedded_writer.idempotency.key.as_deref(),
+            Some("tenant_id")
+        );
+        assert_eq!(
+            embedded_writer.idempotency.scope,
+            Some(IdempotencyScope::Node)
+        );
     }
 
     #[test]
