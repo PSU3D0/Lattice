@@ -3,6 +3,7 @@
 mod builder;
 pub mod determinism;
 mod diagnostics;
+mod edge_transform;
 mod effects;
 pub mod effects_registry;
 #[cfg(feature = "flow-registry")]
@@ -12,6 +13,10 @@ pub mod schema;
 
 pub use builder::{EdgeHandle, FlowBuilder, FlowBuilderError, NodeHandle};
 pub use diagnostics::{diagnostic_codes, Diagnostic, DiagnosticCode, Severity, DIAGNOSTIC_CODES};
+pub use edge_transform::{
+    apply_into_coercion, json_type_name, schemas_compatible, supported_into_coercion, IntoCoercion,
+    IntoCoercionError,
+};
 pub use effects::{Determinism, Effects, NodeError, NodeResult};
 pub use ir::*;
 pub use serde_json;

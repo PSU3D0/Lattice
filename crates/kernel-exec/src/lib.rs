@@ -24,7 +24,10 @@ use async_trait::async_trait;
 #[cfg(target_arch = "wasm32")]
 use cancellation::CancellationToken;
 use capabilities::{context, durability::CheckpointHandle, ResourceAccess, ResourceBag};
-use dag_core::{FlowId, NodeError, NodeResult, Profile};
+use dag_core::{
+    EdgeTransformKind, FlowId, IntoCoercion, NodeError, NodeResult, Profile,
+    apply_into_coercion, json_type_name, schemas_compatible, supported_into_coercion,
+};
 #[cfg(target_arch = "wasm32")]
 use futures::channel::oneshot;
 #[cfg(target_arch = "wasm32")]
@@ -907,6 +910,43 @@ struct InstrumentedSender {
 struct OutgoingSender {
     to: String,
     sender: InstrumentedSender,
+    transform: Option<EdgeRuntimeTransform>,
+}
+
+#[derive(Clone, Debug)]
+enum EdgeRuntimeTransform {
+    Into(IntoCoercion),
+    UnsupportedInto {
+        source_schema: String,
+        target_schema: String,
+    },
+}
+
+impl EdgeRuntimeTransform {
+    fn apply(&self, payload: JsonValue) -> Result<JsonValue, NodeError> {
+        match self {
+            Self::Into(coercion) => apply_into_coercion(*coercion, payload).map_err(|err| {
+                NodeError::new(format!(
+                    "edge Into coercion {} -> {} failed: {err}",
+                    coercion.source_schema(),
+                    coercion.target_schema()
+                ))
+            }),
+            Self::UnsupportedInto {
+                source_schema,
+                target_schema,
+            } => Err(NodeError::new(format!(
+                "edge Into coercion is not supported for schema pair {source_schema} -> {target_schema}"
+            ))),
+        }
+    }
+}
+
+fn schema_label(schema: &dag_core::SchemaRef) -> String {
+    match schema {
+        dag_core::SchemaRef::Named { name } => name.clone(),
+        dag_core::SchemaRef::Opaque => "opaque".to_string(),
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1538,6 +1578,11 @@ impl FlowExecutor {
 
         check_spill_support(&flow)?;
         let spill_manager = SpillManager::new(&flow).map_err(ExecutionError::SpillSetup)?;
+        let node_index: HashMap<_, _> = flow
+            .nodes
+            .iter()
+            .map(|node| (node.alias.as_str(), node))
+            .collect();
 
         for edge in &flow.edges {
             let capacity = edge
@@ -1551,12 +1596,39 @@ impl FlowExecutor {
                 Arc::from(format!("{}->{}", edge.from.as_str(), edge.to.as_str()));
             let tracker = metrics.queue_tracker(edge_label, capacity);
             let spill_context = spill_manager.context_for(&edge.buffer);
+
+            let transform = match edge.transform.as_ref().map(|transform| transform.kind) {
+                Some(EdgeTransformKind::Into) => {
+                    let source = node_index
+                        .get(edge.from.as_str())
+                        .expect("source node exists");
+                    let target = node_index
+                        .get(edge.to.as_str())
+                        .expect("target node exists");
+
+                    if schemas_compatible(&source.out_schema, &target.in_schema) {
+                        None
+                    } else if let Some(coercion) =
+                        supported_into_coercion(&source.out_schema, &target.in_schema)
+                    {
+                        Some(EdgeRuntimeTransform::Into(coercion))
+                    } else {
+                        Some(EdgeRuntimeTransform::UnsupportedInto {
+                            source_schema: schema_label(&source.out_schema),
+                            target_schema: schema_label(&target.in_schema),
+                        })
+                    }
+                }
+                None => None,
+            };
+
             outbound
                 .get_mut(&edge.from)
                 .expect("source node exists")
                 .push(OutgoingSender {
                     to: edge.to.clone(),
                     sender: InstrumentedSender::new(tx, tracker, spill_context),
+                    transform,
                 });
             inbound
                 .get_mut(&edge.to)
@@ -2169,8 +2241,9 @@ async fn run_node(
                         }
                     }
 
-                    let mut first_send = true;
-                    for output in outputs.iter() {
+                    let mut prepared_outputs: Vec<(usize, JsonValue)> = Vec::new();
+                    let mut edge_transform_failed = false;
+                    for (idx, output) in outputs.iter().enumerate() {
                         if let Some(control) = &control
                             && control.controls_edge_to(output.to.as_str())
                             && selected_target.as_deref() != Some(output.to.as_str())
@@ -2178,6 +2251,54 @@ async fn run_node(
                             continue;
                         }
 
+                        let payload_for_edge = match &output.transform {
+                            Some(transform) => match transform.apply(value.clone()) {
+                                Ok(payload) => payload,
+                                Err(err) => {
+                                    let err = NodeError::new(format!(
+                                        "edge `{}` -> `{}` transform failed for payload type {}: {}",
+                                        alias,
+                                        output.to,
+                                        json_type_name(&value),
+                                        err
+                                    ));
+                                    error!("node `{alias}` edge transform failed: {err}");
+                                    metrics.record_node_error(alias.as_str(), "edge_transform_failed");
+                                    let captured_permit = permit.take();
+                                    let send_result = capture
+                                        .send(CapturedOutput {
+                                            alias: alias.clone(),
+                                            result: Err(err),
+                                            permit: captured_permit,
+                                            queue_tracker: Some(capture_tracker.clone()),
+                                        })
+                                        .await;
+                                    if send_result.is_ok() {
+                                        capture_tracker.increment();
+                                        metrics.observe_capture_backpressure(
+                                            capture_alias.as_str(),
+                                            Duration::ZERO,
+                                        );
+                                    }
+                                    metrics.record_cancellation(alias.as_str(), "edge_transform_failed");
+                                    ctx.token().cancel();
+                                    edge_transform_failed = true;
+                                    break;
+                                }
+                            },
+                            None => value.clone(),
+                        };
+
+                        prepared_outputs.push((idx, payload_for_edge));
+                    }
+
+                    if edge_transform_failed {
+                        break;
+                    }
+
+                    let mut first_send = true;
+                    for (idx, payload_for_edge) in prepared_outputs {
+                        let output = &outputs[idx];
                         let downstream_permit = if first_send {
                             first_send = false;
                             permit.take()
@@ -2185,7 +2306,10 @@ async fn run_node(
                             None
                         };
 
-                        if let Err(err) = output.sender.send(value.clone(), downstream_permit).await
+                        if let Err(err) = output
+                            .sender
+                            .send(payload_for_edge, downstream_permit)
+                            .await
                         {
                             debug!("downstream receiver for node `{alias}` dropped: {err}");
                         }
@@ -2382,12 +2506,13 @@ mod tests {
         kv::{KeyValue, MemoryKv},
     };
     use dag_core::prelude::*;
+    use dag_core::{EdgeTransformIR, EdgeTransformKind};
     use futures::StreamExt;
     use kernel_plan::validate;
     use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
     use proptest::prelude::*;
     use serde_json::json;
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, OnceLock};
     use std::time::Duration;
     use tokio::runtime::Builder as RuntimeBuilder;
@@ -2406,6 +2531,195 @@ mod tests {
 
     fn reset_metrics() {
         let _ = metrics_snapshotter().snapshot();
+    }
+
+    fn build_into_transform_flow() -> (FlowExecutor, ValidatedIR) {
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn(
+                "tests::into_trigger",
+                |input: JsonValue| async move { Ok(input) },
+            )
+            .expect("register trigger");
+        registry
+            .register_fn("tests::into_capture", |input: u64| async move { Ok(input) })
+            .expect("register capture");
+
+        let mut builder = FlowBuilder::new("into_transform", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::into_trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Named("u32"),
+                    Effects::Pure,
+                    Determinism::Strict,
+                    Some("emit u32 payloads"),
+                ),
+            )
+            .expect("add trigger");
+        let capture = builder
+            .add_node(
+                "capture",
+                &NodeSpec::inline(
+                    "tests::into_capture",
+                    "Capture",
+                    SchemaSpec::Named("u64"),
+                    SchemaSpec::Named("u64"),
+                    Effects::Pure,
+                    Determinism::Strict,
+                    Some("capture u64 payloads"),
+                ),
+            )
+            .expect("add capture");
+        builder.connect(&trigger, &capture);
+
+        let mut flow = builder.build();
+        flow.edges[0].transform = Some(EdgeTransformIR {
+            kind: EdgeTransformKind::Into,
+        });
+
+        let validated = validate(&flow).expect("flow should validate");
+        (FlowExecutor::new(Arc::new(registry)), validated)
+    }
+
+    #[tokio::test]
+    async fn into_transform_coerces_u32_to_u64_before_downstream_invoke() {
+        let (executor, validated) = build_into_transform_flow();
+        let result = executor
+            .run_once(&validated, "trigger", json!(41u32), "capture", None)
+            .await
+            .expect("run succeeds");
+
+        match result {
+            ExecutionResult::Value(value) => assert_eq!(value, json!(41u64)),
+            ExecutionResult::Stream(_) => panic!("expected non-streaming result"),
+            ExecutionResult::Halt { alias, payload } => {
+                panic!("unexpected halt from {alias}: {payload}")
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn into_transform_fails_deterministically_on_out_of_range_payload() {
+        let (executor, validated) = build_into_transform_flow();
+        let err = match executor
+            .run_once(&validated, "trigger", json!(4294967296u64), "capture", None)
+            .await
+        {
+            Ok(_) => panic!("run should fail"),
+            Err(err) => err,
+        };
+
+        match err {
+            ExecutionError::NodeFailed { alias, source } => {
+                assert_eq!(alias, "trigger");
+                let message = source.to_string();
+                assert!(message.contains("edge `trigger` -> `capture` transform failed"));
+                assert!(message.contains("outside u32 range"));
+            }
+            other => panic!("expected NodeFailed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn into_transform_failure_does_not_partially_fan_out() {
+        let good_hits = Arc::new(AtomicUsize::new(0));
+
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn("tests::fanout_trigger", |input: JsonValue| async move { Ok(input) })
+            .expect("register trigger");
+
+        let good_hits_clone = Arc::clone(&good_hits);
+        registry
+            .register_fn("tests::fanout_good", move |input: JsonValue| {
+                let good_hits = Arc::clone(&good_hits_clone);
+                async move {
+                    good_hits.fetch_add(1, Ordering::SeqCst);
+                    Ok(input)
+                }
+            })
+            .expect("register good sink");
+
+        registry
+            .register_fn("tests::fanout_bad", |input: u64| async move { Ok(input) })
+            .expect("register bad sink");
+
+        let mut builder = FlowBuilder::new("into_fanout", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::fanout_trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Named("u32"),
+                    Effects::Pure,
+                    Determinism::Strict,
+                    Some("emit u32 payloads"),
+                ),
+            )
+            .expect("add trigger");
+
+        let good = builder
+            .add_node(
+                "good",
+                &NodeSpec::inline(
+                    "tests::fanout_good",
+                    "Good",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    Some("records fan-out delivery"),
+                ),
+            )
+            .expect("add good");
+
+        let bad = builder
+            .add_node(
+                "bad",
+                &NodeSpec::inline(
+                    "tests::fanout_bad",
+                    "Bad",
+                    SchemaSpec::Named("u64"),
+                    SchemaSpec::Named("u64"),
+                    Effects::Pure,
+                    Determinism::Strict,
+                    Some("requires u64 input"),
+                ),
+            )
+            .expect("add bad");
+
+        builder.connect(&trigger, &good);
+        builder.connect(&trigger, &bad);
+
+        let mut flow = builder.build();
+        let bad_edge = flow
+            .edges
+            .iter_mut()
+            .find(|edge| edge.to == "bad")
+            .expect("bad edge");
+        bad_edge.transform = Some(EdgeTransformIR {
+            kind: EdgeTransformKind::Into,
+        });
+
+        let validated = validate(&flow).expect("flow should validate");
+        let executor = FlowExecutor::new(Arc::new(registry));
+
+        let err = match executor
+            .run_once(&validated, "trigger", json!(4294967296u64), "good", None)
+            .await
+        {
+            Ok(_) => panic!("run should fail"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(err, ExecutionError::NodeFailed { alias, .. } if alias == "trigger"));
+        assert_eq!(good_hits.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

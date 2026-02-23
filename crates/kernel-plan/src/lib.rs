@@ -1,6 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
-use dag_core::{Delivery, Diagnostic, DurabilityMode, EdgeTransformKind, Effects, FlowIR, SchemaRef, diagnostic_codes};
+use dag_core::{
+    Delivery, Diagnostic, DurabilityMode, EdgeTransformKind, Effects, FlowIR, SchemaRef,
+    diagnostic_codes, schemas_compatible, supported_into_coercion,
+};
 
 const MIN_EXACTLY_ONCE_TTL_MS: u64 = 300_000;
 const DEDUPE_HINT_PREFIX: &str = "resource::dedupe";
@@ -233,27 +236,46 @@ fn check_port_compatibility(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
             Some(node) => node,
             None => continue,
         };
-        if !schemas_compatible(&source.out_schema, &target.in_schema) {
-            if matches!(edge.transform.as_ref().map(|t| t.kind), Some(EdgeTransformKind::Into)) {
-                // Validation intentionally allows Into transforms even though runtime adapters
-                // are not applied yet; incompatible schemas may still fail at runtime.
+
+        if matches!(edge.transform.as_ref().map(|transform| transform.kind), Some(EdgeTransformKind::Into)) {
+            if supported_into_coercion(&source.out_schema, &target.in_schema).is_some() {
                 continue;
             }
+            if schemas_compatible(&source.out_schema, &target.in_schema) {
+                continue;
+            }
+
             diagnostics.push(diagnostic(
                 "DAG201",
                 format!(
-                    "port type mismatch: `{}` -> `{}` ({:?} -> {:?})",
-                    edge.from, edge.to, source.out_schema, target.in_schema
+                    "edge `{}` -> `{}` declares Into transform but no deterministic runtime coercion is supported for schema pair {} -> {}",
+                    edge.from,
+                    edge.to,
+                    schema_label(&source.out_schema),
+                    schema_label(&target.in_schema),
                 ),
             ));
+            continue;
         }
+
+        if schemas_compatible(&source.out_schema, &target.in_schema) {
+            continue;
+        }
+
+        diagnostics.push(diagnostic(
+            "DAG201",
+            format!(
+                "port type mismatch: `{}` -> `{}` ({:?} -> {:?})",
+                edge.from, edge.to, source.out_schema, target.in_schema
+            ),
+        ));
     }
 }
 
-fn schemas_compatible(source: &SchemaRef, target: &SchemaRef) -> bool {
-    match (source, target) {
-        (SchemaRef::Named { name: a }, SchemaRef::Named { name: b }) => a == b,
-        _ => true,
+fn schema_label(schema: &SchemaRef) -> &str {
+    match schema {
+        SchemaRef::Named { name } => name.as_str(),
+        SchemaRef::Opaque => "opaque",
     }
 }
 
