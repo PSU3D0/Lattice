@@ -88,6 +88,76 @@ mod typed_entry_flow_module {
     }
 }
 
+mod multi_entrypoint_flow_module {
+    use super::*;
+
+    #[def_node(
+        trigger,
+        name = "PrimaryTrigger",
+        summary = "Primary trigger",
+        effects = "ReadOnly",
+        determinism = "Strict"
+    )]
+    async fn primary_trigger(input: EntryInput) -> dag_core::NodeResult<EntryInput> {
+        Ok(input)
+    }
+
+    #[def_node(
+        name = "PrimaryCapture",
+        summary = "Primary capture",
+        effects = "Pure",
+        determinism = "Strict"
+    )]
+    async fn primary_capture(_input: EntryInput) -> dag_core::NodeResult<EntryOutput> {
+        Ok(EntryOutput)
+    }
+
+    #[def_node(
+        trigger,
+        name = "SecondaryTrigger",
+        summary = "Secondary trigger",
+        effects = "ReadOnly",
+        determinism = "Strict"
+    )]
+    async fn secondary_trigger(input: EntryInput) -> dag_core::NodeResult<EntryInput> {
+        Ok(input)
+    }
+
+    #[def_node(
+        name = "SecondaryCapture",
+        summary = "Secondary capture",
+        effects = "Pure",
+        determinism = "Strict"
+    )]
+    async fn secondary_capture(_input: EntryInput) -> dag_core::NodeResult<EntryOutput> {
+        Ok(EntryOutput)
+    }
+
+    flow! {
+        name: multi_entrypoint_flow,
+        version: "1.0.0",
+        profile: Web;
+        let primary_trigger = node!(crate::multi_entrypoint_flow_module::primary_trigger);
+        let primary_capture = node!(crate::multi_entrypoint_flow_module::primary_capture);
+        let secondary_trigger = node!(crate::multi_entrypoint_flow_module::secondary_trigger);
+        let secondary_capture = node!(crate::multi_entrypoint_flow_module::secondary_capture);
+        connect!(primary_trigger -> primary_capture);
+        connect!(secondary_trigger -> secondary_capture);
+        entrypoint!({
+            trigger: "primary_trigger",
+            capture: "primary_capture",
+            route_aliases: ["/primary", "/primary-alias"],
+            method: "GET",
+        });
+        entrypoint!({
+            trigger: "secondary_trigger",
+            capture: "secondary_capture",
+            route_aliases: ["/secondary"],
+            method: "POST",
+        });
+    }
+}
+
 mod subflow_entry_flow_module {
     use super::*;
 
@@ -478,6 +548,29 @@ fn flow_generates_entrypoint_consts() {
         typed_entry_flow_module::typed_entry_flow;
 }
 
+#[test]
+fn flow_persists_multi_entrypoint_metadata() {
+    let ir = multi_entrypoint_flow_module::flow();
+    assert_eq!(ir.metadata.entrypoints.len(), 2);
+
+    let primary = &ir.metadata.entrypoints[0];
+    assert_eq!(primary.trigger_alias, "primary_trigger");
+    assert_eq!(primary.capture_alias, "primary_capture");
+    assert_eq!(primary.route_path.as_deref(), Some("/primary"));
+    assert_eq!(primary.method.as_deref(), Some("GET"));
+    assert_eq!(
+        primary.route_aliases,
+        vec!["/primary".to_string(), "/primary-alias".to_string()]
+    );
+
+    let secondary = &ir.metadata.entrypoints[1];
+    assert_eq!(secondary.trigger_alias, "secondary_trigger");
+    assert_eq!(secondary.capture_alias, "secondary_capture");
+    assert_eq!(secondary.route_path.as_deref(), Some("/secondary"));
+    assert_eq!(secondary.method.as_deref(), Some("POST"));
+    assert_eq!(secondary.route_aliases, vec!["/secondary".to_string()]);
+}
+
 #[derive(Clone, Debug)]
 struct ExternalEntryInput;
 
@@ -586,6 +679,22 @@ fn subflow_aggregates_durability_flags() {
 fn subflow_unions_effect_and_determinism_hints() {
     let sub = subflow!(aggregated_hints_subflow_module::hints_aggregate_flow::trigger);
     assert_eq!(sub.kind, dag_core::NodeKind::Subflow);
+    assert!(sub.effect_hints.contains(&"resource::http::read"));
+    assert!(sub.effect_hints.contains(&"resource::http::write"));
+    assert!(sub.determinism_hints.contains(&"resource::http"));
+    assert!(sub.determinism_hints.contains(&"resource::rng"));
+}
+
+#[test]
+fn subflow_rollup_worst_case_semantics_unchanged_with_entrypoint_metadata() {
+    let ir = aggregated_hints_subflow_module::flow();
+    assert_eq!(ir.metadata.entrypoints.len(), 1);
+    assert_eq!(ir.metadata.entrypoints[0].trigger_alias, "trigger");
+    assert_eq!(ir.metadata.entrypoints[0].capture_alias, "rng");
+
+    let sub = subflow!(aggregated_hints_subflow_module::hints_aggregate_flow::trigger);
+    assert_eq!(sub.effects, dag_core::Effects::Effectful);
+    assert_eq!(sub.determinism, dag_core::Determinism::BestEffort);
     assert!(sub.effect_hints.contains(&"resource::http::read"));
     assert!(sub.effect_hints.contains(&"resource::http::write"));
     assert!(sub.determinism_hints.contains(&"resource::http"));

@@ -4504,6 +4504,37 @@ impl WorkflowBundleInput {
             quote!(&[#(#entrypoints),*] as &[::dag_core::flow_registry::EntrypointSpec])
         };
 
+        let flow_metadata_entrypoints = self.entrypoints.iter().map(|entry| {
+            let trigger = &entry.trigger;
+            let capture = &entry.capture;
+            let route_path = entry
+                .route_aliases
+                .first()
+                .map(|route| quote!(Some(#route.to_string())))
+                .unwrap_or_else(|| quote!(None));
+            let route_aliases = if entry.route_aliases.is_empty() {
+                quote!(Vec::new())
+            } else {
+                let aliases = entry.route_aliases.iter();
+                quote!(vec![#(#aliases.to_string()),*])
+            };
+            let method = entry
+                .method
+                .as_ref()
+                .map(|method| quote!(Some(#method.to_string())))
+                .unwrap_or_else(|| quote!(None));
+
+            quote! {
+                ::dag_core::EntrypointMetadata {
+                    trigger_alias: #trigger.to_string(),
+                    capture_alias: #capture.to_string(),
+                    route_path: #route_path,
+                    method: #method,
+                    route_aliases: #route_aliases,
+                }
+            }
+        });
+
         let entrypoints = self.entrypoints.iter().map(|entry| {
             let trigger = &entry.trigger;
             let capture = &entry.capture;
@@ -4742,6 +4773,7 @@ impl WorkflowBundleInput {
                         kind: ::dag_core::EdgeTransformKind::Into,
                     });
                 }
+                flow.metadata.entrypoints = vec![#(#flow_metadata_entrypoints),*];
                 #(#if_statements)*
                 #(#switch_statements)*
                 flow
