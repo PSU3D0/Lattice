@@ -1949,6 +1949,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-s8-contract-surface"
+version = "0.1.0"
+dependencies = [
+ "dag-core",
+ "dag-macros",
+ "host-inproc",
+ "kernel-exec",
+ "kernel-plan",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "exporters"
 version = "0.1.0"
 dependencies = [

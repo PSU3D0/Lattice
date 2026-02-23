@@ -33,6 +33,7 @@ Source-of-truth rule (Flow IR shape):
   - `spec/stdlib-and-node-registry.md`
   - `spec/workspace-capability.md`
   - `spec/subflows.md`
+  - `spec/public-io-contract.md`
   - `spec/connector-and-plugin-model.md`
   - `spec/credential-provider.md`
 - ADRs (forever decisions): `adrs/`

@@ -478,6 +478,37 @@ fn flow_generates_entrypoint_consts() {
         typed_entry_flow_module::typed_entry_flow;
 }
 
+#[derive(Clone, Debug)]
+struct ExternalEntryInput;
+
+impl From<ExternalEntryInput> for typed_entry_flow_module::typed_entry_flow::contract::entry::In {
+    fn from(_: ExternalEntryInput) -> Self {
+        Self(EntryInput)
+    }
+}
+
+#[test]
+fn flow_contract_exports_nominal_adapter_types() {
+    let _: dag_core::FlowEntrypoint<
+        typed_entry_flow_module::typed_entry_flow::contract::entry::RawIn,
+        typed_entry_flow_module::typed_entry_flow::contract::entry::RawOut,
+    > = typed_entry_flow_module::typed_entry_flow::contract::entry::ENTRY;
+
+    assert_eq!(
+        typed_entry_flow_module::typed_entry_flow::contract::entry::CONTRACT_ID,
+        "typed_entry_flow@1.0.0:entry->capture"
+    );
+
+    assert_eq!(
+        std::mem::size_of::<typed_entry_flow_module::typed_entry_flow::contract::entry::In>(),
+        std::mem::size_of::<typed_entry_flow_module::typed_entry_flow::contract::entry::RawIn>()
+    );
+
+    let wrapped: typed_entry_flow_module::typed_entry_flow::contract::entry::In =
+        ExternalEntryInput.into();
+    let _raw: typed_entry_flow_module::typed_entry_flow::contract::entry::RawIn = wrapped.into();
+}
+
 #[test]
 fn subflow_accepts_entrypoint_const() {
     let sub = subflow!(subflow_entry_flow_module::subflow_flow::trigger);

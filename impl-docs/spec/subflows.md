@@ -112,3 +112,7 @@ Subflow invocations are normal NodeIR entries with:
 - `durability` and `effects` populated from the SubflowDescriptor
 
 The actual subflow graph is not embedded in the parent Flow IR; it is referenced via the catalog.
+
+## Related
+
+- `impl-docs/spec/public-io-contract.md` (entrypoint contract exports and adapter pathways)

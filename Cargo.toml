@@ -50,7 +50,8 @@ members = [
   "examples/s5_unsupported_surface",
   "examples/s6_spill",
   "examples/s6_spill/host",
-  "examples/s7_cloudflare_idem"
+  "examples/s7_cloudflare_idem",
+  "examples/s8_contract_surface"
 ]
 
 [workspace.package]

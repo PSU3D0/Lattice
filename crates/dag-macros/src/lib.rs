@@ -4283,6 +4283,7 @@ impl WorkflowBundleInput {
 
         let mut entrypoint_const_defs = Vec::new();
         let mut entrypoint_flow_modules = Vec::new();
+        let mut entrypoint_contract_modules = Vec::new();
         let mut entrypoint_names = HashSet::new();
         let mut root_entrypoint = None::<(Ident, Path, Path)>;
 
@@ -4379,6 +4380,58 @@ impl WorkflowBundleInput {
                     }
                 }
             });
+
+            entrypoint_contract_modules.push(quote! {
+                pub mod #entry_ident {
+                    pub type RawIn = #input_ty;
+                    pub type RawOut = #output_ty;
+
+                    #[repr(transparent)]
+                    pub struct In(pub RawIn);
+
+                    #[repr(transparent)]
+                    pub struct Out(pub RawOut);
+
+                    impl From<RawIn> for In {
+                        fn from(value: RawIn) -> Self {
+                            Self(value)
+                        }
+                    }
+
+                    impl From<In> for RawIn {
+                        fn from(value: In) -> Self {
+                            value.0
+                        }
+                    }
+
+                    impl From<RawOut> for Out {
+                        fn from(value: RawOut) -> Self {
+                            Self(value)
+                        }
+                    }
+
+                    impl From<Out> for RawOut {
+                        fn from(value: Out) -> Self {
+                            value.0
+                        }
+                    }
+
+                    pub const ENTRY: ::dag_core::FlowEntrypoint<RawIn, RawOut> =
+                        super::super::#entry_ident;
+
+                    pub const FLOW_NAME: &str = #flow_name_lit;
+                    pub const FLOW_VERSION: &str = #version_literal;
+                    pub const CONTRACT_ID: &str = concat!(
+                        #flow_name_lit,
+                        "@",
+                        #version_literal,
+                        ":",
+                        #trigger,
+                        "->",
+                        #capture,
+                    );
+                }
+            });
         }
 
         let entrypoint_module = quote! {
@@ -4390,6 +4443,10 @@ impl WorkflowBundleInput {
                 }
 
                 #(#entrypoint_flow_modules)*
+
+                pub mod contract {
+                    #(#entrypoint_contract_modules)*
+                }
             }
         };
 
