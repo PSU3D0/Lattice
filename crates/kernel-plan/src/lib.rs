@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use dag_core::{
     Delivery, Diagnostic, DurabilityMode, EdgeTransformKind, Effects, FlowIR, SchemaRef,
-    diagnostic_codes, schemas_compatible, supported_into_coercion,
+    Severity, diagnostic_codes, schemas_compatible, supported_into_coercion,
 };
 
 const MIN_EXACTLY_ONCE_TTL_MS: u64 = 300_000;
@@ -12,12 +12,18 @@ const DEDUPE_HINT_PREFIX: &str = "resource::dedupe";
 #[derive(Debug, Clone)]
 pub struct ValidatedIR {
     flow: FlowIR,
+    warnings: Vec<Diagnostic>,
 }
 
 impl ValidatedIR {
     /// Access the validated Flow IR.
     pub fn flow(&self) -> &FlowIR {
         &self.flow
+    }
+
+    /// Non-blocking diagnostics (warning/info) emitted during validation.
+    pub fn warnings(&self) -> &[Diagnostic] {
+        &self.warnings
     }
 
     /// Consume the validated wrapper and return the underlying Flow IR.
@@ -27,7 +33,38 @@ impl ValidatedIR {
 }
 
 /// Validate a flow and return diagnostics if issues are discovered.
+///
+/// Severity-aware behavior:
+/// - `Error` diagnostics fail validation (`Err`).
+/// - `Warn`/`Info` diagnostics are preserved in `ValidatedIR::warnings()`.
 pub fn validate(flow: &FlowIR) -> Result<ValidatedIR, Vec<Diagnostic>> {
+    let diagnostics = collect_diagnostics(flow);
+    let (errors, warnings) = split_diagnostics_by_severity(diagnostics);
+
+    if errors.is_empty() {
+        Ok(ValidatedIR {
+            flow: flow.clone(),
+            warnings,
+        })
+    } else {
+        Err(errors)
+    }
+}
+
+/// Strict validation mode that fails on any diagnostic severity.
+pub fn validate_strict(flow: &FlowIR) -> Result<ValidatedIR, Vec<Diagnostic>> {
+    let diagnostics = collect_diagnostics(flow);
+    if diagnostics.is_empty() {
+        Ok(ValidatedIR {
+            flow: flow.clone(),
+            warnings: Vec::new(),
+        })
+    } else {
+        Err(diagnostics)
+    }
+}
+
+fn collect_diagnostics(flow: &FlowIR) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
     check_duplicate_aliases(flow, &mut diagnostics);
@@ -48,11 +85,21 @@ pub fn validate(flow: &FlowIR) -> Result<ValidatedIR, Vec<Diagnostic>> {
     check_switch_control_surfaces(flow, &mut diagnostics);
     check_reserved_control_surfaces(flow, &mut diagnostics);
 
-    if diagnostics.is_empty() {
-        Ok(ValidatedIR { flow: flow.clone() })
-    } else {
-        Err(diagnostics)
+    diagnostics
+}
+
+fn split_diagnostics_by_severity(diagnostics: Vec<Diagnostic>) -> (Vec<Diagnostic>, Vec<Diagnostic>) {
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+
+    for diagnostic in diagnostics {
+        match diagnostic.code.default_severity {
+            Severity::Error => errors.push(diagnostic),
+            Severity::Warn | Severity::Info => warnings.push(diagnostic),
+        }
     }
+
+    (errors, warnings)
 }
 
 fn check_trigger_policy(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
@@ -1494,7 +1541,13 @@ mod tests {
 
     fn assert_ok_or_metadata_warnings(result: Result<ValidatedIR, Vec<Diagnostic>>) {
         match result {
-            Ok(_) => {}
+            Ok(validated) => {
+                assert!(
+                    validated.warnings().iter().all(|d| d.code.code == "DAG350"),
+                    "unexpected warnings: {:?}",
+                    validated.warnings()
+                );
+            }
             Err(diagnostics) => {
                 assert!(
                     diagnostics.iter().all(|d| d.code.code == "DAG350"),
@@ -1548,9 +1601,9 @@ mod tests {
             .expect("add missing node");
 
         let flow = builder.build();
-        let diagnostics = validate(&flow).expect_err("expected lint diagnostics");
+        let validated = validate(&flow).expect("lint warnings should not fail validation");
 
-        assert!(diagnostics.iter().any(|d| d.code.code == "DAG350"));
+        assert!(validated.warnings().iter().any(|d| d.code.code == "DAG350"));
     }
 
     #[test]
