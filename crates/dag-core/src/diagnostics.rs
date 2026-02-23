@@ -375,5 +375,11 @@ pub static DIAGNOSTIC_CODES: Lazy<Vec<DiagnosticCode>> = Lazy::new(|| {
             default_severity: Severity::Error,
             summary: "Stable node missing pinned inputs or cache policy",
         },
+        DiagnosticCode {
+            code: "TYPE001",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Internal node uses unconstrained JSON in both input and output without boundary annotation",
+        },
     ]
 });

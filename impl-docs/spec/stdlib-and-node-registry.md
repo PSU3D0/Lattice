@@ -143,6 +143,15 @@ Nodes such as `std.timer.wait` optionally accept `scheduler` in their input sche
 host-configured aliases (not Flow IR). If a flow specifies a scheduler alias that the host does not
 provide, validation fails.
 
+## Typed boundary policy
+
+For stdlib and translator-authored nodes, follow typed-boundary guardrails:
+- internal nodes should avoid bare `JsonValue -> JsonValue` signatures,
+- boundary JSON bridges must be explicit and annotated.
+
+See:
+- `impl-docs/spec/typed-boundary-policy.md`
+
 ## Guidance
 
 - Prefer stdlib nodes for portable, deterministic behavior.

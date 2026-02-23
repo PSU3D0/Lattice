@@ -5,7 +5,6 @@ use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{ToTokens, format_ident, quote};
 use semver::Version;
 use std::collections::{HashMap, HashSet};
-use syn::{braced, bracketed};
 use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
@@ -13,6 +12,7 @@ use syn::{
     Attribute, Expr, ExprLit, Ident, ItemEnum, ItemFn, Lit, LitBool, LitInt, LitStr, Macro, Meta,
     MetaNameValue, Path, Result, Token, parse_macro_input, parse_quote, spanned::Spanned,
 };
+use syn::{braced, bracketed};
 
 /// Attribute macro for defining workflow nodes.
 #[proc_macro_attribute]
@@ -305,6 +305,7 @@ struct NodeArgs {
     idempotency_key: Option<LitStr>,
     idempotency_scope: Option<LitStr>,
     idempotency_ttl_ms: Option<Expr>,
+    json_boundary: Option<LitBool>,
 }
 
 impl NodeArgs {
@@ -331,6 +332,7 @@ impl NodeArgs {
             idempotency_key: None,
             idempotency_scope: None,
             idempotency_ttl_ms: None,
+            json_boundary: None,
         };
 
         for meta in args {
@@ -381,10 +383,7 @@ impl NodeArgs {
                         }
                         "kind" => {
                             if parsed.kind.is_some() {
-                                return Err(syn::Error::new(
-                                    lit.span(),
-                                    "node kind already set",
-                                ));
+                                return Err(syn::Error::new(lit.span(), "node kind already set"));
                             }
                             parsed.kind = Some(parse_node_kind(&lit)?);
                         }
@@ -433,6 +432,15 @@ impl NodeArgs {
                                 ));
                             }
                         },
+                        "json_boundary" => match lit {
+                            Lit::Bool(value) => parsed.json_boundary = Some(value),
+                            _ => {
+                                return Err(syn::Error::new(
+                                    lit.span(),
+                                    "json_boundary must be bool literal",
+                                ));
+                            }
+                        },
                         other => {
                             return Err(syn::Error::new(
                                 ident.span(),
@@ -462,8 +470,7 @@ impl NodeArgs {
                                         match ident.to_string().as_str() {
                                             "key" => match value {
                                                 Expr::Lit(ExprLit {
-                                                    lit: Lit::Str(s),
-                                                    ..
+                                                    lit: Lit::Str(s), ..
                                                 }) => parsed.idempotency_key = Some(s),
                                                 other => {
                                                     return Err(syn::Error::new(
@@ -474,8 +481,7 @@ impl NodeArgs {
                                             },
                                             "scope" => match value {
                                                 Expr::Lit(ExprLit {
-                                                    lit: Lit::Str(s),
-                                                    ..
+                                                    lit: Lit::Str(s), ..
                                                 }) => parsed.idempotency_scope = Some(s),
                                                 other => {
                                                     return Err(syn::Error::new(
@@ -501,7 +507,7 @@ impl NodeArgs {
                                         return Err(syn::Error::new(
                                             meta.span(),
                                             "idempotency(...) expects key = value pairs",
-                                        ))
+                                        ));
                                     }
                                 }
                             }
@@ -521,10 +527,7 @@ impl NodeArgs {
                     match ident.to_string().as_str() {
                         "trigger" => {
                             if parsed.kind.is_some() {
-                                return Err(syn::Error::new(
-                                    path.span(),
-                                    "node kind already set",
-                                ));
+                                return Err(syn::Error::new(path.span(), "node kind already set"));
                             }
                             parsed.kind = Some(enum_expr("NodeKind", "Trigger", path.span()));
                             trigger_shorthand = true;
@@ -627,7 +630,18 @@ fn node_impl(
         .as_ref()
         .expect("node kind default should be populated");
 
-    let (determinism_hints, effect_hints) = compute_resource_hints(&config.resources);
+    let (determinism_hints, mut effect_hints) = compute_resource_hints(&config.resources);
+
+    if let Some(lit_bool) = &config.json_boundary {
+        if lit_bool.value() {
+            effect_hints.push(HintSpec {
+                value: "policy::json_boundary".to_string(),
+                span: lit_bool.span(),
+                origin: "json_boundary".to_string(),
+            });
+        }
+    }
+
     validate_effect_hints(&effect_hints, effects)?;
     validate_determinism_hints(&determinism_hints, determinism)?;
     let determinism_hints_expr = hint_array_tokens(&determinism_hints);
@@ -645,10 +659,22 @@ fn node_impl(
         .as_ref()
         .map(|value| value.value)
         .unwrap_or(true);
-    let halts = config.halts.as_ref().map(|value| value.value).unwrap_or(false);
+    let halts = config
+        .halts
+        .as_ref()
+        .map(|value| value.value)
+        .unwrap_or(false);
 
-    let checkpointable_expr = if checkpointable { quote!(true) } else { quote!(false) };
-    let replayable_expr = if replayable { quote!(true) } else { quote!(false) };
+    let checkpointable_expr = if checkpointable {
+        quote!(true)
+    } else {
+        quote!(false)
+    };
+    let replayable_expr = if replayable {
+        quote!(true)
+    } else {
+        quote!(false)
+    };
     let halts_expr = if halts { quote!(true) } else { quote!(false) };
 
     let idempotency_expr = {
@@ -674,7 +700,7 @@ fn node_impl(
                     return Err(syn::Error::new(
                         scope.span(),
                         "idempotency scope must be one of: Node, Edge, Partition",
-                    ))
+                    ));
                 }
             };
             quote!(Some(#variant))
@@ -1313,9 +1339,8 @@ fn register_info_for_node_macro(mac: &Macro) -> Result<(Path, String)> {
         ));
     }
 
-    let path: Path = syn::parse2(mac.tokens.clone()).map_err(|err| {
-        syn::Error::new(err.span(), "node! expects a path identifier")
-    })?;
+    let path: Path = syn::parse2(mac.tokens.clone())
+        .map_err(|err| syn::Error::new(err.span(), "node! expects a path identifier"))?;
     register_info_from_base_path(&path)
 }
 
@@ -1404,9 +1429,10 @@ fn flow_fn_tokens_from_entrypoint(path: &Path) -> Result<TokenStream2> {
     }
 
     let mut flow_path = path.clone();
-    flow_path
-        .segments
-        .push(syn::PathSegment::from(Ident::new("flow", Span::call_site())));
+    flow_path.segments.push(syn::PathSegment::from(Ident::new(
+        "flow",
+        Span::call_site(),
+    )));
     Ok(quote!(#flow_path()))
 }
 
@@ -1639,7 +1665,12 @@ fn binding_type_info(expr: &Expr) -> Option<BindingTypeInfo> {
 
 fn connect_type_assert(from_info: &BindingTypeInfo, to_info: &BindingTypeInfo) -> TokenStream2 {
     match (from_info, to_info) {
-        (BindingTypeInfo::Node { output: from_out, .. }, BindingTypeInfo::Node { input: to_in, .. }) => {
+        (
+            BindingTypeInfo::Node {
+                output: from_out, ..
+            },
+            BindingTypeInfo::Node { input: to_in, .. },
+        ) => {
             quote! {
                 {
                     fn __dag_connect_assert<Out, In>()
@@ -1651,7 +1682,12 @@ fn connect_type_assert(from_info: &BindingTypeInfo, to_info: &BindingTypeInfo) -
                 }
             }
         }
-        (BindingTypeInfo::Subflow { entrypoint: from_entry }, BindingTypeInfo::Node { input: to_in, .. }) => {
+        (
+            BindingTypeInfo::Subflow {
+                entrypoint: from_entry,
+            },
+            BindingTypeInfo::Node { input: to_in, .. },
+        ) => {
             quote! {
                 {
                     fn __dag_connect_assert_subflow_to_node<FromIn, FromOut>(
@@ -1665,7 +1701,14 @@ fn connect_type_assert(from_info: &BindingTypeInfo, to_info: &BindingTypeInfo) -
                 }
             }
         }
-        (BindingTypeInfo::Node { output: from_out, .. }, BindingTypeInfo::Subflow { entrypoint: to_entry }) => {
+        (
+            BindingTypeInfo::Node {
+                output: from_out, ..
+            },
+            BindingTypeInfo::Subflow {
+                entrypoint: to_entry,
+            },
+        ) => {
             quote! {
                 {
                     fn __dag_connect_assert_node_to_subflow<ToIn, ToOut>(
@@ -1679,7 +1722,14 @@ fn connect_type_assert(from_info: &BindingTypeInfo, to_info: &BindingTypeInfo) -
                 }
             }
         }
-        (BindingTypeInfo::Subflow { entrypoint: from_entry }, BindingTypeInfo::Subflow { entrypoint: to_entry }) => {
+        (
+            BindingTypeInfo::Subflow {
+                entrypoint: from_entry,
+            },
+            BindingTypeInfo::Subflow {
+                entrypoint: to_entry,
+            },
+        ) => {
             quote! {
                 {
                     fn __dag_connect_assert_subflow_to_subflow<FromIn, FromOut, ToIn, ToOut>(
@@ -2934,15 +2984,12 @@ impl Parse for WorkflowBundleInput {
         }
 
         Ok(WorkflowBundleInput {
-            name: name.ok_or_else(|| {
-                syn::Error::new(Span::call_site(), "flow! requires `name`")
-            })?,
-            version: version.ok_or_else(|| {
-                syn::Error::new(Span::call_site(), "flow! requires `version`")
-            })?,
-            profile: profile.ok_or_else(|| {
-                syn::Error::new(Span::call_site(), "flow! requires `profile`")
-            })?,
+            name: name
+                .ok_or_else(|| syn::Error::new(Span::call_site(), "flow! requires `name`"))?,
+            version: version
+                .ok_or_else(|| syn::Error::new(Span::call_site(), "flow! requires `version`"))?,
+            profile: profile
+                .ok_or_else(|| syn::Error::new(Span::call_site(), "flow! requires `profile`"))?,
             summary,
             bindings,
             connects,
@@ -4265,10 +4312,7 @@ impl WorkflowBundleInput {
             if !entrypoint_names.insert(trigger_alias.clone()) {
                 return Err(syn::Error::new(
                     entry.trigger.span(),
-                    format!(
-                        "duplicate entrypoint const name `{}`",
-                        trigger_alias
-                    ),
+                    format!("duplicate entrypoint const name `{}`", trigger_alias),
                 ));
             }
 
@@ -4363,8 +4407,10 @@ impl WorkflowBundleInput {
             quote!()
         };
 
-        let flow_registry_entrypoints_ident =
-            format_ident!("__{}_FLOW_ENTRYPOINTS", flow_mod_ident.to_string().to_uppercase());
+        let flow_registry_entrypoints_ident = format_ident!(
+            "__{}_FLOW_ENTRYPOINTS",
+            flow_mod_ident.to_string().to_uppercase()
+        );
         let flow_registry_entrypoints = if self.entrypoints.is_empty() {
             quote!(&[] as &[::dag_core::flow_registry::EntrypointSpec])
         } else {

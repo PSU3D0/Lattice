@@ -86,6 +86,7 @@ ensure the registry stays in sync with the implementation.
 | SECR201   | Validation     | Error   | Credential binding grants scopes outside requested set. |
 | SAGA201   | Validation     | Error   | Compensation node incompatible with effect node output. |
 | CAP101    | Runtime        | Error   | Required capability binding missing from ResourceBag during preflight. |
+| TYPE001    | Validation     | Error   | Internal node uses unconstrained JSON in both input and output without boundary annotation. |
 
 > **Note:** The default severity column indicates how diagnostics are surfaced in the
 > absence of policy overrides. Individual organisations may escalate or demote specific

@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use dag_core::{
-    Delivery, Diagnostic, DurabilityMode, EdgeTransformKind, Effects, FlowIR, SchemaRef,
-    Severity, diagnostic_codes, schemas_compatible, supported_into_coercion,
+    Delivery, Diagnostic, DurabilityMode, EdgeTransformKind, Effects, FlowIR, SchemaRef, Severity,
+    diagnostic_codes, schemas_compatible, supported_into_coercion,
 };
 
 const MIN_EXACTLY_ONCE_TTL_MS: u64 = 300_000;
@@ -84,11 +84,14 @@ fn collect_diagnostics(flow: &FlowIR) -> Vec<Diagnostic> {
     check_if_control_surfaces(flow, &mut diagnostics);
     check_switch_control_surfaces(flow, &mut diagnostics);
     check_reserved_control_surfaces(flow, &mut diagnostics);
+    check_bare_json_boundaries(flow, &mut diagnostics);
 
     diagnostics
 }
 
-fn split_diagnostics_by_severity(diagnostics: Vec<Diagnostic>) -> (Vec<Diagnostic>, Vec<Diagnostic>) {
+fn split_diagnostics_by_severity(
+    diagnostics: Vec<Diagnostic>,
+) -> (Vec<Diagnostic>, Vec<Diagnostic>) {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
 
@@ -100,6 +103,51 @@ fn split_diagnostics_by_severity(diagnostics: Vec<Diagnostic>) -> (Vec<Diagnosti
     }
 
     (errors, warnings)
+}
+
+fn check_bare_json_boundaries(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    let mut inbound_counts = std::collections::HashMap::new();
+    let mut outbound_counts = std::collections::HashMap::new();
+
+    for edge in &flow.edges {
+        *outbound_counts.entry(edge.from.as_str()).or_insert(0) += 1;
+        *inbound_counts.entry(edge.to.as_str()).or_insert(0) += 1;
+    }
+
+    for node in &flow.nodes {
+        let has_inbound = inbound_counts.get(node.alias.as_str()).unwrap_or(&0) > &0;
+        let has_outbound = outbound_counts.get(node.alias.as_str()).unwrap_or(&0) > &0;
+
+        if has_inbound && has_outbound {
+            if is_bare_json_schema(&node.in_schema) && is_bare_json_schema(&node.out_schema) {
+                let has_boundary_hint = node
+                    .effect_hints
+                    .iter()
+                    .any(|h| h == "policy::json_boundary");
+                if !has_boundary_hint {
+                    diagnostics.push(diagnostic(
+                        "TYPE001",
+                        format!(
+                            "internal node `{}` uses unconstrained JSON in both input and output; annotate with `json_boundary = true` if this is intentional",
+                            node.alias
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+fn is_bare_json_schema(schema: &dag_core::SchemaRef) -> bool {
+    match schema {
+        dag_core::SchemaRef::Named { name } => {
+            name == "JsonValue"
+                || name == "serde_json::Value"
+                || name == "::dag_core::serde_json::Value"
+                || name == "Value"
+        }
+        _ => false,
+    }
 }
 
 fn check_trigger_policy(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
@@ -284,7 +332,10 @@ fn check_port_compatibility(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
             None => continue,
         };
 
-        if matches!(edge.transform.as_ref().map(|transform| transform.kind), Some(EdgeTransformKind::Into)) {
+        if matches!(
+            edge.transform.as_ref().map(|transform| transform.kind),
+            Some(EdgeTransformKind::Into)
+        ) {
             if supported_into_coercion(&source.out_schema, &target.in_schema).is_some() {
                 continue;
             }
@@ -332,7 +383,10 @@ fn check_idempotency_declarations(flow: &FlowIR, diagnostics: &mut Vec<Diagnosti
         if spec.key.is_none() && (spec.scope.is_some() || spec.ttl_ms.is_some()) {
             diagnostics.push(diagnostic(
                 "DAG004",
-                format!("node `{}` declares idempotency but is missing a key", node.alias),
+                format!(
+                    "node `{}` declares idempotency but is missing a key",
+                    node.alias
+                ),
             ));
         }
     }
@@ -392,7 +446,6 @@ fn check_node_metadata(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
         }
     }
 }
-
 
 fn check_edge_timeout_requirements(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
     for edge in &flow.edges {
@@ -479,10 +532,7 @@ fn check_durability_requirements(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic
             if node.durability.halts {
                 diagnostics.push(diagnostic(
                     "DAG-CKPT-002",
-                    format!(
-                        "halt node `{}` requires durability != off",
-                        node.alias
-                    ),
+                    format!("halt node `{}` requires durability != off", node.alias),
                 ));
             }
         }
@@ -2793,6 +2843,118 @@ mod tests {
 
         let diagnostics = validate(&flow).expect_err("expected spill diagnostic");
         assert!(diagnostics.iter().any(|d| d.code.code == "SPILL001"));
+    }
+
+    #[test]
+    fn validator_flags_bare_json_passthrough() {
+        let mut builder = FlowBuilder::new("json_passthrough", Version::new(1, 0, 0), Profile::Web);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    Some("trigger boundary"),
+                ),
+            )
+            .unwrap();
+        let internal = builder
+            .add_node(
+                "internal",
+                &NodeSpec::inline(
+                    "tests::internal",
+                    "Internal",
+                    SchemaSpec::Named("JsonValue"),
+                    SchemaSpec::Named("JsonValue"),
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let sink = builder
+            .add_node(
+                "sink",
+                &NodeSpec::inline(
+                    "tests::sink",
+                    "Sink",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+
+        builder.connect(&trigger, &internal);
+        builder.connect(&internal, &sink);
+
+        let flow = builder.build();
+        let diagnostics = validate(&flow).expect_err("expected JSON boundary diagnostic");
+        assert!(
+            diagnostics.iter().any(|d| d.code.code == "TYPE001"),
+            "expected TYPE001"
+        );
+    }
+
+    #[test]
+    fn validator_allows_annotated_json_boundary() {
+        let mut builder = FlowBuilder::new("json_boundary", Version::new(1, 0, 0), Profile::Web);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    Some("trigger boundary"),
+                ),
+            )
+            .unwrap();
+        let internal = builder
+            .add_node(
+                "internal",
+                &NodeSpec::inline_with_hints(
+                    "tests::internal",
+                    "Internal",
+                    SchemaSpec::Named("JsonValue"),
+                    SchemaSpec::Named("JsonValue"),
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                    &[],
+                    &["policy::json_boundary"],
+                ),
+            )
+            .unwrap();
+        let sink = builder
+            .add_node(
+                "sink",
+                &NodeSpec::inline(
+                    "tests::sink",
+                    "Sink",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+
+        builder.connect(&trigger, &internal);
+        builder.connect(&internal, &sink);
+
+        let flow = builder.build();
+        assert_ok_or_metadata_warnings(validate(&flow));
     }
 
     #[test]
