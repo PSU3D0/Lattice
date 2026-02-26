@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use dag_core::{FlowIR, NodeKind};
-use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use sha2::Digest;
 

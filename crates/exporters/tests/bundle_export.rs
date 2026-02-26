@@ -3,8 +3,8 @@ mod flow_registry_tests {
     use std::path::PathBuf;
 
     use dag_core::{
-        flow_registry::{EntrypointSpec, FlowRegistration},
         Determinism, Effects, FlowBuilder, NodeSpec, Profile, SchemaSpec,
+        flow_registry::{EntrypointSpec, FlowRegistration},
     };
     use semver::Version;
 
@@ -72,9 +72,11 @@ mod flow_registry_tests {
         exporters::bundle::emit_bundle(out_dir.path(), &export).expect("emit bundle");
 
         assert!(out_dir.path().join("manifest.json").exists());
-        assert!(out_dir
-            .path()
-            .join("flows/registry_flow/flow_ir.json")
-            .exists());
+        assert!(
+            out_dir
+                .path()
+                .join("flows/registry_flow/flow_ir.json")
+                .exists()
+        );
     }
 }

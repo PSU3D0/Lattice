@@ -1420,6 +1420,21 @@ fn qualify_type_path(path: &Path) -> Path {
     }
 }
 
+fn qualify_root_path(path: &Path) -> Path {
+    if path.leading_colon.is_some() {
+        return path.clone();
+    }
+    let Some(first) = path.segments.first() else {
+        return path.clone();
+    };
+    let ident = first.ident.to_string();
+    if matches!(ident.as_str(), "crate" | "self" | "super") {
+        path.clone()
+    } else {
+        parse_quote!(crate::#path)
+    }
+}
+
 fn flow_fn_tokens_from_entrypoint(path: &Path) -> Result<TokenStream2> {
     if path.segments.is_empty() {
         return Err(syn::Error::new_spanned(
@@ -1745,6 +1760,91 @@ fn connect_type_assert(from_info: &BindingTypeInfo, to_info: &BindingTypeInfo) -
             }
         }
     }
+}
+
+fn subflow_contract_paths(entrypoint: &Path) -> Option<(Path, Path, Path)> {
+    let mut flow_path = qualify_root_path(entrypoint);
+    let trigger_alias = flow_path.segments.last()?.ident.clone();
+    flow_path.segments.pop();
+    flow_path.segments.pop_punct();
+    if flow_path.segments.len() < 2 {
+        return None;
+    }
+
+    let raw_in: Path = syn::parse2(quote!(#flow_path::contract::#trigger_alias::RawIn)).ok()?;
+    let raw_out: Path = syn::parse2(quote!(#flow_path::contract::#trigger_alias::RawOut)).ok()?;
+    let contract_id: Path =
+        syn::parse2(quote!(#flow_path::contract::#trigger_alias::CONTRACT_ID)).ok()?;
+    Some((raw_in, raw_out, contract_id))
+}
+
+fn binding_contract_module_tokens(
+    binding_alias: &Ident,
+    info: &BindingTypeInfo,
+) -> Option<TokenStream2> {
+    let alias_lit = LitStr::new(&binding_alias.to_string(), binding_alias.span());
+
+    let (raw_in, raw_out, source_kind, source_contract_id) = match info {
+        BindingTypeInfo::Node { input, output } => (
+            qualify_type_path(input),
+            qualify_type_path(output),
+            "node",
+            None,
+        ),
+        BindingTypeInfo::Subflow { entrypoint } => {
+            let (raw_in, raw_out, contract_id) = subflow_contract_paths(entrypoint)?;
+            (raw_in, raw_out, "subflow", Some(contract_id))
+        }
+    };
+
+    let source_contract_const = source_contract_id
+        .map(|contract_id| {
+            quote! {
+                pub const SOURCE_CONTRACT_ID: &str = #contract_id;
+            }
+        })
+        .unwrap_or_else(|| quote! {});
+
+    Some(quote! {
+        pub mod #binding_alias {
+            pub type RawIn = #raw_in;
+            pub type RawOut = #raw_out;
+
+            #[repr(transparent)]
+            pub struct In(pub RawIn);
+
+            #[repr(transparent)]
+            pub struct Out(pub RawOut);
+
+            impl From<RawIn> for In {
+                fn from(value: RawIn) -> Self {
+                    Self(value)
+                }
+            }
+
+            impl From<In> for RawIn {
+                fn from(value: In) -> Self {
+                    value.0
+                }
+            }
+
+            impl From<RawOut> for Out {
+                fn from(value: RawOut) -> Self {
+                    Self(value)
+                }
+            }
+
+            impl From<Out> for RawOut {
+                fn from(value: Out) -> Self {
+                    value.0
+                }
+            }
+
+            pub const BINDING_ALIAS: &str = #alias_lit;
+            pub const SOURCE_KIND: &str = #source_kind;
+            #source_contract_const
+        }
+    })
 }
 
 struct WorkflowInput {
@@ -3606,7 +3706,31 @@ impl WorkflowInput {
             }
         });
 
+        let binding_contract_modules: Vec<TokenStream2> = self
+            .bindings
+            .iter()
+            .filter_map(|binding| {
+                type_map
+                    .get(&binding.alias.to_string())
+                    .and_then(|info| binding_contract_module_tokens(&binding.alias, info))
+            })
+            .collect();
+
+        let workflow_contract_module = quote! {
+            pub mod #fn_name {
+                pub fn flow() -> ::dag_core::FlowIR {
+                    super::#fn_name()
+                }
+
+                pub mod bindings {
+                    #(#binding_contract_modules)*
+                }
+            }
+        };
+
         Ok(quote! {
+            #workflow_contract_module
+
             pub fn #fn_name() -> ::dag_core::FlowIR {
                 let version = ::dag_core::prelude::Version::parse(#version_literal)
                     .expect("workflow!: invalid semver literal");
@@ -4281,6 +4405,16 @@ impl WorkflowBundleInput {
             }
         });
 
+        let binding_contract_modules: Vec<TokenStream2> = self
+            .bindings
+            .iter()
+            .filter_map(|binding| {
+                type_map
+                    .get(&binding.alias.to_string())
+                    .and_then(|info| binding_contract_module_tokens(&binding.alias, info))
+            })
+            .collect();
+
         let mut entrypoint_const_defs = Vec::new();
         let mut entrypoint_flow_modules = Vec::new();
         let mut entrypoint_contract_modules = Vec::new();
@@ -4443,6 +4577,10 @@ impl WorkflowBundleInput {
                 }
 
                 #(#entrypoint_flow_modules)*
+
+                pub mod bindings {
+                    #(#binding_contract_modules)*
+                }
 
                 pub mod contract {
                     #(#entrypoint_contract_modules)*

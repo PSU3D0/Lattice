@@ -1,15 +1,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use capabilities::durability::{CheckpointError, CheckpointFilter, CheckpointHandle, FlowFrontier};
 use capabilities::{ResourceAccess, ResourceBag};
 use dag_core::DurabilityMode;
-use capabilities::durability::FlowFrontier;
-use kernel_exec::{
-    ExecutionError, ExecutionResult, FlowExecutor, NodeRegistry, NodeResolver, RegistryResolver,
-};
+use kernel_exec::{ExecutionError, ExecutionResult, FlowExecutor, NodeResolver};
 use kernel_plan::ValidatedIR;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
 /// Re-export handy executor result types for bridge crates.
@@ -335,8 +335,8 @@ impl HostRuntime {
     ///
     /// Derivation rule (0.1): required domains are inferred from `NodeIR.effect_hints`.
     pub fn preflight(&self) -> Result<(), ExecutionError> {
-        let mut missing_durability = collect_missing_durability_services(self.ir.as_ref(),
-            self.resources.as_ref());
+        let mut missing_durability =
+            collect_missing_durability_services(self.ir.as_ref(), self.resources.as_ref());
         if !missing_durability.is_empty() {
             missing_durability.sort();
             missing_durability.dedup();
@@ -411,6 +411,223 @@ impl HostRuntime {
 
         result
     }
+
+    /// Resume execution from an existing checkpoint id.
+    pub async fn resume(&self, checkpoint_id: &str) -> Result<ExecutionResult, ExecutionError> {
+        self.preflight()?;
+
+        let Some(store) = self.resources.checkpoint_store() else {
+            return Err(ExecutionError::MissingDurabilityServices {
+                missing: vec!["durability::checkpoint_store".to_string()],
+            });
+        };
+
+        let fallback = CheckpointHandle {
+            checkpoint_id: checkpoint_id.to_string(),
+            flow_id: self.ir.flow().id.clone(),
+            run_id: "unknown".to_string(),
+        };
+
+        let handles = store
+            .list(CheckpointFilter {
+                flow_id: Some(self.ir.flow().id.clone()),
+                run_id: None,
+                status: None,
+            })
+            .await
+            .map_err(|err| map_checkpoint_error(&fallback, err))?;
+
+        let handle = handles
+            .into_iter()
+            .find(|handle| handle.checkpoint_id == checkpoint_id)
+            .ok_or_else(|| ExecutionError::CheckpointNotFound {
+                checkpoint_id: checkpoint_id.to_string(),
+            })?;
+
+        let lease_ttl = self
+            .ir
+            .flow()
+            .policies
+            .durability
+            .lease_ttl
+            .map(Duration::from_millis)
+            .unwrap_or(Duration::from_secs(30));
+
+        let lease = store
+            .lease(&handle, lease_ttl)
+            .await
+            .map_err(|err| map_checkpoint_error(&handle, err))?;
+
+        let record = match store.get(&handle).await {
+            Ok(record) => record,
+            Err(err) => {
+                let _ = store.release_lease(lease).await;
+                return Err(map_checkpoint_error(&handle, err));
+            }
+        };
+
+        if record.version != 1 {
+            let _ = store.release_lease(lease).await;
+            return Err(ExecutionError::CheckpointIncompatibleVersion {
+                checkpoint_id: record.checkpoint_id,
+                version: record.version,
+            });
+        }
+
+        let state = match kernel_exec::durability::rehydrate_state(
+            &record.state,
+            self.resources.checkpoint_blob_store(),
+        )
+        .await
+        {
+            Ok(state) => state,
+            Err(err) => {
+                let _ = store.release_lease(lease).await;
+                return Err(map_checkpoint_error(&handle, err));
+            }
+        };
+
+        let frame = match decode_resume_frame(&record, &state) {
+            Ok(frame) => frame,
+            Err(err) => {
+                let _ = store.release_lease(lease).await;
+                return Err(err);
+            }
+        };
+
+        let mut metadata = InvocationMetadata::default();
+        metadata.insert_label("lf.run_id", uuid::Uuid::new_v4().to_string());
+        metadata.insert_label("lf.flow_id", self.ir.flow().id.0.clone());
+        metadata.insert_label("lf.trigger_alias", frame.halt_alias.clone());
+        metadata.insert_label("lf.capture_alias", frame.capture_alias.clone());
+        metadata.insert_resume_context(
+            record.checkpoint_id.clone(),
+            format!("resume-{}", uuid::Uuid::new_v4()),
+            1,
+            record.frontier.clone(),
+            now_ms(),
+        );
+
+        for plugin in self.plugins.iter() {
+            plugin.before_execute(&metadata);
+        }
+
+        let result = self
+            .executor
+            .resume_once(
+                self.ir.as_ref(),
+                &frame.halt_alias,
+                frame.halt_payload,
+                &frame.pending,
+                &frame.capture_alias,
+                None,
+            )
+            .await;
+
+        for plugin in self.plugins.iter() {
+            plugin.after_execute(
+                &metadata,
+                result
+                    .as_ref()
+                    .map(|value| value as &ExecutionResult)
+                    .map_err(|err| err as &ExecutionError),
+            );
+        }
+
+        match result {
+            Ok(outcome) => {
+                if let Err(err) = store.ack(&handle).await {
+                    let _ = store.release_lease(lease).await;
+                    return Err(map_checkpoint_error(&handle, err));
+                }
+                let _ = store.release_lease(lease).await;
+                Ok(outcome)
+            }
+            Err(err) => {
+                let _ = store.release_lease(lease).await;
+                Err(err)
+            }
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ResumeFrameV1 {
+    version: u32,
+    halt_alias: String,
+    halt_payload: JsonValue,
+    capture_alias: String,
+    #[serde(default)]
+    pending: Vec<String>,
+    #[serde(default, rename = "resume_after_ms")]
+    _resume_after_ms: Option<u64>,
+}
+
+fn decode_resume_frame(
+    record: &capabilities::durability::CheckpointRecord,
+    state: &JsonValue,
+) -> Result<ResumeFrameV1, ExecutionError> {
+    let Some(frame_value) = state
+        .as_object()
+        .and_then(|object| object.get("resume_frame"))
+    else {
+        return Err(ExecutionError::CheckpointStateCorrupted {
+            checkpoint_id: record.checkpoint_id.clone(),
+            message: "missing state.resume_frame".to_string(),
+        });
+    };
+
+    let frame: ResumeFrameV1 =
+        serde_json::from_value(frame_value.clone()).map_err(|err| ExecutionError::CheckpointStateCorrupted {
+            checkpoint_id: record.checkpoint_id.clone(),
+            message: format!("invalid state.resume_frame: {err}"),
+        })?;
+
+    if frame.version != 1 {
+        return Err(ExecutionError::CheckpointIncompatibleVersion {
+            checkpoint_id: record.checkpoint_id.clone(),
+            version: frame.version,
+        });
+    }
+
+    Ok(frame)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn now_ms() -> u64 {
+    let millis = js_sys::Date::now();
+    if millis.is_finite() && millis >= 0.0 {
+        millis as u64
+    } else {
+        0
+    }
+}
+
+fn map_checkpoint_error(handle: &CheckpointHandle, err: CheckpointError) -> ExecutionError {
+    match err {
+        CheckpointError::NotFound => ExecutionError::CheckpointNotFound {
+            checkpoint_id: handle.checkpoint_id.clone(),
+        },
+        CheckpointError::LeaseConflict | CheckpointError::LeaseExpired => {
+            ExecutionError::CheckpointLeaseConflict {
+                checkpoint_id: handle.checkpoint_id.clone(),
+            }
+        }
+        CheckpointError::Storage(message) => ExecutionError::CheckpointStateCorrupted {
+            checkpoint_id: handle.checkpoint_id.clone(),
+            message,
+        },
+    }
 }
 
 fn collect_missing_durability_services(
@@ -481,8 +698,9 @@ mod tests {
         ScheduleStatus, TokenConfig, TokenError,
     };
     use dag_core::prelude::*;
-    use kernel_exec::NodeRegistry;
+    use kernel_exec::{NodeRegistry, RegistryResolver};
     use kernel_plan::validate;
+    use std::collections::HashMap;
     use std::sync::{Arc as StdArc, Mutex};
     use std::time::Duration;
 
@@ -496,11 +714,21 @@ mod tests {
 
     #[async_trait]
     impl CheckpointStore for StubCheckpointStore {
-        async fn put(&self, _record: CheckpointRecord) -> Result<CheckpointHandle, CheckpointError> {
-            Err(CheckpointError::Storage("stub".to_string()))
+        async fn put(
+            &self,
+            record: CheckpointRecord,
+        ) -> Result<CheckpointHandle, CheckpointError> {
+            Ok(CheckpointHandle {
+                checkpoint_id: record.checkpoint_id,
+                flow_id: record.flow_id,
+                run_id: record.run_id,
+            })
         }
 
-        async fn get(&self, _handle: &CheckpointHandle) -> Result<CheckpointRecord, CheckpointError> {
+        async fn get(
+            &self,
+            _handle: &CheckpointHandle,
+        ) -> Result<CheckpointRecord, CheckpointError> {
             Err(CheckpointError::NotFound)
         }
 
@@ -508,16 +736,177 @@ mod tests {
             Ok(())
         }
 
-        async fn lease(&self, _handle: &CheckpointHandle, _ttl: Duration) -> Result<capabilities::durability::Lease, CheckpointError> {
+        async fn lease(
+            &self,
+            _handle: &CheckpointHandle,
+            _ttl: Duration,
+        ) -> Result<capabilities::durability::Lease, CheckpointError> {
             Err(CheckpointError::LeaseConflict)
         }
 
-        async fn release_lease(&self, _lease: capabilities::durability::Lease) -> Result<(), CheckpointError> {
+        async fn release_lease(
+            &self,
+            _lease: capabilities::durability::Lease,
+        ) -> Result<(), CheckpointError> {
             Ok(())
         }
 
-        async fn list(&self, _filter: CheckpointFilter) -> Result<Vec<CheckpointHandle>, CheckpointError> {
+        async fn list(
+            &self,
+            _filter: CheckpointFilter,
+        ) -> Result<Vec<CheckpointHandle>, CheckpointError> {
             Ok(Vec::new())
+        }
+    }
+
+    #[derive(Default)]
+    struct MemoryCheckpointStore {
+        records: Mutex<HashMap<String, CheckpointRecord>>,
+        leases: Mutex<HashMap<String, capabilities::durability::Lease>>,
+    }
+
+    impl MemoryCheckpointStore {
+        fn now_ms() -> u64 {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+                .try_into()
+                .unwrap_or(u64::MAX)
+        }
+
+        fn is_expired(record: &CheckpointRecord, now_ms: u64) -> bool {
+            record
+                .ttl_ms
+                .map(|ttl_ms| record.created_at_ms.saturating_add(ttl_ms) <= now_ms)
+                .unwrap_or(false)
+        }
+    }
+
+    impl capabilities::Capability for MemoryCheckpointStore {
+        fn name(&self) -> &'static str {
+            "checkpoint.memory"
+        }
+    }
+
+    #[async_trait]
+    impl CheckpointStore for MemoryCheckpointStore {
+        async fn put(&self, record: CheckpointRecord) -> Result<CheckpointHandle, CheckpointError> {
+            let handle = CheckpointHandle {
+                checkpoint_id: record.checkpoint_id.clone(),
+                flow_id: record.flow_id.clone(),
+                run_id: record.run_id.clone(),
+            };
+            self.records
+                .lock()
+                .expect("memory checkpoint lock")
+                .insert(record.checkpoint_id.clone(), record);
+            Ok(handle)
+        }
+
+        async fn get(&self, handle: &CheckpointHandle) -> Result<CheckpointRecord, CheckpointError> {
+            self.records
+                .lock()
+                .expect("memory checkpoint lock")
+                .get(&handle.checkpoint_id)
+                .cloned()
+                .ok_or(CheckpointError::NotFound)
+        }
+
+        async fn ack(&self, handle: &CheckpointHandle) -> Result<(), CheckpointError> {
+            self.records
+                .lock()
+                .expect("memory checkpoint lock")
+                .remove(&handle.checkpoint_id);
+            self.leases
+                .lock()
+                .expect("memory lease lock")
+                .remove(&handle.checkpoint_id);
+            Ok(())
+        }
+
+        async fn lease(
+            &self,
+            handle: &CheckpointHandle,
+            ttl: Duration,
+        ) -> Result<capabilities::durability::Lease, CheckpointError> {
+            if !self
+                .records
+                .lock()
+                .expect("memory checkpoint lock")
+                .contains_key(&handle.checkpoint_id)
+            {
+                return Err(CheckpointError::NotFound);
+            }
+
+            let now_ms = Self::now_ms();
+            let mut leases = self.leases.lock().expect("memory lease lock");
+            if let Some(existing) = leases.get(&handle.checkpoint_id)
+                && existing.expires_at_ms > now_ms
+            {
+                return Err(CheckpointError::LeaseConflict);
+            }
+
+            let ttl_ms = u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX).max(1);
+            let lease = capabilities::durability::Lease {
+                lease_id: format!("lease:{}:{now_ms}", handle.checkpoint_id),
+                expires_at_ms: now_ms.saturating_add(ttl_ms),
+            };
+            leases.insert(handle.checkpoint_id.clone(), lease.clone());
+            Ok(lease)
+        }
+
+        async fn release_lease(
+            &self,
+            lease: capabilities::durability::Lease,
+        ) -> Result<(), CheckpointError> {
+            let mut leases = self.leases.lock().expect("memory lease lock");
+            if let Some(key) = leases
+                .iter()
+                .find_map(|(key, existing)| (existing.lease_id == lease.lease_id).then_some(key.clone()))
+            {
+                leases.remove(&key);
+            }
+            Ok(())
+        }
+
+        async fn list(
+            &self,
+            filter: CheckpointFilter,
+        ) -> Result<Vec<CheckpointHandle>, CheckpointError> {
+            let now_ms = Self::now_ms();
+            let records = self.records.lock().expect("memory checkpoint lock");
+            let mut handles = Vec::new();
+            for record in records.values() {
+                if let Some(flow_id) = &filter.flow_id
+                    && &record.flow_id != flow_id
+                {
+                    continue;
+                }
+                if let Some(run_id) = &filter.run_id
+                    && &record.run_id != run_id
+                {
+                    continue;
+                }
+
+                if let Some(status) = filter.status {
+                    let expired = Self::is_expired(record, now_ms);
+                    match status {
+                        capabilities::durability::CheckpointStatus::Active if expired => continue,
+                        capabilities::durability::CheckpointStatus::Expired if !expired => continue,
+                        capabilities::durability::CheckpointStatus::Completed => continue,
+                        _ => {}
+                    }
+                }
+
+                handles.push(CheckpointHandle {
+                    checkpoint_id: record.checkpoint_id.clone(),
+                    flow_id: record.flow_id.clone(),
+                    run_id: record.run_id.clone(),
+                });
+            }
+
+            Ok(handles)
         }
     }
 
@@ -531,11 +920,19 @@ mod tests {
 
     #[async_trait]
     impl ResumeScheduler for StubResumeScheduler {
-        async fn schedule_at(&self, _handle: CheckpointHandle, _at_ms: u64) -> Result<ScheduleId, ScheduleError> {
+        async fn schedule_at(
+            &self,
+            _handle: CheckpointHandle,
+            _at_ms: u64,
+        ) -> Result<ScheduleId, ScheduleError> {
             Ok(ScheduleId("schedule".to_string()))
         }
 
-        async fn schedule_after(&self, _handle: CheckpointHandle, _delay: Duration) -> Result<ScheduleId, ScheduleError> {
+        async fn schedule_after(
+            &self,
+            _handle: CheckpointHandle,
+            _delay: Duration,
+        ) -> Result<ScheduleId, ScheduleError> {
             Ok(ScheduleId("schedule".to_string()))
         }
 
@@ -566,7 +963,10 @@ mod tests {
             Ok(ResumeToken(format!("token-{}", uuid::Uuid::new_v4())))
         }
 
-        async fn resolve_token(&self, _token: &ResumeToken) -> Result<CheckpointHandle, TokenError> {
+        async fn resolve_token(
+            &self,
+            _token: &ResumeToken,
+        ) -> Result<CheckpointHandle, TokenError> {
             Err(TokenError::NotFound)
         }
 
@@ -911,12 +1311,9 @@ mod tests {
             after: after.clone(),
         });
 
-        let runtime = HostRuntime::with_plugins(
-            FlowExecutor::new(Arc::new(registry)),
-            ir,
-            vec![plugin],
-        )
-        .with_resource_bag(resource_bag_with_checkpoint());
+        let runtime =
+            HostRuntime::with_plugins(FlowExecutor::new(Arc::new(registry)), ir, vec![plugin])
+                .with_resource_bag(resource_bag_with_checkpoint());
         let mut invocation = Invocation::new("trigger", "capture", serde_json::json!({"ok": true}));
         invocation
             .metadata_mut()
@@ -1048,8 +1445,8 @@ mod tests {
         builder.connect(&trigger, &kv_node);
         let ir = Arc::new(validate(&builder.build()).expect("flow validates"));
 
-        let resources = resource_bag_with_checkpoint()
-            .with_kv(Arc::new(capabilities::kv::MemoryKv::new()));
+        let resources =
+            resource_bag_with_checkpoint().with_kv(Arc::new(capabilities::kv::MemoryKv::new()));
         let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), ir)
             .with_resource_bag(resources);
         let invocation = Invocation::new("trigger", "kv", serde_json::json!({"ok": true}));
@@ -1075,13 +1472,11 @@ mod tests {
             )
             .unwrap();
         registry
-            .register_fn(
-                "tests::sink",
-                |value: JsonValue| async move { Ok(value) },
-            )
+            .register_fn("tests::sink", |value: JsonValue| async move { Ok(value) })
             .unwrap();
 
-        let mut builder = FlowBuilder::new("preflight_checkpoint", Version::new(1, 0, 0), Profile::Dev);
+        let mut builder =
+            FlowBuilder::new("preflight_checkpoint", Version::new(1, 0, 0), Profile::Dev);
         let trigger = builder
             .add_node(
                 "trigger",
@@ -1139,10 +1534,7 @@ mod tests {
             )
             .unwrap();
         registry
-            .register_fn(
-                "tests::sink",
-                |value: JsonValue| async move { Ok(value) },
-            )
+            .register_fn("tests::sink", |value: JsonValue| async move { Ok(value) })
             .unwrap();
 
         let mut builder = FlowBuilder::new(
@@ -1280,7 +1672,8 @@ mod tests {
             )
             .unwrap();
 
-        let mut builder = FlowBuilder::new("preflight_callback", Version::new(1, 0, 0), Profile::Dev);
+        let mut builder =
+            FlowBuilder::new("preflight_callback", Version::new(1, 0, 0), Profile::Dev);
         let trigger = builder
             .add_node(
                 "trigger",
@@ -1317,8 +1710,8 @@ mod tests {
         }
         let ir = Arc::new(validate(&flow).expect("flow validates"));
 
-        let resources = resource_bag_with_checkpoint()
-            .with_resume_scheduler(Arc::new(StubResumeScheduler));
+        let resources =
+            resource_bag_with_checkpoint().with_resume_scheduler(Arc::new(StubResumeScheduler));
         let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), ir)
             .with_resource_bag(resources);
         let invocation = Invocation::new("trigger", "callback", serde_json::json!({"ok": true}));
@@ -1342,10 +1735,7 @@ mod tests {
             )
             .unwrap();
         registry
-            .register_fn(
-                "tests::sink",
-                |value: JsonValue| async move { Ok(value) },
-            )
+            .register_fn("tests::sink", |value: JsonValue| async move { Ok(value) })
             .unwrap();
 
         let mut builder = FlowBuilder::new("preflight_blob", Version::new(1, 0, 0), Profile::Dev);
@@ -1451,7 +1841,8 @@ mod tests {
         builder.connect(&wait, &capture);
 
         let ir = Arc::new(validate(&builder.build()).expect("flow validates"));
-        let resources = resource_bag_with_checkpoint().with_resume_scheduler(Arc::new(StubResumeScheduler));
+        let resources =
+            resource_bag_with_checkpoint().with_resume_scheduler(Arc::new(StubResumeScheduler));
         let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), ir)
             .with_resource_bag(resources);
 
@@ -1461,7 +1852,8 @@ mod tests {
             until: None,
             payload: payload.clone(),
         };
-        let invocation = Invocation::new("trigger", "capture", serde_json::to_value(input).unwrap());
+        let invocation =
+            Invocation::new("trigger", "capture", serde_json::to_value(input).unwrap());
 
         let result = runtime.execute(invocation).await.expect("exec ok");
         let output = match result {
@@ -1476,6 +1868,141 @@ mod tests {
 
         assert_eq!(output.payload, payload);
         assert!(output.scheduled_at_ms > 0);
+    }
+
+    #[tokio::test]
+    async fn timer_wait_checkpoint_resumes_with_minimal_frame() {
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn(
+                "tests::trigger",
+                |value: stdlib::timer::TimerWaitInput| async move { Ok(value) },
+            )
+            .unwrap();
+        registry
+            .register_fn(
+                "tests::capture_resume",
+                |value: stdlib::timer::TimerWaitOutput| async move {
+                    Ok(serde_json::json!({
+                        "resumed": true,
+                        "scheduled_at_ms": value.scheduled_at_ms,
+                        "payload": value.payload,
+                    }))
+                },
+            )
+            .unwrap();
+        stdlib::timer::timer_wait_register(&mut registry).unwrap();
+
+        let mut builder = FlowBuilder::new("timer_resume", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let wait = builder
+            .add_node("wait", stdlib::timer::timer_wait_node_spec())
+            .unwrap();
+        let capture = builder
+            .add_node(
+                "capture",
+                &NodeSpec::inline(
+                    "tests::capture_resume",
+                    "Capture",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &wait);
+        builder.connect(&wait, &capture);
+
+        let ir = Arc::new(validate(&builder.build()).expect("flow validates"));
+        let checkpoint_store = Arc::new(MemoryCheckpointStore::default());
+        let resources = ResourceBag::new()
+            .with_checkpoint_store(Arc::clone(&checkpoint_store))
+            .with_resume_scheduler(Arc::new(StubResumeScheduler));
+        let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), Arc::clone(&ir))
+            .with_resource_bag(resources);
+
+        let payload = serde_json::json!({"ok": true});
+        let input = stdlib::timer::TimerWaitInput {
+            duration: Some(Duration::from_millis(10)),
+            until: None,
+            payload: payload.clone(),
+        };
+        let invocation =
+            Invocation::new("trigger", "capture", serde_json::to_value(input).unwrap());
+
+        let halted = runtime.execute(invocation).await.expect("exec ok");
+        let halted_payload = match halted {
+            ExecutionResult::Halt { alias, payload } => {
+                assert_eq!(alias, "wait");
+                payload
+            }
+            _ => panic!("unexpected result variant"),
+        };
+
+        let checkpoint_id = halted_payload
+            .get("checkpoint_id")
+            .and_then(|value| value.as_str())
+            .expect("checkpoint_id in halt payload")
+            .to_string();
+
+        let handles = checkpoint_store
+            .list(CheckpointFilter {
+                flow_id: Some(ir.flow().id.clone()),
+                run_id: None,
+                status: None,
+            })
+            .await
+            .expect("list checkpoints");
+        assert_eq!(handles.len(), 1);
+
+        let record = checkpoint_store
+            .get(&handles[0])
+            .await
+            .expect("checkpoint exists");
+        let resume_frame = record
+            .state
+            .data
+            .get("resume_frame")
+            .expect("resume frame in state data");
+        assert!(resume_frame.get("halt_alias").is_some());
+        assert!(resume_frame.get("halt_payload").is_some());
+        assert!(resume_frame.get("capture_alias").is_some());
+        assert!(record.state.data.get("node_outputs").is_none());
+        assert!(record.state.data.get("history").is_none());
+
+        let resumed = runtime.resume(&checkpoint_id).await.expect("resume ok");
+        match resumed {
+            ExecutionResult::Value(value) => {
+                assert_eq!(value.get("resumed").and_then(|v| v.as_bool()), Some(true));
+                assert_eq!(value.get("payload"), Some(&payload));
+            }
+            _ => panic!("unexpected resume result variant"),
+        }
+
+        let remaining = checkpoint_store
+            .list(CheckpointFilter {
+                flow_id: Some(ir.flow().id.clone()),
+                run_id: None,
+                status: None,
+            })
+            .await
+            .expect("list checkpoints after resume");
+        assert!(remaining.is_empty());
     }
 
     #[tokio::test]
@@ -1540,7 +2067,8 @@ mod tests {
             timeout: Some(Duration::from_secs(1)),
             context: serde_json::json!({"source": "test"}),
         };
-        let invocation = Invocation::new("trigger", "capture", serde_json::to_value(input).unwrap());
+        let invocation =
+            Invocation::new("trigger", "capture", serde_json::to_value(input).unwrap());
 
         let result = runtime.execute(invocation).await.expect("exec ok");
         let output = match result {

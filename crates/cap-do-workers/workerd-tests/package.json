@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "cargo install worker-build 2>/dev/null || true && worker-build --release",
-    "test": "vitest run"
+    "test": "npm run build && vitest run"
   },
   "devDependencies": {
     "miniflare": "^3.20241205.0",

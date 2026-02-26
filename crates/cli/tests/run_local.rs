@@ -3,8 +3,8 @@ use std::process::Command;
 use assert_cmd::prelude::*;
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
-use serde_json::json;
 use serde_json::Value;
+use serde_json::json;
 use tempfile::tempdir;
 
 #[test]
@@ -164,11 +164,13 @@ fn run_local_streams_events() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let second: Value = serde_json::from_str(events[1])?;
-    assert!(second
-        .get("stage")
-        .and_then(Value::as_str)
-        .map(|stage| stage.starts_with("update_"))
-        .unwrap_or(false));
+    assert!(
+        second
+            .get("stage")
+            .and_then(Value::as_str)
+            .map(|stage| stage.starts_with("update_"))
+            .unwrap_or(false)
+    );
 
     Ok(())
 }

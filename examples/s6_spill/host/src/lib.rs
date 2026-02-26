@@ -60,8 +60,8 @@ mod tests {
             lf_burst_index: None,
         };
         let payload = serde_json::to_value(&batch).expect("serialize batch");
-        let resources = ResourceBag::new()
-            .with_blob(Arc::new(capabilities::blob::MemoryBlobStore::new()));
+        let resources =
+            ResourceBag::new().with_blob(Arc::new(capabilities::blob::MemoryBlobStore::new()));
         let result = bundle
             .executor()
             .with_resource_bag(resources)

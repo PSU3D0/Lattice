@@ -54,6 +54,11 @@
 use base64::Engine;
 use capabilities::Capability;
 use capabilities::dedupe::{self, DedupeError, DedupeStore};
+use capabilities::durability::{
+    CheckpointError, CheckpointFilter, CheckpointHandle, CheckpointRecord, CheckpointStore, Lease,
+    ResumeScheduler, ResumeSignalSource, ResumeToken, ScheduleError, ScheduleId, ScheduleStatus,
+    TokenConfig, TokenError,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::time::Duration;
@@ -89,6 +94,138 @@ pub const DEFAULT_TTL_SECONDS: u64 = 24 * 60 * 60;
 /// DO alarms have millisecond precision but scheduling too frequently
 /// can cause issues.
 pub const MIN_ALARM_MS: u64 = 1000;
+
+/// Prefix for persisted durability checkpoints.
+#[cfg(target_arch = "wasm32")]
+pub const CHECKPOINT_KEY_PREFIX: &str = "ckpt:";
+
+/// Prefix for checkpoint lease records.
+#[cfg(target_arch = "wasm32")]
+pub const CHECKPOINT_LEASE_PREFIX: &str = "ckpt_lease:";
+
+#[cfg(target_arch = "wasm32")]
+fn checkpoint_key(id: &str) -> String {
+    format!("{CHECKPOINT_KEY_PREFIX}{id}")
+}
+
+#[cfg(target_arch = "wasm32")]
+fn checkpoint_lease_key(id: &str) -> String {
+    format!("{CHECKPOINT_LEASE_PREFIX}{id}")
+}
+
+#[cfg(target_arch = "wasm32")]
+pub const SCHEDULE_KEY_PREFIX: &str = "sched:";
+
+#[cfg(target_arch = "wasm32")]
+pub const RESUME_TOKEN_KEY_PREFIX: &str = "resume_token:";
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredLease {
+    lease_id: String,
+    expires_at_ms: u64,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum StoredScheduleStatus {
+    Pending,
+    Fired { fired_at_ms: u64 },
+    Cancelled,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredSchedule {
+    checkpoint_handle: CheckpointHandle,
+    fires_at_ms: u64,
+    status: StoredScheduleStatus,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredToken {
+    checkpoint_handle: CheckpointHandle,
+    expires_at_ms: Option<u64>,
+    single_use: bool,
+    used: bool,
+    metadata: Option<JsonValue>,
+}
+
+#[cfg(target_arch = "wasm32")]
+fn schedule_key(id: &str) -> String {
+    format!("{SCHEDULE_KEY_PREFIX}{id}")
+}
+
+#[cfg(target_arch = "wasm32")]
+fn resume_token_key(token: &str) -> String {
+    format!("{RESUME_TOKEN_KEY_PREFIX}{token}")
+}
+
+#[cfg(target_arch = "wasm32")]
+fn now_ms_u64() -> u64 {
+    js_sys::Date::now() as u64
+}
+
+#[cfg(target_arch = "wasm32")]
+fn map_do_checkpoint_error(err: DoError) -> CheckpointError {
+    match err {
+        DoError::RuntimeUnavailable => {
+            CheckpointError::Storage("durability runtime unavailable".to_string())
+        }
+        DoError::StorageError(msg)
+        | DoError::BindingError(msg)
+        | DoError::IdError(msg)
+        | DoError::StubError(msg)
+        | DoError::FetchError(msg)
+        | DoError::AlarmError(msg)
+        | DoError::SqlError(msg)
+        | DoError::SerdeError(msg)
+        | DoError::InvalidResponse(msg)
+        | DoError::InvalidRequest(msg) => CheckpointError::Storage(msg),
+        DoError::KeyTooLarge(size) => CheckpointError::Storage(format!("key too large: {size}")),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn map_do_schedule_error(err: DoError) -> ScheduleError {
+    match err {
+        DoError::RuntimeUnavailable => {
+            ScheduleError::Unavailable("durability runtime unavailable".to_string())
+        }
+        DoError::StorageError(msg)
+        | DoError::BindingError(msg)
+        | DoError::IdError(msg)
+        | DoError::StubError(msg)
+        | DoError::FetchError(msg)
+        | DoError::AlarmError(msg)
+        | DoError::SqlError(msg)
+        | DoError::SerdeError(msg)
+        | DoError::InvalidResponse(msg)
+        | DoError::InvalidRequest(msg) => ScheduleError::Unavailable(msg),
+        DoError::KeyTooLarge(size) => ScheduleError::Unavailable(format!("key too large: {size}")),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn map_do_token_error(err: DoError) -> TokenError {
+    match err {
+        DoError::RuntimeUnavailable => {
+            TokenError::Generation("durability runtime unavailable".to_string())
+        }
+        DoError::StorageError(msg)
+        | DoError::BindingError(msg)
+        | DoError::IdError(msg)
+        | DoError::StubError(msg)
+        | DoError::FetchError(msg)
+        | DoError::AlarmError(msg)
+        | DoError::SqlError(msg)
+        | DoError::SerdeError(msg)
+        | DoError::InvalidResponse(msg)
+        | DoError::InvalidRequest(msg) => TokenError::Generation(msg),
+        DoError::KeyTooLarge(size) => TokenError::Generation(format!("key too large: {size}")),
+    }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Error Types
@@ -201,6 +338,8 @@ pub enum DoRequest {
     AlarmSet { scheduled_ms: i64 },
     /// Delete any scheduled alarm.
     AlarmDelete,
+    /// Process due schedule records (alarm tick path).
+    ProcessDueSchedules,
     /// Execute a SQLite statement.
     SqlExec {
         query: String,
@@ -226,22 +365,41 @@ pub enum DoRequest {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum DoResponse {
-    PutIfAbsent { inserted: bool },
-    StorageGet { value: Option<StorageValue> },
+    PutIfAbsent {
+        inserted: bool,
+    },
+    StorageGet {
+        value: Option<StorageValue>,
+    },
     StoragePut,
-    StorageDelete { deleted: bool },
-    StorageList { keys: Vec<String> },
-    AlarmGet { alarm_ms: Option<i64> },
+    StorageDelete {
+        deleted: bool,
+    },
+    StorageList {
+        keys: Vec<String>,
+    },
+    AlarmGet {
+        alarm_ms: Option<i64>,
+    },
     AlarmSet,
     AlarmDelete,
-    SqlExec { rows: Vec<JsonValue> },
-    SqlExecRaw { rows: Vec<Vec<SqlValue>> },
+    ProcessDueSchedules {
+        dispatched: usize,
+    },
+    SqlExec {
+        rows: Vec<JsonValue>,
+    },
+    SqlExecRaw {
+        rows: Vec<Vec<SqlValue>>,
+    },
     Sequence {
         inserted: bool,
         seq: u64,
         first_seen_ts: i64,
     },
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -310,11 +468,11 @@ mod wasm {
     use super::*;
     use async_trait::async_trait;
     use wasm_bindgen::JsValue;
-    use worker::{
-        durable_object, DurableObject, Env, ListOptions, ObjectId, ObjectNamespace, Request,
-        RequestInit, Response, ScheduledTime, SqlStorageValue, State, Stub,
-    };
     use worker::Result as WorkerResult;
+    use worker::{
+        DurableObject, Env, Fetch, ListOptions, Method, ObjectId, ObjectNamespace, Request,
+        RequestInit, Response, ScheduledTime, SqlStorageValue, State, Stub, durable_object,
+    };
 
     const DEFAULT_SCOPE: &str = "dedupe";
 
@@ -345,7 +503,9 @@ mod wasm {
                 SqlStorageValue::Integer(v) => SqlValue::Integer(v),
                 SqlStorageValue::Float(v) => SqlValue::Float(v),
                 SqlStorageValue::String(v) => SqlValue::String(v),
-                SqlStorageValue::Blob(v) => SqlValue::Blob(base64::engine::general_purpose::STANDARD.encode(v)),
+                SqlStorageValue::Blob(v) => {
+                    SqlValue::Blob(base64::engine::general_purpose::STANDARD.encode(v))
+                }
             }
         }
     }
@@ -437,23 +597,25 @@ mod wasm {
     #[durable_object]
     pub struct FlowDurableObject {
         state: State,
+        env: Env,
     }
 
     impl DurableObject for FlowDurableObject {
-        fn new(state: State, _env: Env) -> Self {
-            Self { state }
+        fn new(state: State, env: Env) -> Self {
+            Self { state, env }
         }
 
         async fn fetch(&self, mut req: Request) -> WorkerResult<Response> {
             let body = req.text().await.unwrap_or_default();
             let parsed: Result<DoRequest, _> = serde_json::from_str(&body);
             let response = match parsed {
-                Ok(request) => self
-                    .handle_request(request)
-                    .await
-                    .unwrap_or_else(|err| DoResponse::Error {
-                        message: err.to_string(),
-                    }),
+                Ok(request) => {
+                    self.handle_request(request)
+                        .await
+                        .unwrap_or_else(|err| DoResponse::Error {
+                            message: err.to_string(),
+                        })
+                }
                 Err(err) => DoResponse::Error {
                     message: format!("invalid request body: {err}"),
                 },
@@ -463,7 +625,14 @@ mod wasm {
 
         async fn alarm(&self) -> WorkerResult<Response> {
             let removed = self.clear_expired_entries().await.unwrap_or(0);
-            Response::ok(&format!("expired_entries={removed}"))
+            let dispatched = self.process_due_schedules().await.unwrap_or_else(|err| {
+                tracing::warn!("failed to process due schedules in alarm: {err}");
+                0
+            });
+            Response::from_json(&serde_json::json!({
+                "expired_entries": removed,
+                "dispatched": dispatched,
+            }))
         }
     }
 
@@ -482,7 +651,11 @@ mod wasm {
                     let value = self.get_value(&key).await?;
                     Ok(DoResponse::StorageGet { value })
                 }
-                DoRequest::StoragePut { key, value, ttl_secs } => {
+                DoRequest::StoragePut {
+                    key,
+                    value,
+                    ttl_secs,
+                } => {
                     self.put_value(&key, value, ttl_secs).await?;
                     Ok(DoResponse::StoragePut)
                 }
@@ -490,8 +663,14 @@ mod wasm {
                     let deleted = self.delete_storage_key(&key).await?;
                     Ok(DoResponse::StorageDelete { deleted })
                 }
-                DoRequest::StorageList { prefix, start, limit } => {
-                    let keys = self.list_keys(prefix.as_deref(), start.as_deref(), limit).await?;
+                DoRequest::StorageList {
+                    prefix,
+                    start,
+                    limit,
+                } => {
+                    let keys = self
+                        .list_keys(prefix.as_deref(), start.as_deref(), limit)
+                        .await?;
                     Ok(DoResponse::StorageList { keys })
                 }
                 DoRequest::AlarmGet => {
@@ -515,7 +694,15 @@ mod wasm {
                         .map_err(|e| DoError::AlarmError(e.to_string()))?;
                     Ok(DoResponse::AlarmDelete)
                 }
-                DoRequest::SqlExec { query, bindings, mode } => {
+                DoRequest::ProcessDueSchedules => {
+                    let dispatched = self.process_due_schedules().await?;
+                    Ok(DoResponse::ProcessDueSchedules { dispatched })
+                }
+                DoRequest::SqlExec {
+                    query,
+                    bindings,
+                    mode,
+                } => {
                     let sql = self.state.storage().sql();
                     let bindings: Vec<SqlStorageValue> = bindings
                         .into_iter()
@@ -720,7 +907,10 @@ mod wasm {
             }
 
             let expires_at_ms = ttl_secs.map(|ttl| now_ms() + ttl as i64 * 1000);
-            let stored = StoredValue { value, expires_at_ms };
+            let stored = StoredValue {
+                value,
+                expires_at_ms,
+            };
             self.state
                 .storage()
                 .put(key, stored)
@@ -887,6 +1077,143 @@ mod wasm {
                     .map_err(|e| DoError::AlarmError(e.to_string()))?;
             }
             Ok(removed)
+        }
+
+        async fn process_due_schedules(&self) -> Result<usize, DoError> {
+            let keys = self
+                .list_keys(Some(SCHEDULE_KEY_PREFIX), None, None)
+                .await
+                .map_err(|err| DoError::StorageError(err.to_string()))?;
+            let mut dispatched = 0usize;
+            let mut next_alarm: Option<i64> = None;
+            let now_ms = now_ms_u64();
+
+            for key in keys {
+                let Some(StorageValue::Json(raw_schedule)) = self.get_value(&key).await? else {
+                    continue;
+                };
+                let mut schedule: StoredSchedule = serde_json::from_value(raw_schedule)
+                    .map_err(|err| DoError::StorageError(err.to_string()))?;
+
+                if !matches!(schedule.status, StoredScheduleStatus::Pending) {
+                    continue;
+                }
+
+                if schedule.fires_at_ms <= now_ms {
+                    self.spawn_resume_dispatch(schedule.checkpoint_handle.clone(), schedule.fires_at_ms);
+                    schedule.status = StoredScheduleStatus::Fired {
+                        fired_at_ms: now_ms,
+                    };
+                    let value = serde_json::to_value(&schedule)
+                        .map(StorageValue::Json)
+                        .map_err(|err| DoError::SerdeError(err.to_string()))?;
+                    self.put_value(&key, value, None).await?;
+                    dispatched += 1;
+                } else {
+                    let fire_at = i64::try_from(schedule.fires_at_ms).unwrap_or(i64::MAX);
+                    next_alarm = Some(match next_alarm {
+                        Some(current) => current.min(fire_at),
+                        None => fire_at,
+                    });
+                }
+            }
+
+            if let Some(next_alarm) = next_alarm {
+                self.set_alarm_at(next_alarm).await?;
+            } else {
+                self.state
+                    .storage()
+                    .delete_alarm()
+                    .await
+                    .map_err(|e| DoError::AlarmError(e.to_string()))?;
+            }
+
+            Ok(dispatched)
+        }
+
+        fn spawn_resume_dispatch(&self, handle: CheckpointHandle, fires_at_ms: u64) {
+            let env = self.env.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                if let Err(err) = Self::dispatch_resume_with_env(env, &handle, fires_at_ms).await {
+                    tracing::warn!(
+                        "failed to dispatch scheduled resume for checkpoint {}: {err}",
+                        handle.checkpoint_id
+                    );
+                }
+            });
+        }
+
+        async fn dispatch_resume_with_env(
+            env: Env,
+            handle: &CheckpointHandle,
+            fires_at_ms: u64,
+        ) -> Result<(), DoError> {
+            let dispatch_url = env
+                .var("LATTICE_RESUME_DISPATCH_URL")
+                .ok()
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "http://internal/__lattice/resume".to_string());
+            let dispatch_service = env
+                .var("LATTICE_RESUME_SERVICE_BINDING")
+                .ok()
+                .map(|value| value.to_string());
+            let internal_token = env
+                .var("LATTICE_INTERNAL_RESUME_TOKEN")
+                .ok()
+                .map(|value| value.to_string());
+
+            let body = serde_json::to_string(&serde_json::json!({
+                "checkpoint_id": handle.checkpoint_id,
+                "flow_id": handle.flow_id.as_str(),
+                "run_id": handle.run_id,
+                "fires_at_ms": fires_at_ms,
+            }))
+            .map_err(|err| DoError::SerdeError(err.to_string()))?;
+
+            let mut init = RequestInit::new();
+            init.with_method(Method::Post);
+            init.with_body(Some(JsValue::from_str(&body)));
+            let mut request =
+                Request::new_with_init(&dispatch_url, &init).map_err(|e| DoError::FetchError(e.to_string()))?;
+            request
+                .headers_mut()
+                .map_err(|e| DoError::FetchError(e.to_string()))?
+                .set("content-type", "application/json")
+                .map_err(|e| DoError::FetchError(e.to_string()))?;
+            if let Some(token) = internal_token {
+                request
+                    .headers_mut()
+                    .map_err(|e| DoError::FetchError(e.to_string()))?
+                    .set("x-lattice-internal-token", &token)
+                    .map_err(|e| DoError::FetchError(e.to_string()))?;
+            }
+
+            let mut response: Response = if let Some(binding) = dispatch_service {
+                let fetcher = env
+                    .service(&binding)
+                    .map_err(|e| DoError::BindingError(e.to_string()))?;
+                let http_response: worker::HttpResponse = fetcher
+                    .fetch_request(request)
+                    .await
+                    .map_err(|e| DoError::FetchError(e.to_string()))?;
+                Response::try_from(http_response)
+                    .map_err(|e| DoError::FetchError(e.to_string()))?
+            } else {
+                Fetch::Request(request)
+                    .send()
+                    .await
+                    .map_err(|e| DoError::FetchError(e.to_string()))?
+            };
+
+            let status = response.status_code();
+            if (200..300).contains(&status) || status == 202 {
+                return Ok(());
+            }
+
+            let body = response.text().await.unwrap_or_default();
+            Err(DoError::FetchError(format!(
+                "resume dispatch failed with status {status}: {body}"
+            )))
         }
     }
 
@@ -1081,6 +1408,16 @@ mod wasm {
             }
         }
 
+        pub async fn process_due_schedules(&self) -> Result<usize, DoError> {
+            match self.send_request(DoRequest::ProcessDueSchedules).await? {
+                DoResponse::ProcessDueSchedules { dispatched } => Ok(dispatched),
+                DoResponse::Error { message } => Err(DoError::AlarmError(message)),
+                other => Err(DoError::InvalidResponse(format!(
+                    "unexpected response: {other:?}"
+                ))),
+            }
+        }
+
         pub async fn sql_exec_json(
             &self,
             query: impl Into<String>,
@@ -1128,7 +1465,11 @@ mod wasm {
             ttl: Duration,
             now_ms: Option<i64>,
         ) -> Result<SequenceResult, DoError> {
-            let ttl_secs = if ttl.is_zero() { 0 } else { ttl.as_secs().max(1) };
+            let ttl_secs = if ttl.is_zero() {
+                0
+            } else {
+                ttl.as_secs().max(1)
+            };
             let request = DoRequest::Sequence {
                 idempotency_key: idempotency_key.into(),
                 payload_hash: payload_hash.into(),
@@ -1153,7 +1494,136 @@ mod wasm {
             }
         }
 
-        async fn put_if_absent_local(&self, key: &[u8], ttl: Duration) -> Result<bool, DedupeError> {
+        async fn read_checkpoint_record(
+            &self,
+            key: &str,
+        ) -> Result<Option<CheckpointRecord>, CheckpointError> {
+            match self
+                .storage_get(key)
+                .await
+                .map_err(map_do_checkpoint_error)?
+            {
+                None => Ok(None),
+                Some(StorageValue::Json(value)) => serde_json::from_value(value)
+                    .map(Some)
+                    .map_err(|err| CheckpointError::Storage(err.to_string())),
+                Some(StorageValue::Bytes(_)) => Err(CheckpointError::Storage(
+                    "checkpoint payload stored as bytes".to_string(),
+                )),
+            }
+        }
+
+        async fn read_checkpoint_lease(
+            &self,
+            key: &str,
+        ) -> Result<Option<StoredLease>, CheckpointError> {
+            match self
+                .storage_get(key)
+                .await
+                .map_err(map_do_checkpoint_error)?
+            {
+                None => Ok(None),
+                Some(StorageValue::Json(value)) => serde_json::from_value(value)
+                    .map(Some)
+                    .map_err(|err| CheckpointError::Storage(err.to_string())),
+                Some(StorageValue::Bytes(_)) => Err(CheckpointError::Storage(
+                    "checkpoint lease payload stored as bytes".to_string(),
+                )),
+            }
+        }
+
+        async fn put_checkpoint_lease(
+            &self,
+            key: &str,
+            lease: &StoredLease,
+        ) -> Result<(), CheckpointError> {
+            let value = serde_json::to_value(lease)
+                .map(StorageValue::Json)
+                .map_err(|err| CheckpointError::Storage(err.to_string()))?;
+            self.storage_put(key, value, None)
+                .await
+                .map_err(map_do_checkpoint_error)
+        }
+
+        async fn read_schedule(&self, key: &str) -> Result<Option<StoredSchedule>, ScheduleError> {
+            match self.storage_get(key).await.map_err(map_do_schedule_error)? {
+                None => Ok(None),
+                Some(StorageValue::Json(value)) => serde_json::from_value(value)
+                    .map(Some)
+                    .map_err(|err| ScheduleError::Unavailable(err.to_string())),
+                Some(StorageValue::Bytes(_)) => Err(ScheduleError::Unavailable(
+                    "schedule payload stored as bytes".to_string(),
+                )),
+            }
+        }
+
+        async fn put_schedule(
+            &self,
+            key: &str,
+            schedule: &StoredSchedule,
+        ) -> Result<(), ScheduleError> {
+            let value = serde_json::to_value(schedule)
+                .map(StorageValue::Json)
+                .map_err(|err| ScheduleError::Unavailable(err.to_string()))?;
+            self.storage_put(key, value, None)
+                .await
+                .map_err(map_do_schedule_error)
+        }
+
+        async fn refresh_schedule_alarm(&self) -> Result<(), ScheduleError> {
+            let keys = self
+                .storage_list(StorageListOptions::default().with_prefix(SCHEDULE_KEY_PREFIX))
+                .await
+                .map_err(map_do_schedule_error)?;
+            let mut next_fire_ms: Option<u64> = None;
+
+            for key in keys {
+                let Some(schedule) = self.read_schedule(&key).await? else {
+                    continue;
+                };
+                if matches!(schedule.status, StoredScheduleStatus::Pending) {
+                    next_fire_ms = Some(match next_fire_ms {
+                        Some(current) => current.min(schedule.fires_at_ms),
+                        None => schedule.fires_at_ms,
+                    });
+                }
+            }
+
+            match next_fire_ms {
+                Some(fire_at_ms) => self
+                    .alarm_set(i64::try_from(fire_at_ms).unwrap_or(i64::MAX))
+                    .await
+                    .map_err(map_do_schedule_error),
+                None => self.alarm_delete().await.map_err(map_do_schedule_error),
+            }
+        }
+
+        async fn read_token(&self, key: &str) -> Result<Option<StoredToken>, TokenError> {
+            match self.storage_get(key).await.map_err(map_do_token_error)? {
+                None => Ok(None),
+                Some(StorageValue::Json(value)) => serde_json::from_value(value)
+                    .map(Some)
+                    .map_err(|err| TokenError::Generation(err.to_string())),
+                Some(StorageValue::Bytes(_)) => Err(TokenError::Generation(
+                    "resume token payload stored as bytes".to_string(),
+                )),
+            }
+        }
+
+        async fn put_token(&self, key: &str, token: &StoredToken) -> Result<(), TokenError> {
+            let value = serde_json::to_value(token)
+                .map(StorageValue::Json)
+                .map_err(|err| TokenError::Generation(err.to_string()))?;
+            self.storage_put(key, value, None)
+                .await
+                .map_err(map_do_token_error)
+        }
+
+        async fn put_if_absent_local(
+            &self,
+            key: &[u8],
+            ttl: Duration,
+        ) -> Result<bool, DedupeError> {
             tracing::debug!(
                 key_len = key.len(),
                 ttl_secs = ttl.as_secs(),
@@ -1207,6 +1677,7 @@ mod wasm {
                 | DoRequest::AlarmGet
                 | DoRequest::AlarmSet { .. }
                 | DoRequest::AlarmDelete
+                | DoRequest::ProcessDueSchedules
                 | DoRequest::SqlExec { .. }
                 | DoRequest::Sequence { .. } => None,
             };
@@ -1234,6 +1705,312 @@ mod wasm {
 
         async fn forget(&self, key: &[u8]) -> Result<(), DedupeError> {
             self.forget_local(key).await
+        }
+    }
+
+    #[async_trait(?Send)]
+    impl CheckpointStore for WorkersDurableObject {
+        async fn put(&self, record: CheckpointRecord) -> Result<CheckpointHandle, CheckpointError> {
+            let key = checkpoint_key(&record.checkpoint_id);
+            let ttl = record
+                .ttl_ms
+                .filter(|ttl_ms| *ttl_ms > 0)
+                .map(Duration::from_millis);
+            let value = serde_json::to_value(&record)
+                .map(StorageValue::Json)
+                .map_err(|err| CheckpointError::Storage(err.to_string()))?;
+            self.storage_put(&key, value, ttl)
+                .await
+                .map_err(map_do_checkpoint_error)?;
+            Ok(CheckpointHandle {
+                checkpoint_id: record.checkpoint_id,
+                flow_id: record.flow_id,
+                run_id: record.run_id,
+            })
+        }
+
+        async fn get(
+            &self,
+            handle: &CheckpointHandle,
+        ) -> Result<CheckpointRecord, CheckpointError> {
+            let key = checkpoint_key(&handle.checkpoint_id);
+            self.read_checkpoint_record(&key)
+                .await?
+                .ok_or(CheckpointError::NotFound)
+        }
+
+        async fn ack(&self, handle: &CheckpointHandle) -> Result<(), CheckpointError> {
+            let key = checkpoint_key(&handle.checkpoint_id);
+            let deleted = self
+                .storage_delete(&key)
+                .await
+                .map_err(map_do_checkpoint_error)?;
+            let lease_key = checkpoint_lease_key(&handle.checkpoint_id);
+            let _ = self
+                .storage_delete(&lease_key)
+                .await
+                .map_err(map_do_checkpoint_error)?;
+            if deleted {
+                Ok(())
+            } else {
+                Err(CheckpointError::NotFound)
+            }
+        }
+
+        async fn lease(
+            &self,
+            handle: &CheckpointHandle,
+            ttl: Duration,
+        ) -> Result<Lease, CheckpointError> {
+            let key = checkpoint_key(&handle.checkpoint_id);
+            if self.read_checkpoint_record(&key).await?.is_none() {
+                return Err(CheckpointError::NotFound);
+            }
+
+            let lease_key = checkpoint_lease_key(&handle.checkpoint_id);
+            let now_ms = now_ms_u64();
+            if let Some(existing) = self.read_checkpoint_lease(&lease_key).await? {
+                if existing.expires_at_ms > now_ms {
+                    return Err(CheckpointError::LeaseConflict);
+                }
+            }
+
+            let ttl_ms = u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX).max(1);
+            let expires_at_ms = now_ms.saturating_add(ttl_ms);
+            let lease = StoredLease {
+                lease_id: format!("lease:{}:{expires_at_ms}", handle.checkpoint_id),
+                expires_at_ms,
+            };
+            self.put_checkpoint_lease(&lease_key, &lease).await?;
+            Ok(Lease {
+                lease_id: lease.lease_id,
+                expires_at_ms,
+            })
+        }
+
+        async fn release_lease(&self, lease: Lease) -> Result<(), CheckpointError> {
+            let keys = self
+                .storage_list(StorageListOptions::default().with_prefix(CHECKPOINT_LEASE_PREFIX))
+                .await
+                .map_err(map_do_checkpoint_error)?;
+            for key in keys {
+                let Some(stored) = self.read_checkpoint_lease(&key).await? else {
+                    continue;
+                };
+                if stored.lease_id == lease.lease_id {
+                    let _ = self
+                        .storage_delete(&key)
+                        .await
+                        .map_err(map_do_checkpoint_error)?;
+                    break;
+                }
+            }
+            Ok(())
+        }
+
+        async fn list(
+            &self,
+            filter: CheckpointFilter,
+        ) -> Result<Vec<CheckpointHandle>, CheckpointError> {
+            let keys = self
+                .storage_list(StorageListOptions::default().with_prefix(CHECKPOINT_KEY_PREFIX))
+                .await
+                .map_err(map_do_checkpoint_error)?;
+            let now_ms = now_ms_u64();
+            let mut handles = Vec::new();
+
+            for key in keys {
+                let Some(record) = self.read_checkpoint_record(&key).await? else {
+                    continue;
+                };
+
+                if let Some(flow_id) = &filter.flow_id {
+                    if &record.flow_id != flow_id {
+                        continue;
+                    }
+                }
+                if let Some(run_id) = &filter.run_id {
+                    if &record.run_id != run_id {
+                        continue;
+                    }
+                }
+
+                if let Some(status) = filter.status {
+                    let is_expired = record
+                        .ttl_ms
+                        .map(|ttl_ms| record.created_at_ms.saturating_add(ttl_ms) <= now_ms)
+                        .unwrap_or(false);
+                    match status {
+                        capabilities::durability::CheckpointStatus::Active if is_expired => {
+                            continue;
+                        }
+                        capabilities::durability::CheckpointStatus::Expired if !is_expired => {
+                            continue;
+                        }
+                        capabilities::durability::CheckpointStatus::Completed => continue,
+                        _ => {}
+                    }
+                }
+
+                handles.push(CheckpointHandle {
+                    checkpoint_id: record.checkpoint_id,
+                    flow_id: record.flow_id,
+                    run_id: record.run_id,
+                });
+            }
+
+            Ok(handles)
+        }
+    }
+
+    #[async_trait(?Send)]
+    impl ResumeScheduler for WorkersDurableObject {
+        async fn schedule_at(
+            &self,
+            handle: CheckpointHandle,
+            at_ms: u64,
+        ) -> Result<ScheduleId, ScheduleError> {
+            if at_ms == 0 {
+                return Err(ScheduleError::InvalidDelay(
+                    "schedule_at requires at_ms > 0".to_string(),
+                ));
+            }
+
+            let schedule_id = format!(
+                "sched:{}:{}:{}",
+                handle.checkpoint_id,
+                at_ms,
+                (js_sys::Math::random() * 1_000_000_000.0) as u64
+            );
+            let key = schedule_key(&schedule_id);
+            let schedule = StoredSchedule {
+                checkpoint_handle: handle,
+                fires_at_ms: at_ms,
+                status: StoredScheduleStatus::Pending,
+            };
+            self.put_schedule(&key, &schedule).await?;
+            self.refresh_schedule_alarm().await?;
+            Ok(ScheduleId(schedule_id))
+        }
+
+        async fn schedule_after(
+            &self,
+            handle: CheckpointHandle,
+            delay: Duration,
+        ) -> Result<ScheduleId, ScheduleError> {
+            if delay.is_zero() {
+                return Err(ScheduleError::InvalidDelay(
+                    "schedule_after requires non-zero delay".to_string(),
+                ));
+            }
+            let delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX);
+            let at_ms = now_ms_u64().saturating_add(delay_ms.max(1));
+            self.schedule_at(handle, at_ms).await
+        }
+
+        async fn cancel(&self, schedule_id: ScheduleId) -> Result<(), ScheduleError> {
+            let key = schedule_key(&schedule_id.0);
+            let mut schedule = self
+                .read_schedule(&key)
+                .await?
+                .ok_or(ScheduleError::NotFound)?;
+            schedule.status = StoredScheduleStatus::Cancelled;
+            self.put_schedule(&key, &schedule).await?;
+            self.refresh_schedule_alarm().await?;
+            Ok(())
+        }
+
+        async fn status(&self, schedule_id: ScheduleId) -> Result<ScheduleStatus, ScheduleError> {
+            let key = schedule_key(&schedule_id.0);
+            let mut schedule = self
+                .read_schedule(&key)
+                .await?
+                .ok_or(ScheduleError::NotFound)?;
+            if matches!(schedule.status, StoredScheduleStatus::Pending)
+                && schedule.fires_at_ms <= now_ms_u64()
+            {
+                schedule.status = StoredScheduleStatus::Fired {
+                    fired_at_ms: now_ms_u64(),
+                };
+                self.put_schedule(&key, &schedule).await?;
+                self.refresh_schedule_alarm().await?;
+            }
+
+            match schedule.status {
+                StoredScheduleStatus::Pending => Ok(ScheduleStatus::Pending {
+                    fires_at_ms: schedule.fires_at_ms,
+                }),
+                StoredScheduleStatus::Fired { fired_at_ms } => {
+                    Ok(ScheduleStatus::Fired { fired_at_ms })
+                }
+                StoredScheduleStatus::Cancelled => Ok(ScheduleStatus::Cancelled),
+            }
+        }
+    }
+
+    #[async_trait(?Send)]
+    impl ResumeSignalSource for WorkersDurableObject {
+        async fn create_token(
+            &self,
+            handle: &CheckpointHandle,
+            config: TokenConfig,
+        ) -> Result<ResumeToken, TokenError> {
+            let token = format!(
+                "rt:{}:{}",
+                now_ms_u64(),
+                (js_sys::Math::random() * 1_000_000_000.0) as u64
+            );
+            let key = resume_token_key(&token);
+            let expires_at_ms = config.ttl.map(|ttl| {
+                now_ms_u64().saturating_add(u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX))
+            });
+            let stored = StoredToken {
+                checkpoint_handle: handle.clone(),
+                expires_at_ms,
+                single_use: config.single_use,
+                used: false,
+                metadata: config.metadata,
+            };
+            self.put_token(&key, &stored).await?;
+            Ok(ResumeToken(token))
+        }
+
+        async fn resolve_token(&self, token: &ResumeToken) -> Result<CheckpointHandle, TokenError> {
+            let key = resume_token_key(&token.0);
+            let mut stored = self.read_token(&key).await?.ok_or(TokenError::NotFound)?;
+
+            if let Some(expires_at_ms) = stored.expires_at_ms {
+                if expires_at_ms <= now_ms_u64() {
+                    let _ = self
+                        .storage_delete(&key)
+                        .await
+                        .map_err(map_do_token_error)?;
+                    return Err(TokenError::NotFound);
+                }
+            }
+
+            if stored.single_use {
+                if stored.used {
+                    return Err(TokenError::AlreadyUsed);
+                }
+                stored.used = true;
+                self.put_token(&key, &stored).await?;
+            }
+
+            Ok(stored.checkpoint_handle)
+        }
+
+        async fn revoke_token(&self, token: &ResumeToken) -> Result<(), TokenError> {
+            let key = resume_token_key(&token.0);
+            let deleted = self
+                .storage_delete(&key)
+                .await
+                .map_err(map_do_token_error)?;
+            if deleted {
+                Ok(())
+            } else {
+                Err(TokenError::NotFound)
+            }
         }
     }
 
@@ -1367,10 +2144,7 @@ impl WorkersDurableObject {
         Err(DoError::RuntimeUnavailable)
     }
 
-    pub async fn storage_list(
-        &self,
-        _options: StorageListOptions,
-    ) -> Result<Vec<String>, DoError> {
+    pub async fn storage_list(&self, _options: StorageListOptions) -> Result<Vec<String>, DoError> {
         Err(DoError::RuntimeUnavailable)
     }
 
@@ -1429,6 +2203,115 @@ impl DedupeStore for WorkersDurableObject {
 
     async fn forget(&self, _key: &[u8]) -> Result<(), DedupeError> {
         Err(DedupeError::RuntimeUnavailable)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[async_trait]
+impl CheckpointStore for WorkersDurableObject {
+    async fn put(&self, _record: CheckpointRecord) -> Result<CheckpointHandle, CheckpointError> {
+        Err(CheckpointError::Storage(
+            "durability runtime unavailable".to_string(),
+        ))
+    }
+
+    async fn get(&self, _handle: &CheckpointHandle) -> Result<CheckpointRecord, CheckpointError> {
+        Err(CheckpointError::Storage(
+            "durability runtime unavailable".to_string(),
+        ))
+    }
+
+    async fn ack(&self, _handle: &CheckpointHandle) -> Result<(), CheckpointError> {
+        Err(CheckpointError::Storage(
+            "durability runtime unavailable".to_string(),
+        ))
+    }
+
+    async fn lease(
+        &self,
+        _handle: &CheckpointHandle,
+        _ttl: Duration,
+    ) -> Result<Lease, CheckpointError> {
+        Err(CheckpointError::Storage(
+            "durability runtime unavailable".to_string(),
+        ))
+    }
+
+    async fn release_lease(&self, _lease: Lease) -> Result<(), CheckpointError> {
+        Err(CheckpointError::Storage(
+            "durability runtime unavailable".to_string(),
+        ))
+    }
+
+    async fn list(
+        &self,
+        _filter: CheckpointFilter,
+    ) -> Result<Vec<CheckpointHandle>, CheckpointError> {
+        Err(CheckpointError::Storage(
+            "durability runtime unavailable".to_string(),
+        ))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[async_trait]
+impl ResumeScheduler for WorkersDurableObject {
+    async fn schedule_at(
+        &self,
+        _handle: CheckpointHandle,
+        _at_ms: u64,
+    ) -> Result<ScheduleId, ScheduleError> {
+        Err(ScheduleError::Unavailable(
+            "durability runtime unavailable".to_string(),
+        ))
+    }
+
+    async fn schedule_after(
+        &self,
+        _handle: CheckpointHandle,
+        _delay: Duration,
+    ) -> Result<ScheduleId, ScheduleError> {
+        Err(ScheduleError::Unavailable(
+            "durability runtime unavailable".to_string(),
+        ))
+    }
+
+    async fn cancel(&self, _schedule_id: ScheduleId) -> Result<(), ScheduleError> {
+        Err(ScheduleError::Unavailable(
+            "durability runtime unavailable".to_string(),
+        ))
+    }
+
+    async fn status(&self, _schedule_id: ScheduleId) -> Result<ScheduleStatus, ScheduleError> {
+        Err(ScheduleError::Unavailable(
+            "durability runtime unavailable".to_string(),
+        ))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[async_trait]
+impl ResumeSignalSource for WorkersDurableObject {
+    async fn create_token(
+        &self,
+        _handle: &CheckpointHandle,
+        _config: TokenConfig,
+    ) -> Result<ResumeToken, TokenError> {
+        Err(TokenError::Generation(
+            "durability runtime unavailable".to_string(),
+        ))
+    }
+
+    async fn resolve_token(&self, _token: &ResumeToken) -> Result<CheckpointHandle, TokenError> {
+        Err(TokenError::Generation(
+            "durability runtime unavailable".to_string(),
+        ))
+    }
+
+    async fn revoke_token(&self, _token: &ResumeToken) -> Result<(), TokenError> {
+        Err(TokenError::Generation(
+            "durability runtime unavailable".to_string(),
+        ))
     }
 }
 

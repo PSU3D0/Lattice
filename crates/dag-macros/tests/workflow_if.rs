@@ -1,5 +1,5 @@
-use dag_core::prelude::*;
 use dag_core::ControlSurfaceKind;
+use dag_core::prelude::*;
 use dag_macros::{def_node, node, workflow};
 
 #[def_node(trigger, name = "Trigger")]

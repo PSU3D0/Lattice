@@ -3,7 +3,8 @@ use dag_macros::{def_node, node};
 use kernel_plan::{ValidatedIR, validate};
 use serde_json::{Value as JsonValue, json};
 
-#[def_node(trigger,
+#[def_node(
+    trigger,
     name = "HttpTrigger",
     summary = "Ingress trigger for unsupported surface example"
 )]

@@ -88,6 +88,48 @@ mod typed_entry_flow_module {
     }
 }
 
+mod external_type_flow_module {
+    use super::*;
+
+    #[def_node(
+        trigger,
+        name = "StringTrigger",
+        summary = "String trigger",
+        effects = "ReadOnly",
+        determinism = "Strict"
+    )]
+    async fn string_trigger(
+        input: std::string::String,
+    ) -> dag_core::NodeResult<std::string::String> {
+        Ok(input)
+    }
+
+    #[def_node(
+        name = "StringCapture",
+        summary = "String capture",
+        effects = "Pure",
+        determinism = "Strict"
+    )]
+    async fn string_capture(
+        input: std::string::String,
+    ) -> dag_core::NodeResult<std::string::String> {
+        Ok(input)
+    }
+
+    flow! {
+        name: external_type_flow,
+        version: "1.0.0",
+        profile: Web;
+        let entry = node!(crate::external_type_flow_module::string_trigger);
+        let capture = node!(crate::external_type_flow_module::string_capture);
+        connect!(entry -> capture);
+        entrypoint!({
+            trigger: "entry",
+            capture: "capture",
+        });
+    }
+}
+
 mod multi_entrypoint_flow_module {
     use super::*;
 
@@ -642,6 +684,49 @@ fn subflow_preserves_module_prefix_for_root_alias() {
 fn connect_accepts_subflow_binding() {
     let flow = subflow_parent_flow();
     assert_eq!(flow.edges.len(), 1);
+}
+
+#[test]
+fn workflow_exports_binding_contract_for_subflow_alias() {
+    let _raw_in: subflow_parent_flow::bindings::sub::RawIn = EntryInput;
+    let _raw_out: subflow_parent_flow::bindings::sub::RawOut = EntryOutput;
+
+    assert_eq!(subflow_parent_flow::bindings::sub::BINDING_ALIAS, "sub");
+    assert_eq!(subflow_parent_flow::bindings::sub::SOURCE_KIND, "subflow");
+    assert_eq!(
+        subflow_parent_flow::bindings::sub::SOURCE_CONTRACT_ID,
+        subflow_entry_flow_module::subflow_flow::contract::trigger::CONTRACT_ID
+    );
+    assert_eq!(
+        std::mem::size_of::<subflow_parent_flow::bindings::sub::In>(),
+        std::mem::size_of::<subflow_parent_flow::bindings::sub::RawIn>()
+    );
+}
+
+#[test]
+fn flow_exports_binding_contract_for_node_alias() {
+    let _raw_in: typed_entry_flow_module::typed_entry_flow::bindings::entry::RawIn = EntryInput;
+    let _raw_out: typed_entry_flow_module::typed_entry_flow::bindings::entry::RawOut = EntryInput;
+    assert_eq!(
+        typed_entry_flow_module::typed_entry_flow::bindings::entry::BINDING_ALIAS,
+        "entry"
+    );
+    assert_eq!(
+        typed_entry_flow_module::typed_entry_flow::bindings::entry::SOURCE_KIND,
+        "node"
+    );
+}
+
+#[test]
+fn flow_exports_binding_contract_for_external_types() {
+    let _raw_in: external_type_flow_module::external_type_flow::bindings::entry::RawIn =
+        std::string::String::new();
+    let _raw_out: external_type_flow_module::external_type_flow::bindings::entry::RawOut =
+        std::string::String::new();
+    assert_eq!(
+        external_type_flow_module::external_type_flow::bindings::entry::SOURCE_KIND,
+        "node"
+    );
 }
 
 #[test]

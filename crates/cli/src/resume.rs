@@ -1,8 +1,14 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use anyhow::{Context, Result, anyhow};
 use clap::{Args, Subcommand, ValueEnum};
+use flow_bundle::ExecPolicy;
+use futures::StreamExt;
+use host_inproc::HostRuntime;
+use host_wasmtime::load_flow_bundle;
+use kernel_exec::ExecutionResult;
 
 use capabilities::durability::{
     CheckpointFilter, CheckpointHandle, CheckpointRecord, CheckpointStatus, CheckpointStore,
@@ -66,6 +72,21 @@ pub struct ResumeRunArgs {
     /// Filter by run id.
     #[arg(long)]
     run: Option<String>,
+    /// Explicit built-in example source (e.g. s1_echo, s6_spill).
+    #[arg(long)]
+    example: Option<String>,
+    /// Flow bundle directory source (manifest.json + artifacts).
+    #[arg(long)]
+    bundle: Option<PathBuf>,
+    /// Optional flow id when --bundle contains multiple flows.
+    #[arg(long)]
+    bundle_flow: Option<String>,
+    /// Bind capability providers for required `resource::*` domains.
+    #[arg(long = "bind")]
+    bindings: Vec<String>,
+    /// Path to a machine-generated `bindings.lock.json` file.
+    #[arg(long)]
+    bindings_lock: Option<PathBuf>,
     /// Root directory for filesystem checkpoints.
     #[arg(long, default_value = ".flow/checkpoints")]
     checkpoint_dir: PathBuf,
@@ -160,21 +181,189 @@ async fn resume_show(args: ResumeShowArgs) -> Result<()> {
     Ok(())
 }
 
+enum ResumeSource {
+    Example(String),
+    Bundle { path: PathBuf, flow: Option<String> },
+}
+
+fn detect_example_for_flow(flow_id: &FlowId) -> Result<Option<String>> {
+    const EXAMPLES: &[&str] = &[
+        "s1_echo",
+        "s2_site",
+        "s3_branching",
+        "s4_preflight",
+        "s5_unsupported_surface",
+        "s6_spill",
+    ];
+
+    for candidate in EXAMPLES {
+        let handle = crate::load_example(candidate)?;
+        if handle.ir.flow().id == *flow_id {
+            return Ok(Some((*candidate).to_string()));
+        }
+    }
+
+    Ok(None)
+}
+
+fn resolve_source(args: &ResumeRunArgs, flow_id: &FlowId) -> Result<ResumeSource> {
+    if args.example.is_some() && args.bundle.is_some() {
+        return Err(anyhow!(
+            "--example and --bundle are mutually exclusive for resume run"
+        ));
+    }
+
+    if args.bundle_flow.is_some() && args.bundle.is_none() {
+        return Err(anyhow!("--bundle-flow requires --bundle"));
+    }
+
+    if let Some(example) = &args.example {
+        return Ok(ResumeSource::Example(example.clone()));
+    }
+
+    if let Some(path) = &args.bundle {
+        return Ok(ResumeSource::Bundle {
+            path: path.clone(),
+            flow: args.bundle_flow.clone(),
+        });
+    }
+
+    if let Some(example) = detect_example_for_flow(flow_id)? {
+        return Ok(ResumeSource::Example(example));
+    }
+
+    Err(anyhow!(
+        "unable to infer flow source for checkpoint flow `{}`; provide --example or --bundle",
+        flow_id.as_str()
+    ))
+}
+
+fn checkpoint_resources(args: &ResumeRunArgs, flow_id: &str) -> Result<capabilities::ResourceBag> {
+    if args.bindings_lock.is_some() && !args.bindings.is_empty() {
+        return Err(anyhow!("--bindings-lock cannot be combined with --bind"));
+    }
+
+    let mut resources = if let Some(lock_path) = &args.bindings_lock {
+        crate::resource_bag_from_bindings_lock(lock_path.as_path(), flow_id)?
+    } else {
+        crate::resource_bag_from_bindings(&args.bindings)?
+    };
+
+    resources = crate::attach_checkpoint_store(
+        resources,
+        crate::CheckpointStoreKind::Fs,
+        Some(args.checkpoint_dir.as_path()),
+    );
+
+    Ok(resources)
+}
+
+async fn print_execution_result(execution: ExecutionResult) -> Result<()> {
+    match execution {
+        ExecutionResult::Value(value) => {
+            println!("{}", serde_json::to_string_pretty(&value)?);
+            Ok(())
+        }
+        ExecutionResult::Halt { alias, payload } => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "halted": true,
+                    "node": alias,
+                    "payload": payload,
+                }))?
+            );
+            Ok(())
+        }
+        ExecutionResult::Stream(mut stream) => {
+            while let Some(event) = stream.next().await {
+                let payload = event.map_err(anyhow::Error::new)?;
+                println!("{}", serde_json::to_string(&payload)?);
+            }
+            Ok(())
+        }
+    }
+}
+
 async fn resume_run(args: ResumeRunArgs) -> Result<()> {
     let store = FsCheckpointStore::with_root(&args.checkpoint_dir);
-    let _record = store
-        .get(
-            &find_handle(
-                &store,
-                &args.checkpoint_id,
-                args.flow.as_deref(),
-                args.run.as_deref(),
+    let handle = find_handle(
+        &store,
+        &args.checkpoint_id,
+        args.flow.as_deref(),
+        args.run.as_deref(),
+    )
+    .await?;
+    let _record = store.get(&handle).await.map_err(map_checkpoint_error)?;
+
+    let resources = checkpoint_resources(&args, handle.flow_id.as_str())?;
+    let source = resolve_source(&args, &handle.flow_id)?;
+
+    let execution = match source {
+        ResumeSource::Example(example_name) => {
+            let example = crate::load_example(&example_name)?;
+            if example.ir.flow().id != handle.flow_id {
+                return Err(anyhow!(
+                    "checkpoint flow `{}` does not match example `{}` flow `{}`",
+                    handle.flow_id.as_str(),
+                    example_name,
+                    example.ir.flow().id.as_str(),
+                ));
+            }
+
+            let runtime = HostRuntime::with_plugins(
+                example.executor,
+                example.ir.clone(),
+                example.environment_plugins,
             )
-            .await?,
-        )
-        .await
-        .map_err(map_checkpoint_error)?;
-    Err(anyhow!("resume execution not yet supported"))
+            .with_resource_bag(resources);
+
+            runtime
+                .resume(&args.checkpoint_id)
+                .await
+                .map_err(|err| match &err {
+                    kernel_exec::ExecutionError::MissingCapabilities { hints } => {
+                        anyhow!("[CAP101] missing required capabilities: {hints:?}")
+                    }
+                    _ => anyhow::Error::new(err),
+                })?
+        }
+        ResumeSource::Bundle { path, flow } => {
+            let bundle = load_flow_bundle(
+                &path,
+                ExecPolicy::Wasm,
+                flow.as_deref(),
+                Arc::new(resources.clone()),
+            )?;
+
+            if bundle.validated_ir.flow().id != handle.flow_id {
+                return Err(anyhow!(
+                    "checkpoint flow `{}` does not match bundle flow `{}`",
+                    handle.flow_id.as_str(),
+                    bundle.validated_ir.flow().id.as_str(),
+                ));
+            }
+
+            let runtime = HostRuntime::with_plugins(
+                bundle.executor(),
+                Arc::new(bundle.validated_ir.clone()),
+                bundle.environment_plugins,
+            )
+            .with_resource_bag(resources);
+
+            runtime
+                .resume(&args.checkpoint_id)
+                .await
+                .map_err(|err| match &err {
+                    kernel_exec::ExecutionError::MissingCapabilities { hints } => {
+                        anyhow!("[CAP101] missing required capabilities: {hints:?}")
+                    }
+                    _ => anyhow::Error::new(err),
+                })?
+        }
+    };
+
+    print_execution_result(execution).await
 }
 
 async fn find_handle(

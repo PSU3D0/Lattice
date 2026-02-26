@@ -38,6 +38,7 @@ tokio-util.workspace = true
 tokio = { version = "1", default-features = false, features = ["rt", "sync", "macros"] }
 instant = { version = "0.1", features = ["wasm-bindgen"] }
 gloo-timers = { version = "0.3", features = ["futures"] }
+js-sys = "0.3"
 wasm-bindgen-futures = "0.4"
 
 [dev-dependencies]

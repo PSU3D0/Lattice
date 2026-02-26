@@ -7,9 +7,9 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_stream::stream;
-use cap_do_workers::{SNAPSHOT_SEQ_KEY, StorageValue, WorkersDurableObject};
 #[cfg(target_arch = "wasm32")]
 use cap_do_workers::DurableObjectBinding;
+use cap_do_workers::{SNAPSHOT_SEQ_KEY, StorageValue, WorkersDurableObject};
 #[cfg(not(target_arch = "wasm32"))]
 type DurableObjectBinding = ();
 use capabilities::context;
@@ -189,9 +189,8 @@ async fn sleep_delay(duration: Duration) {
 fn durable_object_for_scope(scope: &str) -> Result<WorkersDurableObject, NodeError> {
     #[cfg(target_arch = "wasm32")]
     {
-        let binding = worker_context::binding().ok_or_else(|| {
-            NodeError::new("durable object binding missing from worker context")
-        })?;
+        let binding = worker_context::binding()
+            .ok_or_else(|| NodeError::new("durable object binding missing from worker context"))?;
         return Ok(WorkersDurableObject::from_binding(
             binding,
             Some(scope.to_string()),
@@ -364,7 +363,11 @@ pub struct IngestResponse {
     pub hash: String,
 }
 
-#[def_node(trigger, name = "trigger_http_ingest", summary = "Ingress trigger for ingest")]
+#[def_node(
+    trigger,
+    name = "trigger_http_ingest",
+    summary = "Ingress trigger for ingest"
+)]
 async fn trigger_http_ingest(request: IngestRequest) -> NodeResult<IngestRequest> {
     Ok(request)
 }
@@ -378,7 +381,11 @@ fn build_list_idempotency_key(request: &ListRequest) -> String {
     key
 }
 
-#[def_node(trigger, name = "trigger_http_events", summary = "Ingress trigger for event listing")]
+#[def_node(
+    trigger,
+    name = "trigger_http_events",
+    summary = "Ingress trigger for event listing"
+)]
 async fn trigger_http_events(mut request: ListRequest) -> NodeResult<ListRequest> {
     if request.idempotency_key.is_empty() {
         request.idempotency_key = build_list_idempotency_key(&request);
@@ -386,12 +393,20 @@ async fn trigger_http_events(mut request: ListRequest) -> NodeResult<ListRequest
     Ok(request)
 }
 
-#[def_node(trigger, name = "trigger_http_snapshot", summary = "Ingress trigger for snapshot reads")]
+#[def_node(
+    trigger,
+    name = "trigger_http_snapshot",
+    summary = "Ingress trigger for snapshot reads"
+)]
 async fn trigger_http_snapshot(request: SnapshotRequest) -> NodeResult<SnapshotRequest> {
     Ok(request)
 }
 
-#[def_node(trigger, name = "trigger_http_stream", summary = "Ingress trigger for stream")]
+#[def_node(
+    trigger,
+    name = "trigger_http_stream",
+    summary = "Ingress trigger for stream"
+)]
 async fn trigger_http_stream(mut request: ListRequest) -> NodeResult<ListRequest> {
     if request.idempotency_key.is_empty() {
         request.idempotency_key = build_list_idempotency_key(&request);
@@ -486,7 +501,9 @@ async fn kv_put_event(input: DedupeResult) -> NodeResult<KvWriteResult> {
         kv.put_with_options(
             &key_for_put,
             &input.payload,
-            KvPutOptions::default().with_ttl(ttl).with_metadata(metadata),
+            KvPutOptions::default()
+                .with_ttl(ttl)
+                .with_metadata(metadata),
         )
         .await
         .map_err(|err| NodeError::new(format!("kv put failed: {err}")))?;
@@ -537,7 +554,9 @@ async fn snapshot_maybe(input: DedupeResult) -> NodeResult<SnapshotResult> {
         kv.put_with_options(
             &key,
             &input.payload,
-            KvPutOptions::default().with_ttl(ttl).with_metadata(metadata.clone()),
+            KvPutOptions::default()
+                .with_ttl(ttl)
+                .with_metadata(metadata.clone()),
         )
         .await
         .map_err(|err| NodeError::new(format!("snapshot kv put failed: {err}")))?;
@@ -575,14 +594,20 @@ async fn snapshot_maybe(input: DedupeResult) -> NodeResult<SnapshotResult> {
 )]
 async fn otel_dispatch(event: OtelEvent) -> NodeResult<OtelDispatchResult> {
     if should_skip_otel(&event) {
-        return Ok(OtelDispatchResult { status: 0, ok: true });
+        return Ok(OtelDispatchResult {
+            status: 0,
+            ok: true,
+        });
     }
 
     let config = worker_context::config();
     let endpoint = match config.otel_endpoint.as_ref() {
         Some(endpoint) => endpoint.clone(),
         None => {
-            return Ok(OtelDispatchResult { status: 0, ok: false });
+            return Ok(OtelDispatchResult {
+                status: 0,
+                ok: false,
+            });
         }
     };
 
@@ -590,7 +615,9 @@ async fn otel_dispatch(event: OtelEvent) -> NodeResult<OtelDispatchResult> {
     let mut request = HttpRequest::new(HttpMethod::Post, endpoint);
     request.body = Some(payload);
     request.timeout_ms = Some(OTEL_TIMEOUT_MS);
-    request.headers.insert("content-type".to_string(), "application/json".to_string());
+    request
+        .headers
+        .insert("content-type".to_string(), "application/json".to_string());
 
     if let Some(raw) = config.otel_headers.as_ref() {
         let extra = parse_headers(raw);
@@ -615,7 +642,10 @@ async fn otel_dispatch(event: OtelEvent) -> NodeResult<OtelDispatchResult> {
             status: response.status as i32,
             ok: response.is_success(),
         }),
-        _ => Ok(OtelDispatchResult { status: 0, ok: false }),
+        _ => Ok(OtelDispatchResult {
+            status: 0,
+            ok: false,
+        }),
     }
 }
 
@@ -733,8 +763,14 @@ async fn snapshot_get(request: SnapshotRequest) -> NodeResult<SnapshotResponse> 
 )]
 async fn build_otel_ingest(input: DedupeResult) -> NodeResult<OtelEvent> {
     let mut attrs = BTreeMap::new();
-    attrs.insert("tenant".to_string(), OtelAttrValue::String(input.tenant.clone()));
-    attrs.insert("stream".to_string(), OtelAttrValue::String(input.stream.clone()));
+    attrs.insert(
+        "tenant".to_string(),
+        OtelAttrValue::String(input.tenant.clone()),
+    );
+    attrs.insert(
+        "stream".to_string(),
+        OtelAttrValue::String(input.stream.clone()),
+    );
     attrs.insert(
         "seq".to_string(),
         OtelAttrValue::Number(serde_json::Number::from(input.seq)),
@@ -752,8 +788,14 @@ async fn build_otel_ingest(input: DedupeResult) -> NodeResult<OtelEvent> {
         "payload_size".to_string(),
         OtelAttrValue::Number(serde_json::Number::from(input.payload.len() as u64)),
     );
-    attrs.insert("event_id".to_string(), OtelAttrValue::String(Uuid::new_v4().to_string()));
-    attrs.insert("run_id".to_string(), OtelAttrValue::String(Uuid::new_v4().to_string()));
+    attrs.insert(
+        "event_id".to_string(),
+        OtelAttrValue::String(Uuid::new_v4().to_string()),
+    );
+    attrs.insert(
+        "run_id".to_string(),
+        OtelAttrValue::String(Uuid::new_v4().to_string()),
+    );
 
     let payload_bytes = if input.inserted {
         Some(truncate_bytes(&input.payload))
@@ -777,14 +819,26 @@ async fn build_otel_ingest(input: DedupeResult) -> NodeResult<OtelEvent> {
 )]
 async fn build_otel_replay(input: ListResponse) -> NodeResult<OtelEvent> {
     let mut attrs = BTreeMap::new();
-    attrs.insert("tenant".to_string(), OtelAttrValue::String(input.tenant.clone()));
-    attrs.insert("stream".to_string(), OtelAttrValue::String(input.stream.clone()));
+    attrs.insert(
+        "tenant".to_string(),
+        OtelAttrValue::String(input.tenant.clone()),
+    );
+    attrs.insert(
+        "stream".to_string(),
+        OtelAttrValue::String(input.stream.clone()),
+    );
     attrs.insert(
         "idempotency_key".to_string(),
         OtelAttrValue::String(input.idempotency_key.clone()),
     );
-    attrs.insert("event_id".to_string(), OtelAttrValue::String(Uuid::new_v4().to_string()));
-    attrs.insert("run_id".to_string(), OtelAttrValue::String(Uuid::new_v4().to_string()));
+    attrs.insert(
+        "event_id".to_string(),
+        OtelAttrValue::String(Uuid::new_v4().to_string()),
+    );
+    attrs.insert(
+        "run_id".to_string(),
+        OtelAttrValue::String(Uuid::new_v4().to_string()),
+    );
     attrs.insert(
         "count".to_string(),
         OtelAttrValue::Number(serde_json::Number::from(input.events.len() as u64)),
@@ -877,13 +931,15 @@ impl serde::Serialize for ListEventStream {
     summary = "Stream events over SSE",
     effects = "Effectful",
     determinism = "BestEffort",
-    resources(kv_read(capabilities::kv::KeyValue), http_write(capabilities::http::HttpWrite)),
+    resources(
+        kv_read(capabilities::kv::KeyValue),
+        http_write(capabilities::http::HttpWrite)
+    ),
     out = "ListEvent"
 )]
 async fn stream_events(request: ListRequest) -> NodeResult<ListEventStream> {
-    let resources = context::current_handle().ok_or_else(|| {
-        NodeError::new("resource context missing")
-    })?;
+    let resources =
+        context::current_handle().ok_or_else(|| NodeError::new("resource context missing"))?;
     let config = worker_context::config();
     let tenant = request.tenant.clone();
     let stream_name = request.stream.clone();
@@ -980,12 +1036,27 @@ async fn stream_events(request: ListRequest) -> NodeResult<ListEventStream> {
 
 fn build_stream_event(name: &str, tenant: &str, stream: &str, cursor: Option<&str>) -> OtelEvent {
     let mut attrs = BTreeMap::new();
-    attrs.insert("tenant".to_string(), OtelAttrValue::String(tenant.to_string()));
-    attrs.insert("stream".to_string(), OtelAttrValue::String(stream.to_string()));
-    attrs.insert("event_id".to_string(), OtelAttrValue::String(Uuid::new_v4().to_string()));
-    attrs.insert("run_id".to_string(), OtelAttrValue::String(Uuid::new_v4().to_string()));
+    attrs.insert(
+        "tenant".to_string(),
+        OtelAttrValue::String(tenant.to_string()),
+    );
+    attrs.insert(
+        "stream".to_string(),
+        OtelAttrValue::String(stream.to_string()),
+    );
+    attrs.insert(
+        "event_id".to_string(),
+        OtelAttrValue::String(Uuid::new_v4().to_string()),
+    );
+    attrs.insert(
+        "run_id".to_string(),
+        OtelAttrValue::String(Uuid::new_v4().to_string()),
+    );
     if let Some(cursor) = cursor {
-        attrs.insert("cursor".to_string(), OtelAttrValue::String(cursor.to_string()));
+        attrs.insert(
+            "cursor".to_string(),
+            OtelAttrValue::String(cursor.to_string()),
+        );
     }
 
     let mut idempotency_key = format!("{}:{}", tenant, stream);
@@ -1007,19 +1078,29 @@ async fn dispatch_otel(
     event: OtelEvent,
 ) -> Result<OtelDispatchResult, NodeError> {
     if should_skip_otel(&event) {
-        return Ok(OtelDispatchResult { status: 0, ok: true });
+        return Ok(OtelDispatchResult {
+            status: 0,
+            ok: true,
+        });
     }
     let config = worker_context::config();
     let endpoint = match config.otel_endpoint.as_ref() {
         Some(endpoint) => endpoint.clone(),
-        None => return Ok(OtelDispatchResult { status: 0, ok: false }),
+        None => {
+            return Ok(OtelDispatchResult {
+                status: 0,
+                ok: false,
+            });
+        }
     };
 
     let payload = build_otlp_payload(&event);
     let mut request = HttpRequest::new(HttpMethod::Post, endpoint);
     request.body = Some(payload);
     request.timeout_ms = Some(OTEL_TIMEOUT_MS);
-    request.headers.insert("content-type".to_string(), "application/json".to_string());
+    request
+        .headers
+        .insert("content-type".to_string(), "application/json".to_string());
     if let Some(raw) = config.otel_headers.as_ref() {
         let extra = parse_headers(raw);
         for (key, value) in extra.iter() {
@@ -1029,7 +1110,12 @@ async fn dispatch_otel(
 
     let http = match resources.http_write() {
         Some(http) => http,
-        None => return Ok(OtelDispatchResult { status: 0, ok: false }),
+        None => {
+            return Ok(OtelDispatchResult {
+                status: 0,
+                ok: false,
+            });
+        }
     };
     let response = http.send(request).await;
     match response {
@@ -1037,7 +1123,10 @@ async fn dispatch_otel(
             status: response.status as i32,
             ok: response.is_success(),
         }),
-        Err(_) => Ok(OtelDispatchResult { status: 0, ok: false }),
+        Err(_) => Ok(OtelDispatchResult {
+            status: 0,
+            ok: false,
+        }),
     }
 }
 

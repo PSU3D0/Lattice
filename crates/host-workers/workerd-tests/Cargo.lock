@@ -60,6 +60,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
+name = "base64"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+
+[[package]]
 name = "bitflags"
 version = "2.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -78,13 +84,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b35204fbdc0b3f4446b89fc1ac2cf84a8a68971995d0bf2e925ec7cd960f9cb3"
 
 [[package]]
+name = "cap-do-workers"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64",
+ "capabilities",
+ "futures",
+ "js-sys",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "thiserror",
+ "tracing",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "worker",
+]
+
+[[package]]
 name = "capabilities"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
  "dag-core",
- "instant",
  "serde",
  "serde_json",
  "thiserror",
@@ -299,6 +324,7 @@ dependencies = [
  "anyhow",
  "capabilities",
  "dag-core",
+ "js-sys",
  "kernel-exec",
  "kernel-plan",
  "serde",
@@ -330,11 +356,15 @@ name = "host-workers-test"
 version = "0.1.0"
 dependencies = [
  "async-stream",
+ "cap-do-workers",
+ "capabilities",
  "dag-core",
  "dag-macros",
  "futures",
  "host-inproc",
  "host-workers",
+ "humantime-serde",
+ "js-sys",
  "kernel-exec",
  "kernel-plan",
  "serde",
@@ -360,6 +390,22 @@ checksum = "1efedce1fb8e6913f23e0c92de8e62cd5b772a67e7b3946df930a62566c93184"
 dependencies = [
  "bytes",
  "http",
+]
+
+[[package]]
+name = "humantime"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "135b12329e5e3ce057a9f972339ea52bc954fe1e9358ef27f95e89716fbc5424"
+
+[[package]]
+name = "humantime-serde"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57a3db5ea5923d99402c94e9feb261dc5ee9b4efa158b0315f788cf549cc200c"
+dependencies = [
+ "humantime",
+ "serde",
 ]
 
 [[package]]
@@ -503,6 +549,7 @@ dependencies = [
  "futures",
  "gloo-timers",
  "instant",
+ "js-sys",
  "kernel-plan",
  "metrics",
  "serde",

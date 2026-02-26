@@ -20,7 +20,8 @@ pub struct EchoResponse {
     pub user: Option<AuthUser>,
 }
 
-#[def_node(trigger,
+#[def_node(
+    trigger,
     name = "HttpTrigger",
     summary = "Ingress HTTP trigger for the echo route"
 )]

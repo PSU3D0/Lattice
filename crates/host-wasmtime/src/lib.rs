@@ -4,13 +4,13 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use capabilities::ResourceAccess;
 use dag_core::{FlowIR, NodeError, NodeResult};
 use flow_bundle::{
-    expand_subflow_ir, select_artifact, sha256_prefixed, validate_manifest, ExecPolicy, FlowEntry,
-    FlowIrRef, Manifest,
+    ExecPolicy, FlowEntry, FlowIrRef, Manifest, expand_subflow_ir, select_artifact,
+    sha256_prefixed, validate_manifest,
 };
 use host_inproc::{FlowBundle, FlowEntrypoint, NodeContract, NodeSource};
 use kernel_exec::{NodeHandler, NodeOutput, NodeResolver};
@@ -44,8 +44,8 @@ pub struct WasmRuntime {
 impl WasmRuntime {
     pub fn new(wasm_bytes: &[u8], resources: Arc<dyn ResourceAccess>) -> Result<Self> {
         let engine = Engine::default();
-        let module = Module::from_binary(&engine, wasm_bytes)
-            .context("failed to load guest wasm module")?;
+        let module =
+            Module::from_binary(&engine, wasm_bytes).context("failed to load guest wasm module")?;
         Ok(Self {
             engine,
             module,
@@ -120,7 +120,7 @@ impl WasmRuntime {
                                     out_ptr,
                                     out_cap,
                                     &encode_err(err),
-                                )
+                                );
                             }
                         };
                         let blob = match caller.data().resources.blob() {
@@ -132,7 +132,7 @@ impl WasmRuntime {
                                     out_ptr,
                                     out_cap,
                                     &encode_err("missing blob provider"),
-                                )
+                                );
                             }
                         };
                         let result = futures::executor::block_on(blob.get(&key));
@@ -152,7 +152,7 @@ impl WasmRuntime {
                                     out_ptr,
                                     out_cap,
                                     &encode_err(err),
-                                )
+                                );
                             }
                         };
                         let blob = match caller.data().resources.blob() {
@@ -164,7 +164,7 @@ impl WasmRuntime {
                                     out_ptr,
                                     out_cap,
                                     &encode_err("missing blob provider"),
-                                )
+                                );
                             }
                         };
                         let result = futures::executor::block_on(blob.put(&key, rest));
@@ -183,7 +183,7 @@ impl WasmRuntime {
                                     out_ptr,
                                     out_cap,
                                     &encode_err(err),
-                                )
+                                );
                             }
                         };
                         let blob = match caller.data().resources.blob() {
@@ -195,7 +195,7 @@ impl WasmRuntime {
                                     out_ptr,
                                     out_cap,
                                     &encode_err("missing blob provider"),
-                                )
+                                );
                             }
                         };
                         let result = futures::executor::block_on(blob.delete(&key));
@@ -286,7 +286,11 @@ struct WasmNodeHandler {
 
 #[async_trait]
 impl NodeHandler for WasmNodeHandler {
-    async fn invoke(&self, input: JsonValue, _ctx: &kernel_exec::NodeContext) -> NodeResult<NodeOutput> {
+    async fn invoke(
+        &self,
+        input: JsonValue,
+        _ctx: &kernel_exec::NodeContext,
+    ) -> NodeResult<NodeOutput> {
         let json = self.runtime.invoke_value(&self.identifier, &input)?;
         Ok(NodeOutput::Value(json))
     }
@@ -307,8 +311,8 @@ pub fn load_flow_bundle(
     let runtime = Arc::new(WasmRuntime::new(&wasm_bytes, resources)?);
 
     let flow_ir = load_flow_ir(bundle_dir, &manifest, flow)?;
-    let validated = validate(&flow_ir)
-        .map_err(|diags| anyhow!("flow IR validation failed: {diags:?}"))?;
+    let validated =
+        validate(&flow_ir).map_err(|diags| anyhow!("flow IR validation failed: {diags:?}"))?;
 
     let entrypoints = flow
         .entrypoints
@@ -352,8 +356,8 @@ fn read_manifest(bundle_dir: &Path) -> Result<Manifest> {
     let manifest_path = bundle_dir.join("manifest.json");
     let data = fs::read(&manifest_path)
         .with_context(|| format!("failed to read {}", manifest_path.display()))?;
-    let manifest: Manifest = serde_json::from_slice(&data)
-        .context("manifest.json is not valid bundle manifest JSON")?;
+    let manifest: Manifest =
+        serde_json::from_slice(&data).context("manifest.json is not valid bundle manifest JSON")?;
     validate_manifest(&manifest)?;
     Ok(manifest)
 }
@@ -371,10 +375,7 @@ fn select_flow<'a>(manifest: &'a Manifest, flow_id: Option<&str>) -> Result<&'a 
             return Ok(flow);
         }
     }
-    manifest
-        .flows
-        .first()
-        .context("bundle has no flow entries")
+    manifest.flows.first().context("bundle has no flow entries")
 }
 
 fn load_flow_ir(bundle_dir: &Path, manifest: &Manifest, flow: &FlowEntry) -> Result<FlowIR> {
@@ -474,10 +475,7 @@ fn write_response(
     if response.len() > out_cap as usize {
         return ERRNO_ENOBUFS;
     }
-    if memory
-        .write(caller, out_ptr as usize, response)
-        .is_err()
-    {
+    if memory.write(caller, out_ptr as usize, response).is_err() {
         return ERRNO_EFAULT;
     }
     response.len() as i32

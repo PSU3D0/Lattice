@@ -5,6 +5,8 @@
 //! propagates cancellation on failures or deadlines, and exposes a thin
 //! interface for hosts to drive requests (e.g. HTTP triggers).
 
+#[cfg(target_arch = "wasm32")]
+use instant::Instant;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::future::Future;
@@ -15,18 +17,24 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll};
 use std::time::Duration;
 #[cfg(not(target_arch = "wasm32"))]
-use std::time::Instant;
-#[cfg(target_arch = "wasm32")]
-use instant::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context as AnyhowContext, Result as AnyhowResult};
+#[cfg(all(feature = "spill-fs", not(target_arch = "wasm32")))]
+use anyhow::Context as AnyhowContext;
+use anyhow::Result as AnyhowResult;
 use async_trait::async_trait;
 #[cfg(target_arch = "wasm32")]
 use cancellation::CancellationToken;
-use capabilities::{context, durability::CheckpointHandle, ResourceAccess, ResourceBag};
+use capabilities::{
+    ResourceAccess, ResourceBag, context,
+    durability::{
+        CheckpointError, CheckpointHandle, CheckpointRecord, FlowFrontier, FrontierEntry,
+        IdempotencyState,
+    },
+};
 use dag_core::{
-    EdgeTransformKind, FlowId, IntoCoercion, NodeError, NodeResult, Profile,
-    apply_into_coercion, json_type_name, schemas_compatible, supported_into_coercion,
+    EdgeTransformKind, FlowId, IntoCoercion, NodeError, NodeResult, Profile, apply_into_coercion,
+    json_type_name, schemas_compatible, supported_into_coercion,
 };
 #[cfg(target_arch = "wasm32")]
 use futures::channel::oneshot;
@@ -36,12 +44,11 @@ use futures::{Stream, StreamExt};
 use kernel_plan::ValidatedIR;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use serde_json::Value as JsonValue;
+use serde_json::{Value as JsonValue, json};
 use thiserror::Error;
-use tokio::sync::{
-    OwnedSemaphorePermit, Semaphore, mpsc,
-    mpsc::error::{SendError, TrySendError},
-};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
+#[cfg(all(feature = "spill-fs", not(target_arch = "wasm32")))]
+use tokio::sync::mpsc::error::{SendError, TrySendError};
 #[cfg(not(target_arch = "wasm32"))]
 use tokio::time;
 #[cfg(not(target_arch = "wasm32"))]
@@ -49,9 +56,9 @@ use tokio_stream::{StreamMap, wrappers::ReceiverStream};
 #[cfg(not(target_arch = "wasm32"))]
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, instrument, trace, warn};
+use uuid::Uuid;
 #[cfg(target_arch = "wasm32")]
 use wasm_stream::ReceiverStream;
-use uuid::Uuid;
 
 pub mod durability;
 
@@ -114,8 +121,8 @@ mod cancellation {
 mod time {
     use std::time::Duration;
 
-    use futures::future::{self, Either};
     use futures::Future;
+    use futures::future::{self, Either};
     use gloo_timers::future::TimeoutFuture;
 
     #[derive(Debug)]
@@ -233,7 +240,7 @@ mod wasm_stream {
     }
 }
 
-#[cfg(feature = "spill-fs")]
+#[cfg(all(feature = "spill-fs", not(target_arch = "wasm32")))]
 mod blob_spill {
     use super::{AnyhowContext, AnyhowResult, JsonValue};
     use std::path::PathBuf;
@@ -297,7 +304,7 @@ mod blob_spill {
     }
 }
 
-#[cfg(feature = "spill-fs")]
+#[cfg(all(feature = "spill-fs", not(target_arch = "wasm32")))]
 pub use blob_spill::BlobSpill;
 
 const DEFAULT_EDGE_CAPACITY: usize = 32;
@@ -593,7 +600,10 @@ impl NodeContext {
 enum CapturedPayload {
     Value(JsonValue),
     Stream(StreamingCapture),
-    Halt(JsonValue),
+    Halt {
+        payload: JsonValue,
+        checkpoint_handle: Option<CheckpointHandle>,
+    },
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -748,18 +758,18 @@ impl ExecutorMetrics {
     }
 }
 
-#[cfg(feature = "spill-fs")]
+#[cfg(all(feature = "spill-fs", not(target_arch = "wasm32")))]
 #[derive(Clone)]
 struct SpillContext {
     storage: Arc<BlobSpill>,
     threshold_bytes: Option<u64>,
 }
 
-#[cfg(not(feature = "spill-fs"))]
+#[cfg(any(not(feature = "spill-fs"), target_arch = "wasm32"))]
 #[derive(Clone)]
 struct SpillContext;
 
-#[cfg(feature = "spill-fs")]
+#[cfg(all(feature = "spill-fs", not(target_arch = "wasm32")))]
 impl SpillContext {
     fn new(storage: Arc<BlobSpill>, threshold_bytes: Option<u64>) -> Self {
         Self {
@@ -831,15 +841,15 @@ impl SpillContext {
     }
 }
 
-#[cfg(feature = "spill-fs")]
+#[cfg(all(feature = "spill-fs", not(target_arch = "wasm32")))]
 struct SpillManager {
     storages: HashMap<String, Arc<BlobSpill>>,
 }
 
-#[cfg(not(feature = "spill-fs"))]
+#[cfg(any(not(feature = "spill-fs"), target_arch = "wasm32"))]
 struct SpillManager;
 
-#[cfg(feature = "spill-fs")]
+#[cfg(all(feature = "spill-fs", not(target_arch = "wasm32")))]
 impl SpillManager {
     fn new(flow: &dag_core::FlowIR) -> AnyhowResult<Self> {
         let mut storages = HashMap::new();
@@ -867,7 +877,7 @@ impl SpillManager {
     }
 }
 
-#[cfg(not(feature = "spill-fs"))]
+#[cfg(any(not(feature = "spill-fs"), target_arch = "wasm32"))]
 impl SpillManager {
     fn new(_flow: &dag_core::FlowIR) -> AnyhowResult<Self> {
         Ok(Self)
@@ -878,12 +888,12 @@ impl SpillManager {
     }
 }
 
-#[cfg(feature = "spill-fs")]
+#[cfg(all(feature = "spill-fs", not(target_arch = "wasm32")))]
 fn check_spill_support(_flow: &dag_core::FlowIR) -> Result<(), ExecutionError> {
     Ok(())
 }
 
-#[cfg(not(feature = "spill-fs"))]
+#[cfg(any(not(feature = "spill-fs"), target_arch = "wasm32"))]
 fn check_spill_support(flow: &dag_core::FlowIR) -> Result<(), ExecutionError> {
     if flow
         .edges
@@ -903,6 +913,7 @@ fn check_spill_support(flow: &dag_core::FlowIR) -> Result<(), ExecutionError> {
 struct InstrumentedSender {
     sender: mpsc::Sender<FlowMessage>,
     tracker: Arc<QueueDepthTracker>,
+    #[cfg(all(feature = "spill-fs", not(target_arch = "wasm32")))]
     spill: Option<Arc<SpillContext>>,
 }
 
@@ -1328,6 +1339,7 @@ fn parse_if_surface(
 }
 
 impl InstrumentedSender {
+    #[cfg(all(feature = "spill-fs", not(target_arch = "wasm32")))]
     fn new(
         sender: mpsc::Sender<FlowMessage>,
         tracker: Arc<QueueDepthTracker>,
@@ -1340,19 +1352,35 @@ impl InstrumentedSender {
         }
     }
 
+    #[cfg(any(not(feature = "spill-fs"), target_arch = "wasm32"))]
+    fn new(
+        sender: mpsc::Sender<FlowMessage>,
+        tracker: Arc<QueueDepthTracker>,
+        _spill: Option<Arc<SpillContext>>,
+    ) -> Self {
+        Self { sender, tracker }
+    }
+
     async fn send(
         &self,
         payload: JsonValue,
         permit: Option<OwnedSemaphorePermit>,
     ) -> Result<(), mpsc::error::SendError<FlowMessage>> {
         let tracker = self.tracker.clone();
+        #[cfg(all(feature = "spill-fs", not(target_arch = "wasm32")))]
         let mut message = FlowMessage::Data {
             payload,
             permit,
             queue_tracker: Some(tracker.clone()),
         };
+        #[cfg(any(not(feature = "spill-fs"), target_arch = "wasm32"))]
+        let message = FlowMessage::Data {
+            payload,
+            permit,
+            queue_tracker: Some(tracker.clone()),
+        };
 
-        #[cfg(feature = "spill-fs")]
+        #[cfg(all(feature = "spill-fs", not(target_arch = "wasm32")))]
         if let Some(spill) = &self.spill {
             if matches!(&message, FlowMessage::Data { payload, .. } if spill.exceeds_threshold(payload))
             {
@@ -1666,6 +1694,7 @@ impl FlowExecutor {
             self.capture_capacity,
         );
 
+        let resume_outputs = outbound.clone();
         let mut tasks = Vec::with_capacity(flow.nodes.len());
         let run_id = format!("run-{}", Uuid::new_v4());
         let flow_id = flow.id.clone();
@@ -1703,11 +1732,13 @@ impl FlowExecutor {
 
         Ok(FlowInstance {
             triggers: trigger_inputs,
+            outputs: resume_outputs,
             capture: capture_rx,
             cancellation,
             permits,
             tasks,
             metrics,
+            last_halt_checkpoint: None,
         })
     }
 
@@ -1761,6 +1792,13 @@ impl FlowExecutor {
                 Ok(ExecutionResult::Stream(stream.into_handle(instance)))
             }
             Ok(CaptureResult::Halt { alias, payload }) => {
+                let checkpoint_handle = instance.take_last_halt_checkpoint();
+                let mut payload = payload;
+                if let Some(handle) = checkpoint_handle {
+                    self.persist_halt_checkpoint(ir, &capture_alias, &alias, &payload, &handle)
+                        .await?;
+                    payload = annotate_halt_payload(payload, &handle.checkpoint_id);
+                }
                 instance.shutdown().await?;
                 Ok(ExecutionResult::Halt { alias, payload })
             }
@@ -1770,16 +1808,158 @@ impl FlowExecutor {
             }
         }
     }
+
+    #[instrument(skip_all, fields(halt = %halt_alias, capture = %capture_alias))]
+    pub async fn resume_once(
+        &self,
+        ir: &ValidatedIR,
+        halt_alias: &str,
+        halt_payload: JsonValue,
+        pending_aliases: &[String],
+        capture_alias: &str,
+        deadline: Option<Duration>,
+    ) -> Result<ExecutionResult, ExecutionError> {
+        let mut instance = self.instantiate(ir, capture_alias)?;
+        instance
+            .resume_from_halt(halt_alias, halt_payload, pending_aliases)
+            .await?;
+
+        let start = Instant::now();
+        let result: Result<CaptureResult, ExecutionError> = if let Some(duration) = deadline {
+            match time::timeout(duration, instance.next()).await {
+                Ok(Some(result)) => result,
+                Ok(None) => Err(ExecutionError::MissingOutput {
+                    alias: capture_alias.to_string(),
+                }),
+                Err(_) => {
+                    instance.cancel_with_reason("deadline");
+                    Err(ExecutionError::DeadlineExceeded { elapsed: duration })
+                }
+            }
+        } else {
+            match instance.next().await {
+                Some(result) => result,
+                None => Err(ExecutionError::MissingOutput {
+                    alias: capture_alias.to_string(),
+                }),
+            }
+        };
+
+        let elapsed = start.elapsed();
+        if let Err(err) = &result {
+            debug!(?elapsed, "flow resume ended with error: {err:?}");
+        } else {
+            trace!(?elapsed, "flow resume completed successfully");
+        }
+
+        match result {
+            Ok(CaptureResult::Value(value)) => {
+                instance.shutdown().await?;
+                Ok(ExecutionResult::Value(value))
+            }
+            Ok(CaptureResult::Stream(stream)) => {
+                Ok(ExecutionResult::Stream(stream.into_handle(instance)))
+            }
+            Ok(CaptureResult::Halt { alias, payload }) => {
+                let checkpoint_handle = instance.take_last_halt_checkpoint();
+                let mut payload = payload;
+                if let Some(handle) = checkpoint_handle {
+                    self.persist_halt_checkpoint(ir, capture_alias, &alias, &payload, &handle)
+                        .await?;
+                    payload = annotate_halt_payload(payload, &handle.checkpoint_id);
+                }
+                instance.shutdown().await?;
+                Ok(ExecutionResult::Halt { alias, payload })
+            }
+            Err(err) => {
+                instance.shutdown().await?;
+                Err(err)
+            }
+        }
+    }
+
+    async fn persist_halt_checkpoint(
+        &self,
+        ir: &ValidatedIR,
+        capture_alias: &str,
+        halt_alias: &str,
+        halt_payload: &JsonValue,
+        handle: &CheckpointHandle,
+    ) -> Result<(), ExecutionError> {
+        if matches!(ir.flow().policies.durability.mode, dag_core::DurabilityMode::Off) {
+            return Ok(());
+        }
+
+        let Some(store) = self.resources.checkpoint_store() else {
+            return Err(ExecutionError::MissingDurabilityServices {
+                missing: vec!["durability::checkpoint_store".to_string()],
+            });
+        };
+
+        let pending = pending_from_alias(ir, halt_alias);
+        let frontier = FlowFrontier {
+            completed: vec![FrontierEntry {
+                node_alias: halt_alias.to_string(),
+                output_port: "out".to_string(),
+                cursor: None,
+            }],
+            pending: pending.clone(),
+        };
+
+        let resume_frame = json!({
+            "version": 1,
+            "halt_alias": halt_alias,
+            "halt_payload": halt_payload,
+            "capture_alias": capture_alias,
+            "pending": pending,
+            "resume_after_ms": infer_resume_after_ms(halt_payload),
+        });
+
+        let state = durability::serialize_state(
+            &handle.checkpoint_id,
+            "resume_frame",
+            &json!({ "resume_frame": resume_frame }),
+            ir.flow().policies.durability.blob_threshold_bytes,
+            self.resources.checkpoint_blob_store(),
+        )
+        .await
+        .map_err(|err| map_checkpoint_error(handle, err))?;
+
+        let record = CheckpointRecord {
+            checkpoint_id: handle.checkpoint_id.clone(),
+            flow_id: handle.flow_id.clone(),
+            flow_version: ir.flow().version.to_string(),
+            run_id: handle.run_id.clone(),
+            parent_run_id: None,
+            frontier,
+            state,
+            idempotency: IdempotencyState::default(),
+            created_at_ms: now_ms(),
+            resume_after_ms: infer_resume_after_ms(halt_payload),
+            ttl_ms: ir.flow().policies.durability.checkpoint_ttl,
+            version: 1,
+        };
+
+        store
+            .put(record)
+            .await
+            .map_err(|err| map_checkpoint_error(handle, err))?;
+
+        Ok(())
+    }
 }
+
 
 /// Active per-run state for a workflow.
 pub struct FlowInstance {
     triggers: HashMap<String, mpsc::Sender<FlowMessage>>,
+    outputs: HashMap<String, Vec<OutgoingSender>>,
     capture: mpsc::Receiver<CapturedOutput>,
     cancellation: CancellationToken,
     permits: Arc<Semaphore>,
     tasks: Vec<TaskHandle>,
     metrics: Arc<ExecutorMetrics>,
+    last_halt_checkpoint: Option<CheckpointHandle>,
 }
 
 impl FlowInstance {
@@ -1827,7 +2007,11 @@ impl FlowInstance {
                 let outcome = match result {
                     Ok(CapturedPayload::Value(value)) => Ok(CaptureResult::Value(value)),
                     Ok(CapturedPayload::Stream(stream)) => Ok(CaptureResult::Stream(stream)),
-                    Ok(CapturedPayload::Halt(payload)) => {
+                    Ok(CapturedPayload::Halt {
+                        payload,
+                        checkpoint_handle,
+                    }) => {
+                        self.last_halt_checkpoint = checkpoint_handle;
                         Ok(CaptureResult::Halt { alias, payload })
                     }
                     Err(err) => Err(ExecutionError::NodeFailed { alias, source: err }),
@@ -1837,6 +2021,50 @@ impl FlowInstance {
             }
             None => None,
         }
+    }
+
+    fn take_last_halt_checkpoint(&mut self) -> Option<CheckpointHandle> {
+        self.last_halt_checkpoint.take()
+    }
+
+    async fn resume_from_halt(
+        &self,
+        halt_alias: &str,
+        halt_payload: JsonValue,
+        pending_aliases: &[String],
+    ) -> Result<(), ExecutionError> {
+        let outputs = self
+            .outputs
+            .get(halt_alias)
+            .ok_or_else(|| ExecutionError::UnknownTrigger {
+                alias: halt_alias.to_string(),
+            })?;
+
+        let pending: HashSet<&str> = pending_aliases.iter().map(String::as_str).collect();
+
+        for output in outputs {
+            if !pending.is_empty() && !pending.contains(output.to.as_str()) {
+                continue;
+            }
+
+            let payload_for_edge = match &output.transform {
+                Some(transform) => transform.apply(halt_payload.clone()).map_err(|source| {
+                    ExecutionError::NodeFailed {
+                        alias: halt_alias.to_string(),
+                        source,
+                    }
+                })?,
+                None => halt_payload.clone(),
+            };
+
+            output
+                .sender
+                .send(payload_for_edge, None)
+                .await
+                .map_err(|_| ExecutionError::Cancelled)?;
+        }
+
+        Ok(())
     }
 
     /// Signal cooperative cancellation.
@@ -1988,7 +2216,7 @@ enum FlowMessage {
         permit: Option<OwnedSemaphorePermit>,
         queue_tracker: Option<Arc<QueueDepthTracker>>,
     },
-    #[cfg(feature = "spill-fs")]
+    #[cfg(all(feature = "spill-fs", not(target_arch = "wasm32")))]
     Spilled {
         key: String,
         storage: Arc<BlobSpill>,
@@ -2057,7 +2285,7 @@ async fn run_node(
                 permit,
                 queue_tracker,
             } => Some((permit, queue_tracker, payload)),
-            #[cfg(feature = "spill-fs")]
+            #[cfg(all(feature = "spill-fs", not(target_arch = "wasm32")))]
             FlowMessage::Spilled {
                 key,
                 storage,
@@ -2117,8 +2345,8 @@ async fn run_node(
             })
             .await
         };
-        let result = if halts {
-            let handle = new_checkpoint_handle(&flow_id, &run_id);
+        let checkpoint_handle = halts.then(|| new_checkpoint_handle(&flow_id, &run_id));
+        let result = if let Some(handle) = checkpoint_handle.clone() {
             context::with_checkpoint_handle(handle, invoke).await
         } else {
             invoke.await
@@ -2131,7 +2359,10 @@ async fn run_node(
                 let send_result = capture
                     .send(CapturedOutput {
                         alias: alias.clone(),
-                        result: Ok(CapturedPayload::Halt(value)),
+                        result: Ok(CapturedPayload::Halt {
+                            payload: value,
+                            checkpoint_handle,
+                        }),
                         permit: captured_permit,
                         queue_tracker: Some(capture_tracker.clone()),
                     })
@@ -2263,7 +2494,8 @@ async fn run_node(
                                         err
                                     ));
                                     error!("node `{alias}` edge transform failed: {err}");
-                                    metrics.record_node_error(alias.as_str(), "edge_transform_failed");
+                                    metrics
+                                        .record_node_error(alias.as_str(), "edge_transform_failed");
                                     let captured_permit = permit.take();
                                     let send_result = capture
                                         .send(CapturedOutput {
@@ -2280,7 +2512,10 @@ async fn run_node(
                                             Duration::ZERO,
                                         );
                                     }
-                                    metrics.record_cancellation(alias.as_str(), "edge_transform_failed");
+                                    metrics.record_cancellation(
+                                        alias.as_str(),
+                                        "edge_transform_failed",
+                                    );
                                     ctx.token().cancel();
                                     edge_transform_failed = true;
                                     break;
@@ -2358,7 +2593,8 @@ async fn run_node(
                         async move { context::with_resources(resources, async move { item }).await }
                     }
                 });
-                let scoped_stream = scoped_stream.take_until(cancellation.clone().cancelled_owned());
+                let scoped_stream =
+                    scoped_stream.take_until(cancellation.clone().cancelled_owned());
                 #[cfg(target_arch = "wasm32")]
                 let boxed_stream = scoped_stream.boxed_local();
                 #[cfg(not(target_arch = "wasm32"))]
@@ -2421,6 +2657,76 @@ fn new_checkpoint_handle(flow_id: &FlowId, run_id: &str) -> CheckpointHandle {
     }
 }
 
+fn pending_from_alias(ir: &ValidatedIR, alias: &str) -> Vec<String> {
+    let mut pending = Vec::new();
+    let mut seen = HashSet::new();
+    for edge in &ir.flow().edges {
+        if edge.from != alias {
+            continue;
+        }
+        if seen.insert(edge.to.clone()) {
+            pending.push(edge.to.clone());
+        }
+    }
+    pending
+}
+
+fn infer_resume_after_ms(payload: &JsonValue) -> Option<u64> {
+    payload
+        .as_object()
+        .and_then(|obj| obj.get("scheduled_at_ms"))
+        .and_then(|value| value.as_i64())
+        .and_then(|value| u64::try_from(value).ok())
+}
+
+fn annotate_halt_payload(payload: JsonValue, checkpoint_id: &str) -> JsonValue {
+    let mut payload = payload;
+    if let Some(object) = payload.as_object_mut() {
+        object.insert(
+            "checkpoint_id".to_string(),
+            JsonValue::String(checkpoint_id.to_string()),
+        );
+    }
+    payload
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn now_ms() -> u64 {
+    let millis = js_sys::Date::now();
+    if millis.is_finite() && millis >= 0.0 {
+        millis as u64
+    } else {
+        0
+    }
+}
+
+fn map_checkpoint_error(handle: &CheckpointHandle, err: CheckpointError) -> ExecutionError {
+    match err {
+        CheckpointError::NotFound => ExecutionError::CheckpointNotFound {
+            checkpoint_id: handle.checkpoint_id.clone(),
+        },
+        CheckpointError::LeaseConflict | CheckpointError::LeaseExpired => {
+            ExecutionError::CheckpointLeaseConflict {
+                checkpoint_id: handle.checkpoint_id.clone(),
+            }
+        }
+        CheckpointError::Storage(message) => ExecutionError::CheckpointStateCorrupted {
+            checkpoint_id: handle.checkpoint_id.clone(),
+            message,
+        },
+    }
+}
+
 /// Errors surfaced during flow execution.
 #[derive(Debug, Error)]
 pub enum ExecutionError {
@@ -2479,7 +2785,10 @@ pub enum ExecutionError {
     CheckpointLeaseConflict { checkpoint_id: String },
     /// Checkpoint state corrupted or unreadable.
     #[error("checkpoint `{checkpoint_id}` state corrupted: {message}")]
-    CheckpointStateCorrupted { checkpoint_id: String, message: String },
+    CheckpointStateCorrupted {
+        checkpoint_id: String,
+        message: String,
+    },
     /// Checkpoint record incompatible with this runtime.
     #[error("checkpoint `{checkpoint_id}` has incompatible version {version}")]
     CheckpointIncompatibleVersion { checkpoint_id: String, version: u32 },
@@ -2536,10 +2845,9 @@ mod tests {
     fn build_into_transform_flow() -> (FlowExecutor, ValidatedIR) {
         let mut registry = NodeRegistry::new();
         registry
-            .register_fn(
-                "tests::into_trigger",
-                |input: JsonValue| async move { Ok(input) },
-            )
+            .register_fn("tests::into_trigger", |input: JsonValue| async move {
+                Ok(input)
+            })
             .expect("register trigger");
         registry
             .register_fn("tests::into_capture", |input: u64| async move { Ok(input) })
@@ -2630,7 +2938,9 @@ mod tests {
 
         let mut registry = NodeRegistry::new();
         registry
-            .register_fn("tests::fanout_trigger", |input: JsonValue| async move { Ok(input) })
+            .register_fn("tests::fanout_trigger", |input: JsonValue| async move {
+                Ok(input)
+            })
             .expect("register trigger");
 
         let good_hits_clone = Arc::clone(&good_hits);

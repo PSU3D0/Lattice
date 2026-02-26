@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use anyhow::{anyhow, Context, Result};
-use capabilities::blob::MemoryBlobStore;
+use anyhow::{Context, Result, anyhow};
 use capabilities::ResourceBag;
+use capabilities::blob::MemoryBlobStore;
 use host_wasmtime::WasmRuntime;
 
 fn main_usage() -> &'static str {

@@ -102,6 +102,158 @@ async function sqlExec(query: string, bindings?: unknown[], mode?: "json" | "raw
   return response.json();
 }
 
+async function checkpointPut(
+  checkpointId: string,
+  flowId = "flow/test",
+  runId = "run/test",
+  ttlMs?: number
+) {
+  const response = await mf.dispatchFetch(`${mfUrl}checkpoint/put`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      checkpoint_id: checkpointId,
+      flow_id: flowId,
+      run_id: runId,
+      ttl_ms: ttlMs,
+      created_at_ms: Date.now(),
+    }),
+  });
+  return response.json();
+}
+
+async function checkpointGet(checkpointId: string, flowId = "flow/test", runId = "run/test") {
+  const params = new URLSearchParams({
+    checkpoint_id: checkpointId,
+    flow_id: flowId,
+    run_id: runId,
+  });
+  const response = await mf.dispatchFetch(`${mfUrl}checkpoint/get?${params.toString()}`);
+  return response.json();
+}
+
+async function checkpointLease(
+  checkpointId: string,
+  flowId = "flow/test",
+  runId = "run/test",
+  ttlSeconds = 30
+) {
+  const response = await mf.dispatchFetch(`${mfUrl}checkpoint/lease`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      checkpoint_id: checkpointId,
+      flow_id: flowId,
+      run_id: runId,
+      ttl_seconds: ttlSeconds,
+    }),
+  });
+  return response.json();
+}
+
+async function checkpointRelease(leaseId: string, expiresAtMs: number) {
+  const response = await mf.dispatchFetch(`${mfUrl}checkpoint/release`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ lease_id: leaseId, expires_at_ms: expiresAtMs }),
+  });
+  return response.json();
+}
+
+async function checkpointAck(checkpointId: string, flowId = "flow/test", runId = "run/test") {
+  const params = new URLSearchParams({
+    checkpoint_id: checkpointId,
+    flow_id: flowId,
+    run_id: runId,
+  });
+  const response = await mf.dispatchFetch(`${mfUrl}checkpoint/ack?${params.toString()}`, {
+    method: "DELETE",
+  });
+  return response.json();
+}
+
+async function checkpointList(flowId = "flow/test") {
+  const params = new URLSearchParams({ flow_id: flowId });
+  const response = await mf.dispatchFetch(`${mfUrl}checkpoint/list?${params.toString()}`);
+  return response.json();
+}
+
+async function scheduleAfter(
+  checkpointId: string,
+  flowId = "flow/test",
+  runId = "run/test",
+  delayMs = 25
+) {
+  const response = await mf.dispatchFetch(`${mfUrl}resume/schedule_after`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      checkpoint_id: checkpointId,
+      flow_id: flowId,
+      run_id: runId,
+      delay_ms: delayMs,
+    }),
+  });
+  return response.json();
+}
+
+async function scheduleStatus(scheduleId: string) {
+  const response = await mf.dispatchFetch(`${mfUrl}resume/schedule_status`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ schedule_id: scheduleId }),
+  });
+  return response.json();
+}
+
+async function scheduleCancel(scheduleId: string) {
+  const response = await mf.dispatchFetch(`${mfUrl}resume/schedule_cancel`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ schedule_id: scheduleId }),
+  });
+  return response.json();
+}
+
+async function tokenCreate(
+  checkpointId: string,
+  flowId = "flow/test",
+  runId = "run/test",
+  ttlSeconds = 60,
+  singleUse = true
+) {
+  const response = await mf.dispatchFetch(`${mfUrl}resume/token_create`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      checkpoint_id: checkpointId,
+      flow_id: flowId,
+      run_id: runId,
+      ttl_seconds: ttlSeconds,
+      single_use: singleUse,
+    }),
+  });
+  return response.json();
+}
+
+async function tokenResolve(token: string) {
+  const response = await mf.dispatchFetch(`${mfUrl}resume/token_resolve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+  return response.json();
+}
+
+async function tokenRevoke(token: string) {
+  const response = await mf.dispatchFetch(`${mfUrl}resume/token_revoke`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+  return response.json();
+}
+
 afterAll(async () => {
   await mf.dispose();
 });
@@ -205,5 +357,64 @@ describe("cap-do-workers E2E", () => {
     expect(rawRows.rows.length).toBe(2);
     expect(rawRows.rows[0][0]).toEqual({ type: "string", value: "alpha" });
     expect(rawRows.rows[1][0]).toEqual({ type: "string", value: "beta" });
+  });
+
+  it("checkpoint store roundtrip + lease semantics", async () => {
+    const id = "ckpt-e2e-1";
+    await checkpointPut(id, "flow/e2e", "run/e2e", 60_000);
+
+    const got = await checkpointGet(id, "flow/e2e", "run/e2e");
+    expect(got.checkpoint_id).toBe(id);
+    expect(got.flow_id).toBe("flow/e2e");
+
+    const lease1 = await checkpointLease(id, "flow/e2e", "run/e2e", 30);
+    expect(lease1.lease_id).toContain(id);
+
+    const lease2 = await checkpointLease(id, "flow/e2e", "run/e2e", 30);
+    expect(String(lease2.error)).toContain("lease conflict");
+
+    const release = await checkpointRelease(lease1.lease_id, lease1.expires_at_ms);
+    expect(release.success).toBe(true);
+
+    const lease3 = await checkpointLease(id, "flow/e2e", "run/e2e", 30);
+    expect(lease3.lease_id).toContain(id);
+
+    const listed = await checkpointList("flow/e2e");
+    expect(Array.isArray(listed.checkpoints)).toBe(true);
+    expect(listed.checkpoints.some((c: any) => c.checkpoint_id === id)).toBe(true);
+
+    const acked = await checkpointAck(id, "flow/e2e", "run/e2e");
+    expect(acked.success).toBe(true);
+  });
+
+  it("resume scheduler status/cancel and token single-use", async () => {
+    const checkpointId = "ckpt-e2e-2";
+    await checkpointPut(checkpointId, "flow/e2e", "run/e2e", 60_000);
+
+    const scheduled = await scheduleAfter(checkpointId, "flow/e2e", "run/e2e", 5);
+    expect(typeof scheduled.schedule_id).toBe("string");
+
+    await new Promise((r) => setTimeout(r, 15));
+
+    const status1 = await scheduleStatus(scheduled.schedule_id);
+    expect(status1.status).toContain("Fired");
+
+    const cancelled = await scheduleCancel(scheduled.schedule_id);
+    expect(cancelled.success).toBe(true);
+
+    const status2 = await scheduleStatus(scheduled.schedule_id);
+    expect(status2.status).toContain("Cancelled");
+
+    const token = await tokenCreate(checkpointId, "flow/e2e", "run/e2e", 60, true);
+    expect(typeof token.token).toBe("string");
+
+    const resolved1 = await tokenResolve(token.token);
+    expect(resolved1.checkpoint_id).toBe(checkpointId);
+
+    const resolved2 = await tokenResolve(token.token);
+    expect(String(resolved2.error)).toContain("already used");
+
+    const revoke = await tokenRevoke(token.token);
+    expect(revoke.success).toBe(true);
   });
 });

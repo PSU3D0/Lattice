@@ -35,7 +35,11 @@ pub struct Ack {
     pub stored: bool,
 }
 
-#[def_node(trigger, name = "BatchTrigger", summary = "Ingress trigger for batch ingest")]
+#[def_node(
+    trigger,
+    name = "BatchTrigger",
+    summary = "Ingress trigger for batch ingest"
+)]
 async fn batch_trigger(request: BatchRequest) -> NodeResult<BatchRequest> {
     Ok(request)
 }
@@ -141,10 +145,7 @@ async fn capture(acks: Vec<Ack>) -> NodeResult<Vec<Ack>> {
 mod bundle_def {
     #[cfg(feature = "host-bundle")]
     use super::{
-        batch_trigger_register,
-        capture_register,
-        prepare_payload_register,
-        slow_ack_register,
+        batch_trigger_register, capture_register, prepare_payload_register, slow_ack_register,
         store_blob_register,
     };
     use dag_macros::node;
@@ -224,7 +225,10 @@ mod tests {
         let ir = flow();
         let node = ir.node("store").expect("store node");
         assert_eq!(node.idempotency.key.as_deref(), Some("batch_id"));
-        assert_eq!(node.idempotency.scope, Some(dag_core::IdempotencyScope::Node));
+        assert_eq!(
+            node.idempotency.scope,
+            Some(dag_core::IdempotencyScope::Node)
+        );
         assert_eq!(node.idempotency.ttl_ms, Some(IDEMPOTENCY_TTL_MS));
     }
 

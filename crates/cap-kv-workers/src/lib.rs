@@ -69,9 +69,9 @@ mod wasm {
     use capabilities::kv::{KvListEntry, KvListOptions, KvListResponse, KvValue};
     use js_sys::{Function, Object, Promise};
     use serde::Serialize;
-    use worker::wasm_bindgen_futures::JsFuture;
     use std::time::{Duration, UNIX_EPOCH};
     use worker::kv::KvStore;
+    use worker::wasm_bindgen_futures::JsFuture;
 
     #[repr(C)]
     struct KvStoreParts {
@@ -101,10 +101,7 @@ mod wasm {
         if store_size != parts_size || store_align != parts_align {
             panic!(
                 "worker::kv::KvStore layout mismatch (size {}, align {}) vs KvStoreParts (size {}, align {}); update cap-kv-workers for worker =0.7.4",
-                store_size,
-                store_align,
-                parts_size,
-                parts_align
+                store_size, store_align, parts_size, parts_align
             );
         }
     }
@@ -390,7 +387,11 @@ mod wasm {
                 prefix: options.prefix.clone(),
                 cursor: options.cursor.clone(),
                 limit: options.limit.map(|limit| limit.min(MAX_LIST_KEYS) as u64),
-                include: if include.is_empty() { None } else { Some(include) },
+                include: if include.is_empty() {
+                    None
+                } else {
+                    Some(include)
+                },
             };
 
             let options_object = serde_wasm_bindgen::to_value(&list_options)

@@ -13,6 +13,7 @@ use thiserror::Error;
 pub const ERRNO_ENOBUFS: i32 = -12;
 
 /// Generic "unsupported" error.
+#[allow(dead_code)]
 pub const ERRNO_EUNSUPPORTED: i32 = -95;
 
 #[derive(Debug, Error)]

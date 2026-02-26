@@ -18,3 +18,4 @@ serde_json = "1.0"
 
 cap-do-workers = { path = ".." }
 capabilities = { path = "../../capabilities" }
+dag-core = { path = "../../dag-core" }

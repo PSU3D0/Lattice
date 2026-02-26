@@ -10,6 +10,11 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 #[cfg(target_arch = "wasm32")]
+use capabilities::{
+    ResourceAccess, ResourceBag,
+    durability::ResumeToken,
+};
+#[cfg(target_arch = "wasm32")]
 use futures::channel::oneshot;
 #[cfg(target_arch = "wasm32")]
 use futures::future::{FutureExt, LocalBoxFuture, Shared};
@@ -20,11 +25,13 @@ use futures::stream::{self, StreamExt};
 #[cfg(target_arch = "wasm32")]
 use host_inproc::{FlowBundle, FlowEntrypoint, HostRuntime, Invocation, InvocationMetadata};
 #[cfg(target_arch = "wasm32")]
-use capabilities::{ResourceAccess, ResourceBag};
-#[cfg(target_arch = "wasm32")]
 use kernel_exec::{ExecutionError, ExecutionResult, StreamHandle};
 #[cfg(target_arch = "wasm32")]
+use serde::Deserialize;
+#[cfg(target_arch = "wasm32")]
 use serde_json::{Value as JsonValue, json};
+#[cfg(target_arch = "wasm32")]
+use tokio::runtime::{Builder as RuntimeBuilder, Handle as RuntimeHandle};
 #[cfg(all(target_arch = "wasm32", feature = "entrypoint"))]
 use worker::event;
 #[cfg(target_arch = "wasm32")]
@@ -33,8 +40,6 @@ use worker::wasm_bindgen::JsCast;
 use worker::wasm_bindgen::closure::Closure;
 #[cfg(target_arch = "wasm32")]
 use worker::{AbortController, Context, Env, Headers, Request, Response, Result};
-#[cfg(target_arch = "wasm32")]
-use tokio::runtime::{Builder as RuntimeBuilder, Handle as RuntimeHandle};
 
 #[cfg(target_arch = "wasm32")]
 type AbortFuture = Shared<LocalBoxFuture<'static, ()>>;
@@ -63,7 +68,7 @@ fn get_resource_access() -> Option<Arc<dyn ResourceAccess>> {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub async fn handle_fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
+pub async fn handle_fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     if RuntimeHandle::try_current().is_err() {
         let runtime = match RuntimeBuilder::new_current_thread().build() {
             Ok(runtime) => runtime,
@@ -83,6 +88,10 @@ async fn handle_fetch_inner(mut req: Request, env: Env) -> Result<Response> {
         return Response::error("no entrypoints configured", 500);
     }
 
+    if is_internal_resume_request(&req) {
+        return handle_internal_resume(req, &env, bundle).await;
+    }
+
     let (trigger_alias, capture_alias, deadline) =
         match select_entrypoint(&req, &bundle.entrypoints) {
             Some(entrypoint) => (
@@ -100,17 +109,7 @@ async fn handle_fetch_inner(mut req: Request, env: Env) -> Result<Response> {
 
     let abort_bridge = AbortBridge::new(&req);
 
-    let executor = bundle.executor();
-    let ir = Arc::new(bundle.validated_ir);
-    let runtime = if bundle.environment_plugins.is_empty() {
-        HostRuntime::new(executor, Arc::clone(&ir))
-    } else {
-        HostRuntime::with_plugins(executor, Arc::clone(&ir), bundle.environment_plugins)
-    };
-    let runtime = match get_resource_access() {
-        Some(resources) => runtime.with_resource_access(resources),
-        None => runtime,
-    };
+    let runtime = runtime_from_bundle(bundle);
 
     let mut invocation =
         Invocation::new(trigger_alias, capture_alias, payload).with_deadline(deadline);
@@ -168,6 +167,118 @@ unsafe extern "Rust" {
 }
 
 #[cfg(target_arch = "wasm32")]
+fn runtime_from_bundle(bundle: FlowBundle) -> HostRuntime {
+    let executor = bundle.executor();
+    let ir = Arc::new(bundle.validated_ir);
+    let runtime = if bundle.environment_plugins.is_empty() {
+        HostRuntime::new(executor, Arc::clone(&ir))
+    } else {
+        HostRuntime::with_plugins(executor, Arc::clone(&ir), bundle.environment_plugins)
+    };
+    match get_resource_access() {
+        Some(resources) => runtime.with_resource_access(resources),
+        None => runtime,
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn is_internal_resume_request(req: &Request) -> bool {
+    req.path() == "/__lattice/resume" && req.method().as_ref().eq_ignore_ascii_case("POST")
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Debug, Deserialize)]
+struct InternalResumeRequest {
+    #[serde(default)]
+    checkpoint_id: Option<String>,
+    #[serde(default)]
+    token: Option<String>,
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn handle_internal_resume(mut req: Request, env: &Env, bundle: FlowBundle) -> Result<Response> {
+    if let Some(expected) = env
+        .var("LATTICE_INTERNAL_RESUME_TOKEN")
+        .ok()
+        .map(|value| value.to_string())
+    {
+        let provided = header_value(&req, "x-lattice-internal-token");
+        if provided.as_deref() != Some(expected.as_str()) {
+            return json_response(401, json!({ "error": "unauthorized" }));
+        }
+    }
+
+    let body = req
+        .bytes()
+        .await
+        .map_err(|err| worker::Error::RustError(format!("failed to read resume body: {err}")))?;
+    let payload = if body.is_empty() {
+        InternalResumeRequest {
+            checkpoint_id: None,
+            token: None,
+        }
+    } else {
+        match serde_json::from_slice::<InternalResumeRequest>(&body) {
+            Ok(payload) => payload,
+            Err(err) => return json_response(400, json!({ "error": format!("invalid request body: {err}") })),
+        }
+    };
+
+    let runtime = runtime_from_bundle(bundle);
+    let checkpoint_id = if let Some(checkpoint_id) = payload.checkpoint_id {
+        checkpoint_id
+    } else if let Some(token) = payload.token {
+        let resources = runtime.resources();
+        let Some(source) = resources.resume_signal_source() else {
+            return json_response(
+                500,
+                json!({
+                    "error": "resume token resolution unavailable",
+                    "code": "DAG-CKPT-003",
+                }),
+            );
+        };
+        match source.resolve_token(&ResumeToken(token)).await {
+            Ok(handle) => handle.checkpoint_id,
+            Err(err) => return json_response(400, json!({ "error": format!("invalid resume token: {err}") })),
+        }
+    } else {
+        return json_response(
+            400,
+            json!({ "error": "missing checkpoint_id or token in resume request" }),
+        );
+    };
+
+    match runtime.resume(&checkpoint_id).await {
+        Ok(ExecutionResult::Value(value)) => {
+            json_response(200, json!({ "resumed": true, "result": value }))
+        }
+        Ok(ExecutionResult::Halt { alias, payload }) => json_response(
+            202,
+            json!({ "halted": true, "node": alias, "payload": payload }),
+        ),
+        Ok(ExecutionResult::Stream(mut stream)) => {
+            let mut events = Vec::new();
+            while let Some(item) = stream.next().await {
+                let payload = match item {
+                    Ok(payload) => payload,
+                    Err(err) => {
+                        let (status, body) = map_execution_error(err);
+                        return json_response(status, body);
+                    }
+                };
+                events.push(payload);
+            }
+            json_response(200, json!({ "resumed": true, "stream": events }))
+        }
+        Err(err) => {
+            let (status, body) = map_execution_error(err);
+            json_response(status, body)
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
 fn select_entrypoint<'a>(
     req: &Request,
     entrypoints: &'a [FlowEntrypoint],
@@ -204,7 +315,8 @@ async fn read_payload(req: &mut Request) -> std::result::Result<JsonValue, Respo
                             ]);
                         }
                         _ => {
-                            *existing = JsonValue::Array(vec![JsonValue::String(value.to_string())]);
+                            *existing =
+                                JsonValue::Array(vec![JsonValue::String(value.to_string())]);
                         }
                     },
                     None => {
@@ -432,7 +544,10 @@ fn map_execution_error(err: ExecutionError) -> (u16, JsonValue) {
                 "details": { "checkpoint_id": checkpoint_id }
             }),
         ),
-        ExecutionError::CheckpointStateCorrupted { checkpoint_id, message } => (
+        ExecutionError::CheckpointStateCorrupted {
+            checkpoint_id,
+            message,
+        } => (
             500,
             json!({
                 "error": "checkpoint state corrupted",
@@ -440,7 +555,10 @@ fn map_execution_error(err: ExecutionError) -> (u16, JsonValue) {
                 "details": { "checkpoint_id": checkpoint_id, "message": message }
             }),
         ),
-        ExecutionError::CheckpointIncompatibleVersion { checkpoint_id, version } => (
+        ExecutionError::CheckpointIncompatibleVersion {
+            checkpoint_id,
+            version,
+        } => (
             500,
             json!({
                 "error": "checkpoint version incompatible",

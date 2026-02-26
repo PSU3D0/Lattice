@@ -2,14 +2,14 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, SystemTime};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
+use std::time::{Duration, SystemTime};
 #[cfg(target_arch = "wasm32")]
 use time::Instant;
 
-pub mod hints;
 pub mod durability;
+pub mod hints;
 
 #[cfg(target_arch = "wasm32")]
 mod wasm_transport;
@@ -256,14 +256,14 @@ impl ResourceBag {
 
 /// Utilities for scoping capability access to the current execution.
 pub mod context {
-    use super::{durability::CheckpointHandle, ResourceAccess};
+    use super::{ResourceAccess, durability::CheckpointHandle};
     use std::future::Future;
     use std::sync::Arc;
 
-    #[cfg(not(target_arch = "wasm32"))]
-    use tokio::task_local;
     #[cfg(target_arch = "wasm32")]
     use std::cell::RefCell;
+    #[cfg(not(target_arch = "wasm32"))]
+    use tokio::task_local;
 
     #[cfg(not(target_arch = "wasm32"))]
     task_local! {
@@ -335,7 +335,9 @@ pub mod context {
     {
         CURRENT_RESOURCES.with(|cell| {
             let borrow = cell.borrow();
-            borrow.as_ref().map(|resources| callback(resources.as_ref()))
+            borrow
+                .as_ref()
+                .map(|resources| callback(resources.as_ref()))
         })
     }
 

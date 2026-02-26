@@ -2,13 +2,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use dag_core::flow_registry::FlowRegistration;
 use dag_core::{Determinism, Effects, FlowIR, Profile, SchemaRef};
 use flow_bundle::{
-    compute_bundle_id, sha256_prefixed, AbiRef, Capabilities, CodeDescriptor, DurabilityProfile,
-    Entrypoint, FlowEntry, FlowIrRef, Manifest, NodeDeterminism, NodeEffects, NodeSpec,
-    BUNDLE_VERSION, DEFAULT_ABI_NAME, DEFAULT_ABI_VERSION,
+    AbiRef, BUNDLE_VERSION, Capabilities, CodeDescriptor, DEFAULT_ABI_NAME, DEFAULT_ABI_VERSION,
+    DurabilityProfile, Entrypoint, FlowEntry, FlowIrRef, Manifest, NodeDeterminism, NodeEffects,
+    NodeSpec, compute_bundle_id, sha256_prefixed,
 };
 
 #[derive(Debug, Clone, Default)]

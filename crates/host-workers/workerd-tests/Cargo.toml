@@ -11,13 +11,22 @@ publish = false
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = ["host-bundle"]
+host-bundle = []
+flow-registry = []
+
 [dependencies]
 async-stream = "0.3"
+cap-do-workers = { path = "../../cap-do-workers" }
+capabilities = { path = "../../capabilities" }
 dag-core = { path = "../../dag-core" }
 dag-macros = { path = "../../dag-macros" }
 futures = "0.3"
 host-inproc = { path = "../../host-inproc" }
 host-workers = { path = "..", default-features = false }
+humantime-serde = "1.1"
+js-sys = "0.3"
 kernel-exec = { path = "../../kernel-exec", default-features = false, features = ["wasm"] }
 kernel-plan = { path = "../../kernel-plan" }
 serde = "1.0"

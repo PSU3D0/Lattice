@@ -54,7 +54,29 @@ description = "Execute the full Rust test suite"
 depends = ["check"]
 run = "cargo test {{vars.cargo_workspace}}"
 
+[tasks.check-wasm-kernel]
+description = "Check kernel-exec wasm profile (no spill-fs)"
+run = "cargo check -p kernel-exec --target wasm32-unknown-unknown --no-default-features -F wasm"
+
+[tasks.check-wasm-host-workers]
+description = "Check host-workers wasm build"
+run = "cargo check -p host-workers --target wasm32-unknown-unknown"
+
+[tasks.test-wasm-host-workers-harness]
+description = "Run Miniflare/workerd host-workers harness"
+run = "cd crates/host-workers/workerd-tests && npm ci && npm test"
+
+[tasks.validate-wasm]
+description = "Wasm lane validation checks for CI"
+depends = ["check-wasm-kernel", "check-wasm-host-workers", "test-wasm-host-workers-harness"]
+run = "echo finished wasm validation checks"
+
 [tasks.validate]
 description = "Aggregate validation task for CI"
 depends = ["fmt", "clippy", "test"]
 run = "echo finished validation checks"
+
+[tasks.validate-ci]
+description = "Full CI validation (native + wasm lanes)"
+depends = ["validate", "validate-wasm"]
+run = "echo finished full CI validation"

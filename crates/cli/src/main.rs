@@ -13,8 +13,8 @@ use dag_core::{Diagnostic, DurabilityMode, Severity};
 use exporters::{to_dot, to_json_value};
 use flow_bundle::ExecPolicy;
 use futures::StreamExt;
-use host_web_axum::{HostHandle, RouteConfig};
 use host_wasmtime::load_flow_bundle;
+use host_web_axum::{HostHandle, RouteConfig};
 use kernel_exec::{ExecutionResult, FlowExecutor};
 use kernel_plan::{ValidatedIR, validate};
 use serde::{Deserialize, Serialize};
@@ -24,11 +24,11 @@ use tokio::net::TcpListener;
 use tokio::runtime::Builder as RuntimeBuilder;
 use tokio::signal;
 
-use capabilities::{ResourceAccess, ResourceBag};
 use capabilities::Capability;
 use capabilities::durability::{
     CheckpointError, CheckpointFilter, CheckpointHandle, CheckpointRecord, CheckpointStore, Lease,
 };
+use capabilities::{ResourceAccess, ResourceBag};
 use host_inproc::{EnvironmentPlugin, HostRuntime, Invocation};
 
 use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
@@ -756,9 +756,7 @@ fn run_bundle(args: BundleArgs) -> Result<()> {
     let checkpoint_override = args.checkpoint_store.is_some() || args.checkpoint_dir.is_some();
     let has_checkpoint_store = resources.checkpoint_store().is_some();
     if checkpoint_override {
-        let store_kind = args
-            .checkpoint_store
-            .unwrap_or(CheckpointStoreKind::Fs);
+        let store_kind = args.checkpoint_store.unwrap_or(CheckpointStoreKind::Fs);
         if store_kind != CheckpointStoreKind::Fs && args.checkpoint_dir.is_some() {
             return Err(anyhow!(
                 "--checkpoint-dir can only be used with --checkpoint-store fs"
@@ -809,12 +807,8 @@ fn run_bundle(args: BundleArgs) -> Result<()> {
         )
         .with_resource_bag(resources);
 
-        let invocation = Invocation::new(
-            trigger_alias.as_str(),
-            capture_alias.as_str(),
-            payload,
-        )
-        .with_deadline(deadline);
+        let invocation = Invocation::new(trigger_alias.as_str(), capture_alias.as_str(), payload)
+            .with_deadline(deadline);
 
         let execution = host_runtime
             .execute(invocation)
@@ -1271,7 +1265,11 @@ impl CheckpointStore for MemoryCheckpointStore {
         Ok(())
     }
 
-    async fn lease(&self, handle: &CheckpointHandle, ttl: Duration) -> Result<Lease, CheckpointError> {
+    async fn lease(
+        &self,
+        handle: &CheckpointHandle,
+        ttl: Duration,
+    ) -> Result<Lease, CheckpointError> {
         let records = self.records.lock().expect("checkpoint store lock");
         if !records.contains_key(&handle.checkpoint_id) {
             return Err(CheckpointError::NotFound);
@@ -1291,7 +1289,10 @@ impl CheckpointStore for MemoryCheckpointStore {
         Ok(())
     }
 
-    async fn list(&self, filter: CheckpointFilter) -> Result<Vec<CheckpointHandle>, CheckpointError> {
+    async fn list(
+        &self,
+        filter: CheckpointFilter,
+    ) -> Result<Vec<CheckpointHandle>, CheckpointError> {
         let records = self.records.lock().expect("checkpoint store lock");
         let mut handles = Vec::new();
         for record in records.values() {
@@ -1333,11 +1334,7 @@ fn resource_bag_from_bindings(bindings: &[String]) -> Result<ResourceBag> {
                 bag = bag.with_blob(Arc::new(capabilities::blob::MemoryBlobStore::new()));
             }
             ("durability::checkpoint_store", "memory") => {
-                bag = attach_checkpoint_store(
-                    bag,
-                    CheckpointStoreKind::Memory,
-                    None,
-                );
+                bag = attach_checkpoint_store(bag, CheckpointStoreKind::Memory, None);
             }
             ("resource::http", "reqwest") => {
                 let client = Arc::new(cap_http_reqwest::ReqwestHttpClient::default());
@@ -1797,7 +1794,9 @@ fn attach_checkpoint_store(
             let root = checkpoint_dir
                 .map(Path::to_path_buf)
                 .unwrap_or_else(|| PathBuf::from(".flow").join("checkpoints"));
-            bag.with_checkpoint_store(Arc::new(local_durability::FsCheckpointStore::with_root(root)))
+            bag.with_checkpoint_store(Arc::new(local_durability::FsCheckpointStore::with_root(
+                root,
+            )))
         }
         CheckpointStoreKind::Memory => {
             bag.with_checkpoint_store(Arc::new(MemoryCheckpointStore::default()))

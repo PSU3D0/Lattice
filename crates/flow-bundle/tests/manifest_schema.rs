@@ -1,6 +1,6 @@
 use flow_bundle::{
-    compute_bundle_id, select_artifact, AbiRef, ArtifactDescriptor, Capabilities, CodeDescriptor,
-    ExecPolicy, FlowEntry, Manifest,
+    AbiRef, ArtifactDescriptor, Capabilities, CodeDescriptor, ExecPolicy, FlowEntry, Manifest,
+    compute_bundle_id, select_artifact,
 };
 use jsonschema::{Draft, JSONSchema};
 use serde_json::json;

@@ -12,10 +12,10 @@ mod ir;
 pub mod schema;
 
 pub use builder::{EdgeHandle, FlowBuilder, FlowBuilderError, NodeHandle};
-pub use diagnostics::{diagnostic_codes, Diagnostic, DiagnosticCode, Severity, DIAGNOSTIC_CODES};
+pub use diagnostics::{DIAGNOSTIC_CODES, Diagnostic, DiagnosticCode, Severity, diagnostic_codes};
 pub use edge_transform::{
-    apply_into_coercion, json_type_name, schemas_compatible, supported_into_coercion, IntoCoercion,
-    IntoCoercionError,
+    IntoCoercion, IntoCoercionError, apply_into_coercion, json_type_name, schemas_compatible,
+    supported_into_coercion,
 };
 pub use effects::{Determinism, Effects, NodeError, NodeResult};
 pub use ir::*;

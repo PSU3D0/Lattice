@@ -85,7 +85,8 @@ impl serde::Serialize for SiteEventStream {
     }
 }
 
-#[def_node(trigger,
+#[def_node(
+    trigger,
     name = "SiteHttpTrigger",
     summary = "Ingress trigger for site status requests"
 )]

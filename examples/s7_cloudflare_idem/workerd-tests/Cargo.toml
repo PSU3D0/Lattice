@@ -20,6 +20,7 @@ cap-do-workers = { path = "../../../crates/cap-do-workers" }
 cap-http-workers = { path = "../../../crates/cap-http-workers" }
 cap-kv-workers = { path = "../../../crates/cap-kv-workers" }
 capabilities = { path = "../../../crates/capabilities" }
+dag-core = { path = "../../../crates/dag-core" }
 host-inproc = { path = "../../../crates/host-inproc" }
 host-workers = { path = "../../../crates/host-workers", default-features = false }
 

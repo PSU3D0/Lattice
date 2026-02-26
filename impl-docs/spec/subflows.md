@@ -1,7 +1,7 @@
 Status: Draft
 Purpose: spec
 Owner: Core
-Last reviewed: 2026-01-29
+Last reviewed: 2026-02-22
 
 # Subflows (0.1.x)
 
@@ -63,6 +63,26 @@ subflow!(crate::flow_mod::entrypoint)
 
 There is no runtime `flows import` mechanism in 0.1.x.
 
+### Generated parent binding surface
+
+When a parent `flow!`/`workflow!` binds a subflow alias, generated code exports a typed binding
+surface under `bindings::<alias>`:
+
+```rust
+<parent_flow>::bindings::<alias>::RawIn
+<parent_flow>::bindings::<alias>::RawOut
+<parent_flow>::bindings::<alias>::In
+<parent_flow>::bindings::<alias>::Out
+<parent_flow>::bindings::<alias>::BINDING_ALIAS
+<parent_flow>::bindings::<alias>::SOURCE_KIND
+<parent_flow>::bindings::<alias>::SOURCE_CONTRACT_ID
+```
+
+- `SOURCE_KIND` is `"subflow"` for subflow bindings.
+- `SOURCE_CONTRACT_ID` points at the selected subflow entrypoint contract ID.
+
+This enables adapter authors to target stable alias modules while keeping compatibility explicit.
+
 ## Execution Semantics
 
 - Subflow executes **in-process** on the same host runtime.
@@ -115,4 +135,4 @@ The actual subflow graph is not embedded in the parent Flow IR; it is referenced
 
 ## Related
 
-- `impl-docs/spec/public-io-contract.md` (entrypoint contract exports and adapter pathways)
+- `impl-docs/spec/public-io-contract.md` (entrypoint + binding contract exports and adapter pathways)

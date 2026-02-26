@@ -3,10 +3,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use capabilities::{Capability, ResourceBag};
 use capabilities::durability::{
     CheckpointError, CheckpointFilter, CheckpointHandle, CheckpointRecord, CheckpointStore, Lease,
 };
+use capabilities::{Capability, ResourceBag};
 use dag_core::{DurabilityMode, FlowId};
 use example_s1_echo as s1_echo;
 use example_s2_site as s2_site;
@@ -68,7 +68,11 @@ impl CheckpointStore for TestCheckpointStore {
         Ok(())
     }
 
-    async fn lease(&self, handle: &CheckpointHandle, _ttl: Duration) -> Result<Lease, CheckpointError> {
+    async fn lease(
+        &self,
+        handle: &CheckpointHandle,
+        _ttl: Duration,
+    ) -> Result<Lease, CheckpointError> {
         Ok(Lease {
             lease_id: format!(
                 "{}:{}:{}",
@@ -84,7 +88,10 @@ impl CheckpointStore for TestCheckpointStore {
         Ok(())
     }
 
-    async fn list(&self, filter: CheckpointFilter) -> Result<Vec<CheckpointHandle>, CheckpointError> {
+    async fn list(
+        &self,
+        filter: CheckpointFilter,
+    ) -> Result<Vec<CheckpointHandle>, CheckpointError> {
         let mut handles = Vec::new();
         for record in self.records.lock().unwrap().values() {
             if let Some(flow_id) = &filter.flow_id {

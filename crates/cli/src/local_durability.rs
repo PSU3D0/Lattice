@@ -64,7 +64,8 @@ impl FsCheckpointStore {
     }
 
     fn lease_dir(&self, handle: &CheckpointHandle) -> PathBuf {
-        self.run_dir(&handle.flow_id, &handle.run_id).join(".leases")
+        self.run_dir(&handle.flow_id, &handle.run_id)
+            .join(".leases")
     }
 
     fn lease_path(&self, handle: &CheckpointHandle) -> PathBuf {
@@ -200,7 +201,11 @@ impl CheckpointStore for FsCheckpointStore {
         fs::remove_file(&path).map_err(Self::map_io_error)
     }
 
-    async fn lease(&self, handle: &CheckpointHandle, ttl: Duration) -> Result<Lease, CheckpointError> {
+    async fn lease(
+        &self,
+        handle: &CheckpointHandle,
+        ttl: Duration,
+    ) -> Result<Lease, CheckpointError> {
         let path = self.checkpoint_path(handle);
         let metadata = fs::metadata(&path).map_err(Self::map_io_error)?;
         if !metadata.is_file() {
@@ -274,7 +279,10 @@ impl CheckpointStore for FsCheckpointStore {
         }
     }
 
-    async fn list(&self, filter: CheckpointFilter) -> Result<Vec<CheckpointHandle>, CheckpointError> {
+    async fn list(
+        &self,
+        filter: CheckpointFilter,
+    ) -> Result<Vec<CheckpointHandle>, CheckpointError> {
         if let Some(status) = filter.status {
             if status == CheckpointStatus::Completed {
                 return Ok(Vec::new());
@@ -295,7 +303,10 @@ impl CheckpointStore for FsCheckpointStore {
                 if !entry.file_type().map_err(Self::map_io_error)?.is_dir() {
                     continue;
                 }
-                let Some(flow_id) = entry.file_name().to_str().map(|name| FlowId(name.to_string()))
+                let Some(flow_id) = entry
+                    .file_name()
+                    .to_str()
+                    .map(|name| FlowId(name.to_string()))
                 else {
                     continue;
                 };
@@ -320,7 +331,8 @@ impl CheckpointStore for FsCheckpointStore {
                     if !entry.file_type().map_err(Self::map_io_error)?.is_dir() {
                         continue;
                     }
-                    let Some(run_id) = entry.file_name().to_str().map(|name| name.to_string()) else {
+                    let Some(run_id) = entry.file_name().to_str().map(|name| name.to_string())
+                    else {
                         continue;
                     };
                     runs.push((run_id, entry.path()));
@@ -351,7 +363,8 @@ impl CheckpointStore for FsCheckpointStore {
                         run_id: run_id.clone(),
                     };
                     if let Some(status) = filter.status {
-                        if status == CheckpointStatus::Active || status == CheckpointStatus::Expired {
+                        if status == CheckpointStatus::Active || status == CheckpointStatus::Expired
+                        {
                             let file = File::open(&path).map_err(Self::map_io_error)?;
                             let reader = BufReader::new(file);
                             let record: CheckpointRecord = serde_json::from_reader(reader)
@@ -472,7 +485,8 @@ mod tests {
             flow_id: FlowId("flow_a".to_string()),
             run_id: "run_1".to_string(),
         };
-        let err = futures::executor::block_on(store.lease(&handle, Duration::from_secs(5))).unwrap_err();
+        let err =
+            futures::executor::block_on(store.lease(&handle, Duration::from_secs(5))).unwrap_err();
         assert!(matches!(err, CheckpointError::NotFound));
     }
 
@@ -497,11 +511,13 @@ mod tests {
         let record = sample_checkpoint_record("flow_a", "run_1", "ckpt_1");
         let handle = futures::executor::block_on(store.put(record)).unwrap();
 
-        let lease = futures::executor::block_on(store.lease(&handle, Duration::from_secs(30))).unwrap();
+        let lease =
+            futures::executor::block_on(store.lease(&handle, Duration::from_secs(30))).unwrap();
         let lease_path = PathBuf::from(&lease.lease_id);
         assert!(lease_path.exists());
 
-        let err = futures::executor::block_on(store.lease(&handle, Duration::from_secs(30))).unwrap_err();
+        let err =
+            futures::executor::block_on(store.lease(&handle, Duration::from_secs(30))).unwrap_err();
         assert!(matches!(err, CheckpointError::LeaseConflict));
     }
 
@@ -517,7 +533,8 @@ mod tests {
         let expired_at_ms = FsCheckpointStore::now_ms().saturating_sub(1);
         write_lease_record(&lease_path, "ckpt_1", "flow_a", "run_1", expired_at_ms);
 
-        let lease = futures::executor::block_on(store.lease(&handle, Duration::from_secs(30))).unwrap();
+        let lease =
+            futures::executor::block_on(store.lease(&handle, Duration::from_secs(30))).unwrap();
         assert!(lease.expires_at_ms > expired_at_ms);
         let lease_path = PathBuf::from(&lease.lease_id);
         assert!(lease_path.exists());
@@ -544,7 +561,8 @@ mod tests {
             serde_json::to_writer(writer, &lease_record).unwrap();
         }));
 
-        let err = futures::executor::block_on(store.lease(&handle, Duration::from_secs(30))).unwrap_err();
+        let err =
+            futures::executor::block_on(store.lease(&handle, Duration::from_secs(30))).unwrap_err();
         assert!(matches!(err, CheckpointError::LeaseConflict));
     }
 
@@ -567,7 +585,8 @@ mod tests {
             }
         }));
 
-        let lease = futures::executor::block_on(store.lease(&handle, Duration::from_secs(30))).unwrap();
+        let lease =
+            futures::executor::block_on(store.lease(&handle, Duration::from_secs(30))).unwrap();
         assert!(PathBuf::from(&lease.lease_id).exists());
     }
 
@@ -590,7 +609,8 @@ mod tests {
             }
         }));
 
-        let lease = futures::executor::block_on(store.lease(&handle, Duration::from_secs(30))).unwrap();
+        let lease =
+            futures::executor::block_on(store.lease(&handle, Duration::from_secs(30))).unwrap();
         assert!(PathBuf::from(&lease.lease_id).exists());
     }
 
@@ -602,7 +622,8 @@ mod tests {
         let record = sample_checkpoint_record("flow_a", "run_1", "ckpt_1");
         let handle = futures::executor::block_on(store.put(record)).unwrap();
 
-        let lease = futures::executor::block_on(store.lease(&handle, Duration::from_secs(30))).unwrap();
+        let lease =
+            futures::executor::block_on(store.lease(&handle, Duration::from_secs(30))).unwrap();
         let lease_path = PathBuf::from(&lease.lease_id);
         assert!(lease_path.exists());
 
@@ -629,14 +650,32 @@ mod tests {
         let handles = futures::executor::block_on(store.list(CheckpointFilter::default())).unwrap();
         let ordered = handles
             .iter()
-            .map(|handle| (handle.flow_id.as_str().to_string(), handle.run_id.clone(), handle.checkpoint_id.clone()))
+            .map(|handle| {
+                (
+                    handle.flow_id.as_str().to_string(),
+                    handle.run_id.clone(),
+                    handle.checkpoint_id.clone(),
+                )
+            })
             .collect::<Vec<_>>();
         assert_eq!(
             ordered,
             vec![
-                ("flow_a".to_string(), "run_1".to_string(), "ckpt_2".to_string()),
-                ("flow_a".to_string(), "run_2".to_string(), "ckpt_1".to_string()),
-                ("flow_b".to_string(), "run_1".to_string(), "ckpt_1".to_string()),
+                (
+                    "flow_a".to_string(),
+                    "run_1".to_string(),
+                    "ckpt_2".to_string()
+                ),
+                (
+                    "flow_a".to_string(),
+                    "run_2".to_string(),
+                    "ckpt_1".to_string()
+                ),
+                (
+                    "flow_b".to_string(),
+                    "run_1".to_string(),
+                    "ckpt_1".to_string()
+                ),
             ]
         );
 
@@ -671,8 +710,20 @@ mod tests {
             .as_millis();
         let now_ms = u64::try_from(now_ms).unwrap_or(u64::MAX);
 
-        let active = sample_checkpoint_record_with_ttl("flow_a", "run_1", "ckpt_active", now_ms - 1_000, 10_000);
-        let expired = sample_checkpoint_record_with_ttl("flow_a", "run_1", "ckpt_expired", now_ms - 10_000, 1_000);
+        let active = sample_checkpoint_record_with_ttl(
+            "flow_a",
+            "run_1",
+            "ckpt_active",
+            now_ms - 1_000,
+            10_000,
+        );
+        let expired = sample_checkpoint_record_with_ttl(
+            "flow_a",
+            "run_1",
+            "ckpt_expired",
+            now_ms - 10_000,
+            1_000,
+        );
         futures::executor::block_on(store.put(active)).unwrap();
         futures::executor::block_on(store.put(expired)).unwrap();
 
@@ -695,7 +746,11 @@ mod tests {
         assert_eq!(expired_handles[0].checkpoint_id, "ckpt_expired");
     }
 
-    fn sample_checkpoint_record(flow_id: &str, run_id: &str, checkpoint_id: &str) -> CheckpointRecord {
+    fn sample_checkpoint_record(
+        flow_id: &str,
+        run_id: &str,
+        checkpoint_id: &str,
+    ) -> CheckpointRecord {
         CheckpointRecord {
             checkpoint_id: checkpoint_id.to_string(),
             flow_id: FlowId(flow_id.to_string()),

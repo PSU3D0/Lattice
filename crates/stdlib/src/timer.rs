@@ -7,7 +7,6 @@ use std::time::Duration;
 
 use capabilities::context;
 
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TimerWaitInput {
     #[serde(default, with = "humantime_serde")]
@@ -39,18 +38,15 @@ async fn timer_wait(input: TimerWaitInput) -> NodeResult<TimerWaitOutput> {
             ));
         }
         (None, None) => {
-            return Err(NodeError::new(
-                "std.timer.wait requires duration or until",
-            ));
+            return Err(NodeError::new("std.timer.wait requires duration or until"));
         }
         (duration, until) => (duration, until),
     };
 
     let now = Utc::now();
     let target = if let Some(duration) = duration {
-        let chrono_duration = chrono::Duration::from_std(duration).map_err(|err| {
-            NodeError::new(format!("std.timer.wait invalid duration: {err}"))
-        })?;
+        let chrono_duration = chrono::Duration::from_std(duration)
+            .map_err(|err| NodeError::new(format!("std.timer.wait invalid duration: {err}")))?;
         now + chrono_duration
     } else if let Some(until) = until {
         until
@@ -59,9 +55,9 @@ async fn timer_wait(input: TimerWaitInput) -> NodeResult<TimerWaitOutput> {
     };
 
     let schedule_result = context::with_current_async(|resources| async move {
-        let scheduler = resources.resume_scheduler().ok_or_else(|| {
-            NodeError::new("std.timer.wait requires ResumeScheduler")
-        })?;
+        let scheduler = resources
+            .resume_scheduler()
+            .ok_or_else(|| NodeError::new("std.timer.wait requires ResumeScheduler"))?;
         let handle = context::current_checkpoint_handle()
             .ok_or_else(|| NodeError::new("std.timer.wait missing checkpoint handle"))?;
         if let Some(duration) = duration {
@@ -86,7 +82,9 @@ async fn timer_wait(input: TimerWaitInput) -> NodeResult<TimerWaitOutput> {
     .await;
 
     if schedule_result.is_none() {
-        return Err(NodeError::new("std.timer.wait missing ResourceAccess context"));
+        return Err(NodeError::new(
+            "std.timer.wait missing ResourceAccess context",
+        ));
     }
     schedule_result.unwrap()?;
 

@@ -1,5 +1,5 @@
-use dag_core::prelude::*;
 use dag_core::EdgeTransformKind;
+use dag_core::prelude::*;
 use dag_macros::{def_node, node, workflow};
 use kernel_plan::validate;
 

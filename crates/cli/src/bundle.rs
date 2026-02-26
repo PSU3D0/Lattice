@@ -5,12 +5,12 @@ use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use cargo_metadata::MetadataCommand;
 use dag_core::FlowIR;
 use exporters::harness::HarnessConfig;
 use flow_bundle::{
-    compute_bundle_id, expand_subflow_ir, sha256_prefixed, validate_manifest, Manifest,
+    Manifest, compute_bundle_id, expand_subflow_ir, sha256_prefixed, validate_manifest,
 };
 use serde::Deserialize;
 use tempfile::tempdir;

@@ -32,9 +32,8 @@ pub async fn serialize_state(
     threshold_bytes: Option<u64>,
     blob_store: Option<&dyn CheckpointBlobStore>,
 ) -> Result<SerializedState, CheckpointError> {
-    let serialized = serde_json::to_vec(state).map_err(|err| {
-        CheckpointError::Storage(format!("failed to serialize state: {err}"))
-    })?;
+    let serialized = serde_json::to_vec(state)
+        .map_err(|err| CheckpointError::Storage(format!("failed to serialize state: {err}")))?;
 
     let should_spill = threshold_bytes
         .map(|limit| serialized.len() as u64 >= limit)
@@ -47,9 +46,8 @@ pub async fn serialize_state(
         });
     }
 
-    let store = blob_store.ok_or_else(|| {
-        CheckpointError::Storage("checkpoint blob store unavailable".to_string())
-    })?;
+    let store = blob_store
+        .ok_or_else(|| CheckpointError::Storage("checkpoint blob store unavailable".to_string()))?;
 
     let blob = store
         .put_checkpoint_blob(checkpoint_id, field, &serialized)
@@ -70,9 +68,8 @@ pub async fn rehydrate_state(
         return Ok(serialized.data.clone());
     }
 
-    let store = blob_store.ok_or_else(|| {
-        CheckpointError::Storage("checkpoint blob store unavailable".to_string())
-    })?;
+    let store = blob_store
+        .ok_or_else(|| CheckpointError::Storage("checkpoint blob store unavailable".to_string()))?;
 
     let blob = serialized
         .blobs
@@ -158,11 +155,17 @@ mod tests {
 
     #[async_trait::async_trait]
     impl CheckpointStore for ConflictStore {
-        async fn put(&self, _record: CheckpointRecord) -> Result<CheckpointHandle, CheckpointError> {
+        async fn put(
+            &self,
+            _record: CheckpointRecord,
+        ) -> Result<CheckpointHandle, CheckpointError> {
             Err(CheckpointError::Storage("not implemented".to_string()))
         }
 
-        async fn get(&self, _handle: &CheckpointHandle) -> Result<CheckpointRecord, CheckpointError> {
+        async fn get(
+            &self,
+            _handle: &CheckpointHandle,
+        ) -> Result<CheckpointRecord, CheckpointError> {
             Err(CheckpointError::Storage("not implemented".to_string()))
         }
 
@@ -170,15 +173,25 @@ mod tests {
             Err(CheckpointError::Storage("not implemented".to_string()))
         }
 
-        async fn lease(&self, _handle: &CheckpointHandle, _ttl: Duration) -> Result<capabilities::durability::Lease, CheckpointError> {
+        async fn lease(
+            &self,
+            _handle: &CheckpointHandle,
+            _ttl: Duration,
+        ) -> Result<capabilities::durability::Lease, CheckpointError> {
             Err(CheckpointError::LeaseConflict)
         }
 
-        async fn release_lease(&self, _lease: capabilities::durability::Lease) -> Result<(), CheckpointError> {
+        async fn release_lease(
+            &self,
+            _lease: capabilities::durability::Lease,
+        ) -> Result<(), CheckpointError> {
             Err(CheckpointError::Storage("not implemented".to_string()))
         }
 
-        async fn list(&self, _filter: capabilities::durability::CheckpointFilter) -> Result<Vec<CheckpointHandle>, CheckpointError> {
+        async fn list(
+            &self,
+            _filter: capabilities::durability::CheckpointFilter,
+        ) -> Result<Vec<CheckpointHandle>, CheckpointError> {
             Err(CheckpointError::Storage("not implemented".to_string()))
         }
     }

@@ -34,9 +34,9 @@ async fn callback_wait(input: CallbackWaitInput) -> NodeResult<CallbackWaitOutpu
     let context_value = input.context;
     let metadata_value = context_value.clone();
     let token = context::with_current_async(|resources| async move {
-        let source = resources.resume_signal_source().ok_or_else(|| {
-            NodeError::new("std.callback.wait requires ResumeSignalSource")
-        })?;
+        let source = resources
+            .resume_signal_source()
+            .ok_or_else(|| NodeError::new("std.callback.wait requires ResumeSignalSource"))?;
         let handle = context::current_checkpoint_handle()
             .ok_or_else(|| NodeError::new("std.callback.wait missing checkpoint handle"))?;
         let metadata = if metadata_value.is_null() {

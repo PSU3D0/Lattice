@@ -1952,6 +1952,7 @@ dependencies = [
 name = "example-s8-contract-surface"
 version = "0.1.0"
 dependencies = [
+ "capabilities",
  "dag-core",
  "dag-macros",
  "host-inproc",
@@ -2627,6 +2628,7 @@ dependencies = [
  "async-trait",
  "capabilities",
  "dag-core",
+ "js-sys",
  "kernel-exec",
  "kernel-plan",
  "serde",
@@ -3419,6 +3421,7 @@ dependencies = [
  "futures",
  "gloo-timers",
  "instant",
+ "js-sys",
  "kernel-plan",
  "metrics",
  "metrics-util",

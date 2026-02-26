@@ -399,10 +399,7 @@ fn normalize_route_path(path: &str) -> String {
     }
 }
 
-fn normalize_route_aliases(
-    route_aliases: Vec<String>,
-    canonical: &str,
-) -> Vec<String> {
+fn normalize_route_aliases(route_aliases: Vec<String>, canonical: &str) -> Vec<String> {
     let mut normalized = Vec::new();
     let mut push_alias = |alias: String| {
         let trimmed = alias.trim();
@@ -746,7 +743,10 @@ fn map_execution_error(err: ExecutionError) -> (StatusCode, JsonValue) {
                 "details": { "checkpoint_id": checkpoint_id }
             }),
         ),
-        ExecutionError::CheckpointStateCorrupted { checkpoint_id, message } => (
+        ExecutionError::CheckpointStateCorrupted {
+            checkpoint_id,
+            message,
+        } => (
             StatusCode::INTERNAL_SERVER_ERROR,
             json!({
                 "error": "checkpoint state corrupted",
@@ -754,7 +754,10 @@ fn map_execution_error(err: ExecutionError) -> (StatusCode, JsonValue) {
                 "details": { "checkpoint_id": checkpoint_id, "message": message }
             }),
         ),
-        ExecutionError::CheckpointIncompatibleVersion { checkpoint_id, version } => (
+        ExecutionError::CheckpointIncompatibleVersion {
+            checkpoint_id,
+            version,
+        } => (
             StatusCode::INTERNAL_SERVER_ERROR,
             json!({
                 "error": "checkpoint version incompatible",
@@ -1580,14 +1583,12 @@ mod tests {
             )
             .unwrap();
         registry
-            .register_fn(
-                "tests::sink",
-                |value: JsonValue| async move { Ok(value) },
-            )
+            .register_fn("tests::sink", |value: JsonValue| async move { Ok(value) })
             .unwrap();
 
         let executor = FlowExecutor::new(Arc::new(registry));
-        let mut builder = FlowBuilder::new("preflight_durable", Version::new(1, 0, 0), Profile::Web);
+        let mut builder =
+            FlowBuilder::new("preflight_durable", Version::new(1, 0, 0), Profile::Web);
         let trigger = builder
             .add_node(
                 "trigger",

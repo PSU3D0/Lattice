@@ -9,14 +9,23 @@ repository.workspace = true
 homepage.workspace = true
 description = "S8 contract export and explicit adapter pathway example."
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 dag-core = { path = "../../crates/dag-core" }
 dag-macros = { path = "../../crates/dag-macros" }
-kernel-exec = { path = "../../crates/kernel-exec" }
+capabilities = { path = "../../crates/capabilities" }
 kernel-plan = { path = "../../crates/kernel-plan" }
 host-inproc = { path = "../../crates/host-inproc" }
 serde.workspace = true
 serde_json.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+kernel-exec = { path = "../../crates/kernel-exec" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+kernel-exec = { path = "../../crates/kernel-exec", default-features = false, features = ["wasm"] }
 
 [features]
 default = ["host-bundle"]

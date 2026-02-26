@@ -5,8 +5,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
-use crate::blob::BlobStore;
 use crate::Capability;
+use crate::blob::BlobStore;
 use dag_core::{DurabilityMode, FlowId};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -107,9 +107,16 @@ pub trait CheckpointStore: Capability {
     async fn put(&self, record: CheckpointRecord) -> Result<CheckpointHandle, CheckpointError>;
     async fn get(&self, handle: &CheckpointHandle) -> Result<CheckpointRecord, CheckpointError>;
     async fn ack(&self, handle: &CheckpointHandle) -> Result<(), CheckpointError>;
-    async fn lease(&self, handle: &CheckpointHandle, ttl: Duration) -> Result<Lease, CheckpointError>;
+    async fn lease(
+        &self,
+        handle: &CheckpointHandle,
+        ttl: Duration,
+    ) -> Result<Lease, CheckpointError>;
     async fn release_lease(&self, lease: Lease) -> Result<(), CheckpointError>;
-    async fn list(&self, filter: CheckpointFilter) -> Result<Vec<CheckpointHandle>, CheckpointError>;
+    async fn list(
+        &self,
+        filter: CheckpointFilter,
+    ) -> Result<Vec<CheckpointHandle>, CheckpointError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -191,8 +198,10 @@ pub trait CheckpointBlobStore: BlobStore {
         field: &str,
         data: &[u8],
     ) -> Result<BlobRef, crate::blob::BlobError>;
-    async fn delete_checkpoint_blobs(&self, checkpoint_id: &str)
-        -> Result<(), crate::blob::BlobError>;
+    async fn delete_checkpoint_blobs(
+        &self,
+        checkpoint_id: &str,
+    ) -> Result<(), crate::blob::BlobError>;
 }
 
 pub trait HostDurability {

@@ -1,5 +1,5 @@
 import { describe, it, expect, afterAll } from "vitest";
-import { Miniflare } from "miniflare";
+import { Miniflare, kCurrentWorker } from "miniflare";
 
 // Initialize Miniflare with our test worker
 const mf = new Miniflare({
@@ -11,6 +11,19 @@ const mf = new Miniflare({
       modulesRules: [
         { type: "CompiledWasm", include: ["**/*.wasm"], fallthrough: true },
       ],
+      durableObjects: {
+        FLOW_DO: {
+          className: "FlowDurableObject",
+          useSQLite: true,
+        },
+      },
+      serviceBindings: {
+        LATTICE_RESUME_SERVICE: kCurrentWorker,
+      },
+      bindings: {
+        LATTICE_RESUME_SERVICE_BINDING: "LATTICE_RESUME_SERVICE",
+        LATTICE_INTERNAL_RESUME_TOKEN: "test-resume-token",
+      },
     },
   ],
 });
@@ -168,6 +181,48 @@ describe("host-workers E2E", () => {
     });
   });
 
+  describe("durability + alarm-driven resume", () => {
+    it("rejects internal resume route without token", async () => {
+      const response = await mf.dispatchFetch(`${mfUrl}__lattice/resume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ checkpoint_id: "cp-missing" }),
+      });
+      expect(response.status).toBe(401);
+    });
+
+    it("resumes timer checkpoint via DO alarm dispatch path", async () => {
+      const response = await mf.dispatchFetch(`${mfUrl}timer`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          duration: "50ms",
+          payload: { hello: "world" },
+        }),
+      });
+
+      expect(response.status).toBe(202);
+      const halted = await response.json();
+      expect(halted.halted).toBe(true);
+      expect(halted.node).toBe("timer_wait");
+
+      const checkpointId = halted?.payload?.checkpoint_id;
+      expect(typeof checkpointId).toBe("string");
+      expect(checkpointId.length).toBeGreaterThan(0);
+
+      await waitFor(async () => {
+        await triggerAlarmTick();
+        return !(await checkpointFound(checkpointId));
+      }, {
+        timeoutMs: 8000,
+        intervalMs: 100,
+      });
+
+      const finalFound = await checkpointFound(checkpointId);
+      expect(finalFound).toBe(false);
+    });
+  });
+
   describe("error handling", () => {
     it("should return 404 for unknown routes", async () => {
       const response = await mf.dispatchFetch(`${mfUrl}unknown`);
@@ -184,6 +239,39 @@ describe("host-workers E2E", () => {
     });
   });
 });
+
+async function checkpointFound(checkpointId: string): Promise<boolean> {
+  const response = await mf.dispatchFetch(
+    `${mfUrl}__test/checkpoint?checkpoint_id=${encodeURIComponent(checkpointId)}`,
+    { method: "GET" }
+  );
+  expect(response.status).toBe(200);
+  const body = await response.json();
+  return Boolean(body?.found);
+}
+
+// Miniflare does not always auto-fire DO alarms deterministically in unit tests,
+// so this endpoint exercises the same DO alarm dispatch code path explicitly.
+async function triggerAlarmTick(): Promise<void> {
+  const response = await mf.dispatchFetch(`${mfUrl}__test/alarm/tick`, {
+    method: "POST",
+  });
+  expect(response.status).toBe(200);
+}
+
+async function waitFor(
+  fn: () => Promise<boolean>,
+  opts: { timeoutMs: number; intervalMs: number }
+): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < opts.timeoutMs) {
+    if (await fn()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, opts.intervalMs));
+  }
+  throw new Error(`waitFor timeout after ${opts.timeoutMs}ms`);
+}
 
 /**
  * Parse SSE event stream into array of JSON objects
