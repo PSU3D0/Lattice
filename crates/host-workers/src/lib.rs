@@ -10,10 +10,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 #[cfg(target_arch = "wasm32")]
-use capabilities::{
-    ResourceAccess, ResourceBag,
-    durability::ResumeToken,
-};
+use capabilities::{ResourceAccess, ResourceBag, durability::ResumeToken};
 #[cfg(target_arch = "wasm32")]
 use futures::channel::oneshot;
 #[cfg(target_arch = "wasm32")]
@@ -109,7 +106,7 @@ async fn handle_fetch_inner(mut req: Request, env: Env) -> Result<Response> {
 
     let abort_bridge = AbortBridge::new(&req);
 
-    let runtime = runtime_from_bundle(bundle);
+    let runtime = runtime_from_bundle(bundle, Some(&env));
 
     let mut invocation =
         Invocation::new(trigger_alias, capture_alias, payload).with_deadline(deadline);
@@ -167,14 +164,23 @@ unsafe extern "Rust" {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn runtime_from_bundle(bundle: FlowBundle) -> HostRuntime {
+fn runtime_from_bundle(bundle: FlowBundle, env: Option<&Env>) -> HostRuntime {
     let executor = bundle.executor();
     let ir = Arc::new(bundle.validated_ir);
-    let runtime = if bundle.environment_plugins.is_empty() {
+    let mut runtime = if bundle.environment_plugins.is_empty() {
         HostRuntime::new(executor, Arc::clone(&ir))
     } else {
         HostRuntime::with_plugins(executor, Arc::clone(&ir), bundle.environment_plugins)
     };
+    if let Some(env) = env {
+        if let Some(bundle_id) = env
+            .var("LATTICE_BUNDLE_ID")
+            .ok()
+            .map(|value| value.to_string())
+        {
+            runtime = runtime.with_bundle_id(bundle_id);
+        }
+    }
     match get_resource_access() {
         Some(resources) => runtime.with_resource_access(resources),
         None => runtime,
@@ -196,7 +202,11 @@ struct InternalResumeRequest {
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn handle_internal_resume(mut req: Request, env: &Env, bundle: FlowBundle) -> Result<Response> {
+async fn handle_internal_resume(
+    mut req: Request,
+    env: &Env,
+    bundle: FlowBundle,
+) -> Result<Response> {
     if let Some(expected) = env
         .var("LATTICE_INTERNAL_RESUME_TOKEN")
         .ok()
@@ -220,11 +230,16 @@ async fn handle_internal_resume(mut req: Request, env: &Env, bundle: FlowBundle)
     } else {
         match serde_json::from_slice::<InternalResumeRequest>(&body) {
             Ok(payload) => payload,
-            Err(err) => return json_response(400, json!({ "error": format!("invalid request body: {err}") })),
+            Err(err) => {
+                return json_response(
+                    400,
+                    json!({ "error": format!("invalid request body: {err}") }),
+                );
+            }
         }
     };
 
-    let runtime = runtime_from_bundle(bundle);
+    let runtime = runtime_from_bundle(bundle, Some(env));
     let checkpoint_id = if let Some(checkpoint_id) = payload.checkpoint_id {
         checkpoint_id
     } else if let Some(token) = payload.token {
@@ -240,7 +255,12 @@ async fn handle_internal_resume(mut req: Request, env: &Env, bundle: FlowBundle)
         };
         match source.resolve_token(&ResumeToken(token)).await {
             Ok(handle) => handle.checkpoint_id,
-            Err(err) => return json_response(400, json!({ "error": format!("invalid resume token: {err}") })),
+            Err(err) => {
+                return json_response(
+                    400,
+                    json!({ "error": format!("invalid resume token: {err}") }),
+                );
+            }
         }
     } else {
         return json_response(
@@ -564,6 +584,22 @@ fn map_execution_error(err: ExecutionError) -> (u16, JsonValue) {
                 "error": "checkpoint version incompatible",
                 "code": "DAG-CKPT-009",
                 "details": { "checkpoint_id": checkpoint_id, "version": version }
+            }),
+        ),
+        ExecutionError::CheckpointPinnedBundleUnavailable {
+            checkpoint_id,
+            required_bundle_id,
+            runtime_bundle_id,
+        } => (
+            409,
+            json!({
+                "error": "checkpoint pinned bundle unavailable",
+                "code": "DAG-CKPT-010",
+                "details": {
+                    "checkpoint_id": checkpoint_id,
+                    "required_bundle_id": required_bundle_id,
+                    "runtime_bundle_id": runtime_bundle_id,
+                }
             }),
         ),
         ExecutionError::UnsupportedSpill { message } => (

@@ -47,6 +47,7 @@ ensure the registry stays in sync with the implementation.
 | DAG-CKPT-007 | Runtime     | Error   | Lease conflict on checkpoint. |
 | DAG-CKPT-008 | Runtime     | Error   | Checkpoint state corrupted. |
 | DAG-CKPT-009 | Runtime     | Error   | Incompatible checkpoint version. |
+| DAG-CKPT-010 | Runtime     | Error   | Checkpoint pinned bundle unavailable or mismatched at resume. |
 | EFFECT201 | Validation     | Error   | Declared effects do not match bound capabilities. |
 | DET301    | Validation     | Error   | Determinism claim conflicts with resource usage. |
 | DET302    | Validation     | Error   | Declared determinism conflicts with registered resource hints. |

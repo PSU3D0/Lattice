@@ -46,9 +46,9 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value as JsonValue, json};
 use thiserror::Error;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 #[cfg(all(feature = "spill-fs", not(target_arch = "wasm32")))]
 use tokio::sync::mpsc::error::{SendError, TrySendError};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 #[cfg(not(target_arch = "wasm32"))]
 use tokio::time;
 #[cfg(not(target_arch = "wasm32"))]
@@ -1530,6 +1530,7 @@ pub struct FlowExecutor {
     trigger_capacity: usize,
     capture_capacity: usize,
     resources: Arc<dyn ResourceAccess>,
+    bundle_id: Option<String>,
 }
 
 impl FlowExecutor {
@@ -1547,6 +1548,7 @@ impl FlowExecutor {
             trigger_capacity: DEFAULT_TRIGGER_CAPACITY,
             capture_capacity: DEFAULT_CAPTURE_CAPACITY,
             resources: default_resources,
+            bundle_id: None,
         }
     }
 
@@ -1573,6 +1575,17 @@ impl FlowExecutor {
         let resources: Arc<ResourceBag> = Arc::new(bag);
         self.resources = resources;
         self
+    }
+
+    /// Attach a bundle identifier used for checkpoint pinning metadata.
+    pub fn with_bundle_id(mut self, bundle_id: impl Into<String>) -> Self {
+        self.bundle_id = Some(bundle_id.into());
+        self
+    }
+
+    /// Current bundle identifier configured for checkpoint pinning.
+    pub fn bundle_id(&self) -> Option<&str> {
+        self.bundle_id.as_deref()
     }
 
     /// Instantiate a fresh flow instance ready to receive inputs.
@@ -1886,7 +1899,10 @@ impl FlowExecutor {
         halt_payload: &JsonValue,
         handle: &CheckpointHandle,
     ) -> Result<(), ExecutionError> {
-        if matches!(ir.flow().policies.durability.mode, dag_core::DurabilityMode::Off) {
+        if matches!(
+            ir.flow().policies.durability.mode,
+            dag_core::DurabilityMode::Off
+        ) {
             return Ok(());
         }
 
@@ -1929,6 +1945,7 @@ impl FlowExecutor {
             checkpoint_id: handle.checkpoint_id.clone(),
             flow_id: handle.flow_id.clone(),
             flow_version: ir.flow().version.to_string(),
+            bundle_id: self.bundle_id.clone(),
             run_id: handle.run_id.clone(),
             parent_run_id: None,
             frontier,
@@ -1948,7 +1965,6 @@ impl FlowExecutor {
         Ok(())
     }
 }
-
 
 /// Active per-run state for a workflow.
 pub struct FlowInstance {
@@ -2033,12 +2049,12 @@ impl FlowInstance {
         halt_payload: JsonValue,
         pending_aliases: &[String],
     ) -> Result<(), ExecutionError> {
-        let outputs = self
-            .outputs
-            .get(halt_alias)
-            .ok_or_else(|| ExecutionError::UnknownTrigger {
-                alias: halt_alias.to_string(),
-            })?;
+        let outputs =
+            self.outputs
+                .get(halt_alias)
+                .ok_or_else(|| ExecutionError::UnknownTrigger {
+                    alias: halt_alias.to_string(),
+                })?;
 
         let pending: HashSet<&str> = pending_aliases.iter().map(String::as_str).collect();
 
@@ -2792,6 +2808,15 @@ pub enum ExecutionError {
     /// Checkpoint record incompatible with this runtime.
     #[error("checkpoint `{checkpoint_id}` has incompatible version {version}")]
     CheckpointIncompatibleVersion { checkpoint_id: String, version: u32 },
+    /// Checkpoint is pinned to a bundle that is not available in this runtime.
+    #[error(
+        "checkpoint `{checkpoint_id}` pinned to bundle `{required_bundle_id}` is unavailable (runtime bundle: {runtime_bundle_id:?})"
+    )]
+    CheckpointPinnedBundleUnavailable {
+        checkpoint_id: String,
+        required_bundle_id: String,
+        runtime_bundle_id: Option<String>,
+    },
 }
 
 impl ExecutionError {
@@ -2801,6 +2826,7 @@ impl ExecutionError {
             ExecutionError::CheckpointLeaseConflict { .. } => Some("DAG-CKPT-007"),
             ExecutionError::CheckpointStateCorrupted { .. } => Some("DAG-CKPT-008"),
             ExecutionError::CheckpointIncompatibleVersion { .. } => Some("DAG-CKPT-009"),
+            ExecutionError::CheckpointPinnedBundleUnavailable { .. } => Some("DAG-CKPT-010"),
             ExecutionError::MissingDurabilityServices { .. } => Some("DAG-CKPT-003"),
             _ => None,
         }

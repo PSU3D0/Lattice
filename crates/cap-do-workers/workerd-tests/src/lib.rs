@@ -317,6 +317,7 @@ async fn handle_checkpoint_put(mut req: Request, ctx: RouteContext<()>) -> Resul
         checkpoint_id: body.checkpoint_id.clone(),
         flow_id: FlowId(body.flow_id.clone()),
         flow_version: "1.0.0".to_string(),
+        bundle_id: None,
         run_id: body.run_id.clone(),
         parent_run_id: None,
         frontier: FlowFrontier {

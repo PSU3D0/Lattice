@@ -48,6 +48,8 @@ pub struct CheckpointRecord {
     pub checkpoint_id: String,
     pub flow_id: FlowId,
     pub flow_version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bundle_id: Option<String>,
     pub run_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_run_id: Option<String>,

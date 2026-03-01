@@ -216,6 +216,7 @@ mod tests {
             checkpoint_id: "ckpt-1".to_string(),
             flow_id,
             flow_version: "1.0.0".to_string(),
+            bundle_id: None,
             run_id: "run-1".to_string(),
             parent_run_id: None,
             frontier: frontier.clone(),

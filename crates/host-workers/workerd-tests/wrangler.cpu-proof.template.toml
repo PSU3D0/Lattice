@@ -1,0 +1,23 @@
+# Generated/consumed by ops/scripts/cloudflare-resume-proof-init.sh
+# Copies this file to .wrangler/wrangler.cpu-proof.toml with placeholders resolved.
+
+name = "__WORKER_NAME__"
+workers_dev = true
+compatibility_date = "2024-09-23"
+main = "build/worker/shim.mjs"
+
+[build]
+command = "cargo install worker-build 2>/dev/null || true && worker-build --release"
+
+# For airtight CPU evidence we route alarm dispatch through externally visible
+# /__lattice/resume so tail logs can distinguish alarm-origin resume invocations.
+[vars]
+LATTICE_RESUME_DISPATCH_URL = "__BASE_URL__/__lattice/resume?source=alarm"
+
+[[durable_objects.bindings]]
+name = "FLOW_DO"
+class_name = "FlowDurableObject"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["FlowDurableObject"]

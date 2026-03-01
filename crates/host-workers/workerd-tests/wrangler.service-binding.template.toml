@@ -1,4 +1,7 @@
-name = "host-workers-test"
+# Generated/consumed by ops/scripts/cloudflare-resume-proof-init.sh
+# Copies this file to .wrangler/wrangler.service-binding.toml with placeholders resolved.
+
+name = "__WORKER_NAME__"
 workers_dev = true
 compatibility_date = "2024-09-23"
 main = "build/worker/shim.mjs"
@@ -6,9 +9,7 @@ main = "build/worker/shim.mjs"
 [build]
 command = "cargo install worker-build 2>/dev/null || true && worker-build --release"
 
-# Portable defaults for deployed alarm->resume dispatch:
-# - service binding dispatch keeps traffic internal to the account edge
-# - set LATTICE_INTERNAL_RESUME_TOKEN as a Wrangler secret (do not commit secrets)
+# Default deployment path: alarm dispatch via service binding.
 [vars]
 LATTICE_RESUME_SERVICE_BINDING = "LATTICE_RESUME_SERVICE"
 
@@ -22,5 +23,4 @@ new_sqlite_classes = ["FlowDurableObject"]
 
 [[services]]
 binding = "LATTICE_RESUME_SERVICE"
-service = "host-workers-test"
-
+service = "__WORKER_NAME__"

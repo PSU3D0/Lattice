@@ -24,6 +24,32 @@ for telemetry.
 - `STREAM_MAX_PAGES` (default: 5)
 - `STREAM_PAGE_DELAY_MS` (default: 200)
 
+## Cloudflare setup (portable template)
+
+`wrangler.toml` is intentionally template-like. Before deploy, replace placeholder KV IDs:
+
+- `REPLACE_WITH_EVENTS_KV_ID`
+- `REPLACE_WITH_EVENTS_KV_PREVIEW_ID`
+
+Recommended flow:
+
+1) Create KV namespace IDs for this account:
+```bash
+npx wrangler kv namespace create EVENTS_KV
+npx wrangler kv namespace create EVENTS_KV --preview
+```
+
+2) Copy and edit config (avoid editing tracked file directly):
+```bash
+cp wrangler.toml .wrangler.local.toml
+# replace placeholders with real IDs
+```
+
+3) Deploy with local config:
+```bash
+npx wrangler deploy --config .wrangler.local.toml
+```
+
 ## OTel dispatch behavior
 
 - Uses OTLP/HTTP JSON with `POST` to `OTEL_EXPORTER_OTLP_ENDPOINT`.

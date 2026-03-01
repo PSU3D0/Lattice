@@ -227,7 +227,9 @@ All effects must go through capability imports. Direct host calls are disallowed
 ## Checkpoint / Resume Pinning
 
 - Checkpoint records MUST include `bundle_id` and `flow_version`.
-- Resume MUST load the exact `bundle_id`. If missing, resume fails deterministically.
+- Resume MUST load the exact `bundle_id`; mismatch/unavailable bundle fails deterministically.
+- Temporary migration path: legacy checkpoints without `bundle_id` may be resumed behind an
+  explicit compatibility mode while existing checkpoints are drained.
 - Hosts must retain old bundles until checkpoints referencing them are drained or expired.
 
 ## Subflow Linking

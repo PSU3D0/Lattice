@@ -765,6 +765,22 @@ fn map_execution_error(err: ExecutionError) -> (StatusCode, JsonValue) {
                 "details": { "checkpoint_id": checkpoint_id, "version": version }
             }),
         ),
+        ExecutionError::CheckpointPinnedBundleUnavailable {
+            checkpoint_id,
+            required_bundle_id,
+            runtime_bundle_id,
+        } => (
+            StatusCode::CONFLICT,
+            json!({
+                "error": "checkpoint pinned bundle unavailable",
+                "code": "DAG-CKPT-010",
+                "details": {
+                    "checkpoint_id": checkpoint_id,
+                    "required_bundle_id": required_bundle_id,
+                    "runtime_bundle_id": runtime_bundle_id,
+                }
+            }),
+        ),
         ExecutionError::UnsupportedSpill { message } => (
             StatusCode::BAD_REQUEST,
             json!({ "error": "unsupported_spill", "message": message }),
@@ -1864,5 +1880,21 @@ mod tests {
             .as_array()
             .expect("details.hints array");
         assert!(hints.contains(&json!(capabilities::kv::HINT_KV_READ)));
+    }
+
+    #[test]
+    fn map_execution_error_reports_pinned_bundle_unavailable() {
+        let (status, body) =
+            super::map_execution_error(ExecutionError::CheckpointPinnedBundleUnavailable {
+                checkpoint_id: "cp-1".to_string(),
+                required_bundle_id: "sha256:abc".to_string(),
+                runtime_bundle_id: Some("sha256:def".to_string()),
+            });
+
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["code"], json!("DAG-CKPT-010"));
+        assert_eq!(body["details"]["checkpoint_id"], json!("cp-1"));
+        assert_eq!(body["details"]["required_bundle_id"], json!("sha256:abc"));
+        assert_eq!(body["details"]["runtime_bundle_id"], json!("sha256:def"));
     }
 }

@@ -204,6 +204,8 @@ pub struct CheckpointRecord {
     /// Flow identity.
     pub flow_id: FlowId,
     pub flow_version: String,
+    /// Exact bundle pin used for deterministic resume lookup.
+    pub bundle_id: Option<String>,
     
     /// Execution identity.
     pub run_id: RunId,
@@ -230,6 +232,10 @@ pub struct CheckpointRecord {
 
 **Note:** Resume tokens are managed by `ResumeSignalSource` and do not need to be stored inside the
 checkpoint record. The record may include `resume_after` but token storage is host-specific.
+
+**Compatibility note (temporary):** legacy checkpoints may be missing `bundle_id`. Hosts may allow
+legacy resume for these records during migration, but newly written checkpoints must persist
+`bundle_id` and strict pinning should be enforced whenever `bundle_id` is present.
 
 ### 4.2 FlowFrontier
 

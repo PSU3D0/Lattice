@@ -755,6 +755,7 @@ mod tests {
             checkpoint_id: checkpoint_id.to_string(),
             flow_id: FlowId(flow_id.to_string()),
             flow_version: "0.1.0".to_string(),
+            bundle_id: None,
             run_id: run_id.to_string(),
             parent_run_id: None,
             frontier: FlowFrontier {

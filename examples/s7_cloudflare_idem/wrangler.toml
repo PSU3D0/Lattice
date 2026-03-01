@@ -1,10 +1,12 @@
+# Template-like baseline for this example.
+# Replace placeholder IDs before deploy, or copy to a local config and pass --config.
 name = "flow-idem-ingest"
 main = "workerd-tests/build/index.js"
 compatibility_date = "2024-09-23"
 compatibility_flags = ["durable_object_alarms"]
 
 kv_namespaces = [
-  { binding = "EVENTS_KV", id = "6d92b88ccab948e99a385c5e80b7c8af", preview_id = "19d23c0023be4a0f8375f9e522d6b144" }
+  { binding = "EVENTS_KV", id = "REPLACE_WITH_EVENTS_KV_ID", preview_id = "REPLACE_WITH_EVENTS_KV_PREVIEW_ID" }
 ]
 
 [[durable_objects.bindings]]
