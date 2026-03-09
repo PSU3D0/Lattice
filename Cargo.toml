@@ -9,6 +9,8 @@ members = [
   "crates/cap-blob-opendal",
   "crates/cap-kv-opendal",
   "crates/cap-opendal-core",
+  "crates/cap-workspace-fs",
+  "crates/cap-workspace-workers",
   "crates/contrib/redis/cap-cache-redis",
   "crates/contrib/redis/cap-dedupe-redis",
   "crates/contrib/redis/cap-redis",

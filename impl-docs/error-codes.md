@@ -87,6 +87,11 @@ ensure the registry stays in sync with the implementation.
 | SECR201   | Validation     | Error   | Credential binding grants scopes outside requested set. |
 | SAGA201   | Validation     | Error   | Compensation node incompatible with effect node output. |
 | CAP101    | Runtime        | Error   | Required capability binding missing from ResourceBag during preflight. |
+| CAP-WS-001 | Capability    | Error   | Workspace path is invalid (empty, root-resolving, non-ASCII by default, or malformed). |
+| CAP-WS-002 | Capability    | Error   | Workspace path traversal rejected (`..` segments are not allowed). |
+| CAP-WS-003 | Capability    | Error   | Workspace entry not found. |
+| CAP-WS-004 | Capability    | Error   | Workspace operation unsupported by the active backend. |
+| CAP-WS-005 | Capability    | Error   | Workspace backend operation failed. |
 | TYPE001    | Validation     | Error   | Internal node uses unconstrained JSON in both input and output without boundary annotation. |
 
 > **Note:** The default severity column indicates how diagnostics are surfaced in the

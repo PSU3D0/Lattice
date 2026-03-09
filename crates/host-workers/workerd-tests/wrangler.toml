@@ -16,9 +16,17 @@ LATTICE_RESUME_SERVICE_BINDING = "LATTICE_RESUME_SERVICE"
 name = "FLOW_DO"
 class_name = "FlowDurableObject"
 
+[[durable_objects.bindings]]
+name = "WORKSPACE_DO"
+class_name = "WorkspaceDurableObject"
+
+[[r2_buckets]]
+binding = "WORKSPACE_BUCKET"
+bucket_name = "host-workers-test-workspace"
+
 [[migrations]]
-tag = "v1"
-new_sqlite_classes = ["FlowDurableObject"]
+tag = "v2"
+new_sqlite_classes = ["FlowDurableObject", "WorkspaceDurableObject"]
 
 [[services]]
 binding = "LATTICE_RESUME_SERVICE"

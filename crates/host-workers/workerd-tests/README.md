@@ -1,7 +1,16 @@
 # host-workers/workerd-tests
 
-This crate provides a deployable Workers fixture used for host-workers E2E and
-resume evidence validation.
+This crate provides a deployable Workers fixture used for host-workers E2E,
+resume evidence validation, and workspace backend integration coverage.
+
+## Covered routes
+
+- `/health`, `/echo`, `/stream`, `/cancel`
+- `/timer` for halt/resume durability
+- `/workspace` for workspace read/write/list/delete semantics
+- `/workspace-resume` for workspace continuity across halt/resume
+- `/workspace-quota` for workers-side quota enforcement checks
+- `/workspace-invalid-path` for traversal rejection checks
 
 ## Config files
 

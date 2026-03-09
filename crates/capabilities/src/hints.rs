@@ -4,7 +4,7 @@
 //! declarations automatically inherit the correct effect/determinism hints
 //! without bespoke wiring in every crate.
 
-use crate::{blob, clock, db, dedupe, http, kv, queue, rng};
+use crate::{blob, clock, db, dedupe, http, kv, queue, rng, workspace};
 
 /// Canonical set of hints exported for a capability.
 #[derive(Debug, Clone, Copy)]
@@ -56,6 +56,10 @@ const BLOB_DETERMINISM: [&str; 1] = [blob::HINT_BLOB];
 
 const DEDUPE_EFFECT: [&str; 1] = [dedupe::HINT_DEDUPE_WRITE];
 const DEDUPE_DETERMINISM: [&str; 1] = [dedupe::HINT_DEDUPE];
+
+const WORKSPACE_READ_EFFECT: [&str; 1] = [workspace::HINT_WORKSPACE_READ];
+const WORKSPACE_WRITE_EFFECT: [&str; 1] = [workspace::HINT_WORKSPACE_WRITE];
+const WORKSPACE_DETERMINISM: [&str; 1] = [workspace::HINT_WORKSPACE];
 
 /// Infer canonical hints for a capability declaration based on its alias and identifier.
 pub fn infer(alias: &str, capability_ident: &str) -> ResourceHintSet {
@@ -154,6 +158,31 @@ pub fn infer(alias: &str, capability_ident: &str) -> ResourceHintSet {
         return ResourceHintSet::new(&QUEUE_PUBLISH_EFFECT, &QUEUE_DETERMINISM);
     }
 
+    if alias_lower.contains("workspace")
+        || alias_lower.contains("fs")
+        || ident_lower.contains("workspace")
+    {
+        workspace::ensure_registered();
+
+        let read_tokens = ["read", "list", "fetch", "get"];
+        if read_tokens
+            .iter()
+            .any(|token| alias_lower.contains(token) || ident_lower.contains(token))
+        {
+            return ResourceHintSet::new(&WORKSPACE_READ_EFFECT, &WORKSPACE_DETERMINISM);
+        }
+
+        let write_tokens = ["write", "put", "delete", "remove", "append", "mkdir"];
+        if write_tokens
+            .iter()
+            .any(|token| alias_lower.contains(token) || ident_lower.contains(token))
+        {
+            return ResourceHintSet::new(&WORKSPACE_WRITE_EFFECT, &WORKSPACE_DETERMINISM);
+        }
+
+        return ResourceHintSet::new(&WORKSPACE_WRITE_EFFECT, &WORKSPACE_DETERMINISM);
+    }
+
     if alias_lower.contains("dedupe")
         || alias_lower.contains("idem")
         || ident_lower.contains("dedupe")
@@ -250,6 +279,17 @@ mod tests {
         let write = infer("blob_write", "BlobWriter");
         assert_eq!(write.effect_hints, &BLOB_WRITE_EFFECT);
         assert_eq!(write.determinism_hints, &BLOB_DETERMINISM);
+    }
+
+    #[test]
+    fn workspace_read_and_write_infer_correctly() {
+        let read = infer("workspace_list", "WorkspaceRead");
+        assert_eq!(read.effect_hints, &WORKSPACE_READ_EFFECT);
+        assert_eq!(read.determinism_hints, &WORKSPACE_DETERMINISM);
+
+        let write = infer("workspace_delete", "WorkspaceWrite");
+        assert_eq!(write.effect_hints, &WORKSPACE_WRITE_EFFECT);
+        assert_eq!(write.determinism_hints, &WORKSPACE_DETERMINISM);
     }
 
     #[test]

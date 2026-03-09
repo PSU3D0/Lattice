@@ -1594,8 +1594,19 @@ impl FlowExecutor {
         ir: &ValidatedIR,
         capture_alias: impl Into<String>,
     ) -> Result<FlowInstance, ExecutionError> {
+        self.instantiate_with_run_id(ir, capture_alias, format!("run-{}", Uuid::new_v4()))
+    }
+
+    /// Instantiate a fresh flow instance with a caller-supplied stable run id.
+    pub fn instantiate_with_run_id(
+        &self,
+        ir: &ValidatedIR,
+        capture_alias: impl Into<String>,
+        run_id: impl Into<String>,
+    ) -> Result<FlowInstance, ExecutionError> {
         let capture_alias = capture_alias.into();
         let flow = ir.flow().clone();
+        let run_id = run_id.into();
         let metrics = Arc::new(ExecutorMetrics::new(flow.name.clone(), flow.profile));
         let routing = Arc::new(RoutingTable::from_flow(&flow)?);
 
@@ -1709,7 +1720,6 @@ impl FlowExecutor {
 
         let resume_outputs = outbound.clone();
         let mut tasks = Vec::with_capacity(flow.nodes.len());
-        let run_id = format!("run-{}", Uuid::new_v4());
         let flow_id = flow.id.clone();
 
         for node in flow.nodes {
@@ -1765,7 +1775,23 @@ impl FlowExecutor {
         capture_alias: &str,
         deadline: Option<Duration>,
     ) -> Result<ExecutionResult, ExecutionError> {
-        let mut instance = self.instantiate(ir, capture_alias)?;
+        let run_id = format!("run-{}", Uuid::new_v4());
+        self.run_once_with_run_id(ir, trigger_alias, payload, capture_alias, &run_id, deadline)
+            .await
+    }
+
+    /// Convenience helper to execute a flow once with a caller-supplied stable run id.
+    #[instrument(skip_all, fields(trigger = %trigger_alias, capture = %capture_alias, run_id = %run_id))]
+    pub async fn run_once_with_run_id(
+        &self,
+        ir: &ValidatedIR,
+        trigger_alias: &str,
+        payload: JsonValue,
+        capture_alias: &str,
+        run_id: &str,
+        deadline: Option<Duration>,
+    ) -> Result<ExecutionResult, ExecutionError> {
+        let mut instance = self.instantiate_with_run_id(ir, capture_alias, run_id)?;
         instance.send(trigger_alias, payload).await?;
 
         let start = Instant::now();
@@ -1822,7 +1848,7 @@ impl FlowExecutor {
         }
     }
 
-    #[instrument(skip_all, fields(halt = %halt_alias, capture = %capture_alias))]
+    #[instrument(skip_all, fields(halt = %halt_alias, capture = %capture_alias, run_id = %run_id))]
     pub async fn resume_once(
         &self,
         ir: &ValidatedIR,
@@ -1830,9 +1856,10 @@ impl FlowExecutor {
         halt_payload: JsonValue,
         pending_aliases: &[String],
         capture_alias: &str,
+        run_id: &str,
         deadline: Option<Duration>,
     ) -> Result<ExecutionResult, ExecutionError> {
-        let mut instance = self.instantiate(ir, capture_alias)?;
+        let mut instance = self.instantiate_with_run_id(ir, capture_alias, run_id)?;
         instance
             .resume_from_halt(halt_alias, halt_payload, pending_aliases)
             .await?;
@@ -2777,6 +2804,9 @@ pub enum ExecutionError {
     /// Required durability services are missing from the host.
     #[error("missing required durability services: {missing:?}")]
     MissingDurabilityServices { missing: Vec<String> },
+    /// Host runtime could not prepare or finalize execution resources.
+    #[error("host environment failure: {0}")]
+    HostEnvironment(anyhow::Error),
     /// Control surface is present but not supported by this runtime.
     #[error("control surface `{id}` ({kind}) is not supported by this runtime")]
     UnsupportedControlSurface { id: String, kind: String },

@@ -28,6 +28,17 @@ For alarm-driven resume on deployed Workers, configure these bindings/vars in `w
   - `LATTICE_INTERNAL_RESUME_TOKEN` (validated by `POST /__lattice/resume`)
 - Optional explicit bundle pin identity override:
   - `LATTICE_BUNDLE_ID` (otherwise host defaults to `flow://<flow_id>@<version>`)
+- Optional workspace bindings (auto-detected by `host-workers` when present):
+  - `WORKSPACE_BUCKET` -> R2 bucket binding for workspace file bodies
+  - `WORKSPACE_DO` -> `WorkspaceDurableObject` binding for workspace index/lifecycle
+- Optional workspace host-policy vars:
+  - `LATTICE_WORKSPACE_BUCKET_BINDING`
+  - `LATTICE_WORKSPACE_DO_BINDING`
+  - `LATTICE_WORKSPACE_OBJECT_PREFIX`
+  - `LATTICE_WORKSPACE_MAX_TOTAL_BYTES`
+  - `LATTICE_WORKSPACE_MAX_FILE_COUNT`
+  - `LATTICE_WORKSPACE_MAX_SINGLE_FILE_BYTES`
+  - `LATTICE_WORKSPACE_RETAIN_COMPLETED_FOR_MS`
 
 When service binding dispatch is used, add a worker service binding for the name referenced by `LATTICE_RESUME_SERVICE_BINDING`.
 

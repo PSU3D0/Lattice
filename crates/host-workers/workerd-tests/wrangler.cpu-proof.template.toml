@@ -18,6 +18,14 @@ LATTICE_RESUME_DISPATCH_URL = "__BASE_URL__/__lattice/resume?source=alarm"
 name = "FLOW_DO"
 class_name = "FlowDurableObject"
 
+[[durable_objects.bindings]]
+name = "WORKSPACE_DO"
+class_name = "WorkspaceDurableObject"
+
+[[r2_buckets]]
+binding = "WORKSPACE_BUCKET"
+bucket_name = "__WORKER_NAME__-workspace"
+
 [[migrations]]
-tag = "v1"
-new_sqlite_classes = ["FlowDurableObject"]
+tag = "v2"
+new_sqlite_classes = ["FlowDurableObject", "WorkspaceDurableObject"]

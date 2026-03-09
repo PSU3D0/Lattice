@@ -970,6 +970,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "cap-workspace-fs"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "capabilities",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "uuid",
+ "walkdir",
+]
+
+[[package]]
+name = "cap-workspace-workers"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "capabilities",
+ "js-sys",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "uuid",
+ "wasm-bindgen",
+ "worker",
+]
+
+[[package]]
 name = "capabilities"
 version = "0.1.0"
 dependencies = [
@@ -2702,6 +2737,7 @@ name = "host-workers"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "cap-workspace-workers",
  "capabilities",
  "dag-core",
  "futures",

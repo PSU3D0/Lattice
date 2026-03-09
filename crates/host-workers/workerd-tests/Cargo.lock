@@ -104,6 +104,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "cap-workspace-workers"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "capabilities",
+ "js-sys",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tracing",
+ "uuid",
+ "wasm-bindgen",
+ "worker",
+]
+
+[[package]]
 name = "capabilities"
 version = "0.1.0"
 dependencies = [
@@ -338,6 +355,7 @@ name = "host-workers"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "cap-workspace-workers",
  "capabilities",
  "dag-core",
  "futures",
@@ -357,6 +375,7 @@ version = "0.1.0"
 dependencies = [
  "async-stream",
  "cap-do-workers",
+ "cap-workspace-workers",
  "capabilities",
  "dag-core",
  "dag-macros",

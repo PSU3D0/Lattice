@@ -48,6 +48,16 @@ static CONSTRAINTS: Lazy<RwLock<Vec<EffectConstraint>>> = Lazy::new(|| {
             Effects::Effectful,
             "Database writes require Effectful; downgrade only for read-only transactions.",
         ),
+        EffectConstraint::new(
+            "resource::workspace::read",
+            Effects::ReadOnly,
+            "Workspace reads access run-scoped state; declare effects = ReadOnly or stronger.",
+        ),
+        EffectConstraint::new(
+            "resource::workspace::write",
+            Effects::Effectful,
+            "Workspace writes mutate run-scoped state; declare effects = Effectful.",
+        ),
     ])
 });
 

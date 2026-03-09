@@ -48,6 +48,11 @@ static CONSTRAINTS: Lazy<RwLock<Vec<DeterminismConstraint>>> = Lazy::new(|| {
             Determinism::BestEffort,
             "Random number generation requires a deterministic seed; downgrade determinism or use a seeded RNG provided via input.",
         ),
+        DeterminismConstraint::new(
+            "resource::workspace",
+            Determinism::BestEffort,
+            "Workspace contents can differ across retries unless persisted and restored by the host; downgrade determinism or treat workspace data as explicit input.",
+        ),
     ])
 });
 

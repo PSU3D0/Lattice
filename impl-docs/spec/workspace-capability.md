@@ -32,9 +32,9 @@ Workspace entries are **binary-first**; text is handled by caller encoding.
 This is the conceptual surface; actual Rust traits live in capability crates.
 
 ```
-workspace.read(path) -> { bytes | blob_ref }
-workspace.write(path, data, options) -> { path, size_bytes, updated_at }
-workspace.list(prefix?, glob?) -> [entry]
+workspace.read(path) -> { bytes | blob_ref } | none
+workspace.write(path, data, options?) -> { path, size_bytes, updated_at }
+workspace.list(prefix?) -> [entry]
 workspace.delete(path) -> { deleted: bool }
 ```
 
@@ -43,6 +43,9 @@ workspace.delete(path) -> { deleted: bool }
 - Paths are relative (e.g., `inbox/file.json`).
 - Path normalization removes `.` and rejects `..`.
 - Paths are UTF-8 and MUST be ASCII-safe by default (host may reject otherwise).
+- Prefix filtering in `list(...)` follows the same normalization rules.
+- Pattern/glob filtering is intentionally out of scope for the 0.1 capability core
+  until portable cross-host semantics are defined.
 
 ### Entry Metadata
 
@@ -52,9 +55,18 @@ Workspace entries SHOULD include:
 - `updated_at`
 - optional `content_hash`
 
+### Missing-entry semantics
+
+- `read(path)` SHOULD return `none` when the entry is absent.
+- `delete(path)` SHOULD return `{ deleted: false }` when the entry is absent.
+- Backends MAY reserve explicit errors for malformed paths, unsupported features,
+  or backend failures.
+
 ## Defaults and Retention
 
 **Default policy**: discard workspace contents on run completion.
+
+Retention is **host policy**, not a flow-controlled write option.
 
 Optional policy (host-configured):
 - `retain_completed_for`: retain workspace contents for a fixed duration.
@@ -100,4 +112,5 @@ The standard library should include thin wrappers:
 - `std.workspace.list`
 - `std.workspace.delete`
 
-These nodes are deterministic and checkpointable.
+These nodes should be checkpointable. Their determinism is typically `BestEffort`
+because workspace contents are host-managed run-scoped state.

@@ -22,6 +22,7 @@ kernel-exec = { path = "../kernel-exec", default-features = false, features = ["
 kernel-plan = { path = "../kernel-plan" }
 dag-core = { path = "../dag-core" }
 capabilities = { path = "../capabilities" }
+cap-workspace-workers = { path = "../cap-workspace-workers" }
 serde.workspace = true
 serde_json.workspace = true
 futures.workspace = true

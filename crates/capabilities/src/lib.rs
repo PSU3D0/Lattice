@@ -10,6 +10,7 @@ use time::Instant;
 
 pub mod durability;
 pub mod hints;
+pub mod workspace;
 
 #[cfg(target_arch = "wasm32")]
 mod wasm_transport;
@@ -92,6 +93,10 @@ pub trait ResourceAccess: Send + Sync + 'static {
         None
     }
 
+    fn workspace(&self) -> Option<&dyn workspace::Workspace> {
+        None
+    }
+
     fn max_durability_mode(&self) -> dag_core::DurabilityMode {
         dag_core::DurabilityMode::Off
     }
@@ -112,6 +117,7 @@ pub struct ResourceBag {
     resume_scheduler: Option<Arc<dyn durability::ResumeScheduler>>,
     resume_signal_source: Option<Arc<dyn durability::ResumeSignalSource>>,
     checkpoint_blob_store: Option<Arc<dyn durability::CheckpointBlobStore>>,
+    workspace: Option<Arc<dyn workspace::Workspace>>,
     max_durability_mode: dag_core::DurabilityMode,
 }
 
@@ -130,6 +136,7 @@ impl Default for ResourceBag {
             resume_scheduler: None,
             resume_signal_source: None,
             checkpoint_blob_store: None,
+            workspace: None,
             max_durability_mode: dag_core::DurabilityMode::Off,
         }
     }
@@ -245,6 +252,15 @@ impl ResourceBag {
     {
         let capability: Arc<dyn durability::CheckpointBlobStore> = capability;
         self.checkpoint_blob_store = Some(capability);
+        self
+    }
+
+    pub fn with_workspace<T>(mut self, capability: Arc<T>) -> Self
+    where
+        T: workspace::Workspace + 'static,
+    {
+        let capability: Arc<dyn workspace::Workspace> = capability;
+        self.workspace = Some(capability);
         self
     }
 
@@ -459,6 +475,12 @@ impl ResourceAccess for ResourceBag {
         self.checkpoint_blob_store
             .as_ref()
             .map(|cap| cap.as_ref() as &dyn durability::CheckpointBlobStore)
+    }
+
+    fn workspace(&self) -> Option<&dyn workspace::Workspace> {
+        self.workspace
+            .as_ref()
+            .map(|cap| cap.as_ref() as &dyn workspace::Workspace)
     }
 
     fn max_durability_mode(&self) -> dag_core::DurabilityMode {
@@ -1920,6 +1942,51 @@ mod bag_tests {
 
     struct NullHttp;
 
+    struct NullWorkspace;
+
+    impl Capability for NullWorkspace {
+        fn name(&self) -> &'static str {
+            "workspace.null"
+        }
+    }
+
+    #[async_trait]
+    impl workspace::Workspace for NullWorkspace {
+        async fn read_normalized(
+            &self,
+            _normalized_path: &str,
+        ) -> Result<Option<workspace::WorkspaceReadResult>, workspace::WorkspaceError> {
+            Ok(None)
+        }
+
+        async fn write_normalized(
+            &self,
+            normalized_path: &str,
+            data: &[u8],
+            _options: workspace::WorkspaceWriteOptions,
+        ) -> Result<workspace::WorkspaceWriteResult, workspace::WorkspaceError> {
+            Ok(workspace::WorkspaceWriteResult {
+                path: normalized_path.to_string(),
+                size_bytes: data.len() as u64,
+                updated_at_ms: 0,
+            })
+        }
+
+        async fn list_normalized(
+            &self,
+            _options: workspace::WorkspaceListOptions,
+        ) -> Result<Vec<workspace::WorkspaceEntry>, workspace::WorkspaceError> {
+            Ok(Vec::new())
+        }
+
+        async fn delete_normalized(
+            &self,
+            _normalized_path: &str,
+        ) -> Result<workspace::WorkspaceDeleteResult, workspace::WorkspaceError> {
+            Ok(workspace::WorkspaceDeleteResult { deleted: false })
+        }
+    }
+
     #[async_trait]
     impl http::HttpRead for NullHttp {
         async fn send(&self, _request: http::HttpRequest) -> http::HttpResult<http::HttpResponse> {
@@ -1944,7 +2011,8 @@ mod bag_tests {
             .with_cache(Arc::new(cache::MemoryCache::default()))
             .with_kv(Arc::new(kv::MemoryKv::new()))
             .with_blob(Arc::new(blob::MemoryBlobStore::new()))
-            .with_queue(Arc::new(queue::MemoryQueue::new()));
+            .with_queue(Arc::new(queue::MemoryQueue::new()))
+            .with_workspace(Arc::new(NullWorkspace));
 
         assert!(bag.http_read().is_some());
         assert!(bag.http_write().is_some());
@@ -1953,6 +2021,7 @@ mod bag_tests {
         assert!(bag.kv().is_some());
         assert!(bag.blob().is_some());
         assert!(bag.queue().is_some());
+        assert!(bag.workspace().is_some());
     }
 
     #[test]

@@ -16,13 +16,21 @@ const mf = new Miniflare({
           className: "FlowDurableObject",
           useSQLite: true,
         },
+        WORKSPACE_DO: {
+          className: "WorkspaceDurableObject",
+          useSQLite: true,
+        },
       },
+      r2Buckets: ["WORKSPACE_BUCKET"],
       serviceBindings: {
         LATTICE_RESUME_SERVICE: kCurrentWorker,
       },
       bindings: {
         LATTICE_RESUME_SERVICE_BINDING: "LATTICE_RESUME_SERVICE",
         LATTICE_INTERNAL_RESUME_TOKEN: "test-resume-token",
+        LATTICE_WORKSPACE_MAX_TOTAL_BYTES: "64",
+        LATTICE_WORKSPACE_MAX_FILE_COUNT: "4",
+        LATTICE_WORKSPACE_MAX_SINGLE_FILE_BYTES: "32",
       },
     },
   ],
@@ -223,6 +231,140 @@ describe("host-workers E2E", () => {
     });
   });
 
+  describe("workspace backend", () => {
+    it("round-trips workspace artifacts and cleans them up on terminal success", async () => {
+      const response = await mf.dispatchFetch(`${mfUrl}workspace`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          content: "hello workspace",
+          prefix: "artifacts",
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.original).toBe("hello workspace");
+      expect(body.upper).toBe("HELLO WORKSPACE");
+      expect(body.missing_read).toBe(false);
+      expect(body.missing_delete).toBe(false);
+      expect(body.deleted_upper).toBe(true);
+      expect(body.listed_paths_before_delete).toEqual([
+        "artifacts/original.txt",
+        "artifacts/upper.txt",
+      ]);
+      expect(body.listed_paths_after_delete).toEqual(["artifacts/original.txt"]);
+
+      expect(await listWorkspaceObjects()).toEqual([]);
+    });
+
+    it("preserves workspace state across resume and cleans it up after completion", async () => {
+      const response = await mf.dispatchFetch(`${mfUrl}workspace-resume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          duration: "10s",
+          content: "resume workspace",
+        }),
+      });
+
+      expect(response.status).toBe(202);
+      const halted = await response.json();
+      expect(halted.halted).toBe(true);
+
+      const checkpointId = halted?.payload?.checkpoint_id;
+      expect(typeof checkpointId).toBe("string");
+      expect(await checkpointFound(checkpointId)).toBe(true);
+
+      await waitFor(async () => {
+        const keys = await listWorkspaceObjects();
+        return keys.some((key) => key.endsWith("resume/input.txt"));
+      }, {
+        timeoutMs: 3000,
+        intervalMs: 100,
+      });
+
+      const resumeResponse = await mf.dispatchFetch(`${mfUrl}__lattice/resume`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-lattice-internal-token": "test-resume-token",
+        },
+        body: JSON.stringify({ checkpoint_id: checkpointId }),
+      });
+
+      expect(resumeResponse.status).toBe(200);
+      const resumed = await resumeResponse.json();
+      expect(resumed.resumed).toBe(true);
+      expect(resumed.result?.resumed).toBe(true);
+      expect(resumed.result?.content).toBe("resume workspace");
+      expect(resumed.result?.listed_paths).toEqual(["resume/input.txt"]);
+
+      expect(await checkpointFound(checkpointId)).toBe(false);
+      expect(await listWorkspaceObjects()).toEqual([]);
+    });
+
+    it("enforces single-file workspace quota in the workers backend", async () => {
+      const response = await mf.dispatchFetch(`${mfUrl}workspace-quota`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "single_file" }),
+      });
+
+      expect(response.status).toBe(500);
+      const body = await response.json();
+      expect(String(body.error)).toContain("max_single_file_bytes");
+    });
+
+    it("enforces total-bytes workspace quota in the workers backend", async () => {
+      const response = await mf.dispatchFetch(`${mfUrl}workspace-quota`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "total_bytes" }),
+      });
+
+      expect(response.status).toBe(500);
+      const body = await response.json();
+      expect(String(body.error)).toContain("max_total_bytes");
+    });
+
+    it("enforces file-count workspace quota in the workers backend", async () => {
+      const response = await mf.dispatchFetch(`${mfUrl}workspace-quota`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "file_count" }),
+      });
+
+      expect(response.status).toBe(500);
+      const body = await response.json();
+      expect(String(body.error)).toContain("max_file_count");
+    });
+
+    it("rejects traversal paths before reaching the backend write path", async () => {
+      const response = await mf.dispatchFetch(`${mfUrl}workspace-invalid-path`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "write_traversal" }),
+      });
+
+      expect(response.status).toBe(500);
+      const body = await response.json();
+      expect(String(body.error)).toContain("path traversal");
+    });
+
+    it("rejects traversal prefixes before reaching the backend list path", async () => {
+      const response = await mf.dispatchFetch(`${mfUrl}workspace-invalid-path`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "list_traversal" }),
+      });
+
+      expect(response.status).toBe(500);
+      const body = await response.json();
+      expect(String(body.error)).toContain("path traversal");
+    });
+  });
+
   describe("error handling", () => {
     it("should return 404 for unknown routes", async () => {
       const response = await mf.dispatchFetch(`${mfUrl}unknown`);
@@ -292,4 +434,13 @@ function parseSSE(text: string): unknown[] {
   }
 
   return events;
+}
+
+async function listWorkspaceObjects(prefix = "workspace/"): Promise<string[]> {
+  const response = await mf.dispatchFetch(
+    `${mfUrl}__test/workspace/objects?prefix=${encodeURIComponent(prefix)}`
+  );
+  expect(response.status).toBe(200);
+  const body = (await response.json()) as { keys: string[] };
+  return body.keys;
 }

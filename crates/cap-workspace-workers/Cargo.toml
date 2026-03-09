@@ -1,0 +1,28 @@
+[package]
+name = "cap-workspace-workers"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Cloudflare Workers R2 + Durable Objects-backed workspace provider."
+
+[dependencies]
+capabilities = { path = "../capabilities" }
+anyhow.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid = { workspace = true, features = ["v5"] }
+worker = { version = "=0.7.4", default-features = false, features = ["http"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

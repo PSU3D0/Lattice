@@ -24,6 +24,7 @@ In 0.1, capabilities are grouped into coarse domains. Canonical hint ids:
 - Blob: `resource::blob`, `resource::blob::read`, `resource::blob::write`
 - Queue: `resource::queue`, `resource::queue::publish`, `resource::queue::consume`
 - Dedupe: `resource::dedupe`, `resource::dedupe::write`
+- Workspace: `resource::workspace`, `resource::workspace::read`, `resource::workspace::write`
 - DB: `resource::db`, `resource::db::read`, `resource::db::write` (interface may evolve)
 - Clock/RNG: `resource::clock`, `resource::rng`
 
@@ -156,6 +157,7 @@ Domains (hint ids) and current provider interfaces live in `crates/capabilities/
 - Blob (`resource::blob*`): `BlobStore`
 - Queue (`resource::queue*`): `Queue`
 - Dedupe (`resource::dedupe*`): `DedupeStore`
+- Workspace (`resource::workspace*`): `Workspace`
 - DB (`resource::db*`): hints + constraints only (no provider trait yet)
 - Clock/RNG (`resource::clock`, `resource::rng`): `Clock`, `Rng`
 - Cache: `Cache` (currently not expressed via `resource::*` hints)

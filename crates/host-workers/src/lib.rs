@@ -10,7 +10,19 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 #[cfg(target_arch = "wasm32")]
-use capabilities::{ResourceAccess, ResourceBag, durability::ResumeToken};
+use std::time::Duration;
+
+#[cfg(target_arch = "wasm32")]
+use cap_workspace_workers::{
+    DEFAULT_WORKSPACE_BUCKET_BINDING, DEFAULT_WORKSPACE_DO_BINDING,
+    DEFAULT_WORKSPACE_OBJECT_PREFIX, WorkersWorkspaceConfig, WorkersWorkspaceFactory,
+};
+#[cfg(target_arch = "wasm32")]
+use capabilities::{
+    ResourceAccess, ResourceBag,
+    durability::ResumeToken,
+    workspace::{WorkspaceFactory, WorkspacePolicy},
+};
 #[cfg(target_arch = "wasm32")]
 use futures::channel::oneshot;
 #[cfg(target_arch = "wasm32")]
@@ -44,6 +56,7 @@ type AbortFuture = Shared<LocalBoxFuture<'static, ()>>;
 #[cfg(target_arch = "wasm32")]
 thread_local! {
     static RESOURCE_OVERRIDE: RefCell<Option<Arc<dyn ResourceAccess>>> = const { RefCell::new(None) };
+    static WORKSPACE_FACTORY_OVERRIDE: RefCell<Option<Arc<dyn WorkspaceFactory>>> = const { RefCell::new(None) };
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -60,8 +73,20 @@ pub fn set_resource_bag(bag: ResourceBag) {
 }
 
 #[cfg(target_arch = "wasm32")]
+pub fn set_workspace_factory(factory: Arc<dyn WorkspaceFactory>) {
+    WORKSPACE_FACTORY_OVERRIDE.with(|slot| {
+        *slot.borrow_mut() = Some(factory);
+    });
+}
+
+#[cfg(target_arch = "wasm32")]
 fn get_resource_access() -> Option<Arc<dyn ResourceAccess>> {
     RESOURCE_OVERRIDE.with(|slot| slot.borrow().clone())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn get_workspace_factory() -> Option<Arc<dyn WorkspaceFactory>> {
+    WORKSPACE_FACTORY_OVERRIDE.with(|slot| slot.borrow().clone())
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -181,10 +206,57 @@ fn runtime_from_bundle(bundle: FlowBundle, env: Option<&Env>) -> HostRuntime {
             runtime = runtime.with_bundle_id(bundle_id);
         }
     }
+    if let Some(factory) =
+        get_workspace_factory().or_else(|| env.and_then(workspace_factory_from_env))
+    {
+        runtime = runtime.with_workspace_factory(factory);
+    }
     match get_resource_access() {
         Some(resources) => runtime.with_resource_access(resources),
         None => runtime,
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn workspace_factory_from_env(env: &Env) -> Option<Arc<dyn WorkspaceFactory>> {
+    let bucket_binding = env_string(env, "LATTICE_WORKSPACE_BUCKET_BINDING")
+        .unwrap_or_else(|| DEFAULT_WORKSPACE_BUCKET_BINDING.to_string());
+    let index_binding = env_string(env, "LATTICE_WORKSPACE_DO_BINDING")
+        .unwrap_or_else(|| DEFAULT_WORKSPACE_DO_BINDING.to_string());
+
+    if env.bucket(&bucket_binding).is_err() || env.durable_object(&index_binding).is_err() {
+        return None;
+    }
+
+    let object_prefix = env_string(env, "LATTICE_WORKSPACE_OBJECT_PREFIX")
+        .unwrap_or_else(|| DEFAULT_WORKSPACE_OBJECT_PREFIX.to_string());
+    let policy = WorkspacePolicy {
+        max_total_bytes: env_u64(env, "LATTICE_WORKSPACE_MAX_TOTAL_BYTES"),
+        max_file_count: env_u64(env, "LATTICE_WORKSPACE_MAX_FILE_COUNT"),
+        max_single_file_bytes: env_u64(env, "LATTICE_WORKSPACE_MAX_SINGLE_FILE_BYTES"),
+        retain_completed_for: env_u64(env, "LATTICE_WORKSPACE_RETAIN_COMPLETED_FOR_MS")
+            .map(Duration::from_millis),
+    };
+
+    Some(Arc::new(WorkersWorkspaceFactory::new(
+        env.clone(),
+        WorkersWorkspaceConfig {
+            bucket_binding,
+            index_binding,
+            object_prefix,
+            policy,
+        },
+    )))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn env_string(env: &Env, name: &str) -> Option<String> {
+    env.var(name).ok().map(|value| value.to_string())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn env_u64(env: &Env, name: &str) -> Option<u64> {
+    env_string(env, name).and_then(|value| value.parse::<u64>().ok())
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -609,6 +681,13 @@ fn map_execution_error(err: ExecutionError) -> (u16, JsonValue) {
         ExecutionError::SpillSetup(err) => (
             500,
             json!({ "error": format!("failed to configure spill storage: {err}") }),
+        ),
+        ExecutionError::HostEnvironment(err) => (
+            500,
+            json!({
+                "error": "host environment failure",
+                "message": err.to_string(),
+            }),
         ),
     }
 }

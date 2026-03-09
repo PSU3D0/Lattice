@@ -5,6 +5,9 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use capabilities::durability::{CheckpointError, CheckpointFilter, CheckpointHandle, FlowFrontier};
+use capabilities::workspace::{
+    Workspace, WorkspaceCompletionDisposition, WorkspaceFactory, WorkspaceRunScope,
+};
 use capabilities::{ResourceAccess, ResourceBag};
 use dag_core::DurabilityMode;
 use kernel_exec::{ExecutionError, ExecutionResult, FlowExecutor, NodeResolver};
@@ -251,7 +254,73 @@ fn is_hint_satisfied_by_resources(hint: &str, resources: &dyn ResourceAccess) ->
             resources.queue().is_some()
         }
         capabilities::dedupe::HINT_DEDUPE_WRITE => resources.dedupe_store().is_some(),
+        capabilities::workspace::HINT_WORKSPACE_READ
+        | capabilities::workspace::HINT_WORKSPACE_WRITE => resources.workspace().is_some(),
         _ => false,
+    }
+}
+
+#[derive(Clone)]
+struct InvocationResources {
+    base: Arc<dyn ResourceAccess>,
+    workspace: Arc<dyn Workspace>,
+}
+
+impl ResourceAccess for InvocationResources {
+    fn http_read(&self) -> Option<&dyn capabilities::http::HttpRead> {
+        self.base.http_read()
+    }
+
+    fn http_write(&self) -> Option<&dyn capabilities::http::HttpWrite> {
+        self.base.http_write()
+    }
+
+    fn clock(&self) -> Option<&dyn capabilities::clock::Clock> {
+        self.base.clock()
+    }
+
+    fn cache(&self) -> Option<&dyn capabilities::cache::Cache> {
+        self.base.cache()
+    }
+
+    fn kv(&self) -> Option<&dyn capabilities::kv::KeyValue> {
+        self.base.kv()
+    }
+
+    fn blob(&self) -> Option<&dyn capabilities::blob::BlobStore> {
+        self.base.blob()
+    }
+
+    fn queue(&self) -> Option<&dyn capabilities::queue::Queue> {
+        self.base.queue()
+    }
+
+    fn dedupe_store(&self) -> Option<&dyn capabilities::dedupe::DedupeStore> {
+        self.base.dedupe_store()
+    }
+
+    fn checkpoint_store(&self) -> Option<&dyn capabilities::durability::CheckpointStore> {
+        self.base.checkpoint_store()
+    }
+
+    fn resume_scheduler(&self) -> Option<&dyn capabilities::durability::ResumeScheduler> {
+        self.base.resume_scheduler()
+    }
+
+    fn resume_signal_source(&self) -> Option<&dyn capabilities::durability::ResumeSignalSource> {
+        self.base.resume_signal_source()
+    }
+
+    fn checkpoint_blob_store(&self) -> Option<&dyn capabilities::durability::CheckpointBlobStore> {
+        self.base.checkpoint_blob_store()
+    }
+
+    fn workspace(&self) -> Option<&dyn Workspace> {
+        Some(self.workspace.as_ref())
+    }
+
+    fn max_durability_mode(&self) -> dag_core::DurabilityMode {
+        self.base.max_durability_mode()
     }
 }
 
@@ -262,6 +331,7 @@ pub struct HostRuntime {
     ir: Arc<ValidatedIR>,
     plugins: Arc<Vec<Arc<dyn EnvironmentPlugin>>>,
     resources: Arc<dyn ResourceAccess>,
+    workspace_factory: Option<Arc<dyn WorkspaceFactory>>,
     required_effect_hints: Arc<Vec<String>>,
     bundle_id: Option<String>,
     allow_legacy_unpinned_checkpoints: bool,
@@ -283,6 +353,7 @@ impl HostRuntime {
             ir,
             plugins: Arc::new(Vec::new()),
             resources,
+            workspace_factory: None,
             required_effect_hints,
             bundle_id,
             allow_legacy_unpinned_checkpoints: true,
@@ -308,6 +379,7 @@ impl HostRuntime {
             ir,
             plugins: Arc::new(plugins),
             resources,
+            workspace_factory: None,
             required_effect_hints,
             bundle_id,
             allow_legacy_unpinned_checkpoints: true,
@@ -340,6 +412,12 @@ impl HostRuntime {
         self.with_resource_access(resources)
     }
 
+    /// Bind a host-managed workspace factory used to open per-run workspaces.
+    pub fn with_workspace_factory(mut self, factory: Arc<dyn WorkspaceFactory>) -> Self {
+        self.workspace_factory = Some(factory);
+        self
+    }
+
     /// Override runtime bundle id used for checkpoint pinning.
     pub fn with_bundle_id(mut self, bundle_id: impl Into<String>) -> Self {
         let id = bundle_id.into();
@@ -363,8 +441,15 @@ impl HostRuntime {
     ///
     /// Derivation rule (0.1): required domains are inferred from `NodeIR.effect_hints`.
     pub fn preflight(&self) -> Result<(), ExecutionError> {
+        self.preflight_with_resources(self.resources.as_ref())
+    }
+
+    fn preflight_with_resources(
+        &self,
+        resources: &dyn ResourceAccess,
+    ) -> Result<(), ExecutionError> {
         let mut missing_durability =
-            collect_missing_durability_services(self.ir.as_ref(), self.resources.as_ref());
+            collect_missing_durability_services(self.ir.as_ref(), resources);
         if !missing_durability.is_empty() {
             missing_durability.sort();
             missing_durability.dedup();
@@ -376,7 +461,7 @@ impl HostRuntime {
         let mut missing: Vec<String> = self
             .required_effect_hints
             .iter()
-            .filter(|hint| !is_hint_satisfied_by_resources(hint.as_str(), self.resources.as_ref()))
+            .filter(|hint| !is_hint_satisfied_by_resources(hint.as_str(), resources))
             .cloned()
             .collect();
         if missing.is_empty() {
@@ -387,10 +472,39 @@ impl HostRuntime {
         Err(ExecutionError::MissingCapabilities { hints: missing })
     }
 
+    async fn bind_workspace_resources(
+        &self,
+        scope: WorkspaceRunScope,
+    ) -> Result<Arc<dyn ResourceAccess>, ExecutionError> {
+        let Some(factory) = self.workspace_factory.as_ref() else {
+            return Ok(self.resources.clone());
+        };
+        let workspace = factory
+            .open(scope)
+            .await
+            .map_err(ExecutionError::HostEnvironment)?;
+        Ok(Arc::new(InvocationResources {
+            base: self.resources.clone(),
+            workspace,
+        }))
+    }
+
+    async fn complete_workspace(
+        &self,
+        scope: WorkspaceRunScope,
+        disposition: WorkspaceCompletionDisposition,
+    ) -> Result<(), ExecutionError> {
+        let Some(factory) = self.workspace_factory.as_ref() else {
+            return Ok(());
+        };
+        factory
+            .complete(scope, disposition)
+            .await
+            .map_err(ExecutionError::HostEnvironment)
+    }
+
     /// Execute a single invocation, returning the captured result or error.
     pub async fn execute(&self, invocation: Invocation) -> Result<ExecutionResult, ExecutionError> {
-        self.preflight()?;
-
         let InvocationParts {
             trigger_alias,
             capture_alias,
@@ -399,9 +513,23 @@ impl HostRuntime {
             mut metadata,
         } = invocation.into_parts();
 
-        if !metadata.labels().contains_key("lf.run_id") {
-            metadata.insert_label("lf.run_id", uuid::Uuid::new_v4().to_string());
+        let run_id = metadata
+            .labels()
+            .get("lf.run_id")
+            .cloned()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let workspace_scope = WorkspaceRunScope::new(self.ir.flow().id.0.clone(), run_id.clone());
+        let resources = self
+            .bind_workspace_resources(workspace_scope.clone())
+            .await?;
+        if let Err(err) = self.preflight_with_resources(resources.as_ref()) {
+            let _ = self
+                .complete_workspace(workspace_scope, WorkspaceCompletionDisposition::Failed)
+                .await;
+            return Err(err);
         }
+
+        metadata.insert_label("lf.run_id", run_id.clone());
         if !metadata.labels().contains_key("lf.flow_id") {
             metadata.insert_label("lf.flow_id", self.ir.flow().id.0.clone());
         }
@@ -418,11 +546,14 @@ impl HostRuntime {
 
         let result = self
             .executor
-            .run_once(
+            .clone()
+            .with_resource_access(resources)
+            .run_once_with_run_id(
                 self.ir.as_ref(),
                 &trigger_alias,
                 payload,
                 &capture_alias,
+                &run_id,
                 deadline,
             )
             .await;
@@ -437,13 +568,24 @@ impl HostRuntime {
             );
         }
 
-        result
+        match result {
+            Ok(value @ ExecutionResult::Halt { .. }) => Ok(value),
+            Ok(value) => {
+                self.complete_workspace(workspace_scope, WorkspaceCompletionDisposition::Succeeded)
+                    .await?;
+                Ok(value)
+            }
+            Err(err) => {
+                let _ = self
+                    .complete_workspace(workspace_scope, WorkspaceCompletionDisposition::Failed)
+                    .await;
+                Err(err)
+            }
+        }
     }
 
     /// Resume execution from an existing checkpoint id.
     pub async fn resume(&self, checkpoint_id: &str) -> Result<ExecutionResult, ExecutionError> {
-        self.preflight()?;
-
         let Some(store) = self.resources.checkpoint_store() else {
             return Err(ExecutionError::MissingDurabilityServices {
                 missing: vec!["durability::checkpoint_store".to_string()],
@@ -543,8 +685,22 @@ impl HostRuntime {
             }
         };
 
+        let workspace_scope =
+            WorkspaceRunScope::new(self.ir.flow().id.0.clone(), handle.run_id.clone());
+        let resources = match self.bind_workspace_resources(workspace_scope.clone()).await {
+            Ok(resources) => resources,
+            Err(err) => {
+                let _ = store.release_lease(lease).await;
+                return Err(err);
+            }
+        };
+        if let Err(err) = self.preflight_with_resources(resources.as_ref()) {
+            let _ = store.release_lease(lease).await;
+            return Err(err);
+        }
+
         let mut metadata = InvocationMetadata::default();
-        metadata.insert_label("lf.run_id", uuid::Uuid::new_v4().to_string());
+        metadata.insert_label("lf.run_id", handle.run_id.clone());
         metadata.insert_label("lf.flow_id", self.ir.flow().id.0.clone());
         metadata.insert_label("lf.trigger_alias", frame.halt_alias.clone());
         metadata.insert_label("lf.capture_alias", frame.capture_alias.clone());
@@ -573,12 +729,15 @@ impl HostRuntime {
 
         let result = self
             .executor
+            .clone()
+            .with_resource_access(resources)
             .resume_once(
                 self.ir.as_ref(),
                 &frame.halt_alias,
                 frame.halt_payload,
                 &frame.pending,
                 &frame.capture_alias,
+                &handle.run_id,
                 None,
             )
             .await;
@@ -594,12 +753,18 @@ impl HostRuntime {
         }
 
         match result {
+            Ok(outcome @ ExecutionResult::Halt { .. }) => {
+                let _ = store.release_lease(lease).await;
+                Ok(outcome)
+            }
             Ok(outcome) => {
                 if let Err(err) = store.ack(&handle).await {
                     let _ = store.release_lease(lease).await;
                     return Err(map_checkpoint_error(&handle, err));
                 }
                 let _ = store.release_lease(lease).await;
+                self.complete_workspace(workspace_scope, WorkspaceCompletionDisposition::Succeeded)
+                    .await?;
                 Ok(outcome)
             }
             Err(err) => {
@@ -1042,6 +1207,99 @@ mod tests {
         ResourceBag::new().with_checkpoint_store(Arc::new(StubCheckpointStore))
     }
 
+    #[derive(Default)]
+    struct RecordingWorkspaceFactory {
+        opened: StdArc<Mutex<Vec<WorkspaceRunScope>>>,
+        completed: StdArc<Mutex<Vec<(WorkspaceRunScope, WorkspaceCompletionDisposition)>>>,
+    }
+
+    impl RecordingWorkspaceFactory {
+        fn opened(&self) -> Vec<WorkspaceRunScope> {
+            self.opened.lock().expect("opened lock").clone()
+        }
+
+        fn completed(&self) -> Vec<(WorkspaceRunScope, WorkspaceCompletionDisposition)> {
+            self.completed.lock().expect("completed lock").clone()
+        }
+    }
+
+    struct NoopWorkspace;
+
+    impl capabilities::Capability for NoopWorkspace {
+        fn name(&self) -> &'static str {
+            "workspace.noop"
+        }
+    }
+
+    #[async_trait]
+    impl Workspace for NoopWorkspace {
+        async fn read_normalized(
+            &self,
+            _normalized_path: &str,
+        ) -> Result<
+            Option<capabilities::workspace::WorkspaceReadResult>,
+            capabilities::workspace::WorkspaceError,
+        > {
+            Ok(None)
+        }
+
+        async fn write_normalized(
+            &self,
+            normalized_path: &str,
+            data: &[u8],
+            _options: capabilities::workspace::WorkspaceWriteOptions,
+        ) -> Result<
+            capabilities::workspace::WorkspaceWriteResult,
+            capabilities::workspace::WorkspaceError,
+        > {
+            Ok(capabilities::workspace::WorkspaceWriteResult {
+                path: normalized_path.to_string(),
+                size_bytes: data.len() as u64,
+                updated_at_ms: 0,
+            })
+        }
+
+        async fn list_normalized(
+            &self,
+            _options: capabilities::workspace::WorkspaceListOptions,
+        ) -> Result<
+            Vec<capabilities::workspace::WorkspaceEntry>,
+            capabilities::workspace::WorkspaceError,
+        > {
+            Ok(Vec::new())
+        }
+
+        async fn delete_normalized(
+            &self,
+            _normalized_path: &str,
+        ) -> Result<
+            capabilities::workspace::WorkspaceDeleteResult,
+            capabilities::workspace::WorkspaceError,
+        > {
+            Ok(capabilities::workspace::WorkspaceDeleteResult { deleted: false })
+        }
+    }
+
+    #[async_trait]
+    impl WorkspaceFactory for RecordingWorkspaceFactory {
+        async fn open(&self, scope: WorkspaceRunScope) -> anyhow::Result<Arc<dyn Workspace>> {
+            self.opened.lock().expect("opened lock").push(scope);
+            Ok(Arc::new(NoopWorkspace))
+        }
+
+        async fn complete(
+            &self,
+            scope: WorkspaceRunScope,
+            disposition: WorkspaceCompletionDisposition,
+        ) -> anyhow::Result<()> {
+            self.completed
+                .lock()
+                .expect("completed lock")
+                .push((scope, disposition));
+            Ok(())
+        }
+    }
+
     #[tokio::test]
     async fn executes_invocation_via_runtime() {
         let mut registry = NodeRegistry::new();
@@ -1105,6 +1363,84 @@ mod tests {
             ExecutionResult::Stream(_) => panic!("expected value result"),
             ExecutionResult::Halt { .. } => panic!("unexpected halt result"),
         }
+    }
+
+    #[tokio::test]
+    async fn workspace_factory_opens_and_completes_for_terminal_execute() {
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn(
+                "tests::trigger",
+                |value: JsonValue| async move { Ok(value) },
+            )
+            .unwrap();
+        registry
+            .register_fn(
+                "tests::capture",
+                |value: JsonValue| async move { Ok(value) },
+            )
+            .unwrap();
+
+        let mut builder = FlowBuilder::new(
+            "workspace_terminal_execute",
+            Version::new(1, 0, 0),
+            Profile::Dev,
+        );
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let capture = builder
+            .add_node(
+                "capture",
+                &NodeSpec::inline(
+                    "tests::capture",
+                    "Capture",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &capture);
+        let ir = Arc::new(validate(&builder.build()).expect("flow validates"));
+
+        let workspace_factory = Arc::new(RecordingWorkspaceFactory::default());
+        let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), Arc::clone(&ir))
+            .with_resource_bag(resource_bag_with_checkpoint())
+            .with_workspace_factory(workspace_factory.clone());
+
+        let result = runtime
+            .execute(Invocation::new(
+                "trigger",
+                "capture",
+                serde_json::json!({"ok": true}),
+            ))
+            .await
+            .expect("execution succeeds");
+        assert!(matches!(result, ExecutionResult::Value(_)));
+
+        let opened = workspace_factory.opened();
+        assert_eq!(opened.len(), 1);
+        assert_eq!(opened[0].flow_id, ir.flow().id.0.clone());
+        assert!(!opened[0].run_id.is_empty());
+
+        let completed = workspace_factory.completed();
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].0, opened[0]);
+        assert_eq!(completed[0].1, WorkspaceCompletionDisposition::Succeeded);
     }
 
     #[tokio::test]
@@ -2074,6 +2410,133 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn workspace_factory_reuses_checkpoint_run_id_across_resume() {
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn(
+                "tests::trigger",
+                |value: stdlib::timer::TimerWaitInput| async move { Ok(value) },
+            )
+            .unwrap();
+        registry
+            .register_fn(
+                "tests::capture_resume",
+                |value: stdlib::timer::TimerWaitOutput| async move {
+                    Ok(serde_json::json!({
+                        "resumed": true,
+                        "scheduled_at_ms": value.scheduled_at_ms,
+                        "payload": value.payload,
+                    }))
+                },
+            )
+            .unwrap();
+        stdlib::timer::timer_wait_register(&mut registry).unwrap();
+
+        let mut builder =
+            FlowBuilder::new("timer_resume_scope", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let wait = builder
+            .add_node("wait", stdlib::timer::timer_wait_node_spec())
+            .unwrap();
+        let capture = builder
+            .add_node(
+                "capture",
+                &NodeSpec::inline(
+                    "tests::capture_resume",
+                    "Capture",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &wait);
+        builder.connect(&wait, &capture);
+
+        let ir = Arc::new(validate(&builder.build()).expect("flow validates"));
+        let checkpoint_store = Arc::new(MemoryCheckpointStore::default());
+        let workspace_factory = Arc::new(RecordingWorkspaceFactory::default());
+        let resources = ResourceBag::new()
+            .with_checkpoint_store(Arc::clone(&checkpoint_store))
+            .with_resume_scheduler(Arc::new(StubResumeScheduler))
+            .with_workspace(Arc::new(NoopWorkspace));
+        let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), Arc::clone(&ir))
+            .with_resource_bag(resources)
+            .with_workspace_factory(workspace_factory.clone());
+
+        let input = stdlib::timer::TimerWaitInput {
+            duration: Some(Duration::from_millis(10)),
+            until: None,
+            payload: serde_json::json!({"ok": true}),
+        };
+        let halted = runtime
+            .execute(Invocation::new(
+                "trigger",
+                "capture",
+                serde_json::to_value(input).unwrap(),
+            ))
+            .await
+            .expect("execution halts");
+        let checkpoint_id = match halted {
+            ExecutionResult::Halt { payload, .. } => payload
+                .get("checkpoint_id")
+                .and_then(|value| value.as_str())
+                .expect("checkpoint id")
+                .to_string(),
+            _ => panic!("expected halt result"),
+        };
+
+        let handles = checkpoint_store
+            .list(CheckpointFilter {
+                flow_id: Some(ir.flow().id.clone()),
+                run_id: None,
+                status: None,
+            })
+            .await
+            .expect("list checkpoints");
+        assert_eq!(handles.len(), 1);
+        let checkpoint_run_id = handles[0].run_id.clone();
+
+        let opened = workspace_factory.opened();
+        assert_eq!(opened.len(), 1);
+        assert_eq!(opened[0].flow_id, ir.flow().id.0.clone());
+        assert_eq!(opened[0].run_id, checkpoint_run_id);
+        assert!(workspace_factory.completed().is_empty());
+
+        let resumed = runtime.resume(&checkpoint_id).await.expect("resume ok");
+        match resumed {
+            ExecutionResult::Value(value) => {
+                assert_eq!(value.get("resumed").and_then(|v| v.as_bool()), Some(true));
+            }
+            _ => panic!("expected resumed value"),
+        }
+
+        let opened = workspace_factory.opened();
+        assert_eq!(opened.len(), 2);
+        assert_eq!(opened[1], opened[0]);
+
+        let completed = workspace_factory.completed();
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].0, opened[0]);
+        assert_eq!(completed[0].1, WorkspaceCompletionDisposition::Succeeded);
+    }
+
+    #[tokio::test]
     async fn resume_fails_when_checkpoint_bundle_pin_mismatches_runtime() {
         let mut registry = NodeRegistry::new();
         registry
@@ -2633,6 +3096,236 @@ mod tests {
                 );
             }
             Err(err) => panic!("unexpected error: {err}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn preflight_fails_when_required_workspace_hints_missing() {
+        const WORKSPACE_EFFECT_HINTS: [&str; 2] = [
+            capabilities::workspace::HINT_WORKSPACE_READ,
+            capabilities::workspace::HINT_WORKSPACE_WRITE,
+        ];
+
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn(
+                "tests::trigger",
+                |value: JsonValue| async move { Ok(value) },
+            )
+            .unwrap();
+        registry
+            .register_fn("tests::workspace_node", |value: JsonValue| async move {
+                Ok(value)
+            })
+            .unwrap();
+
+        let mut builder =
+            FlowBuilder::new("preflight_workspace", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let workspace_node = builder
+            .add_node(
+                "workspace",
+                &NodeSpec::inline_with_hints(
+                    "tests::workspace_node",
+                    "WorkspaceNode",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Effectful,
+                    Determinism::BestEffort,
+                    None,
+                    &[],
+                    &WORKSPACE_EFFECT_HINTS,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &workspace_node);
+
+        let mut flow = builder.build();
+        flow.nodes
+            .iter_mut()
+            .find(|node| node.alias == "workspace")
+            .expect("workspace node")
+            .idempotency
+            .key = Some("idempotency".to_string());
+
+        for node in &mut flow.nodes {
+            if node.summary.is_none() {
+                node.summary = Some("preflight workspace test node".to_string());
+            }
+        }
+
+        let ir = Arc::new(validate(&flow).expect("flow validates"));
+
+        let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), ir)
+            .with_resource_bag(resource_bag_with_checkpoint());
+        let invocation = Invocation::new("trigger", "workspace", serde_json::json!({"ok": true}));
+
+        match runtime.execute(invocation).await {
+            Ok(_) => panic!("expected preflight failure"),
+            Err(ExecutionError::MissingCapabilities { hints }) => {
+                assert_eq!(
+                    hints,
+                    vec![
+                        capabilities::workspace::HINT_WORKSPACE_READ.to_string(),
+                        capabilities::workspace::HINT_WORKSPACE_WRITE.to_string(),
+                    ]
+                );
+            }
+            Err(err) => panic!("unexpected error: {err}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn preflight_passes_when_required_workspace_hints_present() {
+        const WORKSPACE_EFFECT_HINTS: [&str; 2] = [
+            capabilities::workspace::HINT_WORKSPACE_READ,
+            capabilities::workspace::HINT_WORKSPACE_WRITE,
+        ];
+
+        struct NullWorkspace;
+
+        impl capabilities::Capability for NullWorkspace {
+            fn name(&self) -> &'static str {
+                "workspace.null"
+            }
+        }
+
+        #[async_trait]
+        impl capabilities::workspace::Workspace for NullWorkspace {
+            async fn read_normalized(
+                &self,
+                _normalized_path: &str,
+            ) -> Result<
+                Option<capabilities::workspace::WorkspaceReadResult>,
+                capabilities::workspace::WorkspaceError,
+            > {
+                Ok(None)
+            }
+
+            async fn write_normalized(
+                &self,
+                normalized_path: &str,
+                data: &[u8],
+                _options: capabilities::workspace::WorkspaceWriteOptions,
+            ) -> Result<
+                capabilities::workspace::WorkspaceWriteResult,
+                capabilities::workspace::WorkspaceError,
+            > {
+                Ok(capabilities::workspace::WorkspaceWriteResult {
+                    path: normalized_path.to_string(),
+                    size_bytes: data.len() as u64,
+                    updated_at_ms: 0,
+                })
+            }
+
+            async fn list_normalized(
+                &self,
+                _options: capabilities::workspace::WorkspaceListOptions,
+            ) -> Result<
+                Vec<capabilities::workspace::WorkspaceEntry>,
+                capabilities::workspace::WorkspaceError,
+            > {
+                Ok(Vec::new())
+            }
+
+            async fn delete_normalized(
+                &self,
+                _normalized_path: &str,
+            ) -> Result<
+                capabilities::workspace::WorkspaceDeleteResult,
+                capabilities::workspace::WorkspaceError,
+            > {
+                Ok(capabilities::workspace::WorkspaceDeleteResult { deleted: false })
+            }
+        }
+
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn(
+                "tests::trigger",
+                |value: JsonValue| async move { Ok(value) },
+            )
+            .unwrap();
+        registry
+            .register_fn("tests::workspace_node", |value: JsonValue| async move {
+                Ok(value)
+            })
+            .unwrap();
+
+        let mut builder =
+            FlowBuilder::new("preflight_workspace", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let workspace_node = builder
+            .add_node(
+                "workspace",
+                &NodeSpec::inline_with_hints(
+                    "tests::workspace_node",
+                    "WorkspaceNode",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Effectful,
+                    Determinism::BestEffort,
+                    None,
+                    &[],
+                    &WORKSPACE_EFFECT_HINTS,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &workspace_node);
+
+        let mut flow = builder.build();
+        flow.nodes
+            .iter_mut()
+            .find(|node| node.alias == "workspace")
+            .expect("workspace node")
+            .idempotency
+            .key = Some("idempotency".to_string());
+
+        for node in &mut flow.nodes {
+            if node.summary.is_none() {
+                node.summary = Some("preflight workspace test node".to_string());
+            }
+        }
+
+        let ir = Arc::new(validate(&flow).expect("flow validates"));
+
+        let resources = resource_bag_with_checkpoint().with_workspace(Arc::new(NullWorkspace));
+        let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), ir)
+            .with_resource_bag(resources);
+        let invocation = Invocation::new("trigger", "workspace", serde_json::json!({"ok": true}));
+
+        let result = runtime
+            .execute(invocation)
+            .await
+            .expect("execution succeeds");
+        if let ExecutionResult::Stream(_) = result {
+            panic!("expected value result");
         }
     }
 

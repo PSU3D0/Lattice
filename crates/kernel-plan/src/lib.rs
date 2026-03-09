@@ -3240,6 +3240,74 @@ mod tests {
         }
 
         #[test]
+        fn validator_flags_workspace_write_effect_conflict_from_default_registry() {
+            let mut builder = FlowBuilder::new(
+                "workspace_effect_conflict",
+                Version::new(1, 0, 0),
+                Profile::Web,
+            );
+            builder
+                .add_node(
+                    "workspace_writer",
+                    &NodeSpec::inline_with_hints(
+                        "tests::workspace_writer",
+                        "WorkspaceWriter",
+                        SchemaSpec::Opaque,
+                        SchemaSpec::Opaque,
+                        Effects::Pure,
+                        Determinism::BestEffort,
+                        None,
+                        &[],
+                        &["resource::workspace::write"],
+                    ),
+                )
+                .expect("add workspace writer node");
+            let flow = builder.build();
+
+            let diagnostics =
+                validate(&flow).expect_err("expected workspace write effect mismatch diagnostic");
+            assert!(
+                diagnostics.iter().any(|d| d.code.code == "EFFECT201"),
+                "expected EFFECT201, got: {:?}",
+                diagnostics
+            );
+        }
+
+        #[test]
+        fn validator_flags_workspace_determinism_conflict_from_default_registry() {
+            let mut builder = FlowBuilder::new(
+                "workspace_det_conflict",
+                Version::new(1, 0, 0),
+                Profile::Web,
+            );
+            builder
+                .add_node(
+                    "workspace_reader",
+                    &NodeSpec::inline_with_hints(
+                        "tests::workspace_reader",
+                        "WorkspaceReader",
+                        SchemaSpec::Opaque,
+                        SchemaSpec::Opaque,
+                        Effects::ReadOnly,
+                        Determinism::Strict,
+                        None,
+                        &["resource::workspace"],
+                        &[],
+                    ),
+                )
+                .expect("add workspace reader node");
+            let flow = builder.build();
+
+            let diagnostics =
+                validate(&flow).expect_err("expected workspace determinism mismatch diagnostic");
+            assert!(
+                diagnostics.iter().any(|d| d.code.code == "DET302"),
+                "expected DET302, got: {:?}",
+                diagnostics
+            );
+        }
+
+        #[test]
         fn fallback_hints_still_trigger_conflicts() {
             let mut flow = single_node_flow("db_writer", db_writer_node_spec());
             ensure_idempotency(&mut flow, "db_writer");

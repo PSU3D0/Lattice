@@ -19,6 +19,7 @@ flow-registry = []
 [dependencies]
 async-stream = "0.3"
 cap-do-workers = { path = "../../cap-do-workers" }
+cap-workspace-workers = { path = "../../cap-workspace-workers" }
 capabilities = { path = "../../capabilities" }
 dag-core = { path = "../../dag-core" }
 dag-macros = { path = "../../dag-macros" }
