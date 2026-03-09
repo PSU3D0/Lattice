@@ -48,11 +48,18 @@ Routes:
   - halts via timer wait
   - resumes with the same stable run id
   - reads the pre-halt artifact after resume
+- `POST /workspace-retained`
+  - writes a retained artifact without deleting it
+  - demonstrates host-owned retention prior to retained cleanup dispatch
 - `POST /workspace-quota`
   - validates workers-side quota enforcement
   - exercises `max_single_file_bytes`, `max_total_bytes`, and `max_file_count`
 - `POST /workspace-invalid-path`
   - validates traversal rejection before backend operations
+- `POST /workspace-mutation`
+  - validates overwrite-delta accounting and delete/rewrite counter reset behavior
+- `POST /workspace-blocked-prefix`
+  - validates blocked-prefix and max depth/length host policy checks
 
 These routes are a good reference for how to think about workspace-backed
 artifact farming on Workers.
@@ -89,11 +96,17 @@ Optional host-policy vars:
 
 - `payloads/workspace-roundtrip.json`
 - `payloads/workspace-resume.json`
+- `payloads/workspace-retained.json`
 - `payloads/workspace-quota-single-file.json`
 - `payloads/workspace-quota-total-bytes.json`
 - `payloads/workspace-quota-file-count.json`
 - `payloads/workspace-invalid-path-write.json`
 - `payloads/workspace-invalid-path-list.json`
+- `payloads/workspace-mutation-overwrite.json`
+- `payloads/workspace-mutation-delete-rewrite.json`
+- `payloads/workspace-blocked-prefix-write.json`
+- `payloads/workspace-blocked-prefix-max-depth.json`
+- `payloads/workspace-blocked-prefix-max-length.json`
 
 ## Key semantic expectations
 

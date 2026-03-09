@@ -352,6 +352,29 @@ describe("host-workers E2E", () => {
       expect(String(body.error)).toContain("path traversal");
     });
 
+    it("retains workspace objects until the retained cleanup path runs", async () => {
+      const response = await mf.dispatchFetch(`${mfUrl}workspace-retained`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          content: "keep me around",
+          prefix: "retained-artifacts",
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.content).toBe("keep me around");
+      expect(body.listed_paths).toEqual(["retained-artifacts/artifact.txt"]);
+
+      const keys = await listWorkspaceObjects();
+      expect(keys).toHaveLength(1);
+      expect(keys[0]).toContain("retained-artifacts/artifact.txt");
+
+      await runWorkspaceRetainedCleanup(keys[0], Date.now() + 60_000);
+      expect(await listWorkspaceObjects()).toEqual([]);
+    });
+
     it("rejects traversal prefixes before reaching the backend list path", async () => {
       const response = await mf.dispatchFetch(`${mfUrl}workspace-invalid-path`, {
         method: "POST",
@@ -362,6 +385,82 @@ describe("host-workers E2E", () => {
       expect(response.status).toBe(500);
       const body = await response.json();
       expect(String(body.error)).toContain("path traversal");
+    });
+
+    it("keeps overwrite quota accounting delta-based", async () => {
+      const response = await mf.dispatchFetch(`${mfUrl}workspace-mutation`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "overwrite_delta" }),
+      });
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.ok).toBe(true);
+      expect(body.listed_paths).toEqual(["mutation/artifact.txt"]);
+      expect(await listWorkspaceObjects()).toEqual([]);
+    });
+
+    it("allows delete and rewrite without counter drift", async () => {
+      const response = await mf.dispatchFetch(`${mfUrl}workspace-mutation`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "delete_rewrite" }),
+      });
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.ok).toBe(true);
+      expect(body.listed_paths).toEqual(["mutation/second.txt"]);
+      expect(await listWorkspaceObjects()).toEqual([]);
+    });
+
+    it("rejects blocked prefixes by host policy", async () => {
+      const response = await mf.dispatchFetch(`${mfUrl}workspace-blocked-prefix`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "write_blocked" }),
+      });
+
+      expect(response.status).toBe(500);
+      const body = await response.json();
+      expect(String(body.error)).toContain("blocked by host policy");
+    });
+
+    it("rejects blocked prefixes for prefix listing", async () => {
+      const response = await mf.dispatchFetch(`${mfUrl}workspace-blocked-prefix`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "list_blocked" }),
+      });
+
+      expect(response.status).toBe(500);
+      const body = await response.json();
+      expect(String(body.error)).toContain("blocked by host policy");
+    });
+
+    it("rejects overly deep paths by host policy", async () => {
+      const response = await mf.dispatchFetch(`${mfUrl}workspace-blocked-prefix`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "max_depth" }),
+      });
+
+      expect(response.status).toBe(500);
+      const body = await response.json();
+      expect(String(body.error)).toContain("max depth");
+    });
+
+    it("rejects overly long paths by host policy", async () => {
+      const response = await mf.dispatchFetch(`${mfUrl}workspace-blocked-prefix`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "max_length" }),
+      });
+
+      expect(response.status).toBe(500);
+      const body = await response.json();
+      expect(String(body.error)).toContain("max length");
     });
   });
 
@@ -443,4 +542,19 @@ async function listWorkspaceObjects(prefix = "workspace/"): Promise<string[]> {
   expect(response.status).toBe(200);
   const body = (await response.json()) as { keys: string[] };
   return body.keys;
+}
+
+async function runWorkspaceRetainedCleanup(
+  objectKey: string,
+  nowMs: number
+): Promise<void> {
+  const response = await mf.dispatchFetch(
+    `${mfUrl}__test/workspace/run-retained-cleanup`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ object_key: objectKey, now_ms: nowMs }),
+    }
+  );
+  expect(response.status).toBe(200);
 }

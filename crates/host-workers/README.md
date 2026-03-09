@@ -39,6 +39,9 @@ For alarm-driven resume on deployed Workers, configure these bindings/vars in `w
   - `LATTICE_WORKSPACE_MAX_FILE_COUNT`
   - `LATTICE_WORKSPACE_MAX_SINGLE_FILE_BYTES`
   - `LATTICE_WORKSPACE_RETAIN_COMPLETED_FOR_MS`
+  - `LATTICE_WORKSPACE_BLOCKED_PREFIXES` (comma-separated)
+  - `LATTICE_WORKSPACE_MAX_PATH_DEPTH`
+  - `LATTICE_WORKSPACE_MAX_PATH_LENGTH`
 
 When service binding dispatch is used, add a worker service binding for the name referenced by `LATTICE_RESUME_SERVICE_BINDING`.
 

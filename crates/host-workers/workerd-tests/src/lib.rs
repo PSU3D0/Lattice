@@ -8,8 +8,11 @@
 //! - POST /timer - halt + resume via Durable Object alarm dispatch
 //! - POST /workspace - workspace roundtrip + cleanup
 //! - POST /workspace-resume - workspace continuity across halt/resume
+//! - POST /workspace-retained - retained cleanup/alarm path
 //! - POST /workspace-quota - workspace quota enforcement cases
 //! - POST /workspace-invalid-path - traversal rejection cases
+//! - POST /workspace-mutation - overwrite/delete accounting cases
+//! - POST /workspace-blocked-prefix - blocked-prefix policy cases
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -19,6 +22,8 @@ use std::time::Duration;
 
 use async_stream::stream;
 use cap_do_workers::{DurableObjectBinding, WorkersDurableObject};
+use cap_workspace_workers::{WorkersWorkspaceConfig, WorkersWorkspaceFactory};
+use capabilities::workspace::WorkspacePolicy;
 use capabilities::ResourceBag;
 use capabilities::durability::{CheckpointFilter, CheckpointStore};
 use dag_core::{DurabilityMode, NodeError, NodeResult};
@@ -29,7 +34,9 @@ use kernel_exec::{NodeRegistry, RegistryError};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
 #[cfg(target_arch = "wasm32")]
-use worker::{Context, Env, Request, Response, Result, event};
+use js_sys::JsString;
+#[cfg(target_arch = "wasm32")]
+use worker::{Context, Env, Method, Request, RequestInit, Response, Result, event};
 
 pub use cap_do_workers::FlowDurableObject;
 pub use cap_workspace_workers::WorkspaceDurableObject;
@@ -46,8 +53,12 @@ async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     if req.path() == "/__test/workspace/objects" {
         return handle_test_workspace_objects(req, &env).await;
     }
+    if req.path() == "/__test/workspace/run-retained-cleanup" {
+        return handle_test_workspace_retained_cleanup(req, &env).await;
+    }
 
     configure_resources(&env)?;
+    configure_workspace_factory(req.path().as_str(), &env)?;
     host_workers::handle_fetch(req, env, ctx).await
 }
 
@@ -75,6 +86,53 @@ fn configure_resources(env: &Env) -> Result<()> {
         .with_resume_signal_source(Arc::clone(&durability))
         .with_max_durability_mode(DurabilityMode::Partial);
     host_workers::set_resource_bag(resources);
+    Ok(())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn configure_workspace_factory(path: &str, env: &Env) -> Result<()> {
+    if env.bucket("WORKSPACE_BUCKET").is_err() || env.durable_object("WORKSPACE_DO").is_err() {
+        return Ok(());
+    }
+
+    let mut config = WorkersWorkspaceConfig {
+        bucket_binding: "WORKSPACE_BUCKET".to_string(),
+        index_binding: "WORKSPACE_DO".to_string(),
+        object_prefix: "workspace".to_string(),
+        policy: WorkspacePolicy {
+            max_total_bytes: Some(64),
+            max_file_count: Some(4),
+            max_single_file_bytes: Some(32),
+            retain_completed_for: None,
+        },
+        blocked_prefixes: Vec::new(),
+        max_path_depth: None,
+        max_path_length: None,
+    };
+
+    match path {
+        "/workspace-retained" => {
+            config.policy.retain_completed_for = Some(Duration::from_secs(60));
+        }
+        "/workspace-mutation" => {
+            config.policy.max_file_count = Some(1);
+        }
+        "/workspace-blocked-prefix" => {
+            config.blocked_prefixes = vec![
+                "node_modules".to_string(),
+                ".venv".to_string(),
+                "target".to_string(),
+            ];
+            config.max_path_depth = Some(6);
+            config.max_path_length = Some(96);
+        }
+        _ => {}
+    }
+
+    host_workers::set_workspace_factory(Arc::new(WorkersWorkspaceFactory::new(
+        env.clone(),
+        config,
+    )));
     Ok(())
 }
 
@@ -156,6 +214,52 @@ async fn handle_test_workspace_objects(req: Request, env: &Env) -> Result<Respon
         "count": keys.len(),
         "keys": keys,
     }))
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Debug, Deserialize)]
+struct WorkspaceRetainedCleanupRequest {
+    object_key: String,
+    now_ms: Option<u64>,
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn handle_test_workspace_retained_cleanup(mut req: Request, env: &Env) -> Result<Response> {
+    let payload: WorkspaceRetainedCleanupRequest = req.json().await?;
+    let scope_name = workspace_scope_name_from_object_key(&payload.object_key).ok_or_else(|| {
+        worker::Error::RustError(format!(
+            "workspace object key does not encode a scope: {}",
+            payload.object_key
+        ))
+    })?;
+
+    let namespace = env.durable_object("WORKSPACE_DO")?;
+    let id = namespace.id_from_name(&scope_name)?;
+    let stub = id.get_stub()?;
+    let body = serde_json::to_string(&json!({ "now_ms": payload.now_ms }))
+        .map_err(|err| worker::Error::RustError(err.to_string()))?;
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post);
+    init.with_body(Some(JsString::from(body).into()));
+    let request = Request::new_with_init(
+        "http://do/__debug/run-retained-cleanup",
+        &init,
+    )?;
+    let mut response = stub.fetch_with_request(request).await?;
+    let value: JsonValue = response.json().await?;
+    Response::from_json(&value)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn workspace_scope_name_from_object_key(object_key: &str) -> Option<String> {
+    let mut parts = object_key.split('/');
+    let prefix = parts.next()?;
+    let flow_key = parts.next()?;
+    let run_key = parts.next()?;
+    if prefix.is_empty() || flow_key.is_empty() || run_key.is_empty() {
+        return None;
+    }
+    Some(format!("{prefix}/{flow_key}/{run_key}"))
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -769,6 +873,268 @@ async fn workspace_invalid_path_stage(input: WorkspaceInvalidPathInput) -> NodeR
     }
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct WorkspaceRetainedInput {
+    content: String,
+    #[serde(default)]
+    prefix: Option<String>,
+}
+
+#[def_node(
+    trigger,
+    name = "WorkspaceRetainedTrigger",
+    summary = "Ingress trigger for retained workspace cleanup validation",
+    effects = "Pure",
+    determinism = "Strict"
+)]
+async fn workspace_retained_trigger(payload: JsonValue) -> NodeResult<WorkspaceRetainedInput> {
+    serde_json::from_value(payload)
+        .map_err(|err| NodeError::new(format!("invalid workspace retained payload: {err}")))
+}
+
+#[def_node(
+    name = "WorkspaceRetainedStage",
+    summary = "Write retained workspace artifacts without deleting them",
+    effects = "Effectful",
+    determinism = "BestEffort"
+)]
+async fn workspace_retained_stage(input: WorkspaceRetainedInput) -> NodeResult<JsonValue> {
+    let prefix = input.prefix.unwrap_or_else(|| "retained".to_string());
+    let path = format!("{prefix}/artifact.txt");
+    let content = input.content;
+
+    let result = capabilities::context::with_current_async(|resources| async move {
+        let workspace = resources
+            .workspace()
+            .ok_or_else(|| NodeError::new("workspace_retained_stage missing Workspace capability"))?;
+        workspace
+            .write(
+                &path,
+                content.as_bytes(),
+                capabilities::workspace::WorkspaceWriteOptions::default(),
+            )
+            .await
+            .map_err(|err| NodeError::new(format!("workspace write failed: {err}")))?;
+        let read_back = workspace
+            .read(&path)
+            .await
+            .map_err(|err| NodeError::new(format!("workspace read failed: {err}")))?;
+        let listed = workspace
+            .list(capabilities::workspace::WorkspaceListOptions::default().with_prefix(&prefix))
+            .await
+            .map_err(|err| NodeError::new(format!("workspace list failed: {err}")))?;
+
+        Ok::<JsonValue, NodeError>(json!({
+            "prefix": prefix,
+            "path": path,
+            "content": decode_workspace_bytes(read_back)?,
+            "listed_paths": listed.into_iter().map(|entry| entry.path).collect::<Vec<_>>(),
+        }))
+    })
+    .await;
+
+    match result {
+        Some(result) => result,
+        None => Err(NodeError::new(
+            "workspace_retained_stage missing ResourceAccess context",
+        )),
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct WorkspaceMutationInput {
+    kind: String,
+}
+
+#[def_node(
+    trigger,
+    name = "WorkspaceMutationTrigger",
+    summary = "Ingress trigger for workspace overwrite/delete mutation validation",
+    effects = "Pure",
+    determinism = "Strict"
+)]
+async fn workspace_mutation_trigger(payload: JsonValue) -> NodeResult<WorkspaceMutationInput> {
+    serde_json::from_value(payload)
+        .map_err(|err| NodeError::new(format!("invalid workspace mutation payload: {err}")))
+}
+
+#[def_node(
+    name = "WorkspaceMutationStage",
+    summary = "Exercise overwrite and delete/rewrite accounting behavior",
+    effects = "Effectful",
+    determinism = "BestEffort"
+)]
+async fn workspace_mutation_stage(input: WorkspaceMutationInput) -> NodeResult<JsonValue> {
+    let result = capabilities::context::with_current_async(|resources| async move {
+        let workspace = resources
+            .workspace()
+            .ok_or_else(|| NodeError::new("workspace_mutation_stage missing Workspace capability"))?;
+
+        match input.kind.as_str() {
+            "overwrite_delta" => {
+                workspace
+                    .write(
+                        "mutation/artifact.txt",
+                        &vec![b'a'; 32],
+                        capabilities::workspace::WorkspaceWriteOptions::default(),
+                    )
+                    .await
+                    .map_err(|err| NodeError::new(format!("workspace write failed: {err}")))?;
+                workspace
+                    .write(
+                        "mutation/artifact.txt",
+                        &vec![b'b'; 16],
+                        capabilities::workspace::WorkspaceWriteOptions::default(),
+                    )
+                    .await
+                    .map_err(|err| NodeError::new(format!("workspace write failed: {err}")))?;
+                workspace
+                    .write(
+                        "mutation/artifact.txt",
+                        &vec![b'c'; 32],
+                        capabilities::workspace::WorkspaceWriteOptions::default(),
+                    )
+                    .await
+                    .map_err(|err| NodeError::new(format!("workspace write failed: {err}")))?;
+            }
+            "delete_rewrite" => {
+                workspace
+                    .write(
+                        "mutation/first.txt",
+                        &vec![b'd'; 16],
+                        capabilities::workspace::WorkspaceWriteOptions::default(),
+                    )
+                    .await
+                    .map_err(|err| NodeError::new(format!("workspace write failed: {err}")))?;
+                workspace
+                    .delete("mutation/first.txt")
+                    .await
+                    .map_err(|err| NodeError::new(format!("workspace delete failed: {err}")))?;
+                workspace
+                    .write(
+                        "mutation/second.txt",
+                        &vec![b'e'; 16],
+                        capabilities::workspace::WorkspaceWriteOptions::default(),
+                    )
+                    .await
+                    .map_err(|err| NodeError::new(format!("workspace write failed: {err}")))?;
+            }
+            other => {
+                return Err(NodeError::new(format!(
+                    "unsupported workspace mutation kind: {other}"
+                )));
+            }
+        }
+
+        let listed = workspace
+            .list(capabilities::workspace::WorkspaceListOptions::default().with_prefix("mutation"))
+            .await
+            .map_err(|err| NodeError::new(format!("workspace list failed: {err}")))?;
+        Ok::<JsonValue, NodeError>(json!({
+            "ok": true,
+            "kind": input.kind,
+            "listed_paths": listed.into_iter().map(|entry| entry.path).collect::<Vec<_>>(),
+        }))
+    })
+    .await;
+
+    match result {
+        Some(result) => result,
+        None => Err(NodeError::new(
+            "workspace_mutation_stage missing ResourceAccess context",
+        )),
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct WorkspaceBlockedPrefixInput {
+    kind: String,
+}
+
+#[def_node(
+    trigger,
+    name = "WorkspaceBlockedPrefixTrigger",
+    summary = "Ingress trigger for workspace blocked-prefix and path-policy validation",
+    effects = "Pure",
+    determinism = "Strict"
+)]
+async fn workspace_blocked_prefix_trigger(payload: JsonValue) -> NodeResult<WorkspaceBlockedPrefixInput> {
+    serde_json::from_value(payload)
+        .map_err(|err| NodeError::new(format!("invalid workspace blocked-prefix payload: {err}")))
+}
+
+#[def_node(
+    name = "WorkspaceBlockedPrefixStage",
+    summary = "Exercise blocked prefixes and path-depth/length host policy validation",
+    effects = "Effectful",
+    determinism = "BestEffort"
+)]
+async fn workspace_blocked_prefix_stage(input: WorkspaceBlockedPrefixInput) -> NodeResult<JsonValue> {
+    let result = capabilities::context::with_current_async(|resources| async move {
+        let workspace = resources
+            .workspace()
+            .ok_or_else(|| NodeError::new("workspace_blocked_prefix_stage missing Workspace capability"))?;
+
+        match input.kind.as_str() {
+            "write_blocked" => {
+                workspace
+                    .write(
+                        "node_modules/pkg/index.js",
+                        b"bad",
+                        capabilities::workspace::WorkspaceWriteOptions::default(),
+                    )
+                    .await
+                    .map_err(|err| NodeError::new(format!("workspace write failed: {err}")))?;
+            }
+            "list_blocked" => {
+                workspace
+                    .list(
+                        capabilities::workspace::WorkspaceListOptions::default()
+                            .with_prefix("node_modules"),
+                    )
+                    .await
+                    .map_err(|err| NodeError::new(format!("workspace list failed: {err}")))?;
+            }
+            "max_depth" => {
+                workspace
+                    .write(
+                        "a/b/c/d/e/f/g.txt",
+                        b"deep",
+                        capabilities::workspace::WorkspaceWriteOptions::default(),
+                    )
+                    .await
+                    .map_err(|err| NodeError::new(format!("workspace write failed: {err}")))?;
+            }
+            "max_length" => {
+                let long_name = format!("paths/{}", "x".repeat(120));
+                workspace
+                    .write(
+                        &long_name,
+                        b"long",
+                        capabilities::workspace::WorkspaceWriteOptions::default(),
+                    )
+                    .await
+                    .map_err(|err| NodeError::new(format!("workspace write failed: {err}")))?;
+            }
+            other => {
+                return Err(NodeError::new(format!(
+                    "unsupported workspace blocked-prefix kind: {other}"
+                )));
+            }
+        }
+
+        Ok::<JsonValue, NodeError>(json!({ "ok": true, "kind": input.kind }))
+    })
+    .await;
+
+    match result {
+        Some(result) => result,
+        None => Err(NodeError::new(
+            "workspace_blocked_prefix_stage missing ResourceAccess context",
+        )),
+    }
+}
+
 dag_macros::flow! {
     name: host_workers_test_flow,
     version: "0.1.0",
@@ -809,6 +1175,10 @@ dag_macros::flow! {
     connect!(workspace_resume_wait -> workspace_resume_timer_wait);
     connect!(workspace_resume_timer_wait -> workspace_resume_capture);
 
+    let workspace_retained = node!(workspace_retained_trigger);
+    let workspace_retained_capture = node!(workspace_retained_stage);
+    connect!(workspace_retained -> workspace_retained_capture);
+
     let workspace_quota = node!(workspace_quota_trigger);
     let workspace_quota_capture = node!(workspace_quota_stage);
     connect!(workspace_quota -> workspace_quota_capture);
@@ -816,6 +1186,14 @@ dag_macros::flow! {
     let workspace_invalid_path = node!(workspace_invalid_path_trigger);
     let workspace_invalid_path_capture = node!(workspace_invalid_path_stage);
     connect!(workspace_invalid_path -> workspace_invalid_path_capture);
+
+    let workspace_mutation = node!(workspace_mutation_trigger);
+    let workspace_mutation_capture = node!(workspace_mutation_stage);
+    connect!(workspace_mutation -> workspace_mutation_capture);
+
+    let workspace_blocked_prefix = node!(workspace_blocked_prefix_trigger);
+    let workspace_blocked_prefix_capture = node!(workspace_blocked_prefix_stage);
+    connect!(workspace_blocked_prefix -> workspace_blocked_prefix_capture);
 
     entrypoint!({
         trigger: "health",
@@ -874,6 +1252,14 @@ dag_macros::flow! {
     });
 
     entrypoint!({
+        trigger: "workspace_retained",
+        capture: "workspace_retained_capture",
+        route_aliases: ["/workspace-retained"],
+        method: "POST",
+        deadline_ms: 5000,
+    });
+
+    entrypoint!({
         trigger: "workspace_quota",
         capture: "workspace_quota_capture",
         route_aliases: ["/workspace-quota"],
@@ -885,6 +1271,22 @@ dag_macros::flow! {
         trigger: "workspace_invalid_path",
         capture: "workspace_invalid_path_capture",
         route_aliases: ["/workspace-invalid-path"],
+        method: "POST",
+        deadline_ms: 5000,
+    });
+
+    entrypoint!({
+        trigger: "workspace_mutation",
+        capture: "workspace_mutation_capture",
+        route_aliases: ["/workspace-mutation"],
+        method: "POST",
+        deadline_ms: 5000,
+    });
+
+    entrypoint!({
+        trigger: "workspace_blocked_prefix",
+        capture: "workspace_blocked_prefix_capture",
+        route_aliases: ["/workspace-blocked-prefix"],
         method: "POST",
         deadline_ms: 5000,
     });
@@ -960,6 +1362,14 @@ fn bundle_with_policies() -> FlowBundle {
             route_aliases: vec!["/workspace-resume".to_string()],
         },
         FlowEntrypoint {
+            trigger_alias: "workspace_retained".to_string(),
+            capture_alias: "workspace_retained_capture".to_string(),
+            route_path: Some("/workspace-retained".to_string()),
+            method: Some("POST".to_string()),
+            deadline: Some(Duration::from_millis(5000)),
+            route_aliases: vec!["/workspace-retained".to_string()],
+        },
+        FlowEntrypoint {
             trigger_alias: "workspace_quota".to_string(),
             capture_alias: "workspace_quota_capture".to_string(),
             route_path: Some("/workspace-quota".to_string()),
@@ -974,6 +1384,22 @@ fn bundle_with_policies() -> FlowBundle {
             method: Some("POST".to_string()),
             deadline: Some(Duration::from_millis(5000)),
             route_aliases: vec!["/workspace-invalid-path".to_string()],
+        },
+        FlowEntrypoint {
+            trigger_alias: "workspace_mutation".to_string(),
+            capture_alias: "workspace_mutation_capture".to_string(),
+            route_path: Some("/workspace-mutation".to_string()),
+            method: Some("POST".to_string()),
+            deadline: Some(Duration::from_millis(5000)),
+            route_aliases: vec!["/workspace-mutation".to_string()],
+        },
+        FlowEntrypoint {
+            trigger_alias: "workspace_blocked_prefix".to_string(),
+            capture_alias: "workspace_blocked_prefix_capture".to_string(),
+            route_path: Some("/workspace-blocked-prefix".to_string()),
+            method: Some("POST".to_string()),
+            deadline: Some(Duration::from_millis(5000)),
+            route_aliases: vec!["/workspace-blocked-prefix".to_string()],
         },
     ];
     let node_contracts = vec![
@@ -993,10 +1419,16 @@ fn bundle_with_policies() -> FlowBundle {
         node!(workspace_resume_trigger),
         node!(workspace_write_before_wait),
         node!(workspace_read_after_wait),
+        node!(workspace_retained_trigger),
+        node!(workspace_retained_stage),
         node!(workspace_quota_trigger),
         node!(workspace_quota_stage),
         node!(workspace_invalid_path_trigger),
         node!(workspace_invalid_path_stage),
+        node!(workspace_mutation_trigger),
+        node!(workspace_mutation_stage),
+        node!(workspace_blocked_prefix_trigger),
+        node!(workspace_blocked_prefix_stage),
     ]
     .into_iter()
     .map(|spec| NodeContract {
@@ -1034,12 +1466,20 @@ fn register_nodes(registry: &mut NodeRegistry) {
     workspace_write_before_wait_register(registry)
         .expect("register workspace_write_before_wait");
     workspace_read_after_wait_register(registry).expect("register workspace_read_after_wait");
+    workspace_retained_trigger_register(registry).expect("register workspace_retained_trigger");
+    workspace_retained_stage_register(registry).expect("register workspace_retained_stage");
     workspace_quota_trigger_register(registry).expect("register workspace_quota_trigger");
     workspace_quota_stage_register(registry).expect("register workspace_quota_stage");
     workspace_invalid_path_trigger_register(registry)
         .expect("register workspace_invalid_path_trigger");
     workspace_invalid_path_stage_register(registry)
         .expect("register workspace_invalid_path_stage");
+    workspace_mutation_trigger_register(registry).expect("register workspace_mutation_trigger");
+    workspace_mutation_stage_register(registry).expect("register workspace_mutation_stage");
+    workspace_blocked_prefix_trigger_register(registry)
+        .expect("register workspace_blocked_prefix_trigger");
+    workspace_blocked_prefix_stage_register(registry)
+        .expect("register workspace_blocked_prefix_stage");
 }
 
 #[unsafe(no_mangle)]

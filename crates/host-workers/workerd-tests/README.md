@@ -9,8 +9,13 @@ resume evidence validation, and workspace backend integration coverage.
 - `/timer` for halt/resume durability
 - `/workspace` for workspace read/write/list/delete semantics
 - `/workspace-resume` for workspace continuity across halt/resume
+- `/workspace-retained` for retained-cleanup/alarm-path validation
 - `/workspace-quota` for workers-side quota enforcement checks
 - `/workspace-invalid-path` for traversal rejection checks
+- `/workspace-mutation` for overwrite/delete accounting checks
+- `/workspace-blocked-prefix` for blocked-prefix/path-policy checks
+- `/__test/workspace/objects` for R2 object inspection
+- `/__test/workspace/run-retained-cleanup` for retained-cleanup test dispatch
 
 ## Config files
 

@@ -245,6 +245,9 @@ fn workspace_factory_from_env(env: &Env) -> Option<Arc<dyn WorkspaceFactory>> {
             index_binding,
             object_prefix,
             policy,
+            blocked_prefixes: env_csv(env, "LATTICE_WORKSPACE_BLOCKED_PREFIXES"),
+            max_path_depth: env_u32(env, "LATTICE_WORKSPACE_MAX_PATH_DEPTH"),
+            max_path_length: env_u32(env, "LATTICE_WORKSPACE_MAX_PATH_LENGTH"),
         },
     )))
 }
@@ -257,6 +260,25 @@ fn env_string(env: &Env, name: &str) -> Option<String> {
 #[cfg(target_arch = "wasm32")]
 fn env_u64(env: &Env, name: &str) -> Option<u64> {
     env_string(env, name).and_then(|value| value.parse::<u64>().ok())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn env_u32(env: &Env, name: &str) -> Option<u32> {
+    env_string(env, name).and_then(|value| value.parse::<u32>().ok())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn env_csv(env: &Env, name: &str) -> Vec<String> {
+    env_string(env, name)
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(target_arch = "wasm32")]
