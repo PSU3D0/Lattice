@@ -477,6 +477,8 @@ describe("host-workers E2E", () => {
       const body = await response.json();
       expect(body.path).toBe("stdlib/write.txt");
       expect(body.size_bytes).toBe(12);
+      expect(typeof body.updated_at_ms).toBe("number");
+      expect(body.updated_at_ms).toBeGreaterThan(0);
       expect(await listWorkspaceObjects()).toEqual([]);
     });
 
@@ -510,7 +512,16 @@ describe("host-workers E2E", () => {
 
       expect(response.status).toBe(200);
       const body = await response.json();
-      expect(body.paths).toEqual(["stdlib/list/a.txt", "stdlib/list/b.txt"]);
+      expect(body.entries.map((entry: any) => entry.path)).toEqual([
+        "stdlib/list/a.txt",
+        "stdlib/list/b.txt",
+      ]);
+      expect(body.entries[0].size_bytes).toBe(1);
+      expect(body.entries[1].size_bytes).toBe(3);
+      expect(typeof body.entries[0].updated_at_ms).toBe("number");
+      expect(typeof body.entries[1].updated_at_ms).toBe("number");
+      expect(body.entries[0]).toHaveProperty("content_hash");
+      expect(body.entries[1]).toHaveProperty("content_hash");
       expect(await listWorkspaceObjects()).toEqual([]);
     });
 

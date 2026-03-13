@@ -13,6 +13,10 @@
 //! - POST /workspace-invalid-path - traversal rejection cases
 //! - POST /workspace-mutation - overwrite/delete accounting cases
 //! - POST /workspace-blocked-prefix - blocked-prefix policy cases
+//! - POST /workspace-stdlib-write - stdlib write via host-workers runtime path
+//! - POST /workspace-stdlib-read - stdlib read via host-workers runtime path
+//! - POST /workspace-stdlib-list - stdlib list via host-workers runtime path
+//! - POST /workspace-stdlib-delete - stdlib delete via host-workers runtime path
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -23,10 +27,8 @@ use std::time::Duration;
 use async_stream::stream;
 use cap_do_workers::{DurableObjectBinding, WorkersDurableObject};
 use cap_workspace_workers::{WorkersWorkspaceConfig, WorkersWorkspaceFactory};
-use capabilities::workspace::{
-    WorkspaceCompletionDisposition, WorkspaceFactory, WorkspacePolicy, WorkspaceRunScope,
-};
-use capabilities::{ResourceAccess, ResourceBag};
+use capabilities::workspace::WorkspacePolicy;
+use capabilities::ResourceBag;
 use capabilities::durability::{CheckpointFilter, CheckpointStore};
 use dag_core::{DurabilityMode, NodeError, NodeResult};
 use dag_macros::{def_node, node};
@@ -35,6 +37,9 @@ use host_inproc::{FlowBundle, FlowEntrypoint, NodeContract, NodeSource};
 use kernel_exec::{NodeRegistry, RegistryError};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
+use stdlib::workspace::{
+    WorkspaceDeleteInput, WorkspaceListInput, WorkspaceReadInput, WorkspaceWriteInput,
+};
 #[cfg(target_arch = "wasm32")]
 use js_sys::JsString;
 #[cfg(target_arch = "wasm32")]
@@ -57,18 +62,6 @@ async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     }
     if req.path() == "/__test/workspace/run-retained-cleanup" {
         return handle_test_workspace_retained_cleanup(req, &env).await;
-    }
-    if req.path() == "/workspace-stdlib-write" {
-        return handle_workspace_stdlib_write(req, &env).await;
-    }
-    if req.path() == "/workspace-stdlib-read" {
-        return handle_workspace_stdlib_read(req, &env).await;
-    }
-    if req.path() == "/workspace-stdlib-list" {
-        return handle_workspace_stdlib_list(req, &env).await;
-    }
-    if req.path() == "/workspace-stdlib-delete" {
-        return handle_workspace_stdlib_delete(req, &env).await;
     }
 
     configure_resources(&env)?;
@@ -153,175 +146,6 @@ fn configure_workspace_factory(path: &str, env: &Env) -> Result<()> {
         workspace_config_for_path(path),
     )));
     Ok(())
-}
-
-#[cfg(target_arch = "wasm32")]
-struct WorkspaceOnlyResources {
-    workspace: Arc<dyn capabilities::workspace::Workspace>,
-}
-
-#[cfg(target_arch = "wasm32")]
-impl ResourceAccess for WorkspaceOnlyResources {
-    fn workspace(&self) -> Option<&dyn capabilities::workspace::Workspace> {
-        Some(self.workspace.as_ref())
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-fn stdlib_scope(run_label: &str) -> WorkspaceRunScope {
-    WorkspaceRunScope::new("host-workers-stdlib", format!("run-{run_label}"))
-}
-
-#[cfg(target_arch = "wasm32")]
-fn worker_rust_error(message: impl Into<String>) -> worker::Error {
-    worker::Error::RustError(message.into())
-}
-
-#[cfg(target_arch = "wasm32")]
-async fn with_stdlib_workspace<R, F, Fut>(
-    env: &Env,
-    run_label: &str,
-    action: F,
-) -> Result<R>
-where
-    F: FnOnce(Arc<dyn ResourceAccess>, Arc<dyn capabilities::workspace::Workspace>) -> Fut,
-    Fut: std::future::Future<Output = NodeResult<R>>,
-{
-    let factory = WorkersWorkspaceFactory::new(env.clone(), workspace_config_for_path("/workspace"));
-    let scope = stdlib_scope(run_label);
-    let workspace = factory
-        .open(scope.clone())
-        .await
-        .map_err(|err| worker_rust_error(err.to_string()))?;
-    let resources: Arc<dyn ResourceAccess> = Arc::new(WorkspaceOnlyResources {
-        workspace: Arc::clone(&workspace),
-    });
-
-    let result = capabilities::context::with_resources(Arc::clone(&resources), action(resources, Arc::clone(&workspace))).await;
-    let disposition = if result.is_ok() {
-        WorkspaceCompletionDisposition::Succeeded
-    } else {
-        WorkspaceCompletionDisposition::Failed
-    };
-    factory
-        .complete(scope, disposition)
-        .await
-        .map_err(|err| worker_rust_error(err.to_string()))?;
-    result.map_err(|err| worker_rust_error(err.to_string()))
-}
-
-#[cfg(target_arch = "wasm32")]
-#[derive(Debug, Default, Deserialize)]
-struct StdlibWorkspaceWriteRequest {
-    path: Option<String>,
-    content: String,
-}
-
-#[cfg(target_arch = "wasm32")]
-async fn handle_workspace_stdlib_write(mut req: Request, env: &Env) -> Result<Response> {
-    let payload: StdlibWorkspaceWriteRequest = req.json().await?;
-    let path = payload.path.unwrap_or_else(|| "stdlib/write.txt".to_string());
-    let output = with_stdlib_workspace(env, "stdlib-write", move |_, _| async move {
-        stdlib::workspace::workspace_write(stdlib::workspace::WorkspaceWriteInput {
-            path,
-            bytes: payload.content.into_bytes(),
-        })
-        .await
-    })
-    .await?;
-    Response::from_json(&output)
-}
-
-#[cfg(target_arch = "wasm32")]
-#[derive(Debug, Default, Deserialize)]
-struct StdlibWorkspaceReadRequest {
-    path: Option<String>,
-    content: String,
-}
-
-#[cfg(target_arch = "wasm32")]
-async fn handle_workspace_stdlib_read(mut req: Request, env: &Env) -> Result<Response> {
-    let payload: StdlibWorkspaceReadRequest = req.json().await?;
-    let path = payload.path.unwrap_or_else(|| "stdlib/read.txt".to_string());
-    let content = payload.content;
-    let response = with_stdlib_workspace(env, "stdlib-read", move |_, workspace| async move {
-        workspace
-            .write(
-                &path,
-                content.as_bytes(),
-                capabilities::workspace::WorkspaceWriteOptions::default(),
-            )
-            .await
-            .map_err(|err| NodeError::new(format!("seed stdlib read artifact failed: {err}")))?;
-        stdlib::workspace::workspace_read(stdlib::workspace::WorkspaceReadInput { path }).await
-    })
-    .await?;
-    Response::from_json(&response)
-}
-
-#[cfg(target_arch = "wasm32")]
-#[derive(Debug, Default, Deserialize)]
-struct StdlibWorkspaceListRequest {
-    prefix: Option<String>,
-}
-
-#[cfg(target_arch = "wasm32")]
-async fn handle_workspace_stdlib_list(mut req: Request, env: &Env) -> Result<Response> {
-    let payload: StdlibWorkspaceListRequest = req.json().await?;
-    let prefix = payload.prefix.unwrap_or_else(|| "stdlib/list".to_string());
-    let response = with_stdlib_workspace(env, "stdlib-list", move |_, workspace| async move {
-        workspace
-            .write(
-                &format!("{prefix}/b.txt"),
-                b"bbb",
-                capabilities::workspace::WorkspaceWriteOptions::default(),
-            )
-            .await
-            .map_err(|err| NodeError::new(format!("seed stdlib list artifact failed: {err}")))?;
-        workspace
-            .write(
-                &format!("{prefix}/a.txt"),
-                b"a",
-                capabilities::workspace::WorkspaceWriteOptions::default(),
-            )
-            .await
-            .map_err(|err| NodeError::new(format!("seed stdlib list artifact failed: {err}")))?;
-        stdlib::workspace::workspace_list(stdlib::workspace::WorkspaceListInput {
-            prefix: Some(prefix),
-        })
-        .await
-    })
-    .await?;
-    Response::from_json(&json!({
-        "paths": response.entries.into_iter().map(|entry| entry.path).collect::<Vec<_>>()
-    }))
-}
-
-#[cfg(target_arch = "wasm32")]
-#[derive(Debug, Default, Deserialize)]
-struct StdlibWorkspaceDeleteRequest {
-    path: Option<String>,
-    content: String,
-}
-
-#[cfg(target_arch = "wasm32")]
-async fn handle_workspace_stdlib_delete(mut req: Request, env: &Env) -> Result<Response> {
-    let payload: StdlibWorkspaceDeleteRequest = req.json().await?;
-    let path = payload.path.unwrap_or_else(|| "stdlib/delete.txt".to_string());
-    let content = payload.content;
-    let response = with_stdlib_workspace(env, "stdlib-delete", move |_, workspace| async move {
-        workspace
-            .write(
-                &path,
-                content.as_bytes(),
-                capabilities::workspace::WorkspaceWriteOptions::default(),
-            )
-            .await
-            .map_err(|err| NodeError::new(format!("seed stdlib delete artifact failed: {err}")))?;
-        stdlib::workspace::workspace_delete(stdlib::workspace::WorkspaceDeleteInput { path }).await
-    })
-    .await?;
-    Response::from_json(&response)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1323,6 +1147,169 @@ async fn workspace_blocked_prefix_stage(input: WorkspaceBlockedPrefixInput) -> N
     }
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct WorkspaceStdlibWriteRequest {
+    path: Option<String>,
+    content: String,
+}
+
+#[def_node(
+    trigger,
+    name = "WorkspaceStdlibWriteTrigger",
+    summary = "Ingress trigger for stdlib workspace write coverage",
+    effects = "Pure",
+    determinism = "Strict"
+)]
+async fn workspace_stdlib_write_trigger(payload: JsonValue) -> NodeResult<WorkspaceWriteInput> {
+    let input: WorkspaceStdlibWriteRequest = serde_json::from_value(payload)
+        .map_err(|err| NodeError::new(format!("invalid stdlib workspace write payload: {err}")))?;
+    Ok(WorkspaceWriteInput {
+        path: input.path.unwrap_or_else(|| "stdlib/write.txt".to_string()),
+        bytes: input.content.into_bytes(),
+    })
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct WorkspaceStdlibReadRequest {
+    path: Option<String>,
+    content: String,
+}
+
+#[def_node(
+    trigger,
+    name = "WorkspaceStdlibReadTrigger",
+    summary = "Seed a file then execute stdlib workspace read through the runtime path",
+    effects = "Effectful",
+    determinism = "BestEffort",
+    resources(workspace_write(capabilities::workspace::Workspace))
+)]
+async fn workspace_stdlib_read_trigger(payload: JsonValue) -> NodeResult<WorkspaceReadInput> {
+    let input: WorkspaceStdlibReadRequest = serde_json::from_value(payload)
+        .map_err(|err| NodeError::new(format!("invalid stdlib workspace read payload: {err}")))?;
+    let path = input.path.unwrap_or_else(|| "stdlib/read.txt".to_string());
+    let content = input.content;
+
+    let result = capabilities::context::with_current_async(|resources| async move {
+        let workspace = resources.workspace().ok_or_else(|| {
+            NodeError::new("workspace_stdlib_read_trigger missing Workspace capability")
+        })?;
+        workspace
+            .write(
+                &path,
+                content.as_bytes(),
+                capabilities::workspace::WorkspaceWriteOptions::default(),
+            )
+            .await
+            .map_err(|err| NodeError::new(format!("seed stdlib read artifact failed: {err}")))?;
+        Ok::<WorkspaceReadInput, NodeError>(WorkspaceReadInput { path })
+    })
+    .await;
+
+    match result {
+        Some(result) => result,
+        None => Err(NodeError::new(
+            "workspace_stdlib_read_trigger missing ResourceAccess context",
+        )),
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct WorkspaceStdlibListRequest {
+    prefix: Option<String>,
+}
+
+#[def_node(
+    trigger,
+    name = "WorkspaceStdlibListTrigger",
+    summary = "Seed files then execute stdlib workspace list through the runtime path",
+    effects = "Effectful",
+    determinism = "BestEffort",
+    resources(workspace_write(capabilities::workspace::Workspace))
+)]
+async fn workspace_stdlib_list_trigger(payload: JsonValue) -> NodeResult<WorkspaceListInput> {
+    let input: WorkspaceStdlibListRequest = serde_json::from_value(payload)
+        .map_err(|err| NodeError::new(format!("invalid stdlib workspace list payload: {err}")))?;
+    let prefix = input.prefix.unwrap_or_else(|| "stdlib/list".to_string());
+
+    let result = capabilities::context::with_current_async(|resources| async move {
+        let workspace = resources.workspace().ok_or_else(|| {
+            NodeError::new("workspace_stdlib_list_trigger missing Workspace capability")
+        })?;
+        workspace
+            .write(
+                &format!("{prefix}/b.txt"),
+                b"bbb",
+                capabilities::workspace::WorkspaceWriteOptions::default(),
+            )
+            .await
+            .map_err(|err| NodeError::new(format!("seed stdlib list artifact failed: {err}")))?;
+        workspace
+            .write(
+                &format!("{prefix}/a.txt"),
+                b"a",
+                capabilities::workspace::WorkspaceWriteOptions::default(),
+            )
+            .await
+            .map_err(|err| NodeError::new(format!("seed stdlib list artifact failed: {err}")))?;
+        Ok::<WorkspaceListInput, NodeError>(WorkspaceListInput {
+            prefix: Some(prefix),
+        })
+    })
+    .await;
+
+    match result {
+        Some(result) => result,
+        None => Err(NodeError::new(
+            "workspace_stdlib_list_trigger missing ResourceAccess context",
+        )),
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct WorkspaceStdlibDeleteRequest {
+    path: Option<String>,
+    content: String,
+}
+
+#[def_node(
+    trigger,
+    name = "WorkspaceStdlibDeleteTrigger",
+    summary = "Seed a file then execute stdlib workspace delete through the runtime path",
+    effects = "Effectful",
+    determinism = "BestEffort",
+    resources(workspace_write(capabilities::workspace::Workspace))
+)]
+async fn workspace_stdlib_delete_trigger(payload: JsonValue) -> NodeResult<WorkspaceDeleteInput> {
+    let input: WorkspaceStdlibDeleteRequest = serde_json::from_value(payload).map_err(|err| {
+        NodeError::new(format!("invalid stdlib workspace delete payload: {err}"))
+    })?;
+    let path = input.path.unwrap_or_else(|| "stdlib/delete.txt".to_string());
+    let content = input.content;
+
+    let result = capabilities::context::with_current_async(|resources| async move {
+        let workspace = resources.workspace().ok_or_else(|| {
+            NodeError::new("workspace_stdlib_delete_trigger missing Workspace capability")
+        })?;
+        workspace
+            .write(
+                &path,
+                content.as_bytes(),
+                capabilities::workspace::WorkspaceWriteOptions::default(),
+            )
+            .await
+            .map_err(|err| NodeError::new(format!("seed stdlib delete artifact failed: {err}")))?;
+        Ok::<WorkspaceDeleteInput, NodeError>(WorkspaceDeleteInput { path })
+    })
+    .await;
+
+    match result {
+        Some(result) => result,
+        None => Err(NodeError::new(
+            "workspace_stdlib_delete_trigger missing ResourceAccess context",
+        )),
+    }
+}
+
 dag_macros::flow! {
     name: host_workers_test_flow,
     version: "0.1.0",
@@ -1382,6 +1369,22 @@ dag_macros::flow! {
     let workspace_blocked_prefix = node!(workspace_blocked_prefix_trigger);
     let workspace_blocked_prefix_capture = node!(workspace_blocked_prefix_stage);
     connect!(workspace_blocked_prefix -> workspace_blocked_prefix_capture);
+
+    let workspace_stdlib_write = node!(workspace_stdlib_write_trigger);
+    let workspace_stdlib_write_stage = stdlib::workspace::workspace_write_node_spec();
+    connect!(workspace_stdlib_write -> workspace_stdlib_write_stage);
+
+    let workspace_stdlib_read = node!(workspace_stdlib_read_trigger);
+    let workspace_stdlib_read_stage = stdlib::workspace::workspace_read_node_spec();
+    connect!(workspace_stdlib_read -> workspace_stdlib_read_stage);
+
+    let workspace_stdlib_list = node!(workspace_stdlib_list_trigger);
+    let workspace_stdlib_list_stage = stdlib::workspace::workspace_list_node_spec();
+    connect!(workspace_stdlib_list -> workspace_stdlib_list_stage);
+
+    let workspace_stdlib_delete = node!(workspace_stdlib_delete_trigger);
+    let workspace_stdlib_delete_stage = stdlib::workspace::workspace_delete_node_spec();
+    connect!(workspace_stdlib_delete -> workspace_stdlib_delete_stage);
 
     entrypoint!({
         trigger: "health",
@@ -1475,6 +1478,38 @@ dag_macros::flow! {
         trigger: "workspace_blocked_prefix",
         capture: "workspace_blocked_prefix_capture",
         route_aliases: ["/workspace-blocked-prefix"],
+        method: "POST",
+        deadline_ms: 5000,
+    });
+
+    entrypoint!({
+        trigger: "workspace_stdlib_write",
+        capture: "workspace_stdlib_write_stage",
+        route_aliases: ["/workspace-stdlib-write"],
+        method: "POST",
+        deadline_ms: 5000,
+    });
+
+    entrypoint!({
+        trigger: "workspace_stdlib_read",
+        capture: "workspace_stdlib_read_stage",
+        route_aliases: ["/workspace-stdlib-read"],
+        method: "POST",
+        deadline_ms: 5000,
+    });
+
+    entrypoint!({
+        trigger: "workspace_stdlib_list",
+        capture: "workspace_stdlib_list_stage",
+        route_aliases: ["/workspace-stdlib-list"],
+        method: "POST",
+        deadline_ms: 5000,
+    });
+
+    entrypoint!({
+        trigger: "workspace_stdlib_delete",
+        capture: "workspace_stdlib_delete_stage",
+        route_aliases: ["/workspace-stdlib-delete"],
         method: "POST",
         deadline_ms: 5000,
     });
@@ -1589,6 +1624,38 @@ fn bundle_with_policies() -> FlowBundle {
             deadline: Some(Duration::from_millis(5000)),
             route_aliases: vec!["/workspace-blocked-prefix".to_string()],
         },
+        FlowEntrypoint {
+            trigger_alias: "workspace_stdlib_write".to_string(),
+            capture_alias: "workspace_stdlib_write_stage".to_string(),
+            route_path: Some("/workspace-stdlib-write".to_string()),
+            method: Some("POST".to_string()),
+            deadline: Some(Duration::from_millis(5000)),
+            route_aliases: vec!["/workspace-stdlib-write".to_string()],
+        },
+        FlowEntrypoint {
+            trigger_alias: "workspace_stdlib_read".to_string(),
+            capture_alias: "workspace_stdlib_read_stage".to_string(),
+            route_path: Some("/workspace-stdlib-read".to_string()),
+            method: Some("POST".to_string()),
+            deadline: Some(Duration::from_millis(5000)),
+            route_aliases: vec!["/workspace-stdlib-read".to_string()],
+        },
+        FlowEntrypoint {
+            trigger_alias: "workspace_stdlib_list".to_string(),
+            capture_alias: "workspace_stdlib_list_stage".to_string(),
+            route_path: Some("/workspace-stdlib-list".to_string()),
+            method: Some("POST".to_string()),
+            deadline: Some(Duration::from_millis(5000)),
+            route_aliases: vec!["/workspace-stdlib-list".to_string()],
+        },
+        FlowEntrypoint {
+            trigger_alias: "workspace_stdlib_delete".to_string(),
+            capture_alias: "workspace_stdlib_delete_stage".to_string(),
+            route_path: Some("/workspace-stdlib-delete".to_string()),
+            method: Some("POST".to_string()),
+            deadline: Some(Duration::from_millis(5000)),
+            route_aliases: vec!["/workspace-stdlib-delete".to_string()],
+        },
     ];
     let node_contracts = vec![
         node!(health_trigger),
@@ -1617,6 +1684,14 @@ fn bundle_with_policies() -> FlowBundle {
         node!(workspace_mutation_stage),
         node!(workspace_blocked_prefix_trigger),
         node!(workspace_blocked_prefix_stage),
+        node!(workspace_stdlib_write_trigger),
+        stdlib::workspace::workspace_write_node_spec(),
+        node!(workspace_stdlib_read_trigger),
+        stdlib::workspace::workspace_read_node_spec(),
+        node!(workspace_stdlib_list_trigger),
+        stdlib::workspace::workspace_list_node_spec(),
+        node!(workspace_stdlib_delete_trigger),
+        stdlib::workspace::workspace_delete_node_spec(),
     ]
     .into_iter()
     .map(|spec| NodeContract {
@@ -1668,6 +1743,15 @@ fn register_nodes(registry: &mut NodeRegistry) {
         .expect("register workspace_blocked_prefix_trigger");
     workspace_blocked_prefix_stage_register(registry)
         .expect("register workspace_blocked_prefix_stage");
+    workspace_stdlib_write_trigger_register(registry)
+        .expect("register workspace_stdlib_write_trigger");
+    workspace_stdlib_read_trigger_register(registry)
+        .expect("register workspace_stdlib_read_trigger");
+    workspace_stdlib_list_trigger_register(registry)
+        .expect("register workspace_stdlib_list_trigger");
+    workspace_stdlib_delete_trigger_register(registry)
+        .expect("register workspace_stdlib_delete_trigger");
+    stdlib::workspace::register_all(registry).expect("register stdlib workspace nodes");
 }
 
 #[unsafe(no_mangle)]
