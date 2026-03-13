@@ -32,4 +32,5 @@ kernel-exec = { path = "../../kernel-exec", default-features = false, features =
 kernel-plan = { path = "../../kernel-plan" }
 serde = "1.0"
 serde_json = "1.0"
+stdlib = { path = "../../stdlib", features = ["host-bundle"] }
 worker = { version = "=0.7.4", default-features = false, features = ["http"] }

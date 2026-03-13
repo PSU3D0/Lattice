@@ -10,10 +10,11 @@ homepage.workspace = true
 description = "Standard library nodes for Lattice flows."
 
 [features]
-default = ["timer", "callback"]
+default = ["timer", "callback", "workspace"]
 host-bundle = ["dag-macros/host-bundle"]
 timer = []
 callback = []
+workspace = []
 
 [dependencies]
 capabilities = { path = "../capabilities" }
@@ -24,3 +25,7 @@ chrono = { version = "0.4", features = ["serde", "clock"] }
 humantime-serde = "1.1"
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
+tokio = { workspace = true, features = ["full"] }

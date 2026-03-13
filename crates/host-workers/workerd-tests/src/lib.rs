@@ -23,8 +23,10 @@ use std::time::Duration;
 use async_stream::stream;
 use cap_do_workers::{DurableObjectBinding, WorkersDurableObject};
 use cap_workspace_workers::{WorkersWorkspaceConfig, WorkersWorkspaceFactory};
-use capabilities::workspace::WorkspacePolicy;
-use capabilities::ResourceBag;
+use capabilities::workspace::{
+    WorkspaceCompletionDisposition, WorkspaceFactory, WorkspacePolicy, WorkspaceRunScope,
+};
+use capabilities::{ResourceAccess, ResourceBag};
 use capabilities::durability::{CheckpointFilter, CheckpointStore};
 use dag_core::{DurabilityMode, NodeError, NodeResult};
 use dag_macros::{def_node, node};
@@ -55,6 +57,18 @@ async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     }
     if req.path() == "/__test/workspace/run-retained-cleanup" {
         return handle_test_workspace_retained_cleanup(req, &env).await;
+    }
+    if req.path() == "/workspace-stdlib-write" {
+        return handle_workspace_stdlib_write(req, &env).await;
+    }
+    if req.path() == "/workspace-stdlib-read" {
+        return handle_workspace_stdlib_read(req, &env).await;
+    }
+    if req.path() == "/workspace-stdlib-list" {
+        return handle_workspace_stdlib_list(req, &env).await;
+    }
+    if req.path() == "/workspace-stdlib-delete" {
+        return handle_workspace_stdlib_delete(req, &env).await;
     }
 
     configure_resources(&env)?;
@@ -90,11 +104,7 @@ fn configure_resources(env: &Env) -> Result<()> {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn configure_workspace_factory(path: &str, env: &Env) -> Result<()> {
-    if env.bucket("WORKSPACE_BUCKET").is_err() || env.durable_object("WORKSPACE_DO").is_err() {
-        return Ok(());
-    }
-
+fn workspace_config_for_path(path: &str) -> WorkersWorkspaceConfig {
     let mut config = WorkersWorkspaceConfig {
         bucket_binding: "WORKSPACE_BUCKET".to_string(),
         index_binding: "WORKSPACE_DO".to_string(),
@@ -129,11 +139,189 @@ fn configure_workspace_factory(path: &str, env: &Env) -> Result<()> {
         _ => {}
     }
 
+    config
+}
+
+#[cfg(target_arch = "wasm32")]
+fn configure_workspace_factory(path: &str, env: &Env) -> Result<()> {
+    if env.bucket("WORKSPACE_BUCKET").is_err() || env.durable_object("WORKSPACE_DO").is_err() {
+        return Ok(());
+    }
+
     host_workers::set_workspace_factory(Arc::new(WorkersWorkspaceFactory::new(
         env.clone(),
-        config,
+        workspace_config_for_path(path),
     )));
     Ok(())
+}
+
+#[cfg(target_arch = "wasm32")]
+struct WorkspaceOnlyResources {
+    workspace: Arc<dyn capabilities::workspace::Workspace>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl ResourceAccess for WorkspaceOnlyResources {
+    fn workspace(&self) -> Option<&dyn capabilities::workspace::Workspace> {
+        Some(self.workspace.as_ref())
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn stdlib_scope(run_label: &str) -> WorkspaceRunScope {
+    WorkspaceRunScope::new("host-workers-stdlib", format!("run-{run_label}"))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn worker_rust_error(message: impl Into<String>) -> worker::Error {
+    worker::Error::RustError(message.into())
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn with_stdlib_workspace<R, F, Fut>(
+    env: &Env,
+    run_label: &str,
+    action: F,
+) -> Result<R>
+where
+    F: FnOnce(Arc<dyn ResourceAccess>, Arc<dyn capabilities::workspace::Workspace>) -> Fut,
+    Fut: std::future::Future<Output = NodeResult<R>>,
+{
+    let factory = WorkersWorkspaceFactory::new(env.clone(), workspace_config_for_path("/workspace"));
+    let scope = stdlib_scope(run_label);
+    let workspace = factory
+        .open(scope.clone())
+        .await
+        .map_err(|err| worker_rust_error(err.to_string()))?;
+    let resources: Arc<dyn ResourceAccess> = Arc::new(WorkspaceOnlyResources {
+        workspace: Arc::clone(&workspace),
+    });
+
+    let result = capabilities::context::with_resources(Arc::clone(&resources), action(resources, Arc::clone(&workspace))).await;
+    let disposition = if result.is_ok() {
+        WorkspaceCompletionDisposition::Succeeded
+    } else {
+        WorkspaceCompletionDisposition::Failed
+    };
+    factory
+        .complete(scope, disposition)
+        .await
+        .map_err(|err| worker_rust_error(err.to_string()))?;
+    result.map_err(|err| worker_rust_error(err.to_string()))
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Debug, Default, Deserialize)]
+struct StdlibWorkspaceWriteRequest {
+    path: Option<String>,
+    content: String,
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn handle_workspace_stdlib_write(mut req: Request, env: &Env) -> Result<Response> {
+    let payload: StdlibWorkspaceWriteRequest = req.json().await?;
+    let path = payload.path.unwrap_or_else(|| "stdlib/write.txt".to_string());
+    let output = with_stdlib_workspace(env, "stdlib-write", move |_, _| async move {
+        stdlib::workspace::workspace_write(stdlib::workspace::WorkspaceWriteInput {
+            path,
+            bytes: payload.content.into_bytes(),
+        })
+        .await
+    })
+    .await?;
+    Response::from_json(&output)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Debug, Default, Deserialize)]
+struct StdlibWorkspaceReadRequest {
+    path: Option<String>,
+    content: String,
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn handle_workspace_stdlib_read(mut req: Request, env: &Env) -> Result<Response> {
+    let payload: StdlibWorkspaceReadRequest = req.json().await?;
+    let path = payload.path.unwrap_or_else(|| "stdlib/read.txt".to_string());
+    let content = payload.content;
+    let response = with_stdlib_workspace(env, "stdlib-read", move |_, workspace| async move {
+        workspace
+            .write(
+                &path,
+                content.as_bytes(),
+                capabilities::workspace::WorkspaceWriteOptions::default(),
+            )
+            .await
+            .map_err(|err| NodeError::new(format!("seed stdlib read artifact failed: {err}")))?;
+        stdlib::workspace::workspace_read(stdlib::workspace::WorkspaceReadInput { path }).await
+    })
+    .await?;
+    Response::from_json(&response)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Debug, Default, Deserialize)]
+struct StdlibWorkspaceListRequest {
+    prefix: Option<String>,
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn handle_workspace_stdlib_list(mut req: Request, env: &Env) -> Result<Response> {
+    let payload: StdlibWorkspaceListRequest = req.json().await?;
+    let prefix = payload.prefix.unwrap_or_else(|| "stdlib/list".to_string());
+    let response = with_stdlib_workspace(env, "stdlib-list", move |_, workspace| async move {
+        workspace
+            .write(
+                &format!("{prefix}/b.txt"),
+                b"bbb",
+                capabilities::workspace::WorkspaceWriteOptions::default(),
+            )
+            .await
+            .map_err(|err| NodeError::new(format!("seed stdlib list artifact failed: {err}")))?;
+        workspace
+            .write(
+                &format!("{prefix}/a.txt"),
+                b"a",
+                capabilities::workspace::WorkspaceWriteOptions::default(),
+            )
+            .await
+            .map_err(|err| NodeError::new(format!("seed stdlib list artifact failed: {err}")))?;
+        stdlib::workspace::workspace_list(stdlib::workspace::WorkspaceListInput {
+            prefix: Some(prefix),
+        })
+        .await
+    })
+    .await?;
+    Response::from_json(&json!({
+        "paths": response.entries.into_iter().map(|entry| entry.path).collect::<Vec<_>>()
+    }))
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Debug, Default, Deserialize)]
+struct StdlibWorkspaceDeleteRequest {
+    path: Option<String>,
+    content: String,
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn handle_workspace_stdlib_delete(mut req: Request, env: &Env) -> Result<Response> {
+    let payload: StdlibWorkspaceDeleteRequest = req.json().await?;
+    let path = payload.path.unwrap_or_else(|| "stdlib/delete.txt".to_string());
+    let content = payload.content;
+    let response = with_stdlib_workspace(env, "stdlib-delete", move |_, workspace| async move {
+        workspace
+            .write(
+                &path,
+                content.as_bytes(),
+                capabilities::workspace::WorkspaceWriteOptions::default(),
+            )
+            .await
+            .map_err(|err| NodeError::new(format!("seed stdlib delete artifact failed: {err}")))?;
+        stdlib::workspace::workspace_delete(stdlib::workspace::WorkspaceDeleteInput { path }).await
+    })
+    .await?;
+    Response::from_json(&response)
 }
 
 #[cfg(target_arch = "wasm32")]

@@ -462,6 +462,74 @@ describe("host-workers E2E", () => {
       const body = await response.json();
       expect(String(body.error)).toContain("max length");
     });
+
+    it("executes stdlib workspace write against the workers backend", async () => {
+      const response = await mf.dispatchFetch(`${mfUrl}workspace-stdlib-write`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          path: "stdlib/write.txt",
+          content: "hello stdlib",
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.path).toBe("stdlib/write.txt");
+      expect(body.size_bytes).toBe(12);
+      expect(await listWorkspaceObjects()).toEqual([]);
+    });
+
+    it("executes stdlib workspace read against the workers backend", async () => {
+      const response = await mf.dispatchFetch(`${mfUrl}workspace-stdlib-read`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          path: "stdlib/read.txt",
+          content: "hello stdlib",
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.path).toBe("stdlib/read.txt");
+      expect(body.found).toBe(true);
+      expect(body.value).toEqual({
+        kind: "bytes",
+        bytes: Array.from(Buffer.from("hello stdlib", "utf8")),
+      });
+      expect(await listWorkspaceObjects()).toEqual([]);
+    });
+
+    it("executes stdlib workspace list against the workers backend", async () => {
+      const response = await mf.dispatchFetch(`${mfUrl}workspace-stdlib-list`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prefix: "stdlib/list" }),
+      });
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.paths).toEqual(["stdlib/list/a.txt", "stdlib/list/b.txt"]);
+      expect(await listWorkspaceObjects()).toEqual([]);
+    });
+
+    it("executes stdlib workspace delete against the workers backend", async () => {
+      const response = await mf.dispatchFetch(`${mfUrl}workspace-stdlib-delete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          path: "stdlib/delete.txt",
+          content: "delete me",
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.path).toBe("stdlib/delete.txt");
+      expect(body.deleted).toBe(true);
+      expect(await listWorkspaceObjects()).toEqual([]);
+    });
   });
 
   describe("error handling", () => {

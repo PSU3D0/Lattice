@@ -27,7 +27,9 @@ js-sys = "0.3"
 kernel-exec = { path = "../kernel-exec", default-features = false, features = ["wasm"] }
 
 [dev-dependencies]
+cap-workspace-fs = { path = "../cap-workspace-fs" }
 stdlib = { path = "../stdlib", features = ["host-bundle"] }
 serde_json.workspace = true
 async-trait.workspace = true
 tokio = { workspace = true, features = ["full"] }
+tempfile.workspace = true

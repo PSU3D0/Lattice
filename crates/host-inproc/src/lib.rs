@@ -921,17 +921,23 @@ pub trait EnvironmentPlugin: Send + Sync {
 mod tests {
     use super::*;
     use async_trait::async_trait;
+    use cap_workspace_fs::{FsWorkspaceConfig, FsWorkspaceFactory};
     use capabilities::durability::{
         CheckpointError, CheckpointFilter, CheckpointHandle, CheckpointRecord, CheckpointStore,
         ResumeScheduler, ResumeSignalSource, ResumeToken, ScheduleError, ScheduleId,
         ScheduleStatus, TokenConfig, TokenError,
     };
+    use capabilities::workspace::{
+        WorkspaceFactory, WorkspacePolicy, WorkspaceRunScope, WorkspaceWriteOptions,
+    };
     use dag_core::prelude::*;
     use kernel_exec::{NodeRegistry, RegistryResolver};
     use kernel_plan::validate;
     use std::collections::HashMap;
+    use std::fs;
     use std::sync::{Arc as StdArc, Mutex};
     use std::time::Duration;
+    use tempfile::tempdir;
 
     struct StubCheckpointStore;
 
@@ -1298,6 +1304,63 @@ mod tests {
                 .push((scope, disposition));
             Ok(())
         }
+    }
+
+    fn single_stage_flow(flow_name: &str, stage_spec: &NodeSpec) -> Arc<ValidatedIR> {
+        let mut builder = FlowBuilder::new(flow_name, Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let stage = builder.add_node("stage", stage_spec).unwrap();
+        let capture = builder
+            .add_node(
+                "capture",
+                &NodeSpec::inline(
+                    "tests::capture",
+                    "Capture",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &stage);
+        builder.connect(&stage, &capture);
+        Arc::new(validate(&builder.build()).expect("flow validates"))
+    }
+
+    fn retained_fs_workspace_factory(root: &std::path::Path) -> FsWorkspaceFactory {
+        FsWorkspaceFactory::new(FsWorkspaceConfig {
+            root: root.to_path_buf(),
+            policy: WorkspacePolicy {
+                retain_completed_for: Some(Duration::from_secs(60)),
+                ..WorkspacePolicy::default()
+            },
+        })
+    }
+
+    fn invocation_with_run_id(
+        payload: serde_json::Value,
+        run_id: &str,
+    ) -> Invocation {
+        let mut invocation = Invocation::new("trigger", "capture", payload);
+        invocation
+            .metadata_mut()
+            .insert_label("lf.run_id", run_id.to_string());
+        invocation
     }
 
     #[tokio::test]
@@ -2534,6 +2597,240 @@ mod tests {
         assert_eq!(completed.len(), 1);
         assert_eq!(completed[0].0, opened[0]);
         assert_eq!(completed[0].1, WorkspaceCompletionDisposition::Succeeded);
+    }
+
+    #[tokio::test]
+    async fn stdlib_workspace_write_executes_against_fs_factory() {
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn(
+                "tests::trigger",
+                |value: stdlib::workspace::WorkspaceWriteInput| async move { Ok(value) },
+            )
+            .unwrap();
+        registry
+            .register_fn(
+                "tests::capture",
+                |value: stdlib::workspace::WorkspaceWriteOutput| async move { Ok(value) },
+            )
+            .unwrap();
+        stdlib::workspace::workspace_write_register(&mut registry).unwrap();
+
+        let ir = single_stage_flow(
+            "workspace_write_native",
+            stdlib::workspace::workspace_write_node_spec(),
+        );
+        let temp = tempdir().expect("tempdir");
+        let factory = retained_fs_workspace_factory(temp.path());
+        let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), Arc::clone(&ir))
+            .with_resource_bag(resource_bag_with_checkpoint())
+            .with_workspace_factory(Arc::new(factory.clone()));
+
+        let run_id = "run-write";
+        let input = stdlib::workspace::WorkspaceWriteInput {
+            path: "./artifacts//report.txt".to_string(),
+            bytes: b"hello".to_vec(),
+        };
+        let result = runtime
+            .execute(invocation_with_run_id(
+                serde_json::to_value(input).unwrap(),
+                run_id,
+            ))
+            .await
+            .expect("execution ok");
+        let value = match result {
+            ExecutionResult::Value(value) => value,
+            ExecutionResult::Halt { .. } => panic!("unexpected halt result"),
+            ExecutionResult::Stream(_) => panic!("unexpected stream result"),
+        };
+        let output: stdlib::workspace::WorkspaceWriteOutput =
+            serde_json::from_value(value).expect("decode write output");
+        assert_eq!(output.path, "artifacts/report.txt");
+        assert_eq!(output.size_bytes, 5);
+
+        let scope = WorkspaceRunScope::new(ir.flow().id.0.clone(), run_id);
+        let stored = factory.run_root_path(&scope).join("artifacts/report.txt");
+        assert_eq!(fs::read(&stored).expect("read stored artifact"), b"hello");
+    }
+
+    #[tokio::test]
+    async fn stdlib_workspace_read_returns_soft_miss_via_runtime() {
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn(
+                "tests::trigger",
+                |value: stdlib::workspace::WorkspaceReadInput| async move { Ok(value) },
+            )
+            .unwrap();
+        registry
+            .register_fn(
+                "tests::capture",
+                |value: stdlib::workspace::WorkspaceReadOutput| async move { Ok(value) },
+            )
+            .unwrap();
+        stdlib::workspace::workspace_read_register(&mut registry).unwrap();
+
+        let ir = single_stage_flow(
+            "workspace_read_native",
+            stdlib::workspace::workspace_read_node_spec(),
+        );
+        let temp = tempdir().expect("tempdir");
+        let factory = retained_fs_workspace_factory(temp.path());
+        let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), Arc::clone(&ir))
+            .with_resource_bag(resource_bag_with_checkpoint())
+            .with_workspace_factory(Arc::new(factory));
+
+        let result = runtime
+            .execute(invocation_with_run_id(
+                serde_json::to_value(stdlib::workspace::WorkspaceReadInput {
+                    path: "missing.txt".to_string(),
+                })
+                .unwrap(),
+                "run-read-miss",
+            ))
+            .await
+            .expect("execution ok");
+        let value = match result {
+            ExecutionResult::Value(value) => value,
+            ExecutionResult::Halt { .. } => panic!("unexpected halt result"),
+            ExecutionResult::Stream(_) => panic!("unexpected stream result"),
+        };
+        let output: stdlib::workspace::WorkspaceReadOutput =
+            serde_json::from_value(value).expect("decode read output");
+        assert_eq!(output.path, "missing.txt");
+        assert!(!output.found);
+        assert!(output.value.is_none());
+    }
+
+    #[tokio::test]
+    async fn stdlib_workspace_list_reads_preseeded_entries_via_runtime() {
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn(
+                "tests::trigger",
+                |value: stdlib::workspace::WorkspaceListInput| async move { Ok(value) },
+            )
+            .unwrap();
+        registry
+            .register_fn(
+                "tests::capture",
+                |value: stdlib::workspace::WorkspaceListOutput| async move { Ok(value) },
+            )
+            .unwrap();
+        stdlib::workspace::workspace_list_register(&mut registry).unwrap();
+
+        let ir = single_stage_flow(
+            "workspace_list_native",
+            stdlib::workspace::workspace_list_node_spec(),
+        );
+        let temp = tempdir().expect("tempdir");
+        let factory = retained_fs_workspace_factory(temp.path());
+        let run_id = "run-list";
+        let scope = WorkspaceRunScope::new(ir.flow().id.0.clone(), run_id);
+        let workspace = factory.open(scope.clone()).await.expect("open workspace");
+        workspace
+            .write(
+                "artifacts/b.txt",
+                b"bbb",
+                WorkspaceWriteOptions::default(),
+            )
+            .await
+            .expect("seed b");
+        workspace
+            .write(
+                "artifacts/a.txt",
+                b"a",
+                WorkspaceWriteOptions::default(),
+            )
+            .await
+            .expect("seed a");
+
+        let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), Arc::clone(&ir))
+            .with_resource_bag(resource_bag_with_checkpoint())
+            .with_workspace_factory(Arc::new(factory));
+        let result = runtime
+            .execute(invocation_with_run_id(
+                serde_json::to_value(stdlib::workspace::WorkspaceListInput {
+                    prefix: Some("artifacts".to_string()),
+                })
+                .unwrap(),
+                run_id,
+            ))
+            .await
+            .expect("execution ok");
+        let value = match result {
+            ExecutionResult::Value(value) => value,
+            ExecutionResult::Halt { .. } => panic!("unexpected halt result"),
+            ExecutionResult::Stream(_) => panic!("unexpected stream result"),
+        };
+        let output: stdlib::workspace::WorkspaceListOutput =
+            serde_json::from_value(value).expect("decode list output");
+        let paths = output
+            .entries
+            .into_iter()
+            .map(|entry| entry.path)
+            .collect::<Vec<_>>();
+        assert_eq!(paths, vec!["artifacts/a.txt", "artifacts/b.txt"]);
+    }
+
+    #[tokio::test]
+    async fn stdlib_workspace_delete_removes_preseeded_entry_via_runtime() {
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn(
+                "tests::trigger",
+                |value: stdlib::workspace::WorkspaceDeleteInput| async move { Ok(value) },
+            )
+            .unwrap();
+        registry
+            .register_fn(
+                "tests::capture",
+                |value: stdlib::workspace::WorkspaceDeleteOutput| async move { Ok(value) },
+            )
+            .unwrap();
+        stdlib::workspace::workspace_delete_register(&mut registry).unwrap();
+
+        let ir = single_stage_flow(
+            "workspace_delete_native",
+            stdlib::workspace::workspace_delete_node_spec(),
+        );
+        let temp = tempdir().expect("tempdir");
+        let factory = retained_fs_workspace_factory(temp.path());
+        let run_id = "run-delete";
+        let scope = WorkspaceRunScope::new(ir.flow().id.0.clone(), run_id);
+        let workspace = factory.open(scope.clone()).await.expect("open workspace");
+        workspace
+            .write(
+                "artifacts/report.txt",
+                b"hello",
+                WorkspaceWriteOptions::default(),
+            )
+            .await
+            .expect("seed artifact");
+
+        let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), Arc::clone(&ir))
+            .with_resource_bag(resource_bag_with_checkpoint())
+            .with_workspace_factory(Arc::new(factory.clone()));
+        let result = runtime
+            .execute(invocation_with_run_id(
+                serde_json::to_value(stdlib::workspace::WorkspaceDeleteInput {
+                    path: "artifacts/report.txt".to_string(),
+                })
+                .unwrap(),
+                run_id,
+            ))
+            .await
+            .expect("execution ok");
+        let value = match result {
+            ExecutionResult::Value(value) => value,
+            ExecutionResult::Halt { .. } => panic!("unexpected halt result"),
+            ExecutionResult::Stream(_) => panic!("unexpected stream result"),
+        };
+        let output: stdlib::workspace::WorkspaceDeleteOutput =
+            serde_json::from_value(value).expect("decode delete output");
+        assert!(output.deleted);
+        assert_eq!(output.path, "artifacts/report.txt");
+        assert!(!factory.run_root_path(&scope).join("artifacts/report.txt").exists());
     }
 
     #[tokio::test]

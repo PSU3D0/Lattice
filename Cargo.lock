@@ -2661,6 +2661,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "cap-workspace-fs",
  "capabilities",
  "dag-core",
  "js-sys",
@@ -2669,6 +2670,7 @@ dependencies = [
  "serde",
  "serde_json",
  "stdlib",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "uuid",
@@ -5790,6 +5792,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 name = "stdlib"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "capabilities",
  "chrono",
  "dag-core",
@@ -5798,6 +5801,7 @@ dependencies = [
  "kernel-exec",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
