@@ -40,6 +40,16 @@ Validator contract (implemented):
 - If a node declares `determinism` stricter than allowed by its hints, validation fails.
 - Effectful nodes must declare idempotency metadata.
 
+Important architectural note:
+- capability access inside arbitrary Rust nodes remains allowed,
+- but node boundaries are still expected to truthfully declare the resulting
+  effect/determinism/resource requirements,
+- the platform does **not** require every capability call to become its own
+  graph node.
+
+See:
+- `impl-docs/spec/node-vs-capability-surface.md`
+
 ## Binding Providers (Opaque Binding in 0.1)
 
 Binding is host-specific and occurs at the deployment boundary.

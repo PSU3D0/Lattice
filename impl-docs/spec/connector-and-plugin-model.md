@@ -39,8 +39,18 @@ The node wrapper owns:
 The WASM module is invoked through a stable ABI (WIT or JSON bridge). The wrapper handles coercion and
 errors, ensuring downstream nodes remain type-safe.
 
+Connector implication:
+- connector wrappers should generally expose **semantic nodes**, not one graph
+  node per low-level capability call,
+- capability interactions performed inside the wrapper remain implementation
+  detail as long as the wrapper's declared effects/determinism/resource
+  requirements stay truthful.
+
 **Key rule**: plugins are resolved at build time and linked through wrapper crates; there is no dynamic
 runtime discovery for production flows.
+
+See also:
+- `impl-docs/spec/node-vs-capability-surface.md`
 
 ## Manifest and Codegen
 

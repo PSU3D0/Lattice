@@ -105,12 +105,22 @@ return a `blob_ref` for downstream nodes.
 
 ## Stdlib Nodes
 
-The standard library should include thin wrappers:
+The standard library should include canonical graph-visible wrappers:
 
 - `std.workspace.read`
 - `std.workspace.write`
 - `std.workspace.list`
 - `std.workspace.delete`
 
+These are intended as the **portable topology surface** for workspace-backed
+artifact choreography. They are not a statement that every workspace access must
+be represented as its own node.
+
+Custom Rust nodes may still use the workspace capability directly when multiple
+workspace calls belong to one semantic stage.
+
 These nodes should be checkpointable. Their determinism is typically `BestEffort`
 because workspace contents are host-managed run-scoped state.
+
+See also:
+- `impl-docs/spec/node-vs-capability-surface.md`

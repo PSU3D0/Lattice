@@ -152,8 +152,24 @@ For stdlib and translator-authored nodes, follow typed-boundary guardrails:
 See:
 - `impl-docs/spec/typed-boundary-policy.md`
 
+## Node-vs-capability boundary
+
+Stdlib is the canonical **graph-visible** surface for operations that are worth
+reifying in topology. It is **not** intended to mirror every helper available to
+arbitrary Rust nodes through the capability/context API.
+
+Practical rule:
+- use stdlib nodes when the step is topology-significant, reusable, or a stable
+  generator target,
+- keep capability calls inside a custom node when they are implementation-local
+  plumbing belonging to one semantic retry/observe unit.
+
+See:
+- `impl-docs/spec/node-vs-capability-surface.md`
+
 ## Guidance
 
 - Prefer stdlib nodes for portable, deterministic behavior.
 - Avoid runtime discovery for stdlib nodes; keep resolution compile-time.
+- Do not assume every capability call deserves its own stdlib node.
 - Use optional plugin/extension nodes only when explicitly desired and signed off by host policy.
