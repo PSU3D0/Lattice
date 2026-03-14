@@ -224,6 +224,10 @@ Recommended conceptual roles:
 - `inbound_verifier`
 - `endpoint_profile`
 
+For the concrete Phase-B action-first manifest shape that carries these role
+references, see:
+- `impl-docs/spec/connector-manifest-phase-b.md`
+
 A connector family may use one or many of these roles.
 
 ### Example: Slack events

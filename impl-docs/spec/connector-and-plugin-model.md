@@ -69,7 +69,11 @@ See also:
 
 ## Manifest and Codegen
 
-Connectors MAY ship a manifest to drive wrapper generation:
+Connectors MAY ship a manifest to drive wrapper generation.
+
+For the concrete Phase-B action-first manifest surface and generated crate
+layout, see:
+- `impl-docs/spec/connector-manifest-phase-b.md`
 
 ```yaml
 id: connector.google.drive.files_list
