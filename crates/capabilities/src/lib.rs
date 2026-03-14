@@ -8,6 +8,7 @@ use std::time::{Duration, SystemTime};
 #[cfg(target_arch = "wasm32")]
 use time::Instant;
 
+pub mod connector;
 pub mod durability;
 pub mod hints;
 pub mod workspace;
@@ -97,6 +98,14 @@ pub trait ResourceAccess: Send + Sync + 'static {
         None
     }
 
+    fn connector_runtime(&self) -> Option<Arc<dyn connector::ConnectorRuntime>> {
+        None
+    }
+
+    fn connector_scope(&self) -> Option<connector::ConnectorBindingScope> {
+        None
+    }
+
     fn max_durability_mode(&self) -> dag_core::DurabilityMode {
         dag_core::DurabilityMode::Off
     }
@@ -118,6 +127,8 @@ pub struct ResourceBag {
     resume_signal_source: Option<Arc<dyn durability::ResumeSignalSource>>,
     checkpoint_blob_store: Option<Arc<dyn durability::CheckpointBlobStore>>,
     workspace: Option<Arc<dyn workspace::Workspace>>,
+    connector_runtime: Option<Arc<dyn connector::ConnectorRuntime>>,
+    connector_scope: Option<connector::ConnectorBindingScope>,
     max_durability_mode: dag_core::DurabilityMode,
 }
 
@@ -137,6 +148,8 @@ impl Default for ResourceBag {
             resume_signal_source: None,
             checkpoint_blob_store: None,
             workspace: None,
+            connector_runtime: None,
+            connector_scope: None,
             max_durability_mode: dag_core::DurabilityMode::Off,
         }
     }
@@ -261,6 +274,20 @@ impl ResourceBag {
     {
         let capability: Arc<dyn workspace::Workspace> = capability;
         self.workspace = Some(capability);
+        self
+    }
+
+    pub fn with_connector_runtime<T>(mut self, runtime: Arc<T>) -> Self
+    where
+        T: connector::ConnectorRuntime + 'static,
+    {
+        let runtime: Arc<dyn connector::ConnectorRuntime> = runtime;
+        self.connector_runtime = Some(runtime);
+        self
+    }
+
+    pub fn with_connector_scope(mut self, scope: connector::ConnectorBindingScope) -> Self {
+        self.connector_scope = Some(scope);
         self
     }
 
@@ -481,6 +508,14 @@ impl ResourceAccess for ResourceBag {
         self.workspace
             .as_ref()
             .map(|cap| cap.as_ref() as &dyn workspace::Workspace)
+    }
+
+    fn connector_runtime(&self) -> Option<Arc<dyn connector::ConnectorRuntime>> {
+        self.connector_runtime.as_ref().cloned()
+    }
+
+    fn connector_scope(&self) -> Option<connector::ConnectorBindingScope> {
+        self.connector_scope.clone()
     }
 
     fn max_durability_mode(&self) -> dag_core::DurabilityMode {
@@ -1944,6 +1979,8 @@ mod bag_tests {
 
     struct NullWorkspace;
 
+    struct NullConnectorRuntime;
+
     impl Capability for NullWorkspace {
         fn name(&self) -> &'static str {
             "workspace.null"
@@ -2001,6 +2038,33 @@ mod bag_tests {
         }
     }
 
+    #[async_trait]
+    impl connector::ConnectorRuntime for NullConnectorRuntime {
+        async fn apply_outbound_auth(
+            &self,
+            _scope: &connector::ConnectorBindingScope,
+            _profile: &connector::OutboundAuthProfileDescriptor,
+            _request: &mut http::HttpRequest,
+        ) -> Result<(), connector::ConnectorRuntimeError> {
+            Ok(())
+        }
+
+        async fn resolve_endpoint_profile(
+            &self,
+            _scope: &connector::ConnectorBindingScope,
+            profile: &connector::EndpointProfileDescriptor,
+        ) -> Result<connector::ResolvedEndpointProfile, connector::ConnectorRuntimeError> {
+            Ok(connector::ResolvedEndpointProfile {
+                base_url: profile.base_url.to_string(),
+                default_headers: profile
+                    .default_headers
+                    .iter()
+                    .map(|(name, value)| (name.to_string(), value.to_string()))
+                    .collect(),
+            })
+        }
+    }
+
     #[test]
     fn resource_bag_exposes_capabilities() {
         clock::ensure_registered();
@@ -2012,7 +2076,14 @@ mod bag_tests {
             .with_kv(Arc::new(kv::MemoryKv::new()))
             .with_blob(Arc::new(blob::MemoryBlobStore::new()))
             .with_queue(Arc::new(queue::MemoryQueue::new()))
-            .with_workspace(Arc::new(NullWorkspace));
+            .with_workspace(Arc::new(NullWorkspace))
+            .with_connector_runtime(Arc::new(NullConnectorRuntime))
+            .with_connector_scope(connector::ConnectorBindingScope::new(
+                "flow-1",
+                "node-a",
+                "tests::node",
+                "tests::node",
+            ));
 
         assert!(bag.http_read().is_some());
         assert!(bag.http_write().is_some());
@@ -2022,6 +2093,16 @@ mod bag_tests {
         assert!(bag.blob().is_some());
         assert!(bag.queue().is_some());
         assert!(bag.workspace().is_some());
+        assert!(bag.connector_runtime().is_some());
+        assert_eq!(
+            bag.connector_scope(),
+            Some(connector::ConnectorBindingScope::new(
+                "flow-1",
+                "node-a",
+                "tests::node",
+                "tests::node"
+            ))
+        );
     }
 
     #[test]

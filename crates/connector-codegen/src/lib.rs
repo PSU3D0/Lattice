@@ -198,6 +198,7 @@ fn emit_runtime_transport_rs() -> String {
     r#"pub use connectors_std::ActionDescriptor;
 pub use connectors_std::auth::{OutboundAuthKind, OutboundAuthProfileDescriptor};
 pub use connectors_std::decode::ResponseDescriptor;
+pub use connectors_std::dev::EnvConnectorRuntime;
 pub use connectors_std::endpoint::EndpointProfileDescriptor;
 pub use connectors_std::http::{FieldBinding, RequestDescriptor, StaticHeaderDescriptor};
 pub use connectors_std::pagination::PaginationDescriptor;
@@ -292,6 +293,10 @@ fn emit_generated_profiles_rs(manifest: &ConnectorManifest) -> String {
             endpoint_const_name(profile_name)
         ));
         out.push_str(&format!(
+            "    connector_id: \"{}\",\n",
+            escape_rust_string(&manifest.connector.id)
+        ));
+        out.push_str(&format!(
             "    name: \"{}\",\n",
             escape_rust_string(profile_name)
         ));
@@ -318,6 +323,10 @@ fn emit_generated_profiles_rs(manifest: &ConnectorManifest) -> String {
         out.push_str(&format!(
             "pub const {}: OutboundAuthProfileDescriptor = OutboundAuthProfileDescriptor {{\n",
             auth_const_name(profile_name)
+        ));
+        out.push_str(&format!(
+            "    connector_id: \"{}\",\n",
+            escape_rust_string(&manifest.connector.id)
         ));
         out.push_str(&format!(
             "    name: \"{}\",\n",

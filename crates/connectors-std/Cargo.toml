@@ -13,8 +13,12 @@ description = "Standard library of first-party Lattice connectors."
 dag-core = { path = "../dag-core" }
 capabilities = { path = "../capabilities" }
 anyhow.workspace = true
+async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 percent-encoding = "2.3"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }

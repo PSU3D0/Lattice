@@ -4,6 +4,7 @@ use std::time::Duration;
 use anyhow::Result;
 use cap_http_reqwest::ReqwestHttpClient;
 use capabilities::ResourceBag;
+use connector_github_issues::runtime::transport::EnvConnectorRuntime;
 use connector_github_issues::{GithubIssueState, GithubIssuesListInput, GithubIssuesListOutput};
 use dag_core::NodeResult;
 use dag_macros::{def_node, node};
@@ -149,6 +150,7 @@ pub fn http_resources() -> ResourceBag {
     ResourceBag::default()
         .with_http_read(Arc::clone(&client))
         .with_http_write(client)
+        .with_connector_runtime(Arc::new(EnvConnectorRuntime))
 }
 
 pub fn example_input_from_env() -> ExampleTriggerInput {

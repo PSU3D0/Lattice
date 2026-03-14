@@ -26,7 +26,9 @@ use async_trait::async_trait;
 #[cfg(target_arch = "wasm32")]
 use cancellation::CancellationToken;
 use capabilities::{
-    ResourceAccess, ResourceBag, context,
+    ResourceAccess, ResourceBag,
+    connector::ConnectorBindingScope,
+    context,
     durability::{
         CheckpointError, CheckpointHandle, CheckpointRecord, FlowFrontier, FrontierEntry,
         IdempotencyState,
@@ -595,6 +597,104 @@ impl NodeContext {
     pub fn resource_handle(&self) -> Arc<dyn ResourceAccess> {
         self.resources.clone()
     }
+}
+
+#[derive(Clone)]
+struct NodeScopedResources {
+    base: Arc<dyn ResourceAccess>,
+    connector_scope: ConnectorBindingScope,
+}
+
+impl NodeScopedResources {
+    fn new(base: Arc<dyn ResourceAccess>, connector_scope: ConnectorBindingScope) -> Self {
+        Self {
+            base,
+            connector_scope,
+        }
+    }
+}
+
+impl ResourceAccess for NodeScopedResources {
+    fn http_read(&self) -> Option<&dyn capabilities::http::HttpRead> {
+        self.base.http_read()
+    }
+
+    fn http_write(&self) -> Option<&dyn capabilities::http::HttpWrite> {
+        self.base.http_write()
+    }
+
+    fn clock(&self) -> Option<&dyn capabilities::clock::Clock> {
+        self.base.clock()
+    }
+
+    fn cache(&self) -> Option<&dyn capabilities::cache::Cache> {
+        self.base.cache()
+    }
+
+    fn kv(&self) -> Option<&dyn capabilities::kv::KeyValue> {
+        self.base.kv()
+    }
+
+    fn blob(&self) -> Option<&dyn capabilities::blob::BlobStore> {
+        self.base.blob()
+    }
+
+    fn queue(&self) -> Option<&dyn capabilities::queue::Queue> {
+        self.base.queue()
+    }
+
+    fn dedupe_store(&self) -> Option<&dyn capabilities::dedupe::DedupeStore> {
+        self.base.dedupe_store()
+    }
+
+    fn checkpoint_store(&self) -> Option<&dyn capabilities::durability::CheckpointStore> {
+        self.base.checkpoint_store()
+    }
+
+    fn resume_scheduler(&self) -> Option<&dyn capabilities::durability::ResumeScheduler> {
+        self.base.resume_scheduler()
+    }
+
+    fn resume_signal_source(&self) -> Option<&dyn capabilities::durability::ResumeSignalSource> {
+        self.base.resume_signal_source()
+    }
+
+    fn checkpoint_blob_store(&self) -> Option<&dyn capabilities::durability::CheckpointBlobStore> {
+        self.base.checkpoint_blob_store()
+    }
+
+    fn workspace(&self) -> Option<&dyn capabilities::workspace::Workspace> {
+        self.base.workspace()
+    }
+
+    fn connector_runtime(&self) -> Option<Arc<dyn capabilities::connector::ConnectorRuntime>> {
+        self.base.connector_runtime()
+    }
+
+    fn connector_scope(&self) -> Option<ConnectorBindingScope> {
+        Some(self.connector_scope.clone())
+    }
+
+    fn max_durability_mode(&self) -> dag_core::DurabilityMode {
+        self.base.max_durability_mode()
+    }
+}
+
+/// Derive a connector family id from the conventional generated node identifier
+/// shape `connector.<vendor>.<family>.<surface>`.
+///
+/// This is a Phase-1 fallback used until deployment-time connection bindings
+/// become first-class. Non-connector identifiers fall back to their full value.
+fn infer_connector_id(node_identifier: &str) -> String {
+    if node_identifier.starts_with("connector.") {
+        let mut parts = node_identifier.rsplitn(2, '.');
+        let _surface = parts.next();
+        if let Some(connector_id) = parts.next() {
+            return connector_id.to_string();
+        }
+    }
+
+    node_identifier.to_string()
 }
 
 enum CapturedPayload {
@@ -1730,7 +1830,15 @@ impl FlowExecutor {
             let capture_target = capture_alias.clone();
             let token = cancellation.clone();
             let alias = node.alias.clone();
-            let resource_handle = self.resources.clone();
+            let resource_handle: Arc<dyn ResourceAccess> = Arc::new(NodeScopedResources::new(
+                self.resources.clone(),
+                ConnectorBindingScope::new(
+                    flow_id.as_str(),
+                    alias.clone(),
+                    node.identifier.clone(),
+                    infer_connector_id(&node.identifier),
+                ),
+            ));
             let halts = node.durability.halts;
             let node_flow_id = flow_id.clone();
             let node_run_id = run_id.clone();
@@ -3518,6 +3626,95 @@ mod tests {
                 .await
                 .expect("kv read after execution"),
             Some(b"value".to_vec())
+        );
+    }
+
+    #[tokio::test]
+    async fn connector_scope_available_during_execution() {
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn(
+                "tests::trigger_scope",
+                |val: JsonValue| async move { Ok(val) },
+            )
+            .unwrap();
+        registry
+            .register_fn("tests::worker_scope", |_val: JsonValue| async move {
+                let scope = context::with_current(|resources| resources.connector_scope())
+                    .flatten()
+                    .expect("connector scope available");
+                Ok(serde_json::json!({
+                    "flow_id": scope.flow_id,
+                    "node_alias": scope.node_alias,
+                    "node_identifier": scope.node_identifier,
+                    "connector_id": scope.connector_id,
+                }))
+            })
+            .unwrap();
+
+        let mut builder =
+            FlowBuilder::new("connector_scope_flow", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger_scope",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let worker = builder
+            .add_node(
+                "worker",
+                &NodeSpec::inline(
+                    "tests::worker_scope",
+                    "Worker",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &worker);
+
+        let flow = builder.build();
+        let validated = validate(&flow).expect("flow validates");
+        let expected_flow_id = validated.flow().id.as_str().to_string();
+
+        let executor = FlowExecutor::new(Arc::new(registry));
+        let result = executor
+            .run_once(&validated, "trigger", JsonValue::Null, "worker", None)
+            .await
+            .expect("execution succeeds");
+
+        let value = match result {
+            ExecutionResult::Value(value) => value,
+            ExecutionResult::Stream(_) => panic!("unexpected stream execution result"),
+            ExecutionResult::Halt { .. } => panic!("unexpected halt execution result"),
+        };
+        let object = value.as_object().expect("scope object");
+        assert_eq!(
+            object.get("flow_id"),
+            Some(&JsonValue::String(expected_flow_id))
+        );
+        assert_eq!(
+            object.get("node_alias"),
+            Some(&JsonValue::String("worker".to_string()))
+        );
+        assert_eq!(
+            object.get("node_identifier"),
+            Some(&JsonValue::String("tests::worker_scope".to_string()))
+        );
+        assert_eq!(
+            object.get("connector_id"),
+            Some(&JsonValue::String("tests::worker_scope".to_string()))
         );
     }
 

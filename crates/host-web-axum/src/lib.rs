@@ -789,6 +789,10 @@ fn map_execution_error(err: ExecutionError) -> (StatusCode, JsonValue) {
             StatusCode::INTERNAL_SERVER_ERROR,
             json!({ "error": format!("failed to configure spill storage: {err}") }),
         ),
+        ExecutionError::HostEnvironment(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": format!("host environment error: {err}") }),
+        ),
     }
 }
 

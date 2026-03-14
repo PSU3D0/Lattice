@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use cap_http_reqwest::ReqwestHttpClient;
 use capabilities::{ResourceBag, context};
+use connector_github_issues::runtime::transport::EnvConnectorRuntime;
 use connector_github_issues::{
     GithubIssueCreateInput, GithubIssueGetInput, GithubIssueState, GithubIssuesListInput,
     github_issues_create, github_issues_get, github_issues_list,
@@ -54,7 +55,14 @@ fn http_resources() -> Arc<ResourceBag> {
     Arc::new(
         ResourceBag::default()
             .with_http_read(Arc::clone(&client))
-            .with_http_write(client),
+            .with_http_write(client)
+            .with_connector_runtime(Arc::new(EnvConnectorRuntime))
+            .with_connector_scope(capabilities::connector::ConnectorBindingScope::new(
+                "flow://tests",
+                "runtime_test",
+                "connector.github.issues.test",
+                "connector.github.issues",
+            )),
     )
 }
 

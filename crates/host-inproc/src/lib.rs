@@ -319,6 +319,14 @@ impl ResourceAccess for InvocationResources {
         Some(self.workspace.as_ref())
     }
 
+    fn connector_runtime(&self) -> Option<Arc<dyn capabilities::connector::ConnectorRuntime>> {
+        self.base.connector_runtime()
+    }
+
+    fn connector_scope(&self) -> Option<capabilities::connector::ConnectorBindingScope> {
+        self.base.connector_scope()
+    }
+
     fn max_durability_mode(&self) -> dag_core::DurabilityMode {
         self.base.max_durability_mode()
     }
@@ -1352,10 +1360,7 @@ mod tests {
         })
     }
 
-    fn invocation_with_run_id(
-        payload: serde_json::Value,
-        run_id: &str,
-    ) -> Invocation {
+    fn invocation_with_run_id(payload: serde_json::Value, run_id: &str) -> Invocation {
         let mut invocation = Invocation::new("trigger", "capture", payload);
         invocation
             .metadata_mut()
@@ -2729,19 +2734,11 @@ mod tests {
         let scope = WorkspaceRunScope::new(ir.flow().id.0.clone(), run_id);
         let workspace = factory.open(scope.clone()).await.expect("open workspace");
         workspace
-            .write(
-                "artifacts/b.txt",
-                b"bbb",
-                WorkspaceWriteOptions::default(),
-            )
+            .write("artifacts/b.txt", b"bbb", WorkspaceWriteOptions::default())
             .await
             .expect("seed b");
         workspace
-            .write(
-                "artifacts/a.txt",
-                b"a",
-                WorkspaceWriteOptions::default(),
-            )
+            .write("artifacts/a.txt", b"a", WorkspaceWriteOptions::default())
             .await
             .expect("seed a");
 
@@ -2830,7 +2827,12 @@ mod tests {
             serde_json::from_value(value).expect("decode delete output");
         assert!(output.deleted);
         assert_eq!(output.path, "artifacts/report.txt");
-        assert!(!factory.run_root_path(&scope).join("artifacts/report.txt").exists());
+        assert!(
+            !factory
+                .run_root_path(&scope)
+                .join("artifacts/report.txt")
+                .exists()
+        );
     }
 
     #[tokio::test]

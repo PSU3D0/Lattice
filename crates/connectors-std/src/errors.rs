@@ -1,3 +1,4 @@
+use capabilities::connector::ConnectorRuntimeError as HostConnectorRuntimeError;
 use capabilities::http::HttpError;
 
 #[derive(Debug, thiserror::Error)]
@@ -8,6 +9,10 @@ pub enum ConnectorRuntimeError {
     MissingHttpRead { action: &'static str },
     #[error("connector action `{action}` requires HttpWrite")]
     MissingHttpWrite { action: &'static str },
+    #[error("connector action `{action}` requires ConnectorRuntime")]
+    MissingConnectorRuntime { action: &'static str },
+    #[error("connector action `{action}` requires ConnectorBindingScope")]
+    MissingConnectorScope { action: &'static str },
     #[error("connector action input must serialize to a JSON object")]
     InvalidInputObject,
     #[error("connector action references missing input field `{field}`")]
@@ -20,18 +25,8 @@ pub enum ConnectorRuntimeError {
     HttpStatus { status: u16, body: String },
     #[error("connector action response was invalid: {0}")]
     InvalidResponse(String),
-    #[error(
-        "connector auth profile `{profile}` requires local env override `{env_var}` in Phase B"
-    )]
-    MissingAuthOverride {
-        profile: &'static str,
-        env_var: &'static str,
-    },
-    #[error("connector auth profile `{profile}` uses unsupported Phase-B auth kind `{kind}`")]
-    UnsupportedAuthKind {
-        profile: &'static str,
-        kind: &'static str,
-    },
+    #[error(transparent)]
+    ConnectorRuntime(#[from] HostConnectorRuntimeError),
     #[error(transparent)]
     Http(#[from] HttpError),
     #[error(transparent)]

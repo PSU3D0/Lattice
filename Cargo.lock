@@ -1228,12 +1228,14 @@ name = "connectors-std"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "capabilities",
  "dag-core",
  "percent-encoding",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+ "tokio",
  "tracing",
 ]
 
