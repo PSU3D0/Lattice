@@ -1,0 +1,30 @@
+[package]
+name = "example-connector-github-issues-local-flow"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Local mock-first flow example for connector_github_issues."
+
+[features]
+default = ["host-bundle"]
+host-bundle = []
+flow-registry = []
+
+[dependencies]
+anyhow.workspace = true
+cap-http-reqwest = { path = "../../../../../cap-http-reqwest" }
+capabilities = { path = "../../../../../capabilities" }
+connector_github_issues = { path = "../.." }
+dag-core = { path = "../../../../../dag-core" }
+dag-macros = { path = "../../../../../dag-macros" }
+host-inproc = { path = "../../../../../host-inproc" }
+httpmock = "0.7"
+kernel-exec = { path = "../../../../../kernel-exec" }
+kernel-plan = { path = "../../../../../kernel-plan" }
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["full"] }

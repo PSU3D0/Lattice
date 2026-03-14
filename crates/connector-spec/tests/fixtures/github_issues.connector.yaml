@@ -1,0 +1,165 @@
+connector:
+  id: connector.github.issues
+  vendor: github
+  family: issues
+  version: 0.1.0
+  crate: connector_github_issues
+  summary: Semantic GitHub issues connector
+
+profiles:
+  outbound_auth:
+    github_pat:
+      kind: bearer
+      handle_kind: http.bearer
+  endpoint_profiles:
+    github_default:
+      base_url: https://api.github.com
+      default_headers:
+        Accept: application/json
+        X-GitHub-Api-Version: "2022-11-28"
+  provisioning_auth: {}
+  inbound_verifiers: {}
+
+types:
+  GithubIssueState:
+    kind: enum
+    variants: [open, closed, all]
+
+  GithubIssueSummary:
+    kind: object
+    fields:
+      number:
+        type: u64
+      title:
+        type: string
+      state:
+        type: string
+      html_url:
+        type: string
+
+  GithubIssueGetInput:
+    kind: object
+    fields:
+      owner:
+        type: string
+      repo:
+        type: string
+      issue_number:
+        type: u64
+
+  GithubIssuesListInput:
+    kind: object
+    fields:
+      owner:
+        type: string
+      repo:
+        type: string
+      state:
+        type: enum_ref
+        target: GithubIssueState
+        optional: true
+      return_all:
+        type: bool
+        default: false
+      limit:
+        type: u32
+        optional: true
+
+  GithubIssuesListOutput:
+    kind: object
+    fields:
+      items:
+        type: list
+        item:
+          type: object_ref
+          target: GithubIssueSummary
+
+  GithubIssueCreateInput:
+    kind: object
+    fields:
+      owner:
+        type: string
+      repo:
+        type: string
+      title:
+        type: string
+      body:
+        type: string
+        optional: true
+
+surfaces:
+  - kind: action
+    identifier: connector.github.issues.get
+    name: GithubIssuesGet
+    summary: Fetch one issue by number
+    input: GithubIssueGetInput
+    output: GithubIssueSummary
+    endpoint: github_default
+    effects: ReadOnly
+    determinism: BestEffort
+    resources:
+      - http_read(capabilities::http::HttpRead)
+    request:
+      method: GET
+      path_template: /repos/{owner}/{repo}/issues/{issue_number}
+      path_params:
+        owner: owner
+        repo: repo
+        issue_number: issue_number
+    response:
+      kind: json_body
+      root_path: body
+
+  - kind: action
+    identifier: connector.github.issues.list
+    name: GithubIssuesList
+    summary: List issues for a repository
+    input: GithubIssuesListInput
+    output: GithubIssuesListOutput
+    endpoint: github_default
+    effects: ReadOnly
+    determinism: BestEffort
+    resources:
+      - http_read(capabilities::http::HttpRead)
+    request:
+      method: GET
+      path_template: /repos/{owner}/{repo}/issues
+      path_params:
+        owner: owner
+        repo: repo
+      query:
+        state: state
+    pagination:
+      kind: link_header_next
+      enabled_from: return_all
+      page_size_param: per_page
+      page_size: 100
+      max_items_from: limit
+    response:
+      kind: json_body
+      root_path: body
+
+  - kind: action
+    identifier: connector.github.issues.create
+    name: GithubIssuesCreate
+    summary: Create an issue for a repository
+    input: GithubIssueCreateInput
+    output: GithubIssueSummary
+    auth: github_pat
+    endpoint: github_default
+    effects: Effectful
+    determinism: BestEffort
+    resources:
+      - http_write(capabilities::http::HttpWrite)
+    request:
+      method: POST
+      path_template: /repos/{owner}/{repo}/issues
+      path_params:
+        owner: owner
+        repo: repo
+      body:
+        title: title
+        body: body
+    response:
+      kind: json_body
+      root_path: body

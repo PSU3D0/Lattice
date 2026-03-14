@@ -1,5 +1,5 @@
 [package]
-name = "connector-spec"
+name = "connector-codegen"
 version = "0.1.0"
 authors.workspace = true
 edition.workspace = true
@@ -7,12 +7,13 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Connector specification schema and code generation utilities."
+description = "Phase-B connector crate generator for Lattice."
 
 [dependencies]
-dag-core = { path = "../dag-core" }
 anyhow.workspace = true
-serde.workspace = true
+clap.workspace = true
+connector-spec = { path = "../connector-spec" }
 serde_json.workspace = true
-serde_yaml.workspace = true
-thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1185,16 +1185,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "connector-codegen"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "connector-spec",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "connector-spec"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "dag-core",
- "schemars 0.8.22",
  "serde",
  "serde_json",
  "serde_yaml",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "connector_github_issues"
+version = "0.1.0"
+dependencies = [
+ "cap-http-reqwest",
+ "capabilities",
+ "connectors-std",
+ "dag-core",
+ "dag-macros",
+ "httpmock",
+ "kernel-exec",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -1204,7 +1230,9 @@ dependencies = [
  "anyhow",
  "capabilities",
  "dag-core",
+ "percent-encoding",
  "serde",
+ "serde_json",
  "thiserror 1.0.69",
  "tracing",
 ]
@@ -1859,6 +1887,25 @@ checksum = "8be9f3dfaaffdae2972880079a491a1a8bb7cbed0b8dd7a347f668b4150a3b93"
 dependencies = [
  "event-listener 5.4.1",
  "pin-project-lite",
+]
+
+[[package]]
+name = "example-connector-github-issues-local-flow"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cap-http-reqwest",
+ "capabilities",
+ "connector_github_issues",
+ "dag-core",
+ "dag-macros",
+ "host-inproc",
+ "httpmock",
+ "kernel-exec",
+ "kernel-plan",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
