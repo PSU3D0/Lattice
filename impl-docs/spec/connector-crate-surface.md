@@ -7,6 +7,10 @@ Last reviewed: 2026-03-13
 
 This document defines the intended surface of **connector crates** in Lattice.
 
+For the host/runtime contract that owns polling state, route exposure,
+activation state, verifier execution, and reconciliation mechanics, see:
+- `impl-docs/spec/connector-trigger-runtime-contract.md`
+
 It answers a design question that becomes unavoidable once we move from stdlib
 primitives toward real ecosystem farming:
 
@@ -242,6 +246,9 @@ A connector family may use one or many of these roles.
 
 Connector triggers should be able to declare whether they need activation-time
 lifecycle behavior.
+
+Connector crates declare the lifecycle **kind** and semantic expectations.
+Hosts own the stateful implementation details behind that lifecycle.
 
 Recommended conceptual lifecycle kinds:
 - `none`

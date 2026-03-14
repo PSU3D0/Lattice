@@ -120,6 +120,7 @@ Connector-trigger note:
 
 See also:
 - `impl-docs/spec/connector-crate-surface.md`
+- `impl-docs/spec/connector-trigger-runtime-contract.md`
 
 ## EdgeIR
 

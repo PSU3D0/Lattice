@@ -12,6 +12,7 @@ For the finer-grained connector family decomposition — action nodes, polling
 triggers, webhook triggers, credential roles, and activation lifecycle shapes —
 see:
 - `impl-docs/spec/connector-crate-surface.md`
+- `impl-docs/spec/connector-trigger-runtime-contract.md`
 
 ## Goals
 

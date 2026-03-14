@@ -28,6 +28,7 @@ Connector crates may require different credential roles, for example:
 These roles should not be collapsed into a single flat secret slot.
 See also:
 - `impl-docs/spec/connector-crate-surface.md`
+- `impl-docs/spec/connector-trigger-runtime-contract.md`
 
 Example binding (conceptual):
 
@@ -42,6 +43,33 @@ bindings:
 
 Nodes reference the handle (e.g., `credential = "google_sales"`). The handle is not stored in Flow IR
 unless explicitly configured by the host.
+
+Connector-trigger role example (conceptual):
+
+```yaml
+bindings:
+  slack_outbound:
+    kind: slack.api.bearer
+    token_secret: slack_bot_token
+
+  slack_inbound_verifier:
+    kind: hmac.secret
+    secret_ref: slack_signing_secret
+
+  hubspot_provisioning:
+    kind: hubspot.developer.oauth2
+    client_id_secret: hubspot_client_id
+    client_secret_secret: hubspot_client_secret
+    refresh_token_secret: hubspot_refresh_token
+
+  microsoft_graph_us_gov:
+    kind: endpoint.profile
+    graph_api_base_url: https://graph.microsoft.us
+```
+
+A connector trigger or action may reference one or more of these roles by
+handle. The host is responsible for mapping those handles into the appropriate
+runtime services.
 
 ## Credential Types
 
@@ -75,10 +103,22 @@ unless explicitly configured by the host.
 CredentialProvider::resolve(handle) -> CredentialMaterial
 ```
 
+For connector triggers and richer connector families, hosts may resolve several
+role-specific handles rather than a single credential slot, for example:
+
+```
+resolve(outbound_auth_handle)
+resolve(provisioning_auth_handle)
+resolve(inbound_verifier_handle)
+resolve(endpoint_profile_handle)
+```
+
 `CredentialMaterial` is opaque to flows but may include:
 - Access token
 - Expiry timestamp
 - Additional headers
+- Verifier secret material
+- Endpoint/profile metadata
 
 ## Security and Storage
 
