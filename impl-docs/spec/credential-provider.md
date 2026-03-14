@@ -1,7 +1,7 @@
 Status: Draft
 Purpose: spec
 Owner: Core
-Last reviewed: 2026-01-29
+Last reviewed: 2026-03-14
 
 # Credential Provider (0.1.x)
 
@@ -29,6 +29,7 @@ These roles should not be collapsed into a single flat secret slot.
 See also:
 - `impl-docs/spec/connector-crate-surface.md`
 - `impl-docs/spec/connector-trigger-runtime-contract.md`
+- `impl-docs/spec/connector-connection-bindings.md`
 
 Example binding (conceptual):
 
@@ -96,6 +97,10 @@ runtime services.
 - Used to authenticate incoming webhook requests.
 - Distinct from outbound request auth even when both happen to originate from
   the same external service.
+
+For the concrete connection-instance model, runtime trait split, and deployment
+binding extension proposed for `LAT-000029`, see:
+- `impl-docs/spec/connector-connection-bindings.md`
 
 ## Runtime Interface (Conceptual)
 

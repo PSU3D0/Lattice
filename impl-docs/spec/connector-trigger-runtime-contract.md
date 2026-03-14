@@ -1,7 +1,7 @@
 Status: Draft
 Purpose: architecture-decision / spec
 Owner: Runtime
-Last reviewed: 2026-03-13
+Last reviewed: 2026-03-14
 
 # Connector Trigger Runtime Contract (0.1.x)
 
@@ -511,6 +511,10 @@ Should incorporate these role and service implications for:
 - inbound verifier handles,
 - endpoint/environment profiles,
 - and binding schema that can support connector trigger activation services.
+
+For the proposed connection-instance model and runtime trait split used to carry
+those bindings, see:
+- `impl-docs/spec/connector-connection-bindings.md`
 
 This document does **not** require `LAT-000029` to implement the full trigger
 activation store immediately. It does require the credential/binding model to

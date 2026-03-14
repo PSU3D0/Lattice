@@ -1,7 +1,7 @@
 Status: Draft
 Purpose: architecture-decision / spec
 Owner: Runtime
-Last reviewed: 2026-03-13
+Last reviewed: 2026-03-14
 
 # Connector Crate Surface (0.1.x)
 
@@ -227,6 +227,10 @@ Recommended conceptual roles:
 For the concrete Phase-B action-first manifest shape that carries these role
 references, see:
 - `impl-docs/spec/connector-manifest-phase-b.md`
+
+For the proposed host-side connection-instance and role-binding model that
+resolves these roles at deployment/runtime, see:
+- `impl-docs/spec/connector-connection-bindings.md`
 
 A connector family may use one or many of these roles.
 
