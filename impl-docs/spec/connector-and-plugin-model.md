@@ -8,6 +8,11 @@ Last reviewed: 2026-01-29
 This document defines how connectors are packaged, validated, and linked into latticeflow.
 Connectors are **nodes** built on top of capabilities (HTTP, KV, DB, etc.), not capabilities themselves.
 
+For the finer-grained connector family decomposition — action nodes, polling
+triggers, webhook triggers, credential roles, and activation lifecycle shapes —
+see:
+- `impl-docs/spec/connector-crate-surface.md`
+
 ## Goals
 
 - Compile-time linked connectors with strong validation.
@@ -17,6 +22,15 @@ Connectors are **nodes** built on top of capabilities (HTTP, KV, DB, etc.), not 
 ## Connector Crates
 
 Connectors SHOULD be authored as Rust crates that expose node specs and registration helpers.
+
+A connector crate may expose multiple semantic surface kinds:
+- action nodes,
+- polling triggers,
+- webhook triggers,
+- and shared auth/transport/lifecycle helpers.
+
+The first runnable implementation pass may focus on action nodes, but the crate
+model should not assume connectors are action-only.
 
 Example surface:
 

@@ -19,6 +19,16 @@ resolution is a **host service** and is configured in the binding layer.
 Flows reference **credential handles** in binding configuration. The host resolves these handles to
 credential material at runtime.
 
+Connector crates may require different credential roles, for example:
+- **outbound auth** for normal API requests,
+- **provisioning auth** for activation-time webhook/subscription setup,
+- **inbound verifier** material for authenticating webhook requests,
+- **endpoint/environment profile** selection.
+
+These roles should not be collapsed into a single flat secret slot.
+See also:
+- `impl-docs/spec/connector-crate-surface.md`
+
 Example binding (conceptual):
 
 ```yaml
@@ -50,6 +60,14 @@ unless explicitly configured by the host.
 
 - Inputs: token or key
 - Injected directly into headers or request signing.
+
+### Inbound verifier secret
+
+- Inputs: signing secret, shared query secret, verifier key material, or
+  service-specific verification configuration.
+- Used to authenticate incoming webhook requests.
+- Distinct from outbound request auth even when both happen to originate from
+  the same external service.
 
 ## Runtime Interface (Conceptual)
 

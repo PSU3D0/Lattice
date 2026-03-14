@@ -111,6 +111,16 @@ Notes:
 Multiple triggers are allowed, but hosts MUST require explicit entrypoints for each ingress.
 Validators SHOULD reject entrypoints that reference missing aliases or a non-trigger `trigger_alias`.
 
+Connector-trigger note:
+- connector crates may require additional activation/deployment metadata beyond
+  the basic trigger + entrypoint pair (for example polling cursor state,
+  webhook verifier material, or remote subscription setup requirements),
+- but those concerns do not change the core Flow IR rule that ingress is still
+  represented by trigger nodes plus explicit bundle entrypoints.
+
+See also:
+- `impl-docs/spec/connector-crate-surface.md`
+
 ## EdgeIR
 
 An edge describes how data moves between nodes.
