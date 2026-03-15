@@ -27,8 +27,9 @@ use tokio::signal;
 
 use capabilities::Capability;
 use capabilities::connector::{
-    ConnectorBindingScope, ConnectorRuntime, ConnectorRuntimeError, EndpointProfileDescriptor,
-    OutboundAuthKind, OutboundAuthProfileDescriptor, ResolvedEndpointProfile,
+    ConnectorBindingScope, ConnectorRoleKind, ConnectorRuntime, ConnectorRuntimeError,
+    EndpointProfileDescriptor, OutboundAuthKind, OutboundAuthProfileDescriptor,
+    ResolvedEndpointProfile,
 };
 use capabilities::durability::{
     CheckpointError, CheckpointFilter, CheckpointHandle, CheckpointRecord, CheckpointStore, Lease,
@@ -38,7 +39,7 @@ use host_inproc::{EnvironmentPlugin, HostRuntime, Invocation};
 
 use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
 
-use example_connector_github_issues_local_flow as example_connector_github_issues_local_flow;
+use example_connector_github_issues_local_flow;
 use example_s1_echo as s1_echo;
 use example_s2_site as s2_site;
 use example_s3_branching as s3_branching;
@@ -1766,7 +1767,10 @@ fn validate_lock_instance_well_formed(name: &str, instance: &LockInstance) -> Re
     Ok(())
 }
 
-fn validate_connector_handle_well_formed(name: &str, handle: &ConnectorHandleInstance) -> Result<()> {
+fn validate_connector_handle_well_formed(
+    name: &str,
+    handle: &ConnectorHandleInstance,
+) -> Result<()> {
     if handle.provider_kind.trim().is_empty() {
         return Err(anyhow!(
             "bindings.lock connector handle `{name}` has empty `provider_kind`"
@@ -1797,6 +1801,165 @@ fn validate_connector_handle_well_formed(name: &str, handle: &ConnectorHandleIns
         ));
     }
 
+    validate_connector_handle_provider_config(name, handle)
+}
+
+fn connector_role_kind_label(kind: ConnectorRoleKind) -> &'static str {
+    match kind {
+        ConnectorRoleKind::OutboundAuth => "outbound_auth",
+        ConnectorRoleKind::ProvisioningAuth => "provisioning_auth",
+        ConnectorRoleKind::InboundVerifier => "inbound_verifier",
+        ConnectorRoleKind::EndpointProfile => "endpoint_profile",
+    }
+}
+
+fn parse_connector_role_key(role_key: &str) -> Result<(ConnectorRoleKind, &str)> {
+    let (kind, name) = role_key.split_once('.').ok_or_else(|| {
+        anyhow!(
+            "bindings.lock connector role `{role_key}` is invalid; expected `<role_kind>.<role_name>`"
+        )
+    })?;
+
+    if name.trim().is_empty() {
+        return Err(anyhow!(
+            "bindings.lock connector role `{role_key}` is invalid; role name cannot be empty"
+        ));
+    }
+
+    let kind = match kind {
+        "outbound_auth" => ConnectorRoleKind::OutboundAuth,
+        "provisioning_auth" => ConnectorRoleKind::ProvisioningAuth,
+        "inbound_verifier" => ConnectorRoleKind::InboundVerifier,
+        "endpoint_profile" => ConnectorRoleKind::EndpointProfile,
+        other => {
+            return Err(anyhow!(
+                "bindings.lock connector role `{role_key}` uses unsupported role kind `{other}`"
+            ));
+        }
+    };
+
+    Ok((kind, name))
+}
+
+fn validate_connector_handle_provider_config(
+    name: &str,
+    handle: &ConnectorHandleInstance,
+) -> Result<()> {
+    match handle.provider_kind.as_str() {
+        "auth.static_bearer" => {
+            if handle.handle_kind != "http.bearer" {
+                return Err(anyhow!(
+                    "bindings.lock connector handle `{name}` uses provider_kind `auth.static_bearer` but has handle_kind `{}`; expected `http.bearer`",
+                    handle.handle_kind,
+                ));
+            }
+            validate_handle_secret_ref(name, handle)?;
+        }
+        "auth.static_secret" => {
+            if handle.handle_kind != "raw.secret" {
+                return Err(anyhow!(
+                    "bindings.lock connector handle `{name}` uses provider_kind `auth.static_secret` but has handle_kind `{}`; expected `raw.secret`",
+                    handle.handle_kind,
+                ));
+            }
+            validate_handle_secret_ref(name, handle)?;
+        }
+        "endpoint.profile.static" => {
+            if handle.handle_kind != "endpoint.profile" {
+                return Err(anyhow!(
+                    "bindings.lock connector handle `{name}` uses provider_kind `endpoint.profile.static` but has handle_kind `{}`; expected `endpoint.profile`",
+                    handle.handle_kind,
+                ));
+            }
+            validate_static_endpoint_profile_handle(name, handle)?;
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+fn validate_handle_secret_ref(name: &str, handle: &ConnectorHandleInstance) -> Result<()> {
+    let secret_ref = handle
+        .connect
+        .get("secret_ref")
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| {
+            anyhow!(
+                "bindings.lock connector handle `{name}` is missing required `connect.secret_ref` string"
+            )
+        })?;
+
+    if secret_ref.trim().is_empty() {
+        return Err(anyhow!(
+            "bindings.lock connector handle `{name}` has empty `connect.secret_ref`"
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_static_endpoint_profile_handle(
+    name: &str,
+    handle: &ConnectorHandleInstance,
+) -> Result<()> {
+    let base_url = handle
+        .config
+        .get("base_url")
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| {
+            anyhow!(
+                "bindings.lock connector handle `{name}` is missing required `config.base_url` string"
+            )
+        })?;
+    if base_url.trim().is_empty() {
+        return Err(anyhow!(
+            "bindings.lock connector handle `{name}` has empty `config.base_url`"
+        ));
+    }
+
+    if let Some(default_headers) = handle.config.get("default_headers") {
+        let headers = default_headers.as_object().ok_or_else(|| {
+            anyhow!(
+                "bindings.lock connector handle `{name}` has invalid `config.default_headers` (expected object)"
+            )
+        })?;
+        for (header_name, header_value) in headers {
+            if !header_value.is_string() {
+                return Err(anyhow!(
+                    "bindings.lock connector handle `{name}` has non-string `config.default_headers.{header_name}`"
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_connector_role_provider_compatibility(
+    connection_name: &str,
+    role_key: &str,
+    handle_name: &str,
+    handle: &ConnectorHandleInstance,
+) -> Result<()> {
+    let (role_kind, _) = parse_connector_role_key(role_key)?;
+    let provider_kind = handle.provider_kind.as_str();
+
+    let family_matches = match role_kind {
+        ConnectorRoleKind::OutboundAuth | ConnectorRoleKind::ProvisioningAuth => {
+            provider_kind.starts_with("auth.")
+        }
+        ConnectorRoleKind::InboundVerifier => provider_kind.starts_with("verifier."),
+        ConnectorRoleKind::EndpointProfile => provider_kind.starts_with("endpoint.profile."),
+    };
+
+    if !family_matches {
+        return Err(anyhow!(
+            "bindings.lock connector connection `{connection_name}` binds role `{role_key}` to handle `{handle_name}` with provider_kind `{provider_kind}`, but role kind `{}` expects the matching provider family",
+            connector_role_kind_label(role_kind),
+        ));
+    }
+
     Ok(())
 }
 
@@ -1812,11 +1975,12 @@ fn validate_connector_connection_well_formed(
     }
 
     for (role_key, handle_name) in &connection.roles {
-        if !handles.contains_key(handle_name) {
-            return Err(anyhow!(
+        let handle = handles.get(handle_name).ok_or_else(|| {
+            anyhow!(
                 "bindings.lock connector connection `{name}` references unknown handle `{handle_name}` for role `{role_key}`"
-            ));
-        }
+            )
+        })?;
+        validate_connector_role_provider_compatibility(name, role_key, handle_name, handle)?;
     }
 
     Ok(())
@@ -1832,7 +1996,11 @@ struct BindingsLockConnectorRuntime {
 
 impl BindingsLockConnectorRuntime {
     fn new(lock: &BindingsLock, flow_id: &str) -> Result<Self> {
-        let bindings = lock.connector_bindings.get(flow_id).cloned().unwrap_or_default();
+        let bindings = lock
+            .connector_bindings
+            .get(flow_id)
+            .cloned()
+            .unwrap_or_default();
 
         for (name, handle) in &lock.connector_handles {
             validate_connector_handle_well_formed(name, handle)?;
@@ -1848,9 +2016,15 @@ impl BindingsLockConnectorRuntime {
             }
         }
         for (connector_id, connection_name) in &bindings.defaults {
-            if !lock.connector_connections.contains_key(connection_name) {
-                return Err(anyhow!(
+            let connection = lock.connector_connections.get(connection_name).ok_or_else(|| {
+                anyhow!(
                     "bindings.lock connector default for `{connector_id}` references unknown connection `{connection_name}`"
+                )
+            })?;
+            if connection.connector_id != *connector_id {
+                return Err(anyhow!(
+                    "bindings.lock connector default for `{connector_id}` references connection `{connection_name}` targeting `{}`",
+                    connection.connector_id,
                 ));
             }
         }
@@ -1893,9 +2067,7 @@ impl BindingsLockConnectorRuntime {
     ) -> Result<(&'a str, &'a ConnectorConnectionInstance)> {
         let connection_name = self.resolve_connection_name(scope)?;
         let connection = self.connections.get(connection_name).ok_or_else(|| {
-            anyhow!(
-                "bindings.lock references unknown connector connection `{connection_name}`"
-            )
+            anyhow!("bindings.lock references unknown connector connection `{connection_name}`")
         })?;
 
         if connection.connector_id != scope.connector_id {
@@ -1949,57 +2121,18 @@ impl ConnectorRuntime for BindingsLockConnectorRuntime {
                 profile.kind.handle_kind()
             )));
         }
-        if handle.provider_kind != "auth.static_bearer"
-            && handle.provider_kind != "auth.static_secret"
-        {
-            return Err(ConnectorRuntimeError::Provider(anyhow!(
-                "connector handle `{handle_name}` uses unsupported auth provider_kind `{}`",
-                handle.provider_kind,
-            )));
-        }
 
-        let secret_ref = handle
-            .connect
-            .get("secret_ref")
-            .and_then(JsonValue::as_str)
-            .ok_or_else(|| {
-                ConnectorRuntimeError::Provider(anyhow!(
-                    "connector handle `{handle_name}` is missing `connect.secret_ref`"
-                ))
-            })?;
+        let secret_ref = connector_handle_secret_ref(handle_name, handle)?;
         let secret = resolve_secret_ref(secret_ref).map_err(ConnectorRuntimeError::Provider)?;
 
-        match profile.kind {
-            OutboundAuthKind::Bearer { .. } => {
-                request
-                    .headers
-                    .insert("Authorization", format!("Bearer {secret}"));
+        match handle.provider_kind.as_str() {
+            "auth.static_bearer" | "auth.static_secret" => {
+                apply_static_auth_to_request(request, profile, secret)?;
             }
-            OutboundAuthKind::ApiKeyHeader {
-                header_name,
-                prefix,
-                ..
-            } => {
-                let value = prefix
-                    .map(|prefix| format!("{prefix} {secret}"))
-                    .unwrap_or(secret);
-                request.headers.insert(header_name, value);
-            }
-            OutboundAuthKind::ApiKeyQuery { query_name, .. } => {
-                let separator = if request.url.contains('?') { '&' } else { '?' };
-                request.url.push(separator);
-                request.url.push_str(query_name);
-                request.url.push('=');
-                request.url.push_str(&percent_encoding::utf8_percent_encode(
-                    &secret,
-                    percent_encoding::NON_ALPHANUMERIC,
-                ).to_string());
-            }
-            OutboundAuthKind::Unsupported { kind_name, .. } => {
-                return Err(ConnectorRuntimeError::UnsupportedAuthKind {
-                    role_name: profile.name,
-                    kind: kind_name,
-                });
+            other => {
+                return Err(ConnectorRuntimeError::Provider(anyhow!(
+                    "connector handle `{handle_name}` uses unsupported auth provider_kind `{other}`"
+                )));
             }
         }
 
@@ -2022,56 +2155,119 @@ impl ConnectorRuntime for BindingsLockConnectorRuntime {
                 role_key,
             )));
         }
-        if handle.provider_kind != "endpoint.profile.static" {
-            return Err(ConnectorRuntimeError::Provider(anyhow!(
-                "connector handle `{handle_name}` uses unsupported endpoint provider_kind `{}`",
-                handle.provider_kind,
-            )));
+        match handle.provider_kind.as_str() {
+            "endpoint.profile.static" => {
+                resolve_static_endpoint_profile(handle_name, handle, profile)
+            }
+            other => Err(ConnectorRuntimeError::Provider(anyhow!(
+                "connector handle `{handle_name}` uses unsupported endpoint provider_kind `{other}`"
+            ))),
         }
+    }
+}
 
-        let base_url = handle
-            .config
-            .get("base_url")
-            .and_then(JsonValue::as_str)
-            .ok_or_else(|| {
-                ConnectorRuntimeError::InvalidEndpointProfile {
-                    role_name: profile.name,
-                    reason: format!(
-                        "connector handle `{handle_name}` is missing `config.base_url`"
-                    ),
-                }
-            })?
-            .to_string();
+fn connector_handle_secret_ref<'a>(
+    handle_name: &str,
+    handle: &'a ConnectorHandleInstance,
+) -> Result<&'a str, ConnectorRuntimeError> {
+    handle
+        .connect
+        .get("secret_ref")
+        .and_then(JsonValue::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            ConnectorRuntimeError::Provider(anyhow!(
+                "connector handle `{handle_name}` is missing `connect.secret_ref`"
+            ))
+        })
+}
 
-        let mut default_headers = Vec::new();
-        if let Some(header_map) = handle.config.get("default_headers") {
-            let object = header_map.as_object().ok_or_else(|| {
-                ConnectorRuntimeError::InvalidEndpointProfile {
-                    role_name: profile.name,
-                    reason: format!(
-                        "connector handle `{handle_name}` has non-object `config.default_headers`"
-                    ),
-                }
-            })?;
-            for (name, value) in object {
-                let value = value.as_str().ok_or_else(|| {
-                    ConnectorRuntimeError::InvalidEndpointProfile {
+fn apply_static_auth_to_request(
+    request: &mut capabilities::http::HttpRequest,
+    profile: &OutboundAuthProfileDescriptor,
+    secret: String,
+) -> Result<(), ConnectorRuntimeError> {
+    match profile.kind {
+        OutboundAuthKind::Bearer { .. } => {
+            request
+                .headers
+                .insert("Authorization", format!("Bearer {secret}"));
+        }
+        OutboundAuthKind::ApiKeyHeader {
+            header_name,
+            prefix,
+            ..
+        } => {
+            let value = prefix
+                .map(|prefix| format!("{prefix} {secret}"))
+                .unwrap_or(secret);
+            request.headers.insert(header_name, value);
+        }
+        OutboundAuthKind::ApiKeyQuery { query_name, .. } => {
+            let separator = if request.url.contains('?') { '&' } else { '?' };
+            request.url.push(separator);
+            request.url.push_str(query_name);
+            request.url.push('=');
+            request.url.push_str(
+                &percent_encoding::utf8_percent_encode(&secret, percent_encoding::NON_ALPHANUMERIC)
+                    .to_string(),
+            );
+        }
+        OutboundAuthKind::Unsupported { kind_name, .. } => {
+            return Err(ConnectorRuntimeError::UnsupportedAuthKind {
+                role_name: profile.name,
+                kind: kind_name,
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn resolve_static_endpoint_profile(
+    handle_name: &str,
+    handle: &ConnectorHandleInstance,
+    profile: &EndpointProfileDescriptor,
+) -> Result<ResolvedEndpointProfile, ConnectorRuntimeError> {
+    let base_url = handle
+        .config
+        .get("base_url")
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| ConnectorRuntimeError::InvalidEndpointProfile {
+            role_name: profile.name,
+            reason: format!("connector handle `{handle_name}` is missing `config.base_url`"),
+        })?
+        .to_string();
+
+    let mut default_headers = Vec::new();
+    if let Some(header_map) = handle.config.get("default_headers") {
+        let object = header_map.as_object().ok_or_else(|| {
+            ConnectorRuntimeError::InvalidEndpointProfile {
+                role_name: profile.name,
+                reason: format!(
+                    "connector handle `{handle_name}` has non-object `config.default_headers`"
+                ),
+            }
+        })?;
+        for (name, value) in object {
+            let value =
+                value
+                    .as_str()
+                    .ok_or_else(|| ConnectorRuntimeError::InvalidEndpointProfile {
                         role_name: profile.name,
                         reason: format!(
                             "connector handle `{handle_name}` has non-string header `{name}`"
                         ),
-                    }
-                })?;
-                default_headers.push((name.clone(), value.to_string()));
-            }
-            default_headers.sort_by(|left, right| left.0.cmp(&right.0));
+                    })?;
+            default_headers.push((name.clone(), value.to_string()));
         }
-
-        Ok(ResolvedEndpointProfile {
-            base_url,
-            default_headers,
-        })
+        default_headers.sort_by(|left, right| left.0.cmp(&right.0));
     }
+
+    Ok(ResolvedEndpointProfile {
+        base_url,
+        default_headers,
+    })
 }
 
 fn resolve_secret_ref(secret_ref: &str) -> Result<String> {
@@ -2079,11 +2275,12 @@ fn resolve_secret_ref(secret_ref: &str) -> Result<String> {
         return Ok(value);
     }
 
-    let env_name = format!("LATTICE_SECRET_{}", normalize_secret_ref_env_name(secret_ref));
+    let env_name = format!(
+        "LATTICE_SECRET_{}",
+        normalize_secret_ref_env_name(secret_ref)
+    );
     std::env::var(&env_name).with_context(|| {
-        format!(
-            "missing secret ref `{secret_ref}`; expected env `{secret_ref}` or `{env_name}`"
-        )
+        format!("missing secret ref `{secret_ref}`; expected env `{secret_ref}` or `{env_name}`")
     })
 }
 
@@ -2313,6 +2510,35 @@ mod tests {
         path
     }
 
+    fn lock_from_json(mut value: JsonValue) -> BindingsLock {
+        let hash = compute_lock_content_hash(&value).expect("hash");
+        value["content_hash"] = json!(hash);
+        serde_json::from_value(value).expect("bindings lock")
+    }
+
+    fn connector_runtime_from_json(
+        value: JsonValue,
+        flow_id: &str,
+    ) -> BindingsLockConnectorRuntime {
+        let lock = lock_from_json(value);
+        BindingsLockConnectorRuntime::new(&lock, flow_id).expect("connector runtime")
+    }
+
+    fn connector_scope(
+        flow_id: &str,
+        node_alias: &str,
+        connector_id: &str,
+    ) -> ConnectorBindingScope {
+        ConnectorBindingScope::new(
+            flow_id.to_string(),
+            node_alias.to_string(),
+            format!("tests::{node_alias}"),
+            connector_id.to_string(),
+        )
+    }
+
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn bindings_lock_hash_round_trips() {
         let mut lock = json!({
@@ -2479,7 +2705,10 @@ mod tests {
             .err()
             .expect("expected connector binding reject");
         let msg = err.to_string();
-        assert!(msg.contains("unknown connection `missing_connection`"), "{msg}");
+        assert!(
+            msg.contains("unknown connection `missing_connection`"),
+            "{msg}"
+        );
 
         std::fs::remove_file(&path).ok();
     }
@@ -2560,5 +2789,395 @@ mod tests {
         assert!(msg.contains("isolation wrappers"), "{msg}");
 
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn bindings_lock_rejects_default_binding_connector_mismatch() {
+        let flow_id = "test-flow";
+        let lock = json!({
+            "version": 1,
+            "generated_at": "2025-12-15T00:00:00Z",
+            "content_hash": "",
+            "instances": {},
+            "flows": {
+                flow_id: { "use": {} }
+            },
+            "connector_handles": {
+                "endpoint.github_public": {
+                    "provider_kind": "endpoint.profile.static",
+                    "handle_kind": "endpoint.profile",
+                    "connect": {},
+                    "config": { "base_url": "https://api.github.com" },
+                    "grants": {}
+                }
+            },
+            "connector_connections": {
+                "github_primary": {
+                    "connector_id": "connector.slack.events",
+                    "roles": {
+                        "endpoint_profile.github_default": "endpoint.github_public"
+                    }
+                }
+            },
+            "connector_bindings": {
+                flow_id: {
+                    "defaults": {
+                        "connector.github.issues": "github_primary"
+                    },
+                    "nodes": {}
+                }
+            }
+        });
+
+        let err = BindingsLockConnectorRuntime::new(&lock_from_json(lock), flow_id)
+            .err()
+            .expect("expected connector mismatch");
+        let msg = err.to_string();
+        assert!(msg.contains("targeting `connector.slack.events`"), "{msg}");
+    }
+
+    #[test]
+    fn bindings_lock_rejects_unknown_connector_role_kind() {
+        let flow_id = "test-flow";
+        let lock = json!({
+            "version": 1,
+            "generated_at": "2025-12-15T00:00:00Z",
+            "content_hash": "",
+            "instances": {},
+            "flows": {
+                flow_id: { "use": {} }
+            },
+            "connector_handles": {
+                "endpoint.github_public": {
+                    "provider_kind": "endpoint.profile.static",
+                    "handle_kind": "endpoint.profile",
+                    "connect": {},
+                    "config": { "base_url": "https://api.github.com" },
+                    "grants": {}
+                }
+            },
+            "connector_connections": {
+                "github_primary": {
+                    "connector_id": "connector.github.issues",
+                    "roles": {
+                        "mystery.github_default": "endpoint.github_public"
+                    }
+                }
+            },
+            "connector_bindings": {
+                flow_id: {
+                    "defaults": {
+                        "connector.github.issues": "github_primary"
+                    },
+                    "nodes": {}
+                }
+            }
+        });
+
+        let err = BindingsLockConnectorRuntime::new(&lock_from_json(lock), flow_id)
+            .err()
+            .expect("expected role kind reject");
+        let msg = err.to_string();
+        assert!(msg.contains("unsupported role kind `mystery`"), "{msg}");
+    }
+
+    #[test]
+    fn bindings_lock_rejects_role_provider_family_mismatch() {
+        let flow_id = "test-flow";
+        let lock = json!({
+            "version": 1,
+            "generated_at": "2025-12-15T00:00:00Z",
+            "content_hash": "",
+            "instances": {},
+            "flows": {
+                flow_id: { "use": {} }
+            },
+            "connector_handles": {
+                "auth.github_secret": {
+                    "provider_kind": "auth.static_secret",
+                    "handle_kind": "raw.secret",
+                    "connect": { "secret_ref": "github_secret" },
+                    "config": {},
+                    "grants": {}
+                }
+            },
+            "connector_connections": {
+                "github_primary": {
+                    "connector_id": "connector.github.issues",
+                    "roles": {
+                        "endpoint_profile.github_default": "auth.github_secret"
+                    }
+                }
+            },
+            "connector_bindings": {
+                flow_id: {
+                    "defaults": {
+                        "connector.github.issues": "github_primary"
+                    },
+                    "nodes": {}
+                }
+            }
+        });
+
+        let err = BindingsLockConnectorRuntime::new(&lock_from_json(lock), flow_id)
+            .err()
+            .expect("expected role/provider mismatch");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("expects the matching provider family"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn bindings_lock_rejects_static_secret_handle_without_secret_ref() {
+        let flow_id = "test-flow";
+        let lock = json!({
+            "version": 1,
+            "generated_at": "2025-12-15T00:00:00Z",
+            "content_hash": "",
+            "instances": {},
+            "flows": {
+                flow_id: { "use": {} }
+            },
+            "connector_handles": {
+                "auth.github_secret": {
+                    "provider_kind": "auth.static_secret",
+                    "handle_kind": "raw.secret",
+                    "connect": {},
+                    "config": {},
+                    "grants": {}
+                }
+            },
+            "connector_connections": {
+                "github_primary": {
+                    "connector_id": "connector.github.issues",
+                    "roles": {
+                        "outbound_auth.github_pat": "auth.github_secret"
+                    }
+                }
+            },
+            "connector_bindings": {
+                flow_id: {
+                    "defaults": {
+                        "connector.github.issues": "github_primary"
+                    },
+                    "nodes": {}
+                }
+            }
+        });
+
+        let err = BindingsLockConnectorRuntime::new(&lock_from_json(lock), flow_id)
+            .err()
+            .expect("expected missing secret_ref reject");
+        let msg = err.to_string();
+        assert!(msg.contains("connect.secret_ref"), "{msg}");
+    }
+
+    #[test]
+    fn bindings_lock_rejects_static_endpoint_header_values_that_are_not_strings() {
+        let flow_id = "test-flow";
+        let lock = json!({
+            "version": 1,
+            "generated_at": "2025-12-15T00:00:00Z",
+            "content_hash": "",
+            "instances": {},
+            "flows": {
+                flow_id: { "use": {} }
+            },
+            "connector_handles": {
+                "endpoint.github_public": {
+                    "provider_kind": "endpoint.profile.static",
+                    "handle_kind": "endpoint.profile",
+                    "connect": {},
+                    "config": {
+                        "base_url": "https://api.github.com",
+                        "default_headers": {
+                            "Accept": 42
+                        }
+                    },
+                    "grants": {}
+                }
+            },
+            "connector_connections": {
+                "github_primary": {
+                    "connector_id": "connector.github.issues",
+                    "roles": {
+                        "endpoint_profile.github_default": "endpoint.github_public"
+                    }
+                }
+            },
+            "connector_bindings": {
+                flow_id: {
+                    "defaults": {
+                        "connector.github.issues": "github_primary"
+                    },
+                    "nodes": {}
+                }
+            }
+        });
+
+        let err = BindingsLockConnectorRuntime::new(&lock_from_json(lock), flow_id)
+            .err()
+            .expect("expected header value reject");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("non-string `config.default_headers.Accept`"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn bindings_lock_runtime_prefers_node_binding_over_connector_default() {
+        let flow_id = "test-flow";
+        let runtime = connector_runtime_from_json(
+            json!({
+                "version": 1,
+                "generated_at": "2025-12-15T00:00:00Z",
+                "content_hash": "",
+                "instances": {},
+                "flows": {
+                    flow_id: { "use": {} }
+                },
+                "connector_handles": {
+                    "endpoint.github_default": {
+                        "provider_kind": "endpoint.profile.static",
+                        "handle_kind": "endpoint.profile",
+                        "connect": {},
+                        "config": { "base_url": "https://default.example.test" },
+                        "grants": {}
+                    },
+                    "endpoint.github_override": {
+                        "provider_kind": "endpoint.profile.static",
+                        "handle_kind": "endpoint.profile",
+                        "connect": {},
+                        "config": { "base_url": "https://node.example.test" },
+                        "grants": {}
+                    }
+                },
+                "connector_connections": {
+                    "github_default": {
+                        "connector_id": "connector.github.issues",
+                        "roles": {
+                            "endpoint_profile.github_default": "endpoint.github_default"
+                        }
+                    },
+                    "github_override": {
+                        "connector_id": "connector.github.issues",
+                        "roles": {
+                            "endpoint_profile.github_default": "endpoint.github_override"
+                        }
+                    }
+                },
+                "connector_bindings": {
+                    flow_id: {
+                        "defaults": {
+                            "connector.github.issues": "github_default"
+                        },
+                        "nodes": {
+                            "target_node": "github_override"
+                        }
+                    }
+                }
+            }),
+            flow_id,
+        );
+        let profile = EndpointProfileDescriptor {
+            connector_id: "connector.github.issues",
+            name: "github_default",
+            env_base_url_var: "LATTICE_CONNECTOR_ENDPOINT_GITHUB_DEFAULT_BASE_URL",
+            base_url: "https://ignored.example.test",
+            default_headers: &[],
+        };
+
+        let resolved = RuntimeBuilder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(runtime.resolve_endpoint_profile(
+                &connector_scope(flow_id, "target_node", "connector.github.issues"),
+                &profile,
+            ))
+            .expect("endpoint profile");
+
+        assert_eq!(resolved.base_url, "https://node.example.test");
+    }
+
+    #[test]
+    fn bindings_lock_runtime_applies_query_auth_from_static_secret_handle() {
+        let _env_lock = ENV_LOCK.lock().expect("env lock");
+        let flow_id = "test-flow";
+        let runtime = connector_runtime_from_json(
+            json!({
+                "version": 1,
+                "generated_at": "2025-12-15T00:00:00Z",
+                "content_hash": "",
+                "instances": {},
+                "flows": {
+                    flow_id: { "use": {} }
+                },
+                "connector_handles": {
+                    "auth.demo_secret": {
+                        "provider_kind": "auth.static_secret",
+                        "handle_kind": "raw.secret",
+                        "connect": { "secret_ref": "demo_query_secret" },
+                        "config": {},
+                        "grants": {}
+                    }
+                },
+                "connector_connections": {
+                    "demo_connection": {
+                        "connector_id": "connector.demo",
+                        "roles": {
+                            "outbound_auth.demo_query": "auth.demo_secret"
+                        }
+                    }
+                },
+                "connector_bindings": {
+                    flow_id: {
+                        "defaults": {
+                            "connector.demo": "demo_connection"
+                        },
+                        "nodes": {}
+                    }
+                }
+            }),
+            flow_id,
+        );
+        let profile = OutboundAuthProfileDescriptor {
+            connector_id: "connector.demo",
+            name: "demo_query",
+            env_var: "IGNORED_IN_LOCK_RUNTIME",
+            kind: OutboundAuthKind::ApiKeyQuery {
+                query_name: "token",
+                handle_kind: "raw.secret",
+            },
+        };
+        let mut request = capabilities::http::HttpRequest::new(
+            capabilities::http::HttpMethod::Get,
+            "https://example.test/items?existing=1",
+        );
+
+        unsafe {
+            std::env::set_var("demo_query_secret", "abc 123");
+        }
+        let result = RuntimeBuilder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(runtime.apply_outbound_auth(
+                &connector_scope(flow_id, "node", "connector.demo"),
+                &profile,
+                &mut request,
+            ));
+        unsafe {
+            std::env::remove_var("demo_query_secret");
+        }
+
+        result.expect("auth application");
+        assert_eq!(
+            request.url,
+            "https://example.test/items?existing=1&token=abc%20123"
+        );
     }
 }
