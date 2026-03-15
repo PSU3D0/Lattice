@@ -274,6 +274,19 @@ impl Parse for ResourceList {
     }
 }
 
+struct ConnectorOpList {
+    entries: Vec<Path>,
+}
+
+impl Parse for ConnectorOpList {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let punctuated = Punctuated::<Path, Token![,]>::parse_terminated(input)?;
+        Ok(Self {
+            entries: punctuated.into_iter().collect(),
+        })
+    }
+}
+
 struct MetaList {
     entries: Vec<Meta>,
 }
@@ -299,6 +312,7 @@ struct NodeArgs {
     input_schema: Option<LitStr>,
     output_schema: Option<LitStr>,
     resources: Vec<ResourceSpec>,
+    connector_ops: Vec<Path>,
     checkpointable: Option<LitBool>,
     replayable: Option<LitBool>,
     halts: Option<LitBool>,
@@ -326,6 +340,7 @@ impl NodeArgs {
             input_schema: None,
             output_schema: None,
             resources: Vec::new(),
+            connector_ops: Vec::new(),
             checkpointable: None,
             replayable: None,
             halts: None,
@@ -458,6 +473,11 @@ impl NodeArgs {
                         "resources" => {
                             let entries = syn::parse2::<ResourceList>(list.tokens.clone())?.entries;
                             parsed.resources.extend(entries.into_iter());
+                        }
+                        "connector_ops" | "connectorOps" => {
+                            let entries =
+                                syn::parse2::<ConnectorOpList>(list.tokens.clone())?.entries;
+                            parsed.connector_ops.extend(entries.into_iter());
                         }
                         "idempotency" => {
                             let args = syn::parse2::<MetaList>(list.tokens.clone())?.entries;
@@ -610,6 +630,8 @@ fn node_impl(
     let output_type_ident = format_ident!("{}_Output", fn_name);
     let accessor_ident = format_ident!("{}_node_spec", fn_name);
     let register_ident = format_ident!("{}_register", fn_name);
+    let resolved_spec_ident =
+        format_ident!("{}_NODE_SPEC_RESOLVED", fn_name.to_string().to_uppercase());
 
     let identifier_expr = config
         .identifier
@@ -646,8 +668,24 @@ fn node_impl(
     validate_determinism_hints(&determinism_hints, determinism)?;
     let determinism_hints_expr = hint_array_tokens(&determinism_hints);
     let effect_hints_expr = hint_array_tokens(&effect_hints);
+    let connector_ops_expr = if config.connector_ops.is_empty() {
+        quote!(&[])
+    } else {
+        let entries = config.connector_ops.iter().map(|path| quote!(&#path::META));
+        quote!(&[#(#entries),*])
+    };
     let effects_expr = &effects.tokens;
     let determinism_expr = &determinism.tokens;
+    let effects_declared_expr = if config.effects_provided {
+        quote!(true)
+    } else {
+        quote!(false)
+    };
+    let determinism_declared_expr = if config.determinism_provided {
+        quote!(true)
+    } else {
+        quote!(false)
+    };
 
     let checkpointable = config
         .checkpointable
@@ -746,6 +784,9 @@ fn node_impl(
             determinism: #determinism_expr,
             determinism_hints: #determinism_hints_expr,
             effect_hints: #effect_hints_expr,
+            connector_ops: #connector_ops_expr,
+            effects_declared: #effects_declared_expr,
+            determinism_declared: #determinism_declared_expr,
             durability: ::dag_core::DurabilityProfile {
                 checkpointable: #checkpointable_expr,
                 replayable: #replayable_expr,
@@ -754,9 +795,13 @@ fn node_impl(
             idempotency: #idempotency_expr,
         };
 
+        #[allow(non_upper_case_globals)]
+        static #resolved_spec_ident: ::std::sync::OnceLock<::dag_core::NodeSpec> =
+            ::std::sync::OnceLock::new();
+
         #[allow(dead_code)]
         pub fn #accessor_ident() -> &'static ::dag_core::NodeSpec {
-            &#spec_ident
+            #resolved_spec_ident.get_or_init(|| #spec_ident.materialize())
         }
 
         #[cfg(feature = "host-bundle")]
@@ -784,10 +829,11 @@ fn metadata_warning_tokens(config: &NodeArgs, fn_name: &Ident) -> TokenStream2 {
     if config.summary.is_none() {
         tokens.extend(deprecated_warning_tokens(fn_name, "summary"));
     }
-    if !config.effects_provided {
+    let connector_ops_declared = !config.connector_ops.is_empty();
+    if !config.effects_provided && !connector_ops_declared {
         tokens.extend(deprecated_warning_tokens(fn_name, "effects"));
     }
-    if !config.determinism_provided {
+    if !config.determinism_provided && !connector_ops_declared {
         tokens.extend(deprecated_warning_tokens(fn_name, "determinism"));
     }
     tokens
@@ -1581,6 +1627,9 @@ fn subflow_spec_from_path(path: &Path) -> Result<TokenStream2> {
                     determinism: descriptor.determinism,
                     determinism_hints: descriptor.determinism_hints,
                     effect_hints: descriptor.effect_hints,
+                    connector_ops: &[],
+                    effects_declared: true,
+                    determinism_declared: true,
                     durability: descriptor.durability,
                     idempotency: ::dag_core::IdempotencySpecStatic::empty(),
                 }

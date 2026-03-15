@@ -77,6 +77,11 @@ It should not be reduced to:
 This is the connector-specific application of:
 - `impl-docs/spec/node-vs-capability-surface.md`
 
+For the follow-on design that lets the same semantic connector action be reused
+both as a canonical graph-visible node and as an in-node typed operation inside
+custom Rust nodes, see:
+- `impl-docs/spec/connector-op-reuse-and-node-declaration.md`
+
 ## Connector family decomposition
 
 A connector family should be decomposed into the following conceptual surfaces.

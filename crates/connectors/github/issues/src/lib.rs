@@ -2,12 +2,15 @@ pub mod ext;
 pub mod generated;
 pub mod runtime;
 
-pub use generated::actions::*;
 pub use generated::manifest::*;
 pub use generated::profiles::*;
+pub use generated::types::*;
+pub use generated::actions::*;
+pub mod ops {
+    pub use crate::generated::ops::*;
+}
 #[cfg(feature = "host-bundle")]
 pub use generated::register::register_all;
-pub use generated::types::*;
 
 pub const CONNECTOR_FAMILY: &str = "connector.github.issues";
 pub const GITHUB_ISSUES_CREATE_IDENTIFIER: &str = "connector.github.issues.create";

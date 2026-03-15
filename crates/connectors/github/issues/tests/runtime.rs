@@ -7,6 +7,8 @@ use connector_github_issues::{
     GithubIssueCreateInput, GithubIssueGetInput, GithubIssueState, GithubIssuesListInput,
     github_issues_create, github_issues_get, github_issues_list,
 };
+use dag_core::{Effects, NodeError, NodeResult};
+use dag_macros::def_node;
 use httpmock::Method::{GET, POST};
 use httpmock::MockServer;
 
@@ -64,6 +66,127 @@ fn http_resources() -> Arc<ResourceBag> {
                 "connector.github.issues",
             )),
     )
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct MaybeCreateIssueInput {
+    should_create: bool,
+    owner: String,
+    repo: String,
+    title: String,
+    body: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+struct MaybeCreateIssueOutput {
+    created: bool,
+    issue_number: Option<u64>,
+}
+
+#[def_node(
+    name = "MaybeCreateIssue",
+    summary = "Custom node that reuses the generated GitHub issue create connector operation",
+    connector_ops(connector_github_issues::ops::GithubIssuesCreate)
+)]
+async fn maybe_create_issue(input: MaybeCreateIssueInput) -> NodeResult<MaybeCreateIssueOutput> {
+    if !input.should_create {
+        return Ok(MaybeCreateIssueOutput {
+            created: false,
+            issue_number: None,
+        });
+    }
+
+    let created =
+        connector_github_issues::ops::GithubIssuesCreate::invoke(&GithubIssueCreateInput {
+            owner: input.owner,
+            repo: input.repo,
+            title: input.title,
+            body: input.body,
+        })
+        .await
+        .map_err(|err| NodeError::new(err.to_string()))?;
+
+    Ok(MaybeCreateIssueOutput {
+        created: true,
+        issue_number: Some(created.number),
+    })
+}
+
+#[test]
+fn custom_node_spec_auto_hoists_connector_op_requirements() {
+    let spec = maybe_create_issue_node_spec();
+    assert_eq!(spec.effects, Effects::Effectful);
+    assert_eq!(spec.determinism, dag_core::Determinism::BestEffort);
+    assert!(
+        spec.effect_hints
+            .contains(&capabilities::http::HINT_HTTP_WRITE)
+    );
+    assert!(
+        spec.connector_ops
+            .iter()
+            .any(|op| op.operation_id == "connector.github.issues.create")
+    );
+
+    let generated = connector_github_issues::github_issues_create_node_spec();
+    assert_eq!(generated.effects, Effects::Effectful);
+    assert_eq!(generated.determinism, dag_core::Determinism::BestEffort);
+    assert!(
+        generated
+            .effect_hints
+            .contains(&capabilities::http::HINT_HTTP_WRITE)
+    );
+    assert!(
+        generated
+            .connector_ops
+            .iter()
+            .any(|op| op.operation_id == "connector.github.issues.create")
+    );
+}
+
+#[tokio::test]
+async fn custom_node_reuses_generated_connector_operation() {
+    let _env_lock = ENV_LOCK.lock().expect("env lock");
+    let server = MockServer::start();
+    let _endpoint = EnvGuard::set(ENDPOINT_ENV, &server.base_url());
+    let _auth = EnvGuard::set(AUTH_ENV, "super-secret-token");
+
+    let mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/repos/octo/demo/issues")
+            .header("authorization", "Bearer super-secret-token")
+            .json_body_obj(&serde_json::json!({
+                "title": "created from custom node",
+                "body": "wrapped connector op"
+            }));
+        then.status(201).json_body_obj(&serde_json::json!({
+            "number": 707,
+            "title": "created from custom node",
+            "state": "open",
+            "html_url": "https://example.test/issues/707"
+        }));
+    });
+
+    let output = context::with_resources(http_resources(), async {
+        maybe_create_issue(MaybeCreateIssueInput {
+            should_create: true,
+            owner: "octo".to_string(),
+            repo: "demo".to_string(),
+            title: "created from custom node".to_string(),
+            body: Some("wrapped connector op".to_string()),
+        })
+        .await
+        .expect("custom node succeeds")
+    })
+    .await;
+
+    mock.assert();
+    assert_eq!(
+        output,
+        MaybeCreateIssueOutput {
+            created: true,
+            issue_number: Some(707),
+        }
+    );
 }
 
 #[tokio::test]

@@ -1,6 +1,4 @@
-use crate::runtime::transport::{
-    EndpointProfileDescriptor, OutboundAuthKind, OutboundAuthProfileDescriptor,
-};
+use crate::runtime::transport::{EndpointProfileDescriptor, OutboundAuthKind, OutboundAuthProfileDescriptor};
 
 pub const GITHUB_DEFAULT_ENDPOINT_PROFILE: EndpointProfileDescriptor = EndpointProfileDescriptor {
     connector_id: "connector.github.issues",
@@ -17,7 +15,5 @@ pub const GITHUB_PAT_OUTBOUND_AUTH: OutboundAuthProfileDescriptor = OutboundAuth
     connector_id: "connector.github.issues",
     name: "github_pat",
     env_var: "LATTICE_CONNECTOR_AUTH_GITHUB_PAT",
-    kind: OutboundAuthKind::Bearer {
-        handle_kind: "http.bearer",
-    },
+    kind: OutboundAuthKind::Bearer { handle_kind: "http.bearer" },
 };

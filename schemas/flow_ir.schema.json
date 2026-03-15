@@ -85,6 +85,59 @@
       ],
       "type": "object"
     },
+    "ConnectorOpRefIR": {
+      "description": "Serializable connector operation reference emitted into Flow IR.",
+      "properties": {
+        "connector_id": {
+          "type": "string"
+        },
+        "operation_id": {
+          "type": "string"
+        },
+        "roles": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ConnectorRoleRequirementIR"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "connector_id",
+        "operation_id"
+      ],
+      "type": "object"
+    },
+    "ConnectorRoleKindDecl": {
+      "description": "Declarative connector role kinds used by node and connector-op metadata.",
+      "enum": [
+        "outbound_auth",
+        "provisioning_auth",
+        "inbound_verifier",
+        "endpoint_profile"
+      ],
+      "type": "string"
+    },
+    "ConnectorRoleRequirementIR": {
+      "description": "Serializable connector role requirement emitted into Flow IR.",
+      "properties": {
+        "expected_handle_kind": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/ConnectorRoleKindDecl"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "expected_handle_kind",
+        "kind",
+        "name"
+      ],
+      "type": "object"
+    },
     "ControlSurfaceIR": {
       "description": "Control surface metadata for branching/looping constructs.",
       "properties": {
@@ -758,6 +811,14 @@
         "alias": {
           "description": "Alias used within the workflow definition.",
           "type": "string"
+        },
+        "connectorOps": {
+          "default": [],
+          "description": "Structured connector operations declared for the node.",
+          "items": {
+            "$ref": "#/definitions/ConnectorOpRefIR"
+          },
+          "type": "array"
         },
         "determinism": {
           "allOf": [

@@ -652,8 +652,8 @@ mod tests {
 
     use anyhow::Result;
     use dag_core::{
-        Determinism, DurabilityProfile, Effects, FlowBuilder, NodeError, NodeKind, NodeSpec,
-        Profile, SchemaSpec,
+        Determinism, DurabilityProfile, Effects, FlowBuilder, IdempotencySpecStatic, NodeError,
+        NodeKind, NodeSpec, Profile, SchemaSpec,
     };
     use kernel_exec::{FlowExecutor, NodeRegistry};
     use kernel_plan::validate;
@@ -907,7 +907,11 @@ mod tests {
             determinism: Determinism::Strict,
             determinism_hints: &[],
             effect_hints: &[],
+            connector_ops: &[],
+            effects_declared: true,
+            determinism_declared: true,
             durability: DurabilityProfile::default(),
+            idempotency: IdempotencySpecStatic::empty(),
         };
 
         let worker_spec = NodeSpec::inline(

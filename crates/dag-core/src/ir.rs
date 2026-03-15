@@ -142,6 +142,54 @@ impl SchemaSpec {
     }
 }
 
+/// Declarative connector role kinds used by node and connector-op metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectorRoleKindDecl {
+    OutboundAuth,
+    ProvisioningAuth,
+    InboundVerifier,
+    EndpointProfile,
+}
+
+/// Static connector role requirement emitted by connector crates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConnectorRoleRequirement {
+    pub kind: ConnectorRoleKindDecl,
+    pub name: &'static str,
+    pub expected_handle_kind: &'static str,
+}
+
+/// Static reusable connector operation metadata emitted by connector crates.
+#[derive(Debug, Clone)]
+pub struct ConnectorOpMetadata {
+    pub operation_id: &'static str,
+    pub connector_id: &'static str,
+    pub summary: &'static str,
+    pub min_effects: Effects,
+    pub max_determinism: Determinism,
+    pub determinism_hints: &'static [&'static str],
+    pub effect_hints: &'static [&'static str],
+    pub roles: &'static [ConnectorRoleRequirement],
+}
+
+/// Serializable connector role requirement emitted into Flow IR.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ConnectorRoleRequirementIR {
+    pub kind: ConnectorRoleKindDecl,
+    pub name: String,
+    pub expected_handle_kind: String,
+}
+
+/// Serializable connector operation reference emitted into Flow IR.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ConnectorOpRefIR {
+    pub operation_id: String,
+    pub connector_id: String,
+    #[serde(default)]
+    pub roles: Vec<ConnectorRoleRequirementIR>,
+}
+
 /// Compile-time node specification produced by macros.
 #[derive(Debug, Clone)]
 pub struct NodeSpec {
@@ -165,6 +213,12 @@ pub struct NodeSpec {
     pub determinism_hints: &'static [&'static str],
     /// Effect hints emitted by macros or plugins.
     pub effect_hints: &'static [&'static str],
+    /// Reusable connector operations this node may invoke internally.
+    pub connector_ops: &'static [&'static ConnectorOpMetadata],
+    /// Whether effects were explicitly declared by the author.
+    pub effects_declared: bool,
+    /// Whether determinism was explicitly declared by the author.
+    pub determinism_declared: bool,
     /// Durability profile metadata (checkpoint/halts).
     pub durability: DurabilityProfile,
     /// Optional idempotency declaration.
@@ -219,12 +273,143 @@ impl NodeSpec {
             determinism,
             determinism_hints,
             effect_hints,
+            connector_ops: &[],
+            effects_declared: true,
+            determinism_declared: true,
             durability: DurabilityProfile {
                 checkpointable: true,
                 replayable: true,
                 halts: false,
             },
             idempotency: IdempotencySpecStatic::empty(),
+        }
+    }
+
+    /// Resolve effective effects after connector operation hoisting.
+    pub fn resolved_effects(&self) -> Effects {
+        if self.effects_declared {
+            return self.effects;
+        }
+
+        self.connector_ops.iter().fold(self.effects, |current, op| {
+            if op.min_effects.rank() > current.rank() {
+                op.min_effects
+            } else {
+                current
+            }
+        })
+    }
+
+    /// Resolve effective determinism after connector operation hoisting.
+    pub fn resolved_determinism(&self) -> Determinism {
+        if self.determinism_declared {
+            return self.determinism;
+        }
+
+        self.connector_ops
+            .iter()
+            .fold(self.determinism, |current, op| {
+                if op.max_determinism.rank() > current.rank() {
+                    op.max_determinism
+                } else {
+                    current
+                }
+            })
+    }
+
+    /// Resolve determinism hints including connector operation requirements.
+    pub fn resolved_determinism_hints(&self) -> Vec<&'static str> {
+        let mut resolved = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+
+        for hint in self.determinism_hints {
+            if seen.insert(*hint) {
+                resolved.push(*hint);
+            }
+        }
+        for op in self.connector_ops {
+            for hint in op.determinism_hints {
+                if seen.insert(*hint) {
+                    resolved.push(*hint);
+                }
+            }
+        }
+
+        resolved
+    }
+
+    /// Resolve effect hints including connector operation requirements.
+    pub fn resolved_effect_hints(&self) -> Vec<&'static str> {
+        let mut resolved = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+
+        for hint in self.effect_hints {
+            if seen.insert(*hint) {
+                resolved.push(*hint);
+            }
+        }
+        for op in self.connector_ops {
+            for hint in op.effect_hints {
+                if seen.insert(*hint) {
+                    resolved.push(*hint);
+                }
+            }
+        }
+
+        resolved
+    }
+
+    /// Convert connector operation declarations into Flow IR references.
+    pub fn connector_op_refs(&self) -> Vec<ConnectorOpRefIR> {
+        self.connector_ops
+            .iter()
+            .map(|op| ConnectorOpRefIR {
+                operation_id: op.operation_id.to_string(),
+                connector_id: op.connector_id.to_string(),
+                roles: op
+                    .roles
+                    .iter()
+                    .map(|role| ConnectorRoleRequirementIR {
+                        kind: role.kind,
+                        name: role.name.to_string(),
+                        expected_handle_kind: role.expected_handle_kind.to_string(),
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
+
+    /// Materialize a node spec with connector operation envelopes hoisted.
+    pub fn materialize(&self) -> Self {
+        let determinism_hints = self.resolved_determinism_hints();
+        let effect_hints = self.resolved_effect_hints();
+        let determinism_hints = if determinism_hints.is_empty() {
+            &[] as &[&'static str]
+        } else {
+            Box::leak(determinism_hints.into_boxed_slice())
+        };
+        let effect_hints = if effect_hints.is_empty() {
+            &[] as &[&'static str]
+        } else {
+            Box::leak(effect_hints.into_boxed_slice())
+        };
+
+        Self {
+            identifier: self.identifier,
+            name: self.name,
+            kind: self.kind,
+            summary: self.summary,
+            in_schema: self.in_schema,
+            out_schema: self.out_schema,
+            effects: self.resolved_effects(),
+            determinism: self.resolved_determinism(),
+            determinism_hints,
+            effect_hints,
+            connector_ops: self.connector_ops,
+            effects_declared: true,
+            determinism_declared: true,
+            durability: self.durability.clone(),
+            idempotency: self.idempotency,
         }
     }
 }
@@ -311,6 +496,9 @@ pub struct NodeIR {
     /// Effect hints recorded during macro expansion.
     #[serde(rename = "effectHints", default)]
     pub effect_hints: Vec<String>,
+    /// Structured connector operations declared for the node.
+    #[serde(rename = "connectorOps", default)]
+    pub connector_ops: Vec<ConnectorOpRefIR>,
     /// Optional expanded subflow IR for analysis-only views.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subflow_ir: Option<Box<FlowIR>>,

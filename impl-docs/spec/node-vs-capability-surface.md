@@ -252,12 +252,18 @@ Potential future follow-on work:
 - improve capability declaration ergonomics for custom nodes,
 - add lints or helper annotations for capability-heavy nodes,
 - add a separate decision note if we later want finer-grained static declaration
-  of in-node capability use.
+  of in-node capability use,
+- formalize reusable connector-operation declarations for custom nodes and thin
+  connector-node wrappers.
+
+That connector-specific follow-on is now further developed in:
+- `impl-docs/spec/connector-op-reuse-and-node-declaration.md`
 
 ## Cross references
 
 - `impl-docs/spec/stdlib-and-node-registry.md`
 - `impl-docs/spec/capabilities-and-binding.md`
+- `impl-docs/spec/connector-op-reuse-and-node-declaration.md`
 - `impl-docs/spec/workspace-capability.md`
 - `impl-docs/spec/connector-and-plugin-model.md`
 - `impl-docs/spec/typed-boundary-policy.md`

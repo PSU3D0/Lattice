@@ -3144,6 +3144,32 @@ mod tests {
         struct DbHandle;
         #[allow(dead_code)]
         struct Noop;
+        #[allow(dead_code)]
+        struct DemoConnectorWrite;
+
+        impl DemoConnectorWrite {
+            const META: dag_core::ConnectorOpMetadata = dag_core::ConnectorOpMetadata {
+                operation_id: "connector.demo.write",
+                connector_id: "connector.demo",
+                summary: "Write through demo connector op",
+                min_effects: Effects::Effectful,
+                max_determinism: Determinism::BestEffort,
+                determinism_hints: &[capabilities::http::HINT_HTTP],
+                effect_hints: &[capabilities::http::HINT_HTTP_WRITE],
+                roles: &[
+                    dag_core::ConnectorRoleRequirement {
+                        kind: dag_core::ConnectorRoleKindDecl::EndpointProfile,
+                        name: "demo_default",
+                        expected_handle_kind: "endpoint.profile",
+                    },
+                    dag_core::ConnectorRoleRequirement {
+                        kind: dag_core::ConnectorRoleKindDecl::OutboundAuth,
+                        name: "demo_auth",
+                        expected_handle_kind: "http.bearer",
+                    },
+                ],
+            };
+        }
 
         #[allow(dead_code)]
         #[def_node(
@@ -3184,6 +3210,18 @@ mod tests {
             Ok(())
         }
 
+        #[allow(dead_code)]
+        #[def_node(
+            name = "ConnectorWriterViaOp",
+            summary = "Connector-backed write with an intentionally conflicting effect declaration",
+            effects = "Pure",
+            determinism = "BestEffort",
+            connector_ops(DemoConnectorWrite)
+        )]
+        async fn connector_writer_via_op(_: ()) -> NodeResult<()> {
+            Ok(())
+        }
+
         fn single_node_flow(alias: &str, spec: &'static NodeSpec) -> FlowIR {
             let mut builder = FlowBuilder::new(alias, Version::new(1, 0, 0), Profile::Web);
             builder.add_node(alias, spec).expect("add node");
@@ -3206,6 +3244,20 @@ mod tests {
                 node.effects = Effects::Pure;
             }
             let diagnostics = validate(&flow).expect_err("expected effect mismatch diagnostic");
+            assert!(
+                diagnostics.iter().any(|d| d.code.code == "EFFECT201"),
+                "expected EFFECT201, got: {:?}",
+                diagnostics
+            );
+        }
+
+        #[test]
+        fn validator_flags_effect_conflict_from_connector_op_hint() {
+            capabilities::http::ensure_registered();
+            let mut flow =
+                single_node_flow("connector_writer", connector_writer_via_op_node_spec());
+            ensure_idempotency(&mut flow, "connector_writer");
+            let diagnostics = validate(&flow).expect_err("expected connector-op effect mismatch");
             assert!(
                 diagnostics.iter().any(|d| d.code.code == "EFFECT201"),
                 "expected EFFECT201, got: {:?}",

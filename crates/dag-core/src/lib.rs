@@ -199,6 +199,9 @@ mod tests {
             determinism: Determinism::Strict,
             determinism_hints: &[],
             effect_hints: &[],
+            connector_ops: &[],
+            effects_declared: true,
+            determinism_declared: true,
             durability: DurabilityProfile::default(),
             idempotency: IdempotencySpecStatic::empty(),
         };

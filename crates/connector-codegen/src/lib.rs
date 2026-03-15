@@ -77,10 +77,21 @@ pub fn generate_files(
         contents: emit_generated_register_rs(&actions),
     });
     files.push(GeneratedFile {
+        relative_path: "src/generated/ops/mod.rs".to_string(),
+        contents: emit_generated_ops_mod_rs(&actions),
+    });
+    files.push(GeneratedFile {
         relative_path: "src/generated/actions/mod.rs".to_string(),
         contents: emit_generated_actions_mod_rs(&actions),
     });
     for action in &actions {
+        files.push(GeneratedFile {
+            relative_path: format!(
+                "src/generated/ops/{}.rs",
+                generated_module_name(&action.identifier)
+            ),
+            contents: emit_op_file(manifest, action),
+        });
         files.push(GeneratedFile {
             relative_path: format!(
                 "src/generated/actions/{}.rs",
@@ -174,6 +185,9 @@ fn emit_lib_rs(manifest: &ConnectorManifest, actions: &[&ActionSurface]) -> Stri
     out.push_str("pub use generated::profiles::*;\n");
     out.push_str("pub use generated::types::*;\n");
     out.push_str("pub use generated::actions::*;\n");
+    out.push_str("pub mod ops {\n");
+    out.push_str("    pub use crate::generated::ops::*;\n");
+    out.push_str("}\n");
     out.push_str("#[cfg(feature = \"host-bundle\")]\n");
     out.push_str("pub use generated::register::register_all;\n");
     out.push_str(&format!(
@@ -208,7 +222,7 @@ pub use connectors_std::run_action_from_current;
 }
 
 fn emit_generated_mod_rs() -> String {
-    "pub mod actions;\npub mod manifest;\npub mod profiles;\n#[cfg(feature = \"host-bundle\")]\npub mod register;\npub mod types;\n".to_string()
+    "pub mod actions;\npub mod manifest;\npub mod ops;\npub mod profiles;\n#[cfg(feature = \"host-bundle\")]\npub mod register;\npub mod types;\n".to_string()
 }
 
 fn emit_generated_manifest_rs(manifest: &ConnectorManifest) -> String {
@@ -359,6 +373,20 @@ fn emit_generated_register_rs(actions: &[&ActionSurface]) -> String {
     out
 }
 
+fn emit_generated_ops_mod_rs(actions: &[&ActionSurface]) -> String {
+    let mut out = String::new();
+    for action in actions {
+        let module_name = generated_module_name(&action.identifier);
+        out.push_str(&format!("mod {};\n", module_name));
+    }
+    out.push('\n');
+    for action in actions {
+        let module_name = generated_module_name(&action.identifier);
+        out.push_str(&format!("pub use {}::*;\n", module_name));
+    }
+    out
+}
+
 fn emit_generated_actions_mod_rs(actions: &[&ActionSurface]) -> String {
     let mut out = String::new();
     for action in actions {
@@ -373,8 +401,8 @@ fn emit_generated_actions_mod_rs(actions: &[&ActionSurface]) -> String {
     out
 }
 
-fn emit_action_file(manifest: &ConnectorManifest, action: &ActionSurface) -> String {
-    let function_name = to_snake_case(&action.name);
+fn emit_op_file(manifest: &ConnectorManifest, action: &ActionSurface) -> String {
+    let op_struct = rust_type_name(&action.name);
     let request_const = format!("{}_REQUEST", to_upper_snake_case(&action.name));
     let response_const = format!("{}_RESPONSE", to_upper_snake_case(&action.name));
     let action_const = format!("{}_ACTION", to_upper_snake_case(&action.name));
@@ -396,8 +424,6 @@ fn emit_action_file(manifest: &ConnectorManifest, action: &ActionSurface) -> Str
         .unwrap_or_else(|| "None".to_string());
 
     let mut out = String::new();
-    out.push_str("use dag_core::{NodeError, NodeResult};\n");
-    out.push_str("use dag_macros::def_node;\n\n");
     out.push_str(&format!(
         "use crate::generated::types::{{{}, {}}};\n",
         rust_type_name(&action.input),
@@ -513,6 +539,72 @@ fn emit_action_file(manifest: &ConnectorManifest, action: &ActionSurface) -> Str
     out.push_str(&format!("    response: &{},\n", response_const));
     out.push_str("};\n\n");
 
+    out.push_str(&format!("pub struct {};\n\n", op_struct));
+    out.push_str(&format!("impl {} {{\n", op_struct));
+    out.push_str(
+        "    pub const META: ::dag_core::ConnectorOpMetadata = ::dag_core::ConnectorOpMetadata {\n",
+    );
+    out.push_str(&format!(
+        "        operation_id: \"{}\",\n",
+        escape_rust_string(&action.identifier)
+    ));
+    out.push_str(&format!(
+        "        connector_id: \"{}\",\n",
+        escape_rust_string(&manifest.connector.id)
+    ));
+    out.push_str(&format!(
+        "        summary: \"{}\",\n",
+        escape_rust_string(&action.summary)
+    ));
+    out.push_str(&format!(
+        "        min_effects: ::dag_core::Effects::{},\n",
+        action.effects.as_macro_name()
+    ));
+    out.push_str(&format!(
+        "        max_determinism: ::dag_core::Determinism::{},\n",
+        action.determinism.as_macro_name()
+    ));
+    out.push_str(&format!(
+        "        determinism_hints: &{},\n",
+        emit_connector_determinism_hints(&action.resources)
+    ));
+    out.push_str(&format!(
+        "        effect_hints: &{},\n",
+        emit_connector_effect_hints(&action.resources)
+    ));
+    out.push_str(&format!(
+        "        roles: &{},\n",
+        emit_connector_role_requirements(manifest, action)
+    ));
+    out.push_str("    };\n\n");
+    out.push_str(&format!(
+        "    pub async fn invoke(input: &{}) -> Result<{}, crate::runtime::errors::ConnectorRuntimeError> {{\n",
+        rust_type_name(&action.input),
+        rust_type_name(&action.output)
+    ));
+    out.push_str(&format!(
+        "        run_action_from_current(input, &{}).await\n",
+        action_const
+    ));
+    out.push_str("    }\n");
+    out.push_str("}\n");
+    out
+}
+
+fn emit_action_file(_manifest: &ConnectorManifest, action: &ActionSurface) -> String {
+    let function_name = to_snake_case(&action.name);
+    let op_struct = rust_type_name(&action.name);
+
+    let mut out = String::new();
+    out.push_str("use dag_core::{NodeError, NodeResult};\n");
+    out.push_str("use dag_macros::def_node;\n\n");
+    out.push_str(&format!("use crate::generated::ops::{};\n", op_struct));
+    out.push_str(&format!(
+        "use crate::generated::types::{{{}, {}}};\n\n",
+        rust_type_name(&action.input),
+        rust_type_name(&action.output)
+    ));
+
     out.push_str("#[def_node(\n");
     out.push_str(&format!(
         "    name = \"{}\",\n",
@@ -527,19 +619,9 @@ fn emit_action_file(manifest: &ConnectorManifest, action: &ActionSurface) -> Str
         escape_rust_string(&action.identifier)
     ));
     out.push_str(&format!(
-        "    effects = \"{}\",\n",
-        action.effects.as_macro_name()
+        "    connector_ops({})\n",
+        format!("crate::generated::ops::{}", op_struct)
     ));
-    out.push_str(&format!(
-        "    determinism = \"{}\",\n",
-        action.determinism.as_macro_name()
-    ));
-    if !action.resources.is_empty() {
-        out.push_str(&format!(
-            "    resources({})\n",
-            emit_resource_macro_args(&action.resources)
-        ));
-    }
     out.push_str(")]\n");
     out.push_str(&format!(
         "pub async fn {}(input: {}) -> NodeResult<{}> {{\n",
@@ -547,10 +629,7 @@ fn emit_action_file(manifest: &ConnectorManifest, action: &ActionSurface) -> Str
         rust_type_name(&action.input),
         rust_type_name(&action.output)
     ));
-    out.push_str(&format!(
-        "    run_action_from_current(&input, &{})\n",
-        action_const
-    ));
+    out.push_str(&format!("    {}::invoke(&input)\n", op_struct));
     out.push_str("        .await\n");
     out.push_str(&format!(
         "        .map_err(|err| NodeError::new(format!(\"{} failed: {{err}}\")))\n",
@@ -672,12 +751,67 @@ fn emit_static_header_slice(
     rendered
 }
 
-fn emit_resource_macro_args(resources: &[ResourceRequirement]) -> String {
-    resources
-        .iter()
-        .map(|resource| resource.macro_fragment().to_string())
-        .collect::<Vec<_>>()
-        .join(", ")
+fn emit_connector_determinism_hints(resources: &[ResourceRequirement]) -> String {
+    let mut hints = Vec::new();
+    for resource in resources {
+        let hint = match resource {
+            ResourceRequirement::HttpRead | ResourceRequirement::HttpWrite => {
+                "capabilities::http::HINT_HTTP"
+            }
+        };
+        if !hints.contains(&hint) {
+            hints.push(hint);
+        }
+    }
+    if hints.is_empty() {
+        "[]".to_string()
+    } else {
+        format!("[{}]", hints.join(", "))
+    }
+}
+
+fn emit_connector_effect_hints(resources: &[ResourceRequirement]) -> String {
+    let mut hints = Vec::new();
+    for resource in resources {
+        let hint = match resource {
+            ResourceRequirement::HttpRead => "capabilities::http::HINT_HTTP_READ",
+            ResourceRequirement::HttpWrite => "capabilities::http::HINT_HTTP_WRITE",
+        };
+        if !hints.contains(&hint) {
+            hints.push(hint);
+        }
+    }
+    if hints.is_empty() {
+        "[]".to_string()
+    } else {
+        format!("[{}]", hints.join(", "))
+    }
+}
+
+fn emit_connector_role_requirements(
+    manifest: &ConnectorManifest,
+    action: &ActionSurface,
+) -> String {
+    let mut roles = Vec::new();
+    roles.push(format!(
+        "::dag_core::ConnectorRoleRequirement {{ kind: ::dag_core::ConnectorRoleKindDecl::EndpointProfile, name: \"{}\", expected_handle_kind: \"endpoint.profile\" }}",
+        escape_rust_string(&action.endpoint)
+    ));
+
+    if let Some(auth_name) = &action.auth {
+        let profile = manifest
+            .profiles
+            .outbound_auth
+            .get(auth_name)
+            .expect("validated manifest outbound auth profile");
+        roles.push(format!(
+            "::dag_core::ConnectorRoleRequirement {{ kind: ::dag_core::ConnectorRoleKindDecl::OutboundAuth, name: \"{}\", expected_handle_kind: \"{}\" }}",
+            escape_rust_string(auth_name),
+            escape_rust_string(profile.handle_kind())
+        ));
+    }
+
+    format!("[{}]", roles.join(", "))
 }
 
 fn field_attributes(type_name: &str, field_name: &str, field: &FieldDecl) -> Vec<String> {
@@ -899,6 +1033,9 @@ mod tests {
             .map(|file| file.relative_path.as_str())
             .collect::<BTreeSet<_>>();
 
+        assert!(paths.contains("src/generated/ops/get.rs"));
+        assert!(paths.contains("src/generated/ops/list.rs"));
+        assert!(paths.contains("src/generated/ops/create.rs"));
         assert!(paths.contains("src/generated/actions/get.rs"));
         assert!(paths.contains("src/generated/actions/list.rs"));
         assert!(paths.contains("src/generated/actions/create.rs"));

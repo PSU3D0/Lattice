@@ -23,6 +23,7 @@ fn subflow_node(alias: &str, subflow_id: &str) -> NodeIR {
         durability: DurabilityProfile::default(),
         determinism_hints: Vec::new(),
         effect_hints: Vec::new(),
+        connector_ops: Vec::new(),
         subflow_ir: None,
     }
 }

@@ -49,6 +49,7 @@ Important architectural note:
 
 See:
 - `impl-docs/spec/node-vs-capability-surface.md`
+- `impl-docs/spec/connector-op-reuse-and-node-declaration.md`
 
 ## Binding Providers (Opaque Binding in 0.1)
 

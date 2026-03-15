@@ -104,20 +104,21 @@ impl FlowBuilder {
             summary: spec.summary.map(|s| s.to_string()),
             in_schema: spec.in_schema.into_ref(),
             out_schema: spec.out_schema.into_ref(),
-            effects: spec.effects,
-            determinism: spec.determinism,
+            effects: spec.resolved_effects(),
+            determinism: spec.resolved_determinism(),
             idempotency: spec.idempotency.into_owned(),
             durability: spec.durability.clone(),
             determinism_hints: spec
-                .determinism_hints
-                .iter()
+                .resolved_determinism_hints()
+                .into_iter()
                 .map(|hint| hint.to_string())
                 .collect(),
             effect_hints: spec
-                .effect_hints
-                .iter()
+                .resolved_effect_hints()
+                .into_iter()
                 .map(|hint| hint.to_string())
                 .collect(),
+            connector_ops: spec.connector_op_refs(),
             subflow_ir: None,
         };
         self.flow.nodes.push(node_ir);
