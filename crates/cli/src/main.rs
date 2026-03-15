@@ -16,6 +16,7 @@ use flow_bundle::ExecPolicy;
 use futures::StreamExt;
 use host_wasmtime::load_flow_bundle;
 use host_web_axum::{HostHandle, RouteConfig};
+use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use kernel_exec::{ExecutionResult, FlowExecutor};
 use kernel_plan::{ValidatedIR, validate};
 use serde::{Deserialize, Serialize};
@@ -1876,6 +1877,17 @@ fn validate_connector_handle_provider_config(
             validate_named_connect_secret_ref(name, handle, "refresh_token_ref")?;
             validate_oauth2_refresh_config(name, handle)?;
         }
+        "auth.service_account_jwt" => {
+            if handle.handle_kind != "http.bearer" {
+                return Err(anyhow!(
+                    "bindings.lock connector handle `{name}` uses provider_kind `auth.service_account_jwt` but has handle_kind `{}`; expected `http.bearer`",
+                    handle.handle_kind,
+                ));
+            }
+            validate_named_connect_secret_ref(name, handle, "service_account_email_ref")?;
+            validate_named_connect_secret_ref(name, handle, "private_key_ref")?;
+            validate_service_account_jwt_config(name, handle)?;
+        }
         "endpoint.profile.static" => {
             if handle.handle_kind != "endpoint.profile" {
                 return Err(anyhow!(
@@ -1947,6 +1959,94 @@ fn validate_oauth2_refresh_config(name: &str, handle: &ConnectorHandleInstance) 
                     "bindings.lock connector handle `{name}` has non-string `config.scopes[{index}]`"
                 ));
             }
+        }
+    }
+
+    if let Some(extra_form_fields) = handle.config.get("extra_form_fields") {
+        let fields = extra_form_fields.as_object().ok_or_else(|| {
+            anyhow!(
+                "bindings.lock connector handle `{name}` has invalid `config.extra_form_fields` (expected object)"
+            )
+        })?;
+        for (field_name, field_value) in fields {
+            if !field_value.is_string() {
+                return Err(anyhow!(
+                    "bindings.lock connector handle `{name}` has non-string `config.extra_form_fields.{field_name}`"
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_service_account_jwt_config(name: &str, handle: &ConnectorHandleInstance) -> Result<()> {
+    let token_url = handle
+        .config
+        .get("token_url")
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| {
+            anyhow!(
+                "bindings.lock connector handle `{name}` is missing required `config.token_url` string"
+            )
+        })?;
+    if token_url.trim().is_empty() {
+        return Err(anyhow!(
+            "bindings.lock connector handle `{name}` has empty `config.token_url`"
+        ));
+    }
+
+    let scopes = handle
+        .config
+        .get("scopes")
+        .ok_or_else(|| anyhow!(
+            "bindings.lock connector handle `{name}` is missing required `config.scopes` array"
+        ))?
+        .as_array()
+        .ok_or_else(|| {
+            anyhow!(
+                "bindings.lock connector handle `{name}` has invalid `config.scopes` (expected array)"
+            )
+        })?;
+    if scopes.is_empty() {
+        return Err(anyhow!(
+            "bindings.lock connector handle `{name}` requires non-empty `config.scopes`"
+        ));
+    }
+    for (index, value) in scopes.iter().enumerate() {
+        if value
+            .as_str()
+            .filter(|value| !value.trim().is_empty())
+            .is_none()
+        {
+            return Err(anyhow!(
+                "bindings.lock connector handle `{name}` has invalid `config.scopes[{index}]`"
+            ));
+        }
+    }
+
+    if let Some(subject) = handle.config.get("subject") {
+        if subject
+            .as_str()
+            .filter(|value| !value.trim().is_empty())
+            .is_none()
+        {
+            return Err(anyhow!(
+                "bindings.lock connector handle `{name}` has invalid `config.subject` (expected non-empty string)"
+            ));
+        }
+    }
+
+    if let Some(token_lifetime_seconds) = handle.config.get("token_lifetime_seconds") {
+        let Some(seconds) = token_lifetime_seconds.as_u64() else {
+            return Err(anyhow!(
+                "bindings.lock connector handle `{name}` has invalid `config.token_lifetime_seconds` (expected u64)"
+            ));
+        };
+        if seconds == 0 || seconds > 3600 {
+            return Err(anyhow!(
+                "bindings.lock connector handle `{name}` requires `config.token_lifetime_seconds` in 1..=3600"
+            ));
         }
     }
 
@@ -2061,12 +2161,12 @@ struct BindingsLockConnectorRuntime {
     handles: BTreeMap<String, ConnectorHandleInstance>,
     connections: BTreeMap<String, ConnectorConnectionInstance>,
     bindings: ConnectorFlowBindings,
-    oauth_http_client: reqwest::Client,
-    oauth_token_cache: Arc<Mutex<HashMap<String, CachedOauthAccessToken>>>,
+    auth_http_client: reqwest::Client,
+    access_token_cache: Arc<Mutex<HashMap<String, CachedAccessToken>>>,
 }
 
 #[derive(Debug, Clone)]
-struct CachedOauthAccessToken {
+struct CachedAccessToken {
     access_token: String,
     expires_at: Option<Instant>,
 }
@@ -2076,6 +2176,26 @@ struct OAuth2RefreshProviderConfig {
     token_url: String,
     scopes: Vec<String>,
     extra_form_fields: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone)]
+struct ServiceAccountJwtProviderConfig {
+    token_url: String,
+    scopes: Vec<String>,
+    subject: Option<String>,
+    token_lifetime_seconds: u64,
+    extra_form_fields: Vec<(String, String)>,
+}
+
+#[derive(Debug, Serialize)]
+struct ServiceAccountJwtClaims {
+    iss: String,
+    aud: String,
+    scope: String,
+    iat: u64,
+    exp: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sub: Option<String>,
 }
 
 impl BindingsLockConnectorRuntime {
@@ -2118,8 +2238,8 @@ impl BindingsLockConnectorRuntime {
             handles: lock.connector_handles.clone(),
             connections: lock.connector_connections.clone(),
             bindings,
-            oauth_http_client: reqwest::Client::new(),
-            oauth_token_cache: Arc::new(Mutex::new(HashMap::new())),
+            auth_http_client: reqwest::Client::new(),
+            access_token_cache: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -2186,8 +2306,8 @@ impl BindingsLockConnectorRuntime {
         Ok((handle_name.as_str(), handle))
     }
 
-    fn cached_oauth_access_token(&self, handle_name: &str) -> Option<String> {
-        let cache = self.oauth_token_cache.lock().expect("oauth token cache");
+    fn cached_access_token(&self, handle_name: &str) -> Option<String> {
+        let cache = self.access_token_cache.lock().expect("access token cache");
         let entry = cache.get(handle_name)?;
         if let Some(expires_at) = entry.expires_at {
             if Instant::now() + Duration::from_secs(30) >= expires_at {
@@ -2197,7 +2317,7 @@ impl BindingsLockConnectorRuntime {
         Some(entry.access_token.clone())
     }
 
-    fn store_oauth_access_token(
+    fn store_access_token(
         &self,
         handle_name: &str,
         access_token: String,
@@ -2205,14 +2325,77 @@ impl BindingsLockConnectorRuntime {
     ) {
         let expires_at =
             expires_in_seconds.map(|seconds| Instant::now() + Duration::from_secs(seconds));
-        let mut cache = self.oauth_token_cache.lock().expect("oauth token cache");
+        let mut cache = self.access_token_cache.lock().expect("access token cache");
         cache.insert(
             handle_name.to_string(),
-            CachedOauthAccessToken {
+            CachedAccessToken {
                 access_token,
                 expires_at,
             },
         );
+    }
+
+    async fn exchange_access_token(
+        &self,
+        handle_name: &str,
+        provider_label: &str,
+        token_url: String,
+        form_fields: Vec<(String, String)>,
+    ) -> Result<String, ConnectorRuntimeError> {
+        let response = self
+            .auth_http_client
+            .post(token_url)
+            .form(&form_fields)
+            .send()
+            .await
+            .map_err(|err| {
+                ConnectorRuntimeError::Provider(anyhow!(err).context(format!(
+                    "connector handle `{handle_name}` failed to exchange {provider_label} token"
+                )))
+            })?;
+
+        let status = response.status();
+        let body: JsonValue = response.json().await.map_err(|err| {
+            ConnectorRuntimeError::Provider(anyhow!(err).context(format!(
+                "connector handle `{handle_name}` returned invalid {provider_label} token JSON"
+            )))
+        })?;
+
+        if !status.is_success() {
+            return Err(ConnectorRuntimeError::Provider(anyhow!(
+                "connector handle `{handle_name}` {provider_label} token request failed with status {status}: {body}"
+            )));
+        }
+
+        let token_type = body
+            .get("token_type")
+            .and_then(JsonValue::as_str)
+            .map(|value| value.to_ascii_lowercase())
+            .unwrap_or_else(|| "bearer".to_string());
+        if token_type != "bearer" {
+            return Err(ConnectorRuntimeError::Provider(anyhow!(
+                "connector handle `{handle_name}` returned unsupported {provider_label} token_type `{token_type}`"
+            )));
+        }
+
+        let access_token = body
+            .get("access_token")
+            .and_then(JsonValue::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                ConnectorRuntimeError::Provider(anyhow!(
+                    "connector handle `{handle_name}` {provider_label} token response is missing `access_token`"
+                ))
+            })?
+            .to_string();
+        let expires_in_seconds = parse_optional_expires_in_seconds(&body).map_err(|err| {
+            ConnectorRuntimeError::Provider(err.context(format!(
+                "connector handle `{handle_name}` has invalid {provider_label} `expires_in`"
+            )))
+        })?;
+
+        self.store_access_token(handle_name, access_token.clone(), expires_in_seconds);
+        Ok(access_token)
     }
 
     async fn resolve_oauth2_access_token(
@@ -2220,7 +2403,7 @@ impl BindingsLockConnectorRuntime {
         handle_name: &str,
         handle: &ConnectorHandleInstance,
     ) -> Result<String, ConnectorRuntimeError> {
-        if let Some(access_token) = self.cached_oauth_access_token(handle_name) {
+        if let Some(access_token) = self.cached_access_token(handle_name) {
             return Ok(access_token);
         }
 
@@ -2255,60 +2438,56 @@ impl BindingsLockConnectorRuntime {
         }
         form_fields.extend(config.extra_form_fields);
 
-        let response = self
-            .oauth_http_client
-            .post(config.token_url)
-            .form(&form_fields)
-            .send()
+        self.exchange_access_token(handle_name, "OAuth2 refresh", config.token_url, form_fields)
             .await
-            .map_err(|err| {
-                ConnectorRuntimeError::Provider(anyhow!(err).context(format!(
-                    "connector handle `{handle_name}` failed to exchange OAuth2 refresh token"
-                )))
-            })?;
+    }
 
-        let status = response.status();
-        let body: JsonValue = response.json().await.map_err(|err| {
-            ConnectorRuntimeError::Provider(anyhow!(err).context(format!(
-                "connector handle `{handle_name}` returned invalid OAuth2 token JSON"
-            )))
-        })?;
-
-        if !status.is_success() {
-            return Err(ConnectorRuntimeError::Provider(anyhow!(
-                "connector handle `{handle_name}` OAuth2 token request failed with status {status}: {body}"
-            )));
+    async fn resolve_service_account_access_token(
+        &self,
+        handle_name: &str,
+        handle: &ConnectorHandleInstance,
+    ) -> Result<String, ConnectorRuntimeError> {
+        if let Some(access_token) = self.cached_access_token(handle_name) {
+            return Ok(access_token);
         }
 
-        let token_type = body
-            .get("token_type")
-            .and_then(JsonValue::as_str)
-            .map(|value| value.to_ascii_lowercase())
-            .unwrap_or_else(|| "bearer".to_string());
-        if token_type != "bearer" {
-            return Err(ConnectorRuntimeError::Provider(anyhow!(
-                "connector handle `{handle_name}` returned unsupported OAuth2 token_type `{token_type}`"
-            )));
-        }
+        let config = service_account_jwt_provider_config(handle_name, handle)?;
+        let service_account_email = resolve_secret_ref(named_connect_secret_ref(
+            handle_name,
+            handle,
+            "service_account_email_ref",
+        )?)
+        .map_err(ConnectorRuntimeError::Provider)?;
+        let private_key_pem = resolve_secret_ref(named_connect_secret_ref(
+            handle_name,
+            handle,
+            "private_key_ref",
+        )?)
+        .map_err(ConnectorRuntimeError::Provider)?;
 
-        let access_token = body
-            .get("access_token")
-            .and_then(JsonValue::as_str)
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| {
-                ConnectorRuntimeError::Provider(anyhow!(
-                    "connector handle `{handle_name}` OAuth2 token response is missing `access_token`"
-                ))
-            })?
-            .to_string();
-        let expires_in_seconds = parse_optional_expires_in_seconds(&body).map_err(|err| {
-            ConnectorRuntimeError::Provider(err.context(format!(
-                "connector handle `{handle_name}` has invalid OAuth2 `expires_in`"
-            )))
-        })?;
+        let assertion = build_service_account_jwt_assertion(
+            handle_name,
+            &service_account_email,
+            &private_key_pem,
+            &config,
+        )?;
 
-        self.store_oauth_access_token(handle_name, access_token.clone(), expires_in_seconds);
-        Ok(access_token)
+        let mut form_fields = vec![
+            (
+                "grant_type".to_string(),
+                "urn:ietf:params:oauth:grant-type:jwt-bearer".to_string(),
+            ),
+            ("assertion".to_string(), assertion),
+        ];
+        form_fields.extend(config.extra_form_fields);
+
+        self.exchange_access_token(
+            handle_name,
+            "service-account JWT",
+            config.token_url,
+            form_fields,
+        )
+        .await
     }
 }
 
@@ -2343,6 +2522,12 @@ impl ConnectorRuntime for BindingsLockConnectorRuntime {
             "auth.oauth2.refresh" => {
                 let access_token = self
                     .resolve_oauth2_access_token(handle_name, handle)
+                    .await?;
+                apply_static_auth_to_request(request, profile, access_token)?;
+            }
+            "auth.service_account_jwt" => {
+                let access_token = self
+                    .resolve_service_account_access_token(handle_name, handle)
                     .await?;
                 apply_static_auth_to_request(request, profile, access_token)?;
             }
@@ -2480,6 +2665,167 @@ fn oauth2_refresh_provider_config(
         scopes,
         extra_form_fields,
     })
+}
+
+fn service_account_jwt_provider_config(
+    handle_name: &str,
+    handle: &ConnectorHandleInstance,
+) -> Result<ServiceAccountJwtProviderConfig, ConnectorRuntimeError> {
+    let token_url = handle
+        .config
+        .get("token_url")
+        .and_then(JsonValue::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            ConnectorRuntimeError::Provider(anyhow!(
+                "connector handle `{handle_name}` is missing `config.token_url`"
+            ))
+        })?
+        .to_string();
+
+    let scopes = handle
+        .config
+        .get("scopes")
+        .ok_or_else(|| {
+            ConnectorRuntimeError::Provider(anyhow!(
+                "connector handle `{handle_name}` is missing `config.scopes`"
+            ))
+        })?
+        .as_array()
+        .ok_or_else(|| {
+            ConnectorRuntimeError::Provider(anyhow!(
+                "connector handle `{handle_name}` has invalid `config.scopes`"
+            ))
+        })?
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            value
+                .as_str()
+                .filter(|value| !value.trim().is_empty())
+                .map(|value| value.to_string())
+                .ok_or_else(|| {
+                    ConnectorRuntimeError::Provider(anyhow!(
+                        "connector handle `{handle_name}` has invalid `config.scopes[{index}]`"
+                    ))
+                })
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+
+    let subject = handle
+        .config
+        .get("subject")
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|value| !value.trim().is_empty())
+                .map(|value| value.to_string())
+                .ok_or_else(|| {
+                    ConnectorRuntimeError::Provider(anyhow!(
+                        "connector handle `{handle_name}` has invalid `config.subject`"
+                    ))
+                })
+        })
+        .transpose()?;
+
+    let token_lifetime_seconds = handle
+        .config
+        .get("token_lifetime_seconds")
+        .map(|value| {
+            value.as_u64().ok_or_else(|| {
+                ConnectorRuntimeError::Provider(anyhow!(
+                    "connector handle `{handle_name}` has invalid `config.token_lifetime_seconds`"
+                ))
+            })
+        })
+        .transpose()?
+        .unwrap_or(3600);
+    if !(1..=3600).contains(&token_lifetime_seconds) {
+        return Err(ConnectorRuntimeError::Provider(anyhow!(
+            "connector handle `{handle_name}` requires `config.token_lifetime_seconds` in 1..=3600"
+        )));
+    }
+
+    let extra_form_fields = handle
+        .config
+        .get("extra_form_fields")
+        .map(|value| {
+            let object = value.as_object().ok_or_else(|| {
+                ConnectorRuntimeError::Provider(anyhow!(
+                    "connector handle `{handle_name}` has invalid `config.extra_form_fields`"
+                ))
+            })?;
+            let mut entries = object
+                .iter()
+                .map(|(field_name, field_value)| {
+                    field_value
+                        .as_str()
+                        .map(|field_value| (field_name.clone(), field_value.to_string()))
+                        .ok_or_else(|| {
+                            ConnectorRuntimeError::Provider(anyhow!(
+                                "connector handle `{handle_name}` has non-string `config.extra_form_fields.{field_name}`"
+                            ))
+                        })
+                })
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            entries.sort_by(|left, right| left.0.cmp(&right.0));
+            Ok::<Vec<(String, String)>, ConnectorRuntimeError>(entries)
+        })
+        .transpose()?
+        .unwrap_or_default();
+
+    Ok(ServiceAccountJwtProviderConfig {
+        token_url,
+        scopes,
+        subject,
+        token_lifetime_seconds,
+        extra_form_fields,
+    })
+}
+
+fn build_service_account_jwt_assertion(
+    handle_name: &str,
+    service_account_email: &str,
+    private_key_pem: &str,
+    config: &ServiceAccountJwtProviderConfig,
+) -> Result<String, ConnectorRuntimeError> {
+    let issued_at = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_err(|err| {
+            ConnectorRuntimeError::Provider(anyhow!(err).context(format!(
+                "connector handle `{handle_name}` failed to determine current time"
+            )))
+        })?
+        .as_secs();
+    let claims = ServiceAccountJwtClaims {
+        iss: service_account_email.to_string(),
+        aud: config.token_url.clone(),
+        scope: config.scopes.join(" "),
+        iat: issued_at,
+        exp: issued_at + config.token_lifetime_seconds,
+        sub: config.subject.clone(),
+    };
+
+    let private_key_pem = normalize_pem_secret(private_key_pem);
+    let encoding_key = EncodingKey::from_rsa_pem(private_key_pem.as_bytes()).map_err(|err| {
+        ConnectorRuntimeError::Provider(anyhow!(err).context(format!(
+            "connector handle `{handle_name}` failed to parse RSA private key"
+        )))
+    })?;
+    let header = Header::new(Algorithm::RS256);
+    jsonwebtoken::encode(&header, &claims, &encoding_key).map_err(|err| {
+        ConnectorRuntimeError::Provider(anyhow!(err).context(format!(
+            "connector handle `{handle_name}` failed to sign service-account JWT assertion"
+        )))
+    })
+}
+
+fn normalize_pem_secret(secret: &str) -> String {
+    if secret.contains("\\n") && !secret.contains('\n') {
+        secret.replace("\\n", "\n")
+    } else {
+        secret.to_string()
+    }
 }
 
 fn parse_optional_expires_in_seconds(body: &JsonValue) -> Result<Option<u64>> {
@@ -2788,6 +3134,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
+    use base64::Engine as _;
     use cap_http_reqwest::ReqwestHttpClient;
     use capabilities::context;
     use connector_github_issues::{GithubIssueCreateInput, github_issues_create};
@@ -2870,6 +3217,42 @@ mod tests {
     }
 
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    const TEST_RSA_PRIVATE_KEY_PEM: &str = r#"-----BEGIN PRIVATE KEY-----
+MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQDIA/LEAPFqnUft
+gmeGPFVtcWpJSkDfOtqucdzB7lhvV3qKjHgAijwySNPWYbwq+PqjULtMmD5ishZj
+vy86n2oV4dT9wZllpywjgyiwClgLNTmNefZaV7MorK68/rLXlKRZ5w8krokQCDYK
+lKU7PF4u2o5FC/iUT1jDXm7pq7YkldfVmq0QVGlABMNqnEmKHvmE4M0ZMv6g17+w
+w0KPbbI5J1CCiZF0Dvx8775X3yLn4qEW7Euj4lx0Hb2Xc0plGY3LGG6qeApocjNH
+RMg2c15Xb3bSo2JNOoR0CQ58c1ZIh+Eo9kf6foAftrrW6cDoWFdkgGX/3LsNRTz+
+nAH4JFnhAgMBAAECggEAF1riq4FiryzLW8/oz7NW1E80dnddqNNB+rGf8eMnX2Tr
+EaeCUanSipqXZcaGxsvI1G4WWMTEMBkUZTRLSwCXThPPH4xOIaEKFeF4TEoA6tod
+rMfrfLQV3u9+/eGNt3+LS1YgHgvlREJ5MPYXbxnG85igmS5jKco0Fqf9snpS6+WA
+W7J7RHLcGIO8FqGZ9Hn6F76zrnV5E2zu4V9Q+eU3KWvQatPjiDEQq0rArTPFgV/v
+2WxnMJxwbZ/VPbZR2Mx2HQkOaw74kwZeQKxKWzP2ndw7bv1GUFA9FfhuDWYHRsQ2
+mxV2Zgf7JqOTcRcsd0L2KE7ArAjaO5lx3YgEnQKc2wKBgQDwZwqKDoZehUVP/l4s
+GpQMGV+rJvD/imUczCJsZnymWlawr2PMLLvG+pNWg4LALISYyhOhW/b4x8W/eHFr
+Cmd3Z8LIJIheDNTREMhpaHqutQgORJEtSZjD2Wehhpgm3l9jifFuDh8KbRPUwRyH
+TPis/Vz17RWwyvOxei6EoFgOcwKBgQDU/hlYjRUpaQLFlpI63zHbLjmlT7Q0SBNA
+UDCwpuLcPsrxVB2lbbWQ25VCnUx9DftSTZt5wbfNpowvHJi+e42TiUgNp8LTLiuv
+FjO+HNwjzmZcjfsDkUmOe/hi4UeiZmDYxV7kE5nHeE2fwtnNMAIiJ/LQecMZswQi
+uegKUD8tWwKBgHD/rieIfkZtlE/ue6t1bsNlJd/YNQ2YqsBnf4K+hbbX3cm9F0bA
+fB8iZyESPeJAyq7axXFiPetgU6YVYhJzWID6x8a1zVeP5nTC08EgOBJoy3mRZ0AH
+SQQ964U0M86JVgL+svoNLzACZ4DoqJU8a+M8UHbUUw6/xt5UVQtIJzvbAoGABsrb
+sBE/vYRVzEtS+oGnq1+8AuOZ0ZkC1Cg6hUetMGzoN+4AzAfFpIr8JZWynMJXY3aK
+IMXmwK4xBkeZL2ntR+k23Qiek/GC/yBsIgH1m0a3yPfWK3T0rZCSiUS57hnpuMAC
+mK9vVgcmIpQqMfr39nLjsXZQnH8zAJCBL+MDQMUCgYBC+zi/0AQU1Vo3DDyEoYb6
+zvp9oL/loKZA0xJlSz2ZO8ychRWnuJtf5SpAm30O4VJQcOvbV2hwd7sJsh4sAnY1
+qIbhEamp5tjBbAdxLON1Q3Qpyt/uemzi+TSKJbcZ3OQHe2bylylyYYh+4zGCSGMY
+RGKOKF9RKKgFGiXk5I97qQ==
+-----END PRIVATE KEY-----"#;
+
+    fn decode_jwt_payload(jwt: &str) -> JsonValue {
+        let payload = jwt.split('.').nth(1).expect("jwt payload");
+        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(payload)
+            .expect("base64 payload");
+        serde_json::from_slice(&bytes).expect("payload json")
+    }
 
     #[test]
     fn bindings_lock_hash_round_trips() {
@@ -3811,5 +4194,329 @@ mod tests {
         create_mock.assert();
         assert_eq!(output.number, 321);
         assert_eq!(output.title, "created through oauth runtime");
+    }
+
+    #[test]
+    fn service_account_jwt_assertion_encodes_expected_claims() {
+        let config = ServiceAccountJwtProviderConfig {
+            token_url: "https://oauth.example.test/token".to_string(),
+            scopes: vec!["scope:one".to_string(), "scope:two".to_string()],
+            subject: Some("user@example.test".to_string()),
+            token_lifetime_seconds: 900,
+            extra_form_fields: Vec::new(),
+        };
+
+        let assertion = build_service_account_jwt_assertion(
+            "handle.demo",
+            "svc@example.test",
+            TEST_RSA_PRIVATE_KEY_PEM,
+            &config,
+        )
+        .expect("assertion");
+        let payload = decode_jwt_payload(&assertion);
+
+        assert_eq!(payload["iss"], json!("svc@example.test"));
+        assert_eq!(payload["aud"], json!("https://oauth.example.test/token"));
+        assert_eq!(payload["scope"], json!("scope:one scope:two"));
+        assert_eq!(payload["sub"], json!("user@example.test"));
+        let iat = payload["iat"].as_u64().expect("iat");
+        let exp = payload["exp"].as_u64().expect("exp");
+        assert_eq!(exp - iat, 900);
+    }
+
+    #[test]
+    fn bindings_lock_rejects_service_account_handle_without_scopes() {
+        let flow_id = "test-flow";
+        let lock = json!({
+            "version": 1,
+            "generated_at": "2025-12-15T00:00:00Z",
+            "content_hash": "",
+            "instances": {},
+            "flows": {
+                flow_id: { "use": {} }
+            },
+            "connector_handles": {
+                "auth.google_sa": {
+                    "provider_kind": "auth.service_account_jwt",
+                    "handle_kind": "http.bearer",
+                    "connect": {
+                        "service_account_email_ref": "sa_email",
+                        "private_key_ref": "sa_private_key"
+                    },
+                    "config": {
+                        "token_url": "https://oauth.example.test/token"
+                    },
+                    "grants": {}
+                }
+            },
+            "connector_connections": {
+                "google_primary": {
+                    "connector_id": "connector.github.issues",
+                    "roles": {
+                        "outbound_auth.github_pat": "auth.google_sa"
+                    }
+                }
+            },
+            "connector_bindings": {
+                flow_id: {
+                    "defaults": {
+                        "connector.github.issues": "google_primary"
+                    },
+                    "nodes": {}
+                }
+            }
+        });
+
+        let err = BindingsLockConnectorRuntime::new(&lock_from_json(lock), flow_id)
+            .err()
+            .expect("expected missing scopes reject");
+        let msg = err.to_string();
+        assert!(msg.contains("config.scopes"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn bindings_lock_runtime_fetches_and_caches_service_account_tokens() {
+        let _env_lock = ENV_LOCK.lock().expect("env lock");
+        let token_server = MockServer::start();
+        let flow_id = "test-flow";
+        let runtime = connector_runtime_from_json(
+            json!({
+                "version": 1,
+                "generated_at": "2025-12-15T00:00:00Z",
+                "content_hash": "",
+                "instances": {},
+                "flows": { flow_id: { "use": {} } },
+                "connector_handles": {
+                    "auth.google_sa": {
+                        "provider_kind": "auth.service_account_jwt",
+                        "handle_kind": "http.bearer",
+                        "connect": {
+                            "service_account_email_ref": "sa_email",
+                            "private_key_ref": "sa_private_key"
+                        },
+                        "config": {
+                            "token_url": format!("{}/oauth/token", token_server.base_url()),
+                            "scopes": ["scope:one", "scope:two"],
+                            "subject": "user@example.test",
+                            "token_lifetime_seconds": 900
+                        },
+                        "grants": {}
+                    }
+                },
+                "connector_connections": {
+                    "google_primary": {
+                        "connector_id": "connector.github.issues",
+                        "roles": {
+                            "outbound_auth.github_pat": "auth.google_sa"
+                        }
+                    }
+                },
+                "connector_bindings": {
+                    flow_id: {
+                        "defaults": {
+                            "connector.github.issues": "google_primary"
+                        },
+                        "nodes": {}
+                    }
+                }
+            }),
+            flow_id,
+        );
+        let profile = OutboundAuthProfileDescriptor {
+            connector_id: "connector.github.issues",
+            name: "github_pat",
+            env_var: "IGNORED_IN_LOCK_RUNTIME",
+            kind: OutboundAuthKind::Bearer {
+                handle_kind: "http.bearer",
+            },
+        };
+        let mut request_one = capabilities::http::HttpRequest::new(
+            capabilities::http::HttpMethod::Post,
+            "https://example.test/one",
+        );
+        let mut request_two = capabilities::http::HttpRequest::new(
+            capabilities::http::HttpMethod::Post,
+            "https://example.test/two",
+        );
+
+        unsafe {
+            std::env::set_var("sa_email", "svc@example.test");
+            std::env::set_var("sa_private_key", TEST_RSA_PRIVATE_KEY_PEM);
+        }
+
+        let token_mock = token_server.mock(|when, then| {
+            when.method(POST)
+                .path("/oauth/token")
+                .body_contains("grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer")
+                .body_contains("assertion=");
+            then.status(200).json_body_obj(&serde_json::json!({
+                "access_token": "service-account-access-token-1",
+                "token_type": "Bearer",
+                "expires_in": 3600
+            }));
+        });
+
+        runtime
+            .apply_outbound_auth(
+                &connector_scope(flow_id, "node", "connector.github.issues"),
+                &profile,
+                &mut request_one,
+            )
+            .await
+            .expect("first auth application");
+        runtime
+            .apply_outbound_auth(
+                &connector_scope(flow_id, "node", "connector.github.issues"),
+                &profile,
+                &mut request_two,
+            )
+            .await
+            .expect("second auth application");
+
+        unsafe {
+            std::env::remove_var("sa_email");
+            std::env::remove_var("sa_private_key");
+        }
+
+        assert_eq!(
+            request_one.headers.get("Authorization"),
+            Some(&"Bearer service-account-access-token-1".to_string())
+        );
+        assert_eq!(
+            request_two.headers.get("Authorization"),
+            Some(&"Bearer service-account-access-token-1".to_string())
+        );
+        token_mock.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn github_create_node_executes_via_service_account_bindings_runtime() {
+        let _env_lock = ENV_LOCK.lock().expect("env lock");
+        let token_server = MockServer::start();
+        let api_server = MockServer::start();
+        let flow_id = "flow://github-service-account-runtime";
+        let runtime = connector_runtime_from_json(
+            json!({
+                "version": 1,
+                "generated_at": "2025-12-15T00:00:00Z",
+                "content_hash": "",
+                "instances": {},
+                "flows": { flow_id: { "use": {} } },
+                "connector_handles": {
+                    "auth.google_sa": {
+                        "provider_kind": "auth.service_account_jwt",
+                        "handle_kind": "http.bearer",
+                        "connect": {
+                            "service_account_email_ref": "sa_email",
+                            "private_key_ref": "sa_private_key"
+                        },
+                        "config": {
+                            "token_url": format!("{}/oauth/token", token_server.base_url()),
+                            "scopes": ["scope:issues.write"],
+                            "token_lifetime_seconds": 900
+                        },
+                        "grants": {}
+                    },
+                    "endpoint.github_local": {
+                        "provider_kind": "endpoint.profile.static",
+                        "handle_kind": "endpoint.profile",
+                        "connect": {},
+                        "config": {
+                            "base_url": api_server.base_url(),
+                            "default_headers": {
+                                "Accept": "application/json",
+                                "X-GitHub-Api-Version": "2022-11-28"
+                            }
+                        },
+                        "grants": {}
+                    }
+                },
+                "connector_connections": {
+                    "github_service_account_local": {
+                        "connector_id": "connector.github.issues",
+                        "roles": {
+                            "outbound_auth.github_pat": "auth.google_sa",
+                            "endpoint_profile.github_default": "endpoint.github_local"
+                        }
+                    }
+                },
+                "connector_bindings": {
+                    flow_id: {
+                        "defaults": {
+                            "connector.github.issues": "github_service_account_local"
+                        },
+                        "nodes": {}
+                    }
+                }
+            }),
+            flow_id,
+        );
+        let token_mock = token_server.mock(|when, then| {
+            when.method(POST)
+                .path("/oauth/token")
+                .body_contains("grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer")
+                .body_contains("assertion=");
+            then.status(200).json_body_obj(&serde_json::json!({
+                "access_token": "service-account-create-token",
+                "token_type": "bearer",
+                "expires_in": 3600
+            }));
+        });
+        let create_mock = api_server.mock(|when, then| {
+            when.method(POST)
+                .path("/repos/octo/demo/issues")
+                .header("authorization", "Bearer service-account-create-token")
+                .header("accept", "application/json")
+                .header("x-github-api-version", "2022-11-28")
+                .json_body_obj(&serde_json::json!({
+                    "title": "created through service account runtime",
+                    "body": "hello service account"
+                }));
+            then.status(201).json_body_obj(&serde_json::json!({
+                "number": 654,
+                "title": "created through service account runtime",
+                "state": "open",
+                "html_url": "https://example.test/issues/654"
+            }));
+        });
+
+        unsafe {
+            std::env::set_var("sa_email", "svc@example.test");
+            std::env::set_var("sa_private_key", TEST_RSA_PRIVATE_KEY_PEM);
+        }
+
+        let http_client = Arc::new(ReqwestHttpClient::default());
+        let resources = Arc::new(
+            ResourceBag::default()
+                .with_http_write(http_client)
+                .with_connector_runtime(Arc::new(runtime))
+                .with_connector_scope(connector_scope(
+                    flow_id,
+                    "create_issue",
+                    "connector.github.issues",
+                )),
+        );
+
+        let output = context::with_resources(resources, async {
+            github_issues_create(GithubIssueCreateInput {
+                owner: "octo".to_string(),
+                repo: "demo".to_string(),
+                title: "created through service account runtime".to_string(),
+                body: Some("hello service account".to_string()),
+            })
+            .await
+            .expect("create succeeds")
+        })
+        .await;
+
+        unsafe {
+            std::env::remove_var("sa_email");
+            std::env::remove_var("sa_private_key");
+        }
+
+        token_mock.assert_hits(1);
+        create_mock.assert();
+        assert_eq!(output.number, 654);
+        assert_eq!(output.title, "created through service account runtime");
     }
 }

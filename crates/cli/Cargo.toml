@@ -51,9 +51,11 @@ futures.workspace = true
 metrics.workspace = true
 metrics-util.workspace = true
 reqwest = { workspace = true }
+jsonwebtoken = "9"
 sha2 = "0.10"
 tempfile = "3.12"
 percent-encoding = "2.3"
+base64 = "0.22"
 
 [dev-dependencies]
 assert_cmd = "2.0"
