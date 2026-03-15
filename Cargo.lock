@@ -2201,6 +2201,7 @@ dependencies = [
  "cargo_metadata",
  "clap",
  "connector-spec",
+ "connector_github_issues",
  "dag-core",
  "example-connector-github-issues-local-flow",
  "example-s1-echo",
