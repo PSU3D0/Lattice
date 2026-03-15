@@ -16,6 +16,7 @@ async fn http_trigger(payload: JsonValue) -> NodeResult<JsonValue> {
     summary = "Declares a KV read requirement to trigger CAP101 when unbound",
     effects = "ReadOnly",
     determinism = "BestEffort",
+    json_boundary = true,
     resources(kv_read(capabilities::kv::KeyValue))
 )]
 async fn kv_read(payload: JsonValue) -> NodeResult<JsonValue> {

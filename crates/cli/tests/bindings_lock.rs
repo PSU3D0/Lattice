@@ -167,3 +167,161 @@ fn run_local_rejects_lock_missing_flow_id() -> Result<(), Box<dyn std::error::Er
     std::fs::remove_file(&lock_path).ok();
     Ok(())
 }
+
+#[test]
+fn run_local_connector_example_succeeds_with_connector_bindings_lock(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let server = httpmock::MockServer::start();
+    let flow_id = example_connector_github_issues_local_flow::validated_ir()
+        .flow()
+        .id
+        .as_str()
+        .to_string();
+
+    let mut lock = serde_json::json!({
+        "version": 1,
+        "generated_at": "2025-12-15T00:00:00Z",
+        "content_hash": "",
+        "instances": {
+            "http1": {
+                "provider_kind": "http.reqwest",
+                "provides": ["resource::http"],
+                "connect": {},
+                "config": {},
+                "isolation": []
+            }
+        },
+        "flows": {
+            flow_id.clone(): {
+                "use": {
+                    "resource::http": "http1"
+                }
+            }
+        },
+        "connector_handles": {
+            "endpoint.github_local": {
+                "provider_kind": "endpoint.profile.static",
+                "handle_kind": "endpoint.profile",
+                "connect": {},
+                "config": {
+                    "base_url": server.base_url(),
+                    "default_headers": {
+                        "Accept": "application/json",
+                        "X-GitHub-Api-Version": "2022-11-28"
+                    }
+                },
+                "grants": {}
+            }
+        },
+        "connector_connections": {
+            "github_local": {
+                "connector_id": "connector.github.issues",
+                "roles": {
+                    "endpoint_profile.github_default": "endpoint.github_local"
+                }
+            }
+        },
+        "connector_bindings": {
+            flow_id.clone(): {
+                "defaults": {
+                    "connector.github.issues": "github_local"
+                },
+                "nodes": {}
+            }
+        }
+    });
+
+    let path = temp_lock_path();
+    let json_for_hash = lock.clone();
+
+    let mut hasher = sha2::Sha256::new();
+    let canonical = canonical_json_without_hash_for_test(&json_for_hash);
+    use sha2::Digest;
+    hasher.update(canonical.as_bytes());
+    let digest = hasher.finalize();
+    let hash = digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    lock["content_hash"] = serde_json::json!(hash);
+    std::fs::write(&path, serde_json::to_vec_pretty(&lock)?)?;
+
+    let mock = server.mock(|_when, then| {
+        then.status(200).json_body_obj(&serde_json::json!([
+            {
+                "number": 501,
+                "title": "from cli bindings lock",
+                "state": "open",
+                "html_url": "https://example.test/issues/501"
+            }
+        ]));
+    });
+
+    let output = Command::cargo_bin("flows")?
+        .args([
+            "run",
+            "local",
+            "--example",
+            "connector_github_issues_local_flow",
+            "--bindings-lock",
+            path.to_str().expect("path"),
+            "--payload",
+            r#"{"owner":"rust-lang","repo":"cargo"}"#,
+        ])
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "connector run local failed: status={:?}, stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8(output.stdout)?;
+    let payload: Value = serde_json::from_str(stdout.trim())?;
+    assert_eq!(payload["items"][0]["number"], 501);
+    assert_eq!(payload["items"][0]["title"], "from cli bindings lock");
+    mock.assert();
+
+    std::fs::remove_file(&path).ok();
+    Ok(())
+}
+
+fn canonical_json_without_hash_for_test(value: &Value) -> String {
+    let mut value = value.clone();
+    if let Some(object) = value.as_object_mut() {
+        object.remove("content_hash");
+    }
+    canonical_json_for_test(&value)
+}
+
+fn canonical_json_for_test(value: &Value) -> String {
+    match value {
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
+            serde_json::to_string(value).expect("json")
+        }
+        Value::Array(values) => {
+            let mut out = String::from("[");
+            for (index, item) in values.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                out.push_str(&canonical_json_for_test(item));
+            }
+            out.push(']');
+            out
+        }
+        Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            let mut out = String::from("{");
+            for (index, key) in keys.into_iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                out.push_str(&serde_json::to_string(key).expect("json key"));
+                out.push(':');
+                out.push_str(&canonical_json_for_test(map.get(key).expect("key present")));
+            }
+            out.push('}');
+            out
+        }
+    }
+}
