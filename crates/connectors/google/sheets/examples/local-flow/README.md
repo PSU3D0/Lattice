@@ -12,8 +12,12 @@ Default behavior:
 - if `LATTICE_CONNECTOR_ENDPOINT_GOOGLE_SHEETS_DEFAULT_BASE_URL` is unset, the example can run against a local mock server in tests
 - if `LATTICE_CONNECTOR_AUTH_GOOGLE_WORKSPACE_AUTH` is unset in that mock-first path, the example uses a demo bearer token
 
-Representative production path:
-- run via `flows run local --example connector_google_sheets_local_flow --bindings-lock <lock.json>`
+Representative production paths:
+- one-shot local execution:
+  - `flows run local --example connector_google_sheets_local_flow --bindings-lock <lock.json>`
+- Axum/server-hosted route:
+  - `flows run serve --example connector_google_sheets_local_flow --bindings-lock <lock.json>`
+  - then POST JSON to `/google/sheets/local`
 - bind `connector.google.sheets` to either:
   - `auth.service_account_jwt`, or
   - `auth.oauth2.refresh`
