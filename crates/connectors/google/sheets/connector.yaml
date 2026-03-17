@@ -24,6 +24,80 @@ types:
     kind: enum
     variants: [raw, user_entered]
 
+  GoogleSheetsSheetSummary:
+    kind: object
+    fields:
+      sheet_id:
+        type: u32
+      title:
+        type: string
+      index:
+        type: u32
+        optional: true
+      row_count:
+        type: u32
+        optional: true
+      column_count:
+        type: u32
+        optional: true
+
+  GoogleSheetsCreateSpreadsheetInput:
+    kind: object
+    fields:
+      title:
+        type: string
+      locale:
+        type: string
+        optional: true
+      time_zone:
+        type: string
+        optional: true
+      initial_sheet_title:
+        type: string
+        optional: true
+
+  GoogleSheetsCreateSpreadsheetOutput:
+    kind: object
+    fields:
+      spreadsheet_id:
+        type: string
+      spreadsheet_url:
+        type: string
+        optional: true
+      title:
+        type: string
+      sheets:
+        type: list
+        item:
+          type: object_ref
+          target: GoogleSheetsSheetSummary
+
+  GoogleSheetsCreateSheetInput:
+    kind: object
+    fields:
+      spreadsheet_id:
+        type: string
+      title:
+        type: string
+      index:
+        type: u32
+        optional: true
+      row_count:
+        type: u32
+        optional: true
+      column_count:
+        type: u32
+        optional: true
+
+  GoogleSheetsCreateSheetOutput:
+    kind: object
+    fields:
+      spreadsheet_id:
+        type: string
+      sheet:
+        type: object_ref
+        target: GoogleSheetsSheetSummary
+
   GoogleSheetsAppendRowInput:
     kind: object
     fields:
@@ -133,6 +207,34 @@ types:
           target: GoogleSheetsRowMatch
 
 surfaces:
+  - kind: action
+    identifier: connector.google.sheets.create_spreadsheet
+    name: GoogleSheetsCreateSpreadsheet
+    summary: Create a spreadsheet with optional initial sheet metadata
+    input: GoogleSheetsCreateSpreadsheetInput
+    output: GoogleSheetsCreateSpreadsheetOutput
+    auth: google_workspace_auth
+    endpoint: google_sheets_default
+    effects: Effectful
+    determinism: BestEffort
+    resources:
+      - http_write(capabilities::http::HttpWrite)
+    implementation: handwritten_semantic
+
+  - kind: action
+    identifier: connector.google.sheets.create_sheet
+    name: GoogleSheetsCreateSheet
+    summary: Add a new sheet tab to an existing spreadsheet
+    input: GoogleSheetsCreateSheetInput
+    output: GoogleSheetsCreateSheetOutput
+    auth: google_workspace_auth
+    endpoint: google_sheets_default
+    effects: Effectful
+    determinism: BestEffort
+    resources:
+      - http_write(capabilities::http::HttpWrite)
+    implementation: handwritten_semantic
+
   - kind: action
     identifier: connector.google.sheets.append_row
     name: GoogleSheetsAppendRow

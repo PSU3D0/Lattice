@@ -17,8 +17,10 @@ use crate::generated::profiles::{
     GOOGLE_SHEETS_DEFAULT_ENDPOINT_PROFILE, GOOGLE_WORKSPACE_AUTH_OUTBOUND_AUTH,
 };
 use crate::generated::types::{
-    GoogleSheetsAppendRowInput, GoogleSheetsAppendRowOutput, GoogleSheetsFindRowsInput,
-    GoogleSheetsFindRowsOutput, GoogleSheetsRowMatch, GoogleSheetsUpsertAction,
+    GoogleSheetsAppendRowInput, GoogleSheetsAppendRowOutput, GoogleSheetsCreateSheetInput,
+    GoogleSheetsCreateSheetOutput, GoogleSheetsCreateSpreadsheetInput,
+    GoogleSheetsCreateSpreadsheetOutput, GoogleSheetsFindRowsInput, GoogleSheetsFindRowsOutput,
+    GoogleSheetsRowMatch, GoogleSheetsSheetSummary, GoogleSheetsUpsertAction,
     GoogleSheetsUpsertRowInput, GoogleSheetsUpsertRowOutput,
 };
 use crate::runtime::errors::ConnectorRuntimeError;
@@ -39,6 +41,100 @@ impl SheetsApi {
             action_id,
             context,
             endpoint,
+        })
+    }
+
+    pub async fn create_spreadsheet(
+        &self,
+        input: &GoogleSheetsCreateSpreadsheetInput,
+    ) -> Result<GoogleSheetsCreateSpreadsheetOutput, ConnectorRuntimeError> {
+        let mut properties = Map::new();
+        properties.insert("title".to_string(), JsonValue::String(input.title.clone()));
+        if let Some(locale) = &input.locale {
+            properties.insert("locale".to_string(), JsonValue::String(locale.clone()));
+        }
+        if let Some(time_zone) = &input.time_zone {
+            properties.insert("timeZone".to_string(), JsonValue::String(time_zone.clone()));
+        }
+
+        let mut body = Map::new();
+        body.insert("properties".to_string(), JsonValue::Object(properties));
+        if let Some(initial_sheet_title) = &input.initial_sheet_title {
+            body.insert(
+                "sheets".to_string(),
+                JsonValue::Array(vec![json!({
+                    "properties": {
+                        "title": initial_sheet_title,
+                    }
+                })]),
+            );
+        }
+
+        let response = self
+            .request_json(
+                HttpMethod::Post,
+                spreadsheets_path(),
+                &[],
+                Some(JsonValue::Object(body)),
+            )
+            .await?;
+
+        spreadsheet_created_output_from_response(&response)
+    }
+
+    pub async fn create_sheet(
+        &self,
+        input: &GoogleSheetsCreateSheetInput,
+    ) -> Result<GoogleSheetsCreateSheetOutput, ConnectorRuntimeError> {
+        let mut properties = Map::new();
+        properties.insert("title".to_string(), JsonValue::String(input.title.clone()));
+        if let Some(index) = input.index {
+            properties.insert("index".to_string(), JsonValue::from(index));
+        }
+        if input.row_count.is_some() || input.column_count.is_some() {
+            let mut grid_properties = Map::new();
+            if let Some(row_count) = input.row_count {
+                grid_properties.insert("rowCount".to_string(), JsonValue::from(row_count));
+            }
+            if let Some(column_count) = input.column_count {
+                grid_properties.insert("columnCount".to_string(), JsonValue::from(column_count));
+            }
+            properties.insert(
+                "gridProperties".to_string(),
+                JsonValue::Object(grid_properties),
+            );
+        }
+
+        let body = json!({
+            "requests": [
+                {
+                    "addSheet": {
+                        "properties": properties,
+                    }
+                }
+            ]
+        });
+
+        let response = self
+            .request_json(
+                HttpMethod::Post,
+                &spreadsheet_batch_update_path(&input.spreadsheet_id),
+                &[],
+                Some(body),
+            )
+            .await?;
+
+        let properties = response
+            .pointer("/replies/0/addSheet/properties")
+            .ok_or_else(|| {
+                ConnectorRuntimeError::invalid_response(
+                    "Google Sheets create_sheet response did not contain `replies[0].addSheet.properties`",
+                )
+            })?;
+
+        Ok(GoogleSheetsCreateSheetOutput {
+            spreadsheet_id: input.spreadsheet_id.clone(),
+            sheet: sheet_summary_from_properties(properties)?,
         })
     }
 
@@ -273,6 +369,17 @@ impl SheetsApi {
     }
 }
 
+fn spreadsheets_path() -> &'static str {
+    "/v4/spreadsheets"
+}
+
+fn spreadsheet_batch_update_path(spreadsheet_id: &str) -> String {
+    format!(
+        "/v4/spreadsheets/{}:batchUpdate",
+        encode_path_segment(spreadsheet_id)
+    )
+}
+
 fn values_path(spreadsheet_id: &str, range: &str) -> String {
     format!(
         "/v4/spreadsheets/{}/values/{}",
@@ -306,6 +413,104 @@ fn values_matrix_from_response(
             })
         })
         .collect()
+}
+
+fn spreadsheet_created_output_from_response(
+    body: &JsonValue,
+) -> Result<GoogleSheetsCreateSpreadsheetOutput, ConnectorRuntimeError> {
+    let spreadsheet_id = required_string_pointer(body, "/spreadsheetId", "spreadsheetId")?;
+    let title = required_string_pointer(body, "/properties/title", "properties.title")?;
+    let spreadsheet_url = body
+        .get("spreadsheetUrl")
+        .and_then(JsonValue::as_str)
+        .map(str::to_string);
+
+    let sheets = match body.get("sheets") {
+        Some(JsonValue::Array(items)) => items
+            .iter()
+            .map(|sheet| {
+                let properties = sheet.get("properties").ok_or_else(|| {
+                    ConnectorRuntimeError::invalid_response(
+                        "Google Sheets create_spreadsheet response sheets must contain `properties`",
+                    )
+                })?;
+                sheet_summary_from_properties(properties)
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        Some(_) => {
+            return Err(ConnectorRuntimeError::invalid_response(
+                "Google Sheets create_spreadsheet response field `sheets` must be an array",
+            ));
+        }
+        None => Vec::new(),
+    };
+
+    Ok(GoogleSheetsCreateSpreadsheetOutput {
+        spreadsheet_id,
+        spreadsheet_url,
+        title,
+        sheets,
+    })
+}
+
+fn sheet_summary_from_properties(
+    properties: &JsonValue,
+) -> Result<GoogleSheetsSheetSummary, ConnectorRuntimeError> {
+    Ok(GoogleSheetsSheetSummary {
+        sheet_id: required_u32_pointer(properties, "/sheetId", "sheetId")?,
+        title: required_string_pointer(properties, "/title", "title")?,
+        index: optional_u32_pointer(properties, "/index")?,
+        row_count: optional_u32_pointer(properties, "/gridProperties/rowCount")?,
+        column_count: optional_u32_pointer(properties, "/gridProperties/columnCount")?,
+    })
+}
+
+fn required_string_pointer(
+    body: &JsonValue,
+    pointer: &str,
+    field_name: &str,
+) -> Result<String, ConnectorRuntimeError> {
+    body.pointer(pointer)
+        .and_then(JsonValue::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| {
+            ConnectorRuntimeError::invalid_response(format!(
+                "Google Sheets response did not contain string field `{field_name}`"
+            ))
+        })
+}
+
+fn optional_u32_pointer(
+    body: &JsonValue,
+    pointer: &str,
+) -> Result<Option<u32>, ConnectorRuntimeError> {
+    body.pointer(pointer).map(json_u32).transpose()
+}
+
+fn required_u32_pointer(
+    body: &JsonValue,
+    pointer: &str,
+    field_name: &str,
+) -> Result<u32, ConnectorRuntimeError> {
+    let value = body.pointer(pointer).ok_or_else(|| {
+        ConnectorRuntimeError::invalid_response(format!(
+            "Google Sheets response did not contain numeric field `{field_name}`"
+        ))
+    })?;
+    json_u32(value)
+}
+
+fn json_u32(value: &JsonValue) -> Result<u32, ConnectorRuntimeError> {
+    let value = value.as_u64().ok_or_else(|| {
+        ConnectorRuntimeError::invalid_response(
+            "Google Sheets response field must be an unsigned integer",
+        )
+    })?;
+    u32::try_from(value).map_err(|_| {
+        ConnectorRuntimeError::invalid_response(
+            "Google Sheets response integer field exceeded supported u32 range",
+        )
+    })
 }
 
 fn extract_updated_range(body: &JsonValue) -> Result<String, ConnectorRuntimeError> {

@@ -6,9 +6,11 @@ use connector_google_platform::sheets::{append_table_range, row_range, wide_read
 use connector_google_sheets::runtime::transport::EnvConnectorRuntime;
 use connector_google_sheets::{
     GOOGLE_SHEETS_DEFAULT_ENDPOINT_ENV, GOOGLE_WORKSPACE_AUTH_ENV, GoogleSheetsAppendRowInput,
-    GoogleSheetsAppendRowOutput, GoogleSheetsFindRowsInput, GoogleSheetsRowMatch,
+    GoogleSheetsAppendRowOutput, GoogleSheetsCreateSheetInput, GoogleSheetsCreateSheetOutput,
+    GoogleSheetsCreateSpreadsheetInput, GoogleSheetsCreateSpreadsheetOutput,
+    GoogleSheetsFindRowsInput, GoogleSheetsRowMatch, GoogleSheetsSheetSummary,
     GoogleSheetsUpsertAction, GoogleSheetsUpsertRowInput, google_sheets_append_row,
-    google_sheets_find_rows,
+    google_sheets_create_sheet, google_sheets_create_spreadsheet, google_sheets_find_rows,
 };
 use dag_core::{Determinism, Effects, NodeError, NodeResult};
 use dag_macros::def_node;
@@ -68,6 +70,13 @@ fn values_path(spreadsheet_id: &str, range: &str) -> String {
         "/v4/spreadsheets/{}/values/{}",
         utf8_percent_encode(spreadsheet_id, NON_ALPHANUMERIC),
         utf8_percent_encode(range, NON_ALPHANUMERIC)
+    )
+}
+
+fn batch_update_path(spreadsheet_id: &str) -> String {
+    format!(
+        "/v4/spreadsheets/{}:batchUpdate",
+        utf8_percent_encode(spreadsheet_id, NON_ALPHANUMERIC)
     )
 }
 
@@ -152,6 +161,165 @@ fn custom_node_spec_auto_hoists_connector_op_requirements() {
             .connector_ops
             .iter()
             .any(|op| op.operation_id == "connector.google.sheets.upsert_row")
+    );
+}
+
+#[tokio::test]
+async fn create_spreadsheet_returns_spreadsheet_metadata() {
+    let _env_lock = ENV_LOCK.lock().expect("env lock");
+    let server = MockServer::start();
+    let _endpoint = EnvGuard::set(GOOGLE_SHEETS_DEFAULT_ENDPOINT_ENV, &server.base_url());
+    let _auth = EnvGuard::set(GOOGLE_WORKSPACE_AUTH_ENV, "google-test-token");
+
+    let create_mock = server.mock(|when, then| {
+        when.method(POST)
+            .path("/v4/spreadsheets")
+            .header("authorization", "Bearer google-test-token")
+            .header("accept", "application/json")
+            .header("content-type", "application/json")
+            .json_body_obj(&json!({
+                "properties": {
+                    "title": "Lead Intake",
+                    "locale": "en_US",
+                    "timeZone": "America/Chicago"
+                },
+                "sheets": [
+                    {
+                        "properties": {
+                            "title": "Leads"
+                        }
+                    }
+                ]
+            }));
+        then.status(200).json_body_obj(&json!({
+            "spreadsheetId": "spreadsheet-123",
+            "spreadsheetUrl": "https://docs.google.com/spreadsheets/d/spreadsheet-123/edit",
+            "properties": {
+                "title": "Lead Intake"
+            },
+            "sheets": [
+                {
+                    "properties": {
+                        "sheetId": 0,
+                        "title": "Leads",
+                        "index": 0,
+                        "gridProperties": {
+                            "rowCount": 1000,
+                            "columnCount": 26
+                        }
+                    }
+                }
+            ]
+        }));
+    });
+
+    let output = context::with_resources(http_resources(), async {
+        google_sheets_create_spreadsheet(GoogleSheetsCreateSpreadsheetInput {
+            title: "Lead Intake".to_string(),
+            locale: Some("en_US".to_string()),
+            time_zone: Some("America/Chicago".to_string()),
+            initial_sheet_title: Some("Leads".to_string()),
+        })
+        .await
+        .expect("create spreadsheet succeeds")
+    })
+    .await;
+
+    create_mock.assert();
+    assert_eq!(
+        output,
+        GoogleSheetsCreateSpreadsheetOutput {
+            spreadsheet_id: "spreadsheet-123".to_string(),
+            spreadsheet_url: Some(
+                "https://docs.google.com/spreadsheets/d/spreadsheet-123/edit".to_string()
+            ),
+            title: "Lead Intake".to_string(),
+            sheets: vec![GoogleSheetsSheetSummary {
+                sheet_id: 0,
+                title: "Leads".to_string(),
+                index: Some(0),
+                row_count: Some(1000),
+                column_count: Some(26),
+            }],
+        }
+    );
+}
+
+#[tokio::test]
+async fn create_sheet_adds_sheet_via_batch_update() {
+    let _env_lock = ENV_LOCK.lock().expect("env lock");
+    let server = MockServer::start();
+    let _endpoint = EnvGuard::set(GOOGLE_SHEETS_DEFAULT_ENDPOINT_ENV, &server.base_url());
+    let _auth = EnvGuard::set(GOOGLE_WORKSPACE_AUTH_ENV, "google-test-token");
+
+    let spreadsheet_id = "spreadsheet-123";
+    let create_mock = server.mock(|when, then| {
+        when.method(POST)
+            .path(batch_update_path(spreadsheet_id))
+            .header("authorization", "Bearer google-test-token")
+            .header("accept", "application/json")
+            .header("content-type", "application/json")
+            .json_body_obj(&json!({
+                "requests": [
+                    {
+                        "addSheet": {
+                            "properties": {
+                                "title": "Archive",
+                                "index": 1,
+                                "gridProperties": {
+                                    "rowCount": 200,
+                                    "columnCount": 8
+                                }
+                            }
+                        }
+                    }
+                ]
+            }));
+        then.status(200).json_body_obj(&json!({
+            "replies": [
+                {
+                    "addSheet": {
+                        "properties": {
+                            "sheetId": 77,
+                            "title": "Archive",
+                            "index": 1,
+                            "gridProperties": {
+                                "rowCount": 200,
+                                "columnCount": 8
+                            }
+                        }
+                    }
+                }
+            ]
+        }));
+    });
+
+    let output = context::with_resources(http_resources(), async {
+        google_sheets_create_sheet(GoogleSheetsCreateSheetInput {
+            spreadsheet_id: spreadsheet_id.to_string(),
+            title: "Archive".to_string(),
+            index: Some(1),
+            row_count: Some(200),
+            column_count: Some(8),
+        })
+        .await
+        .expect("create sheet succeeds")
+    })
+    .await;
+
+    create_mock.assert();
+    assert_eq!(
+        output,
+        GoogleSheetsCreateSheetOutput {
+            spreadsheet_id: spreadsheet_id.to_string(),
+            sheet: GoogleSheetsSheetSummary {
+                sheet_id: 77,
+                title: "Archive".to_string(),
+                index: Some(1),
+                row_count: Some(200),
+                column_count: Some(8),
+            },
+        }
     );
 }
 

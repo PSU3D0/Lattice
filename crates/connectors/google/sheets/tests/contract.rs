@@ -7,6 +7,16 @@ fn register_all_binds_all_actions() {
     register_all(&mut registry).expect("register nodes");
     assert!(
         registry
+            .handler("connector.google.sheets.create_spreadsheet")
+            .is_some()
+    );
+    assert!(
+        registry
+            .handler("connector.google.sheets.create_sheet")
+            .is_some()
+    );
+    assert!(
+        registry
             .handler("connector.google.sheets.append_row")
             .is_some()
     );

@@ -12,6 +12,9 @@ pub use generated::register::register_all;
 pub use generated::types::*;
 
 pub const CONNECTOR_FAMILY: &str = "connector.google.sheets";
+pub const GOOGLE_SHEETS_CREATE_SPREADSHEET_IDENTIFIER: &str =
+    "connector.google.sheets.create_spreadsheet";
+pub const GOOGLE_SHEETS_CREATE_SHEET_IDENTIFIER: &str = "connector.google.sheets.create_sheet";
 pub const GOOGLE_SHEETS_APPEND_ROW_IDENTIFIER: &str = "connector.google.sheets.append_row";
 pub const GOOGLE_SHEETS_FIND_ROWS_IDENTIFIER: &str = "connector.google.sheets.find_rows";
 pub const GOOGLE_SHEETS_UPSERT_ROW_IDENTIFIER: &str = "connector.google.sheets.upsert_row";
