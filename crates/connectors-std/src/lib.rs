@@ -35,9 +35,10 @@ pub struct ActionDescriptor {
     pub response: &'static ResponseDescriptor,
 }
 
-struct ConnectorExecutionContext {
-    runtime: Arc<dyn ConnectorRuntime>,
-    scope: ConnectorBindingScope,
+#[derive(Clone)]
+pub struct CurrentConnectorContext {
+    pub runtime: Arc<dyn ConnectorRuntime>,
+    pub scope: ConnectorBindingScope,
 }
 
 pub async fn run_action_from_current<In, Out>(
@@ -53,7 +54,7 @@ where
         .as_object()
         .ok_or(ConnectorRuntimeError::InvalidInputObject)?;
 
-    let connector_context = connector_execution_context(action).await?;
+    let connector_context = current_connector_context(action.identifier).await?;
     let endpoint = resolve_endpoint_profile(action, &connector_context).await?;
     let pagination = action.pagination.copied();
     let should_paginate = match pagination {
@@ -96,7 +97,7 @@ where
 async fn execute_paginated_action(
     input: &serde_json::Map<String, Value>,
     action: &'static ActionDescriptor,
-    connector_context: &ConnectorExecutionContext,
+    connector_context: &CurrentConnectorContext,
     endpoint: &ResolvedEndpointProfile,
     limit: Option<usize>,
 ) -> Result<Value, ConnectorRuntimeError> {
@@ -140,51 +141,105 @@ async fn execute_paginated_action(
     finalize_output_value(Value::Array(items), action.response)
 }
 
-async fn connector_execution_context(
-    action: &'static ActionDescriptor,
-) -> Result<ConnectorExecutionContext, ConnectorRuntimeError> {
+pub async fn current_connector_context(
+    action: &'static str,
+) -> Result<CurrentConnectorContext, ConnectorRuntimeError> {
     context::with_current_async(|resources| async move {
-        let runtime = resources.connector_runtime().ok_or(
-            ConnectorRuntimeError::MissingConnectorRuntime {
-                action: action.identifier,
-            },
-        )?;
-        let scope =
-            resources
-                .connector_scope()
-                .ok_or(ConnectorRuntimeError::MissingConnectorScope {
-                    action: action.identifier,
-                })?;
-        Ok(ConnectorExecutionContext { runtime, scope })
+        let runtime = resources
+            .connector_runtime()
+            .ok_or(ConnectorRuntimeError::MissingConnectorRuntime { action })?;
+        let scope = resources
+            .connector_scope()
+            .ok_or(ConnectorRuntimeError::MissingConnectorScope { action })?;
+        Ok(CurrentConnectorContext { runtime, scope })
     })
     .await
     .ok_or(ConnectorRuntimeError::MissingResourceContext)?
 }
 
-async fn resolve_endpoint_profile(
-    action: &'static ActionDescriptor,
-    connector_context: &ConnectorExecutionContext,
+pub async fn resolve_endpoint_with_context(
+    profile: &'static EndpointProfileDescriptor,
+    connector_context: &CurrentConnectorContext,
 ) -> Result<ResolvedEndpointProfile, ConnectorRuntimeError> {
     connector_context
         .runtime
-        .resolve_endpoint_profile(&connector_context.scope, action.endpoint)
+        .resolve_endpoint_profile(&connector_context.scope, profile)
         .await
         .map_err(ConnectorRuntimeError::from)
+}
+
+pub async fn apply_outbound_auth_with_context(
+    profile: &'static OutboundAuthProfileDescriptor,
+    request: &mut HttpRequest,
+    connector_context: &CurrentConnectorContext,
+) -> Result<(), ConnectorRuntimeError> {
+    connector_context
+        .runtime
+        .apply_outbound_auth(&connector_context.scope, profile, request)
+        .await
+        .map_err(ConnectorRuntimeError::from)
+}
+
+pub async fn send_request_from_current(
+    action: &'static str,
+    method: HttpMethod,
+    request: HttpRequest,
+) -> Result<HttpResponse, ConnectorRuntimeError> {
+    context::with_current_async(|resources| async move {
+        match method {
+            HttpMethod::Get | HttpMethod::Head => {
+                let client = resources
+                    .http_read()
+                    .ok_or(ConnectorRuntimeError::MissingHttpRead { action })?;
+                client
+                    .send(request)
+                    .await
+                    .map_err(ConnectorRuntimeError::from)
+            }
+            HttpMethod::Post | HttpMethod::Put | HttpMethod::Patch | HttpMethod::Delete => {
+                let client = resources
+                    .http_write()
+                    .ok_or(ConnectorRuntimeError::MissingHttpWrite { action })?;
+                client
+                    .send(request)
+                    .await
+                    .map_err(ConnectorRuntimeError::from)
+            }
+        }
+    })
+    .await
+    .ok_or(ConnectorRuntimeError::MissingResourceContext)?
+}
+
+pub fn decode_json_response_body(response: &HttpResponse) -> Result<Value, ConnectorRuntimeError> {
+    if !response.is_success() {
+        let body = String::from_utf8_lossy(&response.body);
+        let body = body.chars().take(240).collect::<String>();
+        return Err(ConnectorRuntimeError::HttpStatus {
+            status: response.status,
+            body,
+        });
+    }
+
+    serde_json::from_slice(&response.body).map_err(ConnectorRuntimeError::from)
+}
+
+async fn resolve_endpoint_profile(
+    action: &'static ActionDescriptor,
+    connector_context: &CurrentConnectorContext,
+) -> Result<ResolvedEndpointProfile, ConnectorRuntimeError> {
+    resolve_endpoint_with_context(action.endpoint, connector_context).await
 }
 
 async fn apply_action_defaults(
     request: &mut HttpRequest,
     action: &'static ActionDescriptor,
-    connector_context: &ConnectorExecutionContext,
+    connector_context: &CurrentConnectorContext,
     endpoint: &ResolvedEndpointProfile,
 ) -> Result<(), ConnectorRuntimeError> {
     apply_default_headers(&mut request.headers, endpoint);
     if let Some(profile) = action.auth {
-        connector_context
-            .runtime
-            .apply_outbound_auth(&connector_context.scope, profile, request)
-            .await
-            .map_err(ConnectorRuntimeError::from)?;
+        apply_outbound_auth_with_context(profile, request, connector_context).await?;
     }
     Ok(())
 }
@@ -208,36 +263,7 @@ async fn send_request(
     action: &'static ActionDescriptor,
     request: HttpRequest,
 ) -> Result<HttpResponse, ConnectorRuntimeError> {
-    context::with_current_async(|resources| async move {
-        match action.request.method {
-            HttpMethod::Get | HttpMethod::Head => {
-                let client =
-                    resources
-                        .http_read()
-                        .ok_or(ConnectorRuntimeError::MissingHttpRead {
-                            action: action.identifier,
-                        })?;
-                client
-                    .send(request)
-                    .await
-                    .map_err(ConnectorRuntimeError::from)
-            }
-            HttpMethod::Post | HttpMethod::Put | HttpMethod::Patch | HttpMethod::Delete => {
-                let client =
-                    resources
-                        .http_write()
-                        .ok_or(ConnectorRuntimeError::MissingHttpWrite {
-                            action: action.identifier,
-                        })?;
-                client
-                    .send(request)
-                    .await
-                    .map_err(ConnectorRuntimeError::from)
-            }
-        }
-    })
-    .await
-    .ok_or(ConnectorRuntimeError::MissingResourceContext)?
+    send_request_from_current(action.identifier, action.request.method, request).await
 }
 
 #[cfg(test)]

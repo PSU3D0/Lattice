@@ -188,3 +188,107 @@ fn validate_for_codegen_rejects_unsupported_outbound_auth_kind() {
             .any(|error| error.code == ValidationCode::UnsupportedOutboundAuthKind)
     );
 }
+
+#[test]
+fn handwritten_semantic_action_validates_without_request_mapping() {
+    let text = r#"
+connector:
+  id: connector.test.semantic
+  vendor: test
+  family: semantic
+  version: 0.1.0
+  crate: connector_test_semantic
+  summary: Semantic action example
+profiles:
+  outbound_auth: {}
+  endpoint_profiles:
+    default:
+      base_url: https://example.test
+  provisioning_auth: {}
+  inbound_verifiers: {}
+types:
+  Input:
+    kind: object
+    fields:
+      row:
+        type: json
+        escape_hatch_reason: Semantic row bodies stay handwritten in the first slice.
+  Output:
+    kind: object
+    fields:
+      ok:
+        type: bool
+surfaces:
+  - kind: action
+    identifier: connector.test.semantic.upsert
+    name: SemanticUpsert
+    summary: Handwritten semantic action
+    input: Input
+    output: Output
+    endpoint: default
+    effects: Effectful
+    determinism: BestEffort
+    resources:
+      - http_read(capabilities::http::HttpRead)
+      - http_write(capabilities::http::HttpWrite)
+    implementation: handwritten_semantic
+"#;
+    let manifest = ConnectorManifest::from_yaml_str(text).expect("manifest parses");
+    manifest
+        .validate()
+        .expect("handwritten semantic actions should validate");
+}
+
+#[test]
+fn validate_for_codegen_rejects_handwritten_semantic_actions() {
+    let text = r#"
+connector:
+  id: connector.test.semantic
+  vendor: test
+  family: semantic
+  version: 0.1.0
+  crate: connector_test_semantic
+  summary: Semantic action example
+profiles:
+  outbound_auth: {}
+  endpoint_profiles:
+    default:
+      base_url: https://example.test
+  provisioning_auth: {}
+  inbound_verifiers: {}
+types:
+  Input:
+    kind: object
+    fields: {}
+  Output:
+    kind: object
+    fields:
+      ok:
+        type: bool
+surfaces:
+  - kind: action
+    identifier: connector.test.semantic.upsert
+    name: SemanticUpsert
+    summary: Handwritten semantic action
+    input: Input
+    output: Output
+    endpoint: default
+    effects: Effectful
+    determinism: BestEffort
+    resources:
+      - http_read(capabilities::http::HttpRead)
+      - http_write(capabilities::http::HttpWrite)
+    implementation: handwritten_semantic
+"#;
+    let manifest = ConnectorManifest::from_yaml_str(text).expect("manifest parses");
+    let errors = manifest
+        .validate_for_codegen()
+        .expect_err("codegen validation should fail");
+
+    assert!(
+        errors
+            .as_slice()
+            .iter()
+            .any(|error| error.code == ValidationCode::UnsupportedActionImplementation)
+    );
+}

@@ -1,0 +1,31 @@
+[package]
+name = "connector_google_sheets"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Semantic Google Sheets connector"
+
+[features]
+default = ["host-bundle"]
+host-bundle = ["dag-macros/host-bundle"]
+
+[dependencies]
+capabilities = { path = "../../../capabilities" }
+dag-core = { path = "../../../dag-core" }
+dag-macros = { path = "../../../dag-macros" }
+kernel-exec = { path = "../../../kernel-exec" }
+connectors-std = { path = "../../../connectors-std" }
+connector_google_platform = { path = "../platform" }
+serde.workspace = true
+serde_json.workspace = true
+percent-encoding = "2.3"
+
+[dev-dependencies]
+cap-http-reqwest = { path = "../../../cap-http-reqwest" }
+connector-spec = { path = "../../../connector-spec" }
+httpmock = "0.7"
+tokio = { workspace = true, features = ["full"] }

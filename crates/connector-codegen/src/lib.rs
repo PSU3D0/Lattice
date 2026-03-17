@@ -419,6 +419,9 @@ fn emit_op_file(manifest: &ConnectorManifest, action: &ActionSurface) -> String 
         })
         .unwrap_or_else(|| "None".to_string());
     let response = action.response();
+    let request = action
+        .request()
+        .expect("codegen requires request-mapped action");
     let collection_field = paginated_collection_field(manifest, &action.output)
         .map(|field| format!("Some(\"{}\")", escape_rust_string(field)))
         .unwrap_or_else(|| "None".to_string());
@@ -436,7 +439,7 @@ fn emit_op_file(manifest: &ConnectorManifest, action: &ActionSurface) -> String 
         "ResponseDescriptor",
         "run_action_from_current",
     ];
-    if !action.request.headers.is_empty() {
+    if !request.headers.is_empty() {
         transport_imports.push("StaticHeaderDescriptor");
     }
     out.push_str(&format!(
@@ -454,27 +457,27 @@ fn emit_op_file(manifest: &ConnectorManifest, action: &ActionSurface) -> String 
     ));
     out.push_str(&format!(
         "    method: capabilities::http::HttpMethod::{},\n",
-        rust_http_method_variant(action.request.method.as_str())
+        rust_http_method_variant(request.method.as_str())
     ));
     out.push_str(&format!(
         "    path_template: \"{}\",\n",
-        escape_rust_string(&action.request.path_template)
+        escape_rust_string(&request.path_template)
     ));
     out.push_str(&format!(
         "    path_params: &{},\n",
-        emit_field_binding_slice(&action.request.path_params)
+        emit_field_binding_slice(&request.path_params)
     ));
     out.push_str(&format!(
         "    query: &{},\n",
-        emit_field_binding_slice(&action.request.query)
+        emit_field_binding_slice(&request.query)
     ));
     out.push_str(&format!(
         "    body: &{},\n",
-        emit_field_binding_slice(&action.request.body)
+        emit_field_binding_slice(&request.body)
     ));
     out.push_str(&format!(
         "    headers: &{},\n",
-        emit_static_header_slice(&action.request.headers)
+        emit_static_header_slice(&request.headers)
     ));
     out.push_str("};\n\n");
 

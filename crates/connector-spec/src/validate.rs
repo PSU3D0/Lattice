@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::diagnostics::{ValidationCode, ValidationError, ValidationErrors};
 use crate::model::{
-    ActionSurface, ConnectorManifest, DefaultValue, FieldDecl, FieldKind, PaginationDecl,
-    ResourceRequirement, SurfaceDecl, TypeDecl,
+    ActionImplementation, ActionSurface, ConnectorManifest, DefaultValue, FieldDecl, FieldKind,
+    PaginationDecl, RequestMapping, ResourceRequirement, SurfaceDecl, TypeDecl,
 };
 
 pub fn validate_manifest(manifest: &ConnectorManifest) -> Result<(), ValidationErrors> {
@@ -75,6 +75,17 @@ pub fn validate_manifest_for_codegen(manifest: &ConnectorManifest) -> Result<(),
         let surface_path = format!("surfaces[{index}]");
         match surface {
             SurfaceDecl::Action(action) => {
+                if action.implementation != ActionImplementation::RequestMapped {
+                    errors.push(ValidationError::new(
+                        ValidationCode::UnsupportedActionImplementation,
+                        Some(format!("{surface_path}.implementation")),
+                        format!(
+                            "action `{}` uses implementation `{:?}` which is not Phase-B codegen compatible",
+                            action.identifier, action.implementation
+                        ),
+                    ));
+                }
+
                 if let Some(auth_name) = &action.auth {
                     if let Some(profile) = manifest.profiles.outbound_auth.get(auth_name) {
                         if !profile.supports_codegen() {
@@ -362,67 +373,41 @@ fn validate_action_surface(
         }
     }
 
-    let placeholders = match extract_placeholders(&action.request.path_template) {
-        Ok(placeholders) => placeholders,
-        Err(message) => {
-            errors.push(ValidationError::new(
-                ValidationCode::InvalidPathTemplate,
-                Some(format!("{surface_path}.request.path_template")),
-                message,
-            ));
-            Vec::new()
+    match action.implementation {
+        ActionImplementation::RequestMapped => {
+            let request = match action.request() {
+                Some(request) => request,
+                None => {
+                    errors.push(ValidationError::new(
+                        ValidationCode::InvalidTypeReference,
+                        Some(format!("{surface_path}.request")),
+                        "request-mapped actions must declare `request`",
+                    ));
+                    validate_resource_envelope(action, surface_path, errors);
+                    return;
+                }
+            };
+
+            validate_request_mapping(request, input_fields, surface_path, errors);
+            validate_resources_for_request(action, request, surface_path, errors);
+
+            if let Some(pagination) = &action.pagination {
+                validate_pagination(pagination, input_fields, surface_path, errors);
+            }
         }
-    };
-
-    let path_params = &action.request.path_params;
-    for placeholder in &placeholders {
-        if !path_params.contains_key(placeholder) {
-            errors.push(ValidationError::new(
-                ValidationCode::InvalidPathTemplate,
-                Some(format!("{surface_path}.request.path_params")),
-                format!(
-                    "path template placeholder `{{{placeholder}}}` is not mapped in `path_params`"
-                ),
-            ));
+        ActionImplementation::HandwrittenSemantic => {
+            if let Some(request) = action.request() {
+                validate_request_mapping(request, input_fields, surface_path, errors);
+            }
+            validate_resource_envelope(action, surface_path, errors);
+            if action.pagination.is_some() {
+                errors.push(ValidationError::new(
+                    ValidationCode::UnsupportedPaginatedOutputShape,
+                    Some(format!("{surface_path}.pagination")),
+                    "handwritten semantic actions do not currently support manifest-level pagination declarations",
+                ));
+            }
         }
-    }
-
-    for (placeholder, field_name) in path_params {
-        if !placeholders
-            .iter()
-            .any(|candidate| candidate == placeholder)
-        {
-            errors.push(ValidationError::new(
-                ValidationCode::InvalidPathTemplate,
-                Some(format!("{surface_path}.request.path_params.{placeholder}")),
-                format!("path_params entry `{placeholder}` is not used by the path template"),
-            ));
-        }
-        ensure_input_field_exists(
-            input_fields,
-            field_name,
-            format!("{surface_path}.request.path_params.{placeholder}"),
-            errors,
-        );
-    }
-
-    validate_field_mapping(
-        input_fields,
-        &action.request.query,
-        format!("{surface_path}.request.query"),
-        errors,
-    );
-    validate_field_mapping(
-        input_fields,
-        &action.request.body,
-        format!("{surface_path}.request.body"),
-        errors,
-    );
-
-    validate_resources(action, surface_path, errors);
-
-    if let Some(pagination) = &action.pagination {
-        validate_pagination(pagination, input_fields, surface_path, errors);
     }
 
     let response = action.response();
@@ -477,6 +462,70 @@ fn validate_field_mapping(
     }
 }
 
+fn validate_request_mapping(
+    request: &RequestMapping,
+    input_fields: &BTreeMap<String, FieldDecl>,
+    surface_path: &str,
+    errors: &mut ValidationErrors,
+) {
+    let placeholders = match extract_placeholders(&request.path_template) {
+        Ok(placeholders) => placeholders,
+        Err(message) => {
+            errors.push(ValidationError::new(
+                ValidationCode::InvalidPathTemplate,
+                Some(format!("{surface_path}.request.path_template")),
+                message,
+            ));
+            Vec::new()
+        }
+    };
+
+    let path_params = &request.path_params;
+    for placeholder in &placeholders {
+        if !path_params.contains_key(placeholder) {
+            errors.push(ValidationError::new(
+                ValidationCode::InvalidPathTemplate,
+                Some(format!("{surface_path}.request.path_params")),
+                format!(
+                    "path template placeholder `{{{placeholder}}}` is not mapped in `path_params`"
+                ),
+            ));
+        }
+    }
+
+    for (placeholder, field_name) in path_params {
+        if !placeholders
+            .iter()
+            .any(|candidate| candidate == placeholder)
+        {
+            errors.push(ValidationError::new(
+                ValidationCode::InvalidPathTemplate,
+                Some(format!("{surface_path}.request.path_params.{placeholder}")),
+                format!("path_params entry `{placeholder}` is not used by the path template"),
+            ));
+        }
+        ensure_input_field_exists(
+            input_fields,
+            field_name,
+            format!("{surface_path}.request.path_params.{placeholder}"),
+            errors,
+        );
+    }
+
+    validate_field_mapping(
+        input_fields,
+        &request.query,
+        format!("{surface_path}.request.query"),
+        errors,
+    );
+    validate_field_mapping(
+        input_fields,
+        &request.body,
+        format!("{surface_path}.request.body"),
+        errors,
+    );
+}
+
 fn ensure_input_field_exists(
     input_fields: &BTreeMap<String, FieldDecl>,
     field_name: &str,
@@ -492,8 +541,13 @@ fn ensure_input_field_exists(
     }
 }
 
-fn validate_resources(action: &ActionSurface, surface_path: &str, errors: &mut ValidationErrors) {
-    let required = if action.request.method.requires_write() {
+fn validate_resources_for_request(
+    action: &ActionSurface,
+    request: &RequestMapping,
+    surface_path: &str,
+    errors: &mut ValidationErrors,
+) {
+    let required = if request.method.requires_write() {
         ResourceRequirement::HttpWrite
     } else {
         ResourceRequirement::HttpRead
@@ -509,12 +563,20 @@ fn validate_resources(action: &ActionSurface, surface_path: &str, errors: &mut V
             Some(format!("{surface_path}.resources")),
             format!(
                 "request method `{}` requires resource `{}`",
-                action.request.method.as_str(),
+                request.method.as_str(),
                 required.manifest_value()
             ),
         ));
     }
 
+    validate_resource_envelope(action, surface_path, errors);
+}
+
+fn validate_resource_envelope(
+    action: &ActionSurface,
+    surface_path: &str,
+    errors: &mut ValidationErrors,
+) {
     for resource in &action.resources {
         if !action
             .effects

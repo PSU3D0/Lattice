@@ -1224,6 +1224,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "connector_google_platform"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "connector_google_sheets"
+version = "0.1.0"
+dependencies = [
+ "cap-http-reqwest",
+ "capabilities",
+ "connector-spec",
+ "connector_google_platform",
+ "connectors-std",
+ "dag-core",
+ "dag-macros",
+ "httpmock",
+ "kernel-exec",
+ "percent-encoding",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "connectors-std"
 version = "0.1.0"
 dependencies = [
@@ -1911,6 +1938,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-connector-google-sheets-local-flow"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cap-http-reqwest",
+ "capabilities",
+ "connector_google_platform",
+ "connector_google_sheets",
+ "dag-core",
+ "dag-macros",
+ "host-inproc",
+ "httpmock",
+ "kernel-exec",
+ "kernel-plan",
+ "percent-encoding",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "example-s1-echo"
 version = "0.1.0"
 dependencies = [
@@ -2205,6 +2253,7 @@ dependencies = [
  "connector_github_issues",
  "dag-core",
  "example-connector-github-issues-local-flow",
+ "example-connector-google-sheets-local-flow",
  "example-s1-echo",
  "example-s2-site",
  "example-s3-branching",

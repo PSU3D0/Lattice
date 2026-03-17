@@ -41,6 +41,7 @@ use host_inproc::{EnvironmentPlugin, HostRuntime, Invocation};
 use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
 
 use example_connector_github_issues_local_flow;
+use example_connector_google_sheets_local_flow;
 use example_s1_echo as s1_echo;
 use example_s2_site as s2_site;
 use example_s3_branching as s3_branching;
@@ -3094,6 +3095,10 @@ fn load_example(name: &str) -> Result<ExampleHandle> {
         "s6_spill" => (s6_spill::bundle(), false),
         "connector_github_issues_local_flow" => (
             example_connector_github_issues_local_flow::example_bundle(),
+            false,
+        ),
+        "connector_google_sheets_local_flow" => (
+            example_connector_google_sheets_local_flow::example_bundle(),
             false,
         ),
         other => return Err(anyhow!("unknown example `{other}`")),

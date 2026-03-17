@@ -1,0 +1,178 @@
+connector:
+  id: connector.google.sheets
+  vendor: google
+  family: sheets
+  version: 0.1.0
+  crate: connector_google_sheets
+  summary: Semantic Google Sheets connector
+
+profiles:
+  outbound_auth:
+    google_workspace_auth:
+      kind: bearer
+      handle_kind: http.bearer
+  endpoint_profiles:
+    google_sheets_default:
+      base_url: https://sheets.googleapis.com
+      default_headers:
+        Accept: application/json
+  provisioning_auth: {}
+  inbound_verifiers: {}
+
+types:
+  GoogleSheetsValueInputOption:
+    kind: enum
+    variants: [raw, user_entered]
+
+  GoogleSheetsAppendRowInput:
+    kind: object
+    fields:
+      spreadsheet_id:
+        type: string
+      sheet:
+        type: string
+      row:
+        type: json
+        escape_hatch_reason: Semantic row payloads remain handwritten while Sheets ops still need column-order alignment.
+      header_row:
+        type: u32
+        default: 1
+      value_input_option:
+        type: enum_ref
+        target: GoogleSheetsValueInputOption
+        optional: true
+
+  GoogleSheetsAppendRowOutput:
+    kind: object
+    fields:
+      spreadsheet_id:
+        type: string
+      sheet:
+        type: string
+      updated_range:
+        type: string
+      row_index:
+        type: u32
+        optional: true
+
+  GoogleSheetsUpsertAction:
+    kind: enum
+    variants: [inserted, updated]
+
+  GoogleSheetsUpsertRowInput:
+    kind: object
+    fields:
+      spreadsheet_id:
+        type: string
+      sheet:
+        type: string
+      match_on:
+        type: list
+        item:
+          type: string
+      row:
+        type: json
+        escape_hatch_reason: Upsert still needs handwritten row merge semantics over current sheet headers and existing row state.
+      header_row:
+        type: u32
+        default: 1
+      value_input_option:
+        type: enum_ref
+        target: GoogleSheetsValueInputOption
+        optional: true
+
+  GoogleSheetsUpsertRowOutput:
+    kind: object
+    fields:
+      action:
+        type: enum_ref
+        target: GoogleSheetsUpsertAction
+      spreadsheet_id:
+        type: string
+      sheet:
+        type: string
+      updated_range:
+        type: string
+      row_index:
+        type: u32
+        optional: true
+
+  GoogleSheetsFindRowsInput:
+    kind: object
+    fields:
+      spreadsheet_id:
+        type: string
+      sheet:
+        type: string
+      filters:
+        type: json
+        escape_hatch_reason: Row filtering stays semantic-first while the first slice keeps multi-scalar filter payloads compact.
+      limit:
+        type: u32
+        optional: true
+      header_row:
+        type: u32
+        default: 1
+
+  GoogleSheetsRowMatch:
+    kind: object
+    fields:
+      row_number:
+        type: u32
+      values:
+        type: json
+        escape_hatch_reason: Matching rows return dynamic sheet columns keyed by header names.
+
+  GoogleSheetsFindRowsOutput:
+    kind: object
+    fields:
+      items:
+        type: list
+        item:
+          type: object_ref
+          target: GoogleSheetsRowMatch
+
+surfaces:
+  - kind: action
+    identifier: connector.google.sheets.append_row
+    name: GoogleSheetsAppendRow
+    summary: Append one semantic row to a sheet
+    input: GoogleSheetsAppendRowInput
+    output: GoogleSheetsAppendRowOutput
+    auth: google_workspace_auth
+    endpoint: google_sheets_default
+    effects: Effectful
+    determinism: BestEffort
+    resources:
+      - http_read(capabilities::http::HttpRead)
+      - http_write(capabilities::http::HttpWrite)
+    implementation: handwritten_semantic
+
+  - kind: action
+    identifier: connector.google.sheets.find_rows
+    name: GoogleSheetsFindRows
+    summary: Find semantic rows in a sheet by column filters
+    input: GoogleSheetsFindRowsInput
+    output: GoogleSheetsFindRowsOutput
+    auth: google_workspace_auth
+    endpoint: google_sheets_default
+    effects: ReadOnly
+    determinism: BestEffort
+    resources:
+      - http_read(capabilities::http::HttpRead)
+    implementation: handwritten_semantic
+
+  - kind: action
+    identifier: connector.google.sheets.upsert_row
+    name: GoogleSheetsUpsertRow
+    summary: Update a matching row or append a new one
+    input: GoogleSheetsUpsertRowInput
+    output: GoogleSheetsUpsertRowOutput
+    auth: google_workspace_auth
+    endpoint: google_sheets_default
+    effects: Effectful
+    determinism: BestEffort
+    resources:
+      - http_read(capabilities::http::HttpRead)
+      - http_write(capabilities::http::HttpWrite)
+    implementation: handwritten_semantic

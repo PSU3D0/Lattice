@@ -11,6 +11,7 @@ pub enum ValidationCode {
     InvalidTypeReference,
     UnknownEndpointProfile,
     UnknownOutboundAuthProfile,
+    UnsupportedActionImplementation,
     UnsupportedOutboundAuthKind,
     UnsupportedPaginatedOutputShape,
     UnsupportedSurfaceKind,
@@ -33,6 +34,9 @@ impl ValidationCode {
             ValidationCode::UnknownEndpointProfile => "connector::unknown_endpoint_profile",
             ValidationCode::UnknownOutboundAuthProfile => {
                 "connector::unknown_outbound_auth_profile"
+            }
+            ValidationCode::UnsupportedActionImplementation => {
+                "connector::unsupported_action_implementation"
             }
             ValidationCode::UnsupportedOutboundAuthKind => {
                 "connector::unsupported_outbound_auth_kind"

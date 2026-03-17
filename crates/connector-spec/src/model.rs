@@ -257,7 +257,10 @@ pub struct ActionSurface {
     pub determinism: DeterminismLevel,
     #[serde(default)]
     pub resources: Vec<ResourceRequirement>,
-    pub request: RequestMapping,
+    #[serde(default)]
+    pub implementation: ActionImplementation,
+    #[serde(default)]
+    pub request: Option<RequestMapping>,
     #[serde(default)]
     pub pagination: Option<PaginationDecl>,
     #[serde(default)]
@@ -268,6 +271,18 @@ impl ActionSurface {
     pub fn response(&self) -> ResponseDecl {
         self.response.clone().unwrap_or_default()
     }
+
+    pub fn request(&self) -> Option<&RequestMapping> {
+        self.request.as_ref()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionImplementation {
+    #[default]
+    RequestMapped,
+    HandwrittenSemantic,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

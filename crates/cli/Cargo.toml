@@ -36,6 +36,7 @@ example-s4-preflight = { path = "../../examples/s4_preflight" }
 example-s5-unsupported-surface = { path = "../../examples/s5_unsupported_surface" }
 example-s6-spill-host = { path = "../../examples/s6_spill/host" }
 example-connector-github-issues-local-flow = { path = "../connectors/github/issues/examples/local-flow" }
+example-connector-google-sheets-local-flow = { path = "../connectors/google/sheets/examples/local-flow" }
 host-inproc = { path = "../host-inproc" }
 anyhow.workspace = true
 async-trait.workspace = true

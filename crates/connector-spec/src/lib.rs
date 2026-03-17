@@ -7,11 +7,11 @@ use std::path::Path;
 
 pub use diagnostics::{ValidationCode, ValidationError, ValidationErrors};
 pub use model::{
-    ActionSurface, ConnectorManifest, ConnectorMetadata, ConnectorProfiles, DefaultValue,
-    DeterminismLevel, EffectLevel, EndpointProfile, FieldDecl, FieldKind, OutboundAuthProfile,
-    PaginationDecl, PaginationKind, RequestMapping, RequestMethod, ReservedProfile,
-    ReservedTriggerConfig, ResourceRequirement, ResponseDecl, ResponseKind, StaticHeaderDecl,
-    SurfaceDecl, TypeDecl, WebhookTriggerSurface,
+    ActionImplementation, ActionSurface, ConnectorManifest, ConnectorMetadata, ConnectorProfiles,
+    DefaultValue, DeterminismLevel, EffectLevel, EndpointProfile, FieldDecl, FieldKind,
+    OutboundAuthProfile, PaginationDecl, PaginationKind, RequestMapping, RequestMethod,
+    ReservedProfile, ReservedTriggerConfig, ResourceRequirement, ResponseDecl, ResponseKind,
+    StaticHeaderDecl, SurfaceDecl, TypeDecl, WebhookTriggerSurface,
 };
 pub use validate::{
     generated_module_name, paginated_collection_field, validate_manifest,
