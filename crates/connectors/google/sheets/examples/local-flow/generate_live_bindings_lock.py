@@ -247,6 +247,11 @@ def main() -> None:
     print(f"  export {args.private_key_ref}=<private-key-pem>")
     print("  # or load the private key from a service-account JSON file before running")
     print(
+        "  cargo run -p flows-cli -- run local --example "
+        f"{DEFAULT_EXAMPLE} --bindings-lock {args.out} --payload "
+        r"'{\"spreadsheet_title\":\"Lattice CRM Smoke\",\"sheet\":\"Leads\",\"email\":\"ada@example.test\",\"name\":\"Ada Lovelace\",\"summary\":\"live smoke\"}'"
+    )
+    print(
         "  cargo run -p flows-cli -- run serve --example "
         f"{DEFAULT_EXAMPLE} --bindings-lock {args.out} --addr 127.0.0.1:8080"
     )

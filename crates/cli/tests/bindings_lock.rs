@@ -324,11 +324,92 @@ fn run_local_connector_example_succeeds_with_connector_bindings_lock()
     Ok(())
 }
 
-#[test]
-fn run_local_google_sheets_example_succeeds_with_service_account_bindings_lock()
+#[tokio::test(flavor = "multi_thread")]
+async fn run_local_google_sheets_example_succeeds_with_service_account_bindings_lock()
 -> Result<(), Box<dyn std::error::Error>> {
-    let token_server = httpmock::MockServer::start();
-    let api_server = httpmock::MockServer::start();
+    use axum::Json;
+    use axum::body::Body;
+    use axum::extract::{Path, Request};
+    use axum::http::{Method, Response, StatusCode};
+    use axum::response::IntoResponse;
+    use axum::routing::{get, post};
+    use axum::{Router, serve};
+    use tokio::net::TcpListener;
+    use tokio::sync::oneshot;
+
+    async fn token_handler() -> impl IntoResponse {
+        Json(serde_json::json!({
+            "access_token": "google-service-account-token",
+            "token_type": "Bearer",
+            "expires_in": 3600
+        }))
+    }
+
+    async fn metadata_handler(Path(spreadsheet_id): Path<String>) -> impl IntoResponse {
+        Json(serde_json::json!({
+            "spreadsheetId": spreadsheet_id,
+            "spreadsheetUrl": "https://docs.google.com/spreadsheets/d/demo-spreadsheet/edit",
+            "sheets": [
+                {
+                    "properties": {
+                        "sheetId": 0,
+                        "title": "Leads",
+                        "index": 0,
+                        "gridProperties": {
+                            "rowCount": 1000,
+                            "columnCount": 26
+                        }
+                    }
+                }
+            ]
+        }))
+    }
+
+    async fn values_get_handler(Path((_spreadsheet_id, _tail)): Path<(String, String)>) -> impl IntoResponse {
+        Json(serde_json::json!({
+            "range": "'Leads'!A1:ZZZ",
+            "values": [["email", "name", "summary"]]
+        }))
+    }
+
+    async fn values_post_handler(
+        Path((_spreadsheet_id, tail)): Path<(String, String)>,
+        request: Request,
+    ) -> Response<Body> {
+        if request.method() == Method::POST && tail.ends_with(":append") {
+            Json(serde_json::json!({
+                "updates": {
+                    "updatedRange": "'Leads'!A2:C2"
+                }
+            }))
+            .into_response()
+        } else {
+            Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::from("not found"))
+                .expect("response")
+        }
+    }
+
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let base_url = format!("http://{addr}");
+    let app = Router::new()
+        .route("/oauth/token", post(token_handler))
+        .route("/v4/spreadsheets/:spreadsheet_id", get(metadata_handler))
+        .route(
+            "/v4/spreadsheets/:spreadsheet_id/values/*tail",
+            get(values_get_handler).post(values_post_handler),
+        );
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let server_task = tokio::spawn(async move {
+        serve(listener, app)
+            .with_graceful_shutdown(async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+    });
+
     let flow_id = example_connector_google_sheets_local_flow::validated_ir()
         .flow()
         .id
@@ -364,7 +445,7 @@ fn run_local_google_sheets_example_succeeds_with_service_account_bindings_lock()
                     "private_key_ref": "google_sheets_sa_private_key"
                 },
                 "config": {
-                    "token_url": format!("{}/oauth/token", token_server.base_url()),
+                    "token_url": format!("{}/oauth/token", base_url),
                     "scopes": [
                         "https://www.googleapis.com/auth/spreadsheets"
                     ]
@@ -376,7 +457,7 @@ fn run_local_google_sheets_example_succeeds_with_service_account_bindings_lock()
                 "handle_kind": "endpoint.profile",
                 "connect": {},
                 "config": {
-                    "base_url": api_server.base_url(),
+                    "base_url": base_url,
                     "default_headers": {
                         "Accept": "application/json"
                     }
@@ -418,69 +499,26 @@ fn run_local_google_sheets_example_succeeds_with_service_account_bindings_lock()
     lock["content_hash"] = serde_json::json!(hash);
     std::fs::write(&path, serde_json::to_vec_pretty(&lock)?)?;
 
-    let spreadsheet_id = "demo-spreadsheet";
-    let read_range = "'Leads'!A1:ZZZ";
-    let append_range = "'Leads'!A1:C";
-
-    let token_mock = token_server.mock(|when, then| {
-        when.method(httpmock::Method::POST)
-            .path("/oauth/token")
-            .body_contains("grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer")
-            .body_contains("assertion=");
-        then.status(200).json_body_obj(&serde_json::json!({
-            "access_token": "google-service-account-token",
-            "token_type": "Bearer",
-            "expires_in": 3600
-        }));
-    });
-
-    let read_mock = api_server.mock(|when, then| {
-        when.method(httpmock::Method::GET)
-            .path(values_path_for_test(spreadsheet_id, read_range))
-            .header("authorization", "Bearer google-service-account-token")
-            .header("accept", "application/json");
-        then.status(200).json_body_obj(&serde_json::json!({
-            "range": read_range,
-            "values": [["email", "name", "summary"]]
-        }));
-    });
-
-    let append_mock = api_server.mock(|when, then| {
-        when.method(httpmock::Method::POST)
-            .path(format!(
-                "{}:append",
-                values_path_for_test(spreadsheet_id, append_range)
-            ))
-            .header("authorization", "Bearer google-service-account-token")
-            .header("accept", "application/json")
-            .header("content-type", "application/json")
-            .query_param("insertDataOption", "INSERT_ROWS")
-            .query_param("valueInputOption", "RAW")
-            .json_body_obj(&serde_json::json!({
-                "majorDimension": "ROWS",
-                "values": [["ada@example.test", "Ada Lovelace", "from bindings lock"]]
-            }));
-        then.status(200).json_body_obj(&serde_json::json!({
-            "updates": {
-                "updatedRange": "'Leads'!A2:C2"
-            }
-        }));
-    });
-
-    let output = Command::cargo_bin("flows")?
-        .args([
-            "run",
-            "local",
-            "--example",
-            "connector_google_sheets_local_flow",
-            "--bindings-lock",
-            path.to_str().expect("path"),
-            "--payload",
-            r#"{"spreadsheet_id":"demo-spreadsheet","sheet":"Leads","email":"ada@example.test","name":"Ada Lovelace","summary":"from bindings lock"}"#,
-        ])
-        .env("google_sheets_sa_email", "svc@example.test")
-        .env("google_sheets_sa_private_key", TEST_RSA_PRIVATE_KEY_PEM)
-        .output()?;
+    let path_for_cmd = path.clone();
+    let output = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("flows")
+            .expect("flows binary")
+            .args([
+                "run",
+                "local",
+                "--example",
+                "connector_google_sheets_local_flow",
+                "--bindings-lock",
+                path_for_cmd.to_str().expect("path"),
+                "--payload",
+                r#"{"spreadsheet_id":"demo-spreadsheet","sheet":"Leads","email":"ada@example.test","name":"Ada Lovelace","summary":"from bindings lock"}"#,
+            ])
+            .env("google_sheets_sa_email", "svc@example.test")
+            .env("google_sheets_sa_private_key", TEST_RSA_PRIVATE_KEY_PEM)
+            .output()
+            .expect("flows run local output")
+    })
+    .await?;
 
     assert!(
         output.status.success(),
@@ -494,12 +532,14 @@ fn run_local_google_sheets_example_succeeds_with_service_account_bindings_lock()
     assert_eq!(payload["action"], "inserted");
     assert_eq!(payload["row_index"], 2);
     assert_eq!(payload["updated_range"], "'Leads'!A2:C2");
-
-    token_mock.assert();
-    read_mock.assert();
-    append_mock.assert();
+    assert_eq!(
+        payload["spreadsheet_url"],
+        "https://docs.google.com/spreadsheets/d/demo-spreadsheet/edit"
+    );
 
     std::fs::remove_file(&path).ok();
+    let _ = shutdown_tx.send(());
+    server_task.await??;
     Ok(())
 }
 

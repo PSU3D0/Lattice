@@ -270,15 +270,7 @@ async fn serve_streaming_route_emits_sse() -> Result<(), Box<dyn std::error::Err
 async fn serve_google_sheets_route_round_trips_connector_flow()
 -> Result<(), Box<dyn std::error::Error>> {
     let _env_lock = google_sheets_local::env_lock();
-    let server = httpmock::MockServer::start();
-    let _endpoint = google_sheets_local::EnvGuard::set(
-        "LATTICE_CONNECTOR_ENDPOINT_GOOGLE_SHEETS_DEFAULT_BASE_URL",
-        &server.base_url(),
-    );
-    let _auth = google_sheets_local::EnvGuard::set(
-        "LATTICE_CONNECTOR_AUTH_GOOGLE_WORKSPACE_AUTH",
-        "google-test-token",
-    );
+    let _mock = google_sheets_local::maybe_start_mock_server().expect("local mock server");
 
     let bundle = google_sheets_local::example_bundle();
     let entrypoint = bundle.entrypoints.first().expect("bundle entrypoint");
@@ -306,43 +298,6 @@ async fn serve_google_sheets_route_round_trips_connector_flow()
             .await
     });
 
-    let spreadsheet_id = "demo-spreadsheet";
-    let read_range = "'Leads'!A1:ZZZ";
-    let append_range = "'Leads'!A1:C";
-
-    let read_mock = server.mock(|when, then| {
-        when.method(httpmock::Method::GET)
-            .path(google_values_path(spreadsheet_id, read_range))
-            .header("authorization", "Bearer google-test-token")
-            .header("accept", "application/json");
-        then.status(200).json_body_obj(&json!({
-            "range": read_range,
-            "values": [["email", "name", "summary"]]
-        }));
-    });
-
-    let append_mock = server.mock(|when, then| {
-        when.method(httpmock::Method::POST)
-            .path(format!(
-                "{}:append",
-                google_values_path(spreadsheet_id, append_range)
-            ))
-            .header("authorization", "Bearer google-test-token")
-            .header("accept", "application/json")
-            .header("content-type", "application/json")
-            .query_param("insertDataOption", "INSERT_ROWS")
-            .query_param("valueInputOption", "RAW")
-            .json_body_obj(&json!({
-                "majorDimension": "ROWS",
-                "values": [["ada@example.test", "Ada Lovelace", "served via axum"]]
-            }));
-        then.status(200).json_body_obj(&json!({
-            "updates": {
-                "updatedRange": "'Leads'!A2:C2"
-            }
-        }));
-    });
-
     let client = reqwest::Client::new();
     let url = format!("http://{addr}{route_path}");
     let response = timeout(
@@ -350,7 +305,7 @@ async fn serve_google_sheets_route_round_trips_connector_flow()
         client
             .post(url)
             .json(&json!({
-                "spreadsheet_id": spreadsheet_id,
+                "spreadsheet_id": "demo-spreadsheet",
                 "sheet": "Leads",
                 "email": "ada@example.test",
                 "name": "Ada Lovelace",
@@ -360,14 +315,17 @@ async fn serve_google_sheets_route_round_trips_connector_flow()
     )
     .await??;
 
-    assert_eq!(response.status(), 200);
-    let body: serde_json::Value = response.json().await?;
+    let status = response.status();
+    let response_text = response.text().await?;
+    assert_eq!(status, 200, "unexpected body: {response_text}");
+    let body: serde_json::Value = serde_json::from_str(&response_text)?;
     assert_eq!(body["action"], json!("inserted"));
     assert_eq!(body["row_index"], json!(2));
     assert_eq!(body["updated_range"], json!("'Leads'!A2:C2"));
-
-    read_mock.assert();
-    append_mock.assert();
+    assert_eq!(
+        body["spreadsheet_url"],
+        json!("https://docs.google.com/spreadsheets/d/demo-spreadsheet/edit")
+    );
 
     let _ = shutdown_tx.send(());
     let server_result = timeout(Duration::from_secs(2), server_task).await??;

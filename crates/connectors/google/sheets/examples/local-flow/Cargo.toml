@@ -18,6 +18,7 @@ flow-registry = []
 anyhow.workspace = true
 cap-http-reqwest = { path = "../../../../../cap-http-reqwest" }
 capabilities = { path = "../../../../../capabilities" }
+connectors-std = { path = "../../../../../connectors-std" }
 connector_google_sheets = { path = "../.." }
 connector_google_platform = { path = "../../../platform" }
 dag-core = { path = "../../../../../dag-core" }

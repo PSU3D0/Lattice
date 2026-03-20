@@ -22,6 +22,13 @@ Representative production paths:
   - `auth.service_account_jwt`, or
   - `auth.oauth2.refresh`
 
+The flow is now **self-bootstrapping**:
+- if you provide `spreadsheet_id`, it reuses that workbook
+- if you omit `spreadsheet_id`, it creates a spreadsheet, ensures the target
+  sheet exists, ensures the CRM header row exists, and then upserts the lead
+- for repeatable/idempotent follow-on runs, persist the returned
+  `spreadsheet_id` and pass it back on later requests
+
 ## Helper: generate a live service-account bindings lock
 
 This example includes a small helper that generates a valid `bindings.lock.json`
@@ -52,24 +59,46 @@ uv run crates/connectors/google/sheets/examples/local-flow/generate_live_binding
 
 ## Live smoke checklist
 
-1. Create or choose a spreadsheet with a `Leads` tab.
-2. Put this header row in row 1:
-   - `email | name | summary`
-3. Share the spreadsheet with the service-account email as editor.
-4. Export the expected env vars:
+1. Create a Google Cloud service account and enable the Google Sheets API.
+2. Export the expected env vars:
 
 ```bash
 export google_sheets_sa_email='your-service-account@project.iam.gserviceaccount.com'
 export google_sheets_sa_private_key='<private-key-pem>'
 ```
 
-5. Run locally:
+3. Generate the live bindings lock:
+
+```bash
+uv run crates/connectors/google/sheets/examples/local-flow/generate_live_bindings_lock.py \
+  --out /tmp/google-sheets-live.bindings.lock.json
+```
+
+4. Run locally with **no spreadsheet_id** so the flow creates the workbook,
+   sheet, and header row for you:
 
 ```bash
 cargo run -p flows-cli -- run local \
   --example connector_google_sheets_local_flow \
   --bindings-lock /tmp/google-sheets-live.bindings.lock.json \
-  --payload '{"spreadsheet_id":"YOUR_SPREADSHEET_ID","sheet":"Leads","email":"ada@example.test","name":"Ada Lovelace","summary":"live smoke"}'
+  --payload '{"spreadsheet_title":"Lattice CRM Smoke","sheet":"Leads","email":"ada@example.test","name":"Ada Lovelace","summary":"live smoke"}'
+```
+
+The response will include:
+- `spreadsheet_id`
+- `spreadsheet_url`
+- `created_spreadsheet`
+- `created_sheet`
+- `initialized_headers`
+- upsert result fields such as `action`, `row_index`, and `updated_range`
+
+5. For repeatable follow-on runs, pass the returned `spreadsheet_id` back in:
+
+```bash
+cargo run -p flows-cli -- run local \
+  --example connector_google_sheets_local_flow \
+  --bindings-lock /tmp/google-sheets-live.bindings.lock.json \
+  --payload '{"spreadsheet_id":"YOUR_SPREADSHEET_ID","sheet":"Leads","email":"ada@example.test","name":"Ada Lovelace","summary":"follow-on upsert"}'
 ```
 
 6. Or serve over Axum:
@@ -82,5 +111,5 @@ cargo run -p flows-cli -- run serve \
 
 curl -sS -X POST http://127.0.0.1:8080/google/sheets/local \
   -H 'content-type: application/json' \
-  -d '{"spreadsheet_id":"YOUR_SPREADSHEET_ID","sheet":"Leads","email":"ada@example.test","name":"Ada Lovelace","summary":"served live smoke"}'
+  -d '{"spreadsheet_title":"Lattice CRM Smoke","sheet":"Leads","email":"ada@example.test","name":"Ada Lovelace","summary":"served live smoke"}'
 ```
