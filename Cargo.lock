@@ -1946,6 +1946,7 @@ dependencies = [
  "capabilities",
  "connector_google_platform",
  "connector_google_sheets",
+ "connectors-std",
  "dag-core",
  "dag-macros",
  "host-inproc",
