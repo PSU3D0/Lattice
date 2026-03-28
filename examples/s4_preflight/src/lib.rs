@@ -5,7 +5,9 @@ use serde_json::Value as JsonValue;
 #[def_node(
     trigger,
     name = "HttpTrigger",
-    summary = "Ingress trigger for preflight example"
+    summary = "Ingress trigger for preflight example",
+    effects = "Pure",
+    determinism = "Strict"
 )]
 async fn http_trigger(payload: JsonValue) -> NodeResult<JsonValue> {
     Ok(payload)

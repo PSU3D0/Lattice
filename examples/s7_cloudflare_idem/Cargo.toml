@@ -30,6 +30,7 @@ uuid = { workspace = true, features = ["v4", "js"] }
 [features]
 default = ["host-bundle"]
 host-bundle = []
+flow-registry = ["dag-core/flow-registry", "dag-macros/flow-registry"]
  
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 kernel-exec = { path = "../../crates/kernel-exec" }

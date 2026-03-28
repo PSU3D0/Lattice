@@ -7,14 +7,14 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_stream::stream;
+use cap_do_workers::WorkersDurableObject;
 #[cfg(target_arch = "wasm32")]
-use cap_do_workers::DurableObjectBinding;
-use cap_do_workers::{SNAPSHOT_SEQ_KEY, StorageValue, WorkersDurableObject};
+use cap_do_workers::{DurableObjectBinding, SNAPSHOT_SEQ_KEY, StorageValue};
 #[cfg(not(target_arch = "wasm32"))]
 type DurableObjectBinding = ();
 use capabilities::context;
-use capabilities::http::{HttpHeaders, HttpMethod, HttpRequest, HttpWrite};
-use capabilities::kv::{KeyValue, KvGetOptions, KvListOptions, KvPutOptions};
+use capabilities::http::{HttpHeaders, HttpMethod, HttpRequest};
+use capabilities::kv::{KvGetOptions, KvListOptions, KvPutOptions};
 use dag_core::{FlowIR, IdempotencyScope, NodeError, NodeResult};
 use dag_macros::{def_node, node};
 use futures::Stream;
@@ -124,6 +124,7 @@ mod worker_context {
 
     #[derive(Clone)]
     pub struct WorkerContext {
+        #[cfg(target_arch = "wasm32")]
         pub binding: DurableObjectBinding,
         pub config: WorkerConfig,
     }
@@ -133,8 +134,15 @@ mod worker_context {
     }
 
     pub fn set(binding: DurableObjectBinding, config: WorkerConfig) {
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = binding;
+
         CONTEXT.with(|slot| {
-            *slot.borrow_mut() = Some(WorkerContext { binding, config });
+            *slot.borrow_mut() = Some(WorkerContext {
+                #[cfg(target_arch = "wasm32")]
+                binding,
+                config,
+            });
         });
     }
 
@@ -144,6 +152,7 @@ mod worker_context {
         });
     }
 
+    #[cfg(target_arch = "wasm32")]
     pub fn binding() -> Option<DurableObjectBinding> {
         CONTEXT.with(|slot| slot.borrow().as_ref().map(|ctx| ctx.binding.clone()))
     }
@@ -366,7 +375,9 @@ pub struct IngestResponse {
 #[def_node(
     trigger,
     name = "trigger_http_ingest",
-    summary = "Ingress trigger for ingest"
+    summary = "Ingress trigger for ingest",
+    effects = "Pure",
+    determinism = "Strict"
 )]
 async fn trigger_http_ingest(request: IngestRequest) -> NodeResult<IngestRequest> {
     Ok(request)
@@ -384,7 +395,9 @@ fn build_list_idempotency_key(request: &ListRequest) -> String {
 #[def_node(
     trigger,
     name = "trigger_http_events",
-    summary = "Ingress trigger for event listing"
+    summary = "Ingress trigger for event listing",
+    effects = "Pure",
+    determinism = "Strict"
 )]
 async fn trigger_http_events(mut request: ListRequest) -> NodeResult<ListRequest> {
     if request.idempotency_key.is_empty() {
@@ -396,7 +409,9 @@ async fn trigger_http_events(mut request: ListRequest) -> NodeResult<ListRequest
 #[def_node(
     trigger,
     name = "trigger_http_snapshot",
-    summary = "Ingress trigger for snapshot reads"
+    summary = "Ingress trigger for snapshot reads",
+    effects = "Pure",
+    determinism = "Strict"
 )]
 async fn trigger_http_snapshot(request: SnapshotRequest) -> NodeResult<SnapshotRequest> {
     Ok(request)
@@ -405,7 +420,9 @@ async fn trigger_http_snapshot(request: SnapshotRequest) -> NodeResult<SnapshotR
 #[def_node(
     trigger,
     name = "trigger_http_stream",
-    summary = "Ingress trigger for stream"
+    summary = "Ingress trigger for stream",
+    effects = "Pure",
+    determinism = "Strict"
 )]
 async fn trigger_http_stream(mut request: ListRequest) -> NodeResult<ListRequest> {
     if request.idempotency_key.is_empty() {

@@ -11,7 +11,6 @@ The canonical runnable local example now lives as a **full example crate** under
 Run it from the workspace root:
 
 ```bash
-cd codebase/.sessions/lat-000028-impl
 cargo run -p example-connector-github-issues-local-flow
 ```
 

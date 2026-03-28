@@ -1,12 +1,14 @@
 use dag_core::{ControlSurfaceIR, ControlSurfaceKind, FlowIR, NodeResult};
-use dag_macros::{def_node, node};
+use dag_macros::def_node;
 use kernel_plan::{ValidatedIR, validate};
 use serde_json::{Value as JsonValue, json};
 
 #[def_node(
     trigger,
     name = "HttpTrigger",
-    summary = "Ingress trigger for unsupported surface example"
+    summary = "Ingress trigger for unsupported surface example",
+    effects = "Pure",
+    determinism = "Strict"
 )]
 async fn http_trigger(payload: JsonValue) -> NodeResult<JsonValue> {
     Ok(payload)

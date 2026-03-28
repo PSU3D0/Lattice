@@ -41,18 +41,10 @@ static LEASE_REMOVE_HOOK: OnceLock<Mutex<Option<LeaseHook>>> = OnceLock::new();
 static LEASE_OPEN_HOOK: OnceLock<Mutex<Option<LeaseHook>>> = OnceLock::new();
 
 impl FsCheckpointStore {
-    pub fn new() -> Self {
-        Self::with_root(Self::default_root())
-    }
-
     pub fn with_root(root: impl AsRef<Path>) -> Self {
         Self {
             root: root.as_ref().to_path_buf(),
         }
-    }
-
-    fn default_root() -> PathBuf {
-        PathBuf::from(".flow").join("checkpoints")
     }
 
     fn flow_dir(&self, flow_id: &FlowId) -> PathBuf {

@@ -23,7 +23,9 @@ pub struct EchoResponse {
 #[def_node(
     trigger,
     name = "HttpTrigger",
-    summary = "Ingress HTTP trigger for the echo route"
+    summary = "Ingress HTTP trigger for the echo route",
+    effects = "Pure",
+    determinism = "Strict"
 )]
 async fn http_trigger(request: EchoRequest) -> NodeResult<EchoRequest> {
     Ok(request)

@@ -21,6 +21,31 @@ The workspace provides everything needed to go from macro-authored code to runni
 - **Policy & compliance:** Capabilities, secrets, and egress are gated at compile time, certification, and runtime. Error codes map directly to policy remediation steps.
 - **Extensibility:** Plugins (WASM, Python) and connector specs allow external teams or agents to extend the platform while preserving sandboxing and evidence trails.
 
+## Current Maturity Snapshot
+
+### Available today
+- Macro-authored flows with compile-time metadata and stable validation diagnostics.
+- `flows graph check`, `flows entrypoints check`, `flows run local`, and `flows run serve`.
+- In-process execution via `host-inproc` and HTTP serving via `host-web-axum`.
+- Run-scoped workspace capability with native and Workers backends.
+- Host-owned connector runtime/bindings substrate with local OAuth2 refresh and service-account JWT providers.
+- Runnable connector-owned examples for GitHub Issues and Google Sheets.
+- Workerd/Miniflare-backed `host-workers` coverage for durability and workspace semantics.
+
+### Still preview / under active buildout
+- Workers parity for richer connector binding/provider execution.
+- Connector trigger runtime, inbound verifier providers, and activation lifecycle.
+- Larger connector farming surface beyond the first serious Google Sheets slice.
+- Broader real-world workflow example coverage across multiple domains.
+
+### Still scaffold / intentionally incomplete
+- `host-temporal`
+- `registry-cert`
+- `importer-n8n`
+- `plugin-python`
+- `plugin-wasi`
+- `studio-backend`
+
 ## Workspace Topology
 
 ```
@@ -30,11 +55,11 @@ The workspace provides everything needed to go from macro-authored code to runni
 /crates/                          # Primary library, runtime, tooling, and adapters
   dag-core/                       # Flow IR types, diagnostics, builder utilities
   dag-macros/                     # Authoring DSL (`#[def_node]`, `flow!`, control surfaces)
-  kernel-plan/                    # Flow IR validators + lowering scaffolding
-  kernel-exec/                    # (Scaffold) runtime for execution plans
+  kernel-plan/                    # Flow IR validators + lowering and policy checks
+  kernel-exec/                    # Runtime for execution plans, resume, and resource overlays
   capabilities/, cap-*            # Capability typestates + concrete providers
-  host-inproc/, host-web-axum/, bridge-queue-redis/, host-temporal/  # Runtime + execution bridges
-  plugin-wasi/, plugin-python/    # Sandbox runtimes for WASM and gRPC plugins
+  host-inproc/, host-web-axum/, host-workers/, bridge-queue-redis/, host-temporal/  # Runtime + execution bridges
+  plugin-wasi/, plugin-python/    # Sandbox runtimes for WASM and gRPC plugins (early scaffold)
   exporters/                      # Flow IR exporters (JSON, DOT, future OpenAPI/WIT)
   registry-client/, registry-cert/# Certification + registry publication tooling
   connector-spec/, connectors-std/# Connector generation + curated packs
@@ -57,11 +82,11 @@ The workspace provides everything needed to go from macro-authored code to runni
 | `dag-core` | Canonical types: Flow IR structs, builder helpers, diagnostics, effects/determinism. |
 | `dag-macros` | Procedural macros expanding Rust nodes/triggers/flows and emitting Flow IR. Includes trybuild suites for diagnostics. |
 | `kernel-plan` | Validation engine enforcing DAG rules, port compatibility, cycle detection, and idempotency preconditions. Produces `ValidatedIR`. |
-| `kernel-exec` | (Scaffold) in-process executor with scheduling, backpressure, and cancellation hooks. |
+| `kernel-exec` | In-process executor with scheduling, deadlines, resource overlays, and resume integration points. |
 | `exporters` | Flow IR exporters (`to_json_value`, `to_dot`) consumed by CLI and Studio. |
-| `flows-cli` | CLI entrypoint (`flows graph check`, future run/certify/publish subcommands). |
-| `capabilities`, `cap-*` | Typestate traits and concrete implementations for HTTP, KV, blob, cache, dedupe, clock, etc. |
-| `host-*` | Host adapters for Axios-web, Redis queue workers, Temporal lowering. |
+| `flows-cli` | CLI entrypoint for graph validation, entrypoint checks, local execution, and local serving. |
+| `capabilities`, `cap-*` | Typestate traits and concrete implementations for HTTP, KV, blob, cache, dedupe, clock, workspace, etc. |
+| `host-*` | Host adapters for Axum/web, Cloudflare Workers, Redis queue workers, and future Temporal lowering. |
 | `plugin-*` | Sandboxed plugin runtimes (WASM/Wasmtime + WIT, Python gRPC). |
 | `registry-*` | Publishing, signing, and certification harness integration. |
 | `connector-spec`, `connectors-std` | YAML schema/codegen for connectors, curated packs. |
@@ -105,16 +130,15 @@ Validation highlights implemented in `kernel-plan::validate`:
 
 Additional rules (delivery requirements, capability overlap, policy waivers) are outlined in the RFC and queued for future phases.
 
-## Runtime, Bridges & Hosts (Scaffold)
+## Runtime, Bridges & Hosts
 
-- **kernel-exec:** Will host the async scheduler, cancellation tokens, partition routing, backpressure, and spill-to-blob logic. Targets the Web, Queue, Temporal, and WASM profiles defined by the contract specs under `impl-docs/spec/`.
-- **host-inproc:** Shared runtime harness used by all bridges to execute validated flows within the current process.
-- **host-web-axum:** Axum adapter that mounts HTTP triggers, handles SSE streaming, request facet injection, deadlines, and cancellation propagation.
-- **bridge-queue-redis:** Redis-based queue bridge managing visibility timeouts, dedupe integration (`cap-dedupe-redis`), rate limits, and fairness scheduling before delegating to `host-inproc`.
-- **host-temporal:** Code generation + Rust activity worker bridging Flow IR to Temporal workflows and activity semantics (signals, timers, Continue-As-New).
-- **plugin-wasi / plugin-python:** Sandboxed plugin hosts enforcing declared capabilities, memory/timeout budgets, and determinism evidence.
-
-All host crates currently provide scaffolding with README guidance and will be filled out as phases progress.
+- **kernel-exec:** In-process executor for validated flows, including resource overlays, run identity plumbing, and checkpoint/resume integration points.
+- **host-inproc:** Shared runtime harness used by examples, tests, and higher-level hosts to execute validated flows in-process.
+- **host-web-axum:** Axum adapter that mounts HTTP triggers, handles request facets, streaming responses, deadlines, and cancellation propagation.
+- **host-workers:** Cloudflare Workers adapter with workerd/Miniflare coverage, DO-backed durability substrate, and Workers workspace wiring.
+- **bridge-queue-redis:** Queue bridge for Redis-backed execution lanes; still earlier than the web/native path.
+- **host-temporal:** Present in the workspace, but still scaffold-level rather than product-ready.
+- **plugin-wasi / plugin-python:** Present as extension seams, but still scaffold-level rather than stable public integration surfaces.
 
 ## Capabilities & Connectors
 
@@ -127,51 +151,61 @@ All host crates currently provide scaffolding with README guidance and will be f
 
 ```bash
 # Validate a Flow IR document (from file)
-cargo run -p flows-cli -- graph check --input examples/s1_echo.flow_ir.json
+cargo run -p flows-cli -- graph check --input schemas/examples/s2_site.json
 
-# Validate from stdin and emit DOT
-cargo run -p flows-cli -- graph check --emit-dot < flow.json
+# Validate trigger/capture wiring
+cargo run -p flows-cli -- entrypoints check --input schemas/examples/s2_site.json
 
-# Validate and write DOT to disk
-cargo run -p flows-cli -- graph check --input flow.json --dot flow.dot
+# Execute a built-in example locally
+cargo run -p flows-cli -- run local --example s1_echo --payload '{"value":" Hello "}'
+
+# Serve a built-in example over HTTP
+cargo run -p flows-cli -- run serve --example s1_echo --addr 127.0.0.1:8080
+
+# Execute the connector-owned Google Sheets example via bindings.lock
+cargo run -p flows-cli -- run local \
+  --example connector_google_sheets_local_flow \
+  --bindings-lock /tmp/google-sheets-live.bindings.lock.json
 ```
 
-Future commands (per implementation plan):
-- `flows run local` / `flows run serve`
-- `flows queue up`
-- `flows export wasm`
-- `flows certify` (idempotency/determinism/policy harnesses)
-- `flows publish` (registry hand-off)
-- `flows import n8n`
+Still planned / incomplete:
+- queue-first operator flows and richer bridge commands
+- registry certification / publish flows
+- importer-driven `n8n` translation path
 
 ## Development Guide
 
 ### Prerequisites
-- **Rust 1.90** (workspace MSRV)
-- `cargo fmt`, `cargo clippy`, `cargo test`
+- **Rust 1.90** (workspace MSRV; `mise.toml` currently pins 1.93.0 for local tooling)
+- `mise` for the repo-managed task/toolchain entrypoints
 - Optional: Redis (queue profile), Wasmtime (plugin host), Temporal dev server (later phase)
 
 ### Common Commands
 
 ```bash
-# Format & lint
-cargo fmt
-cargo clippy --all-targets --workspace -- -D warnings
+# Fast local validation
+mise run validate
 
-# Build core crates
+# Native + wasm validation + secret scan (CI-shaped aggregate)
+mise run validate-ci
+
+# Build core crates directly
 cargo check -p dag-core
 cargo check -p dag-macros
 cargo check -p kernel-plan
 cargo check -p flows-cli
 
 # Run macro UI tests (requires a writeable target dir; use env var to sidestep sandbox limits)
-CARGO_TARGET_DIR=.target cargo test -p dag-macros
+CARGO_TARGET_DIR=.target cargo test -p dag-macros --test trybuild
 
-# Execute example unit tests
+# Execute canonical examples
 cargo test -p example-s1-echo
+cargo run -p flows-cli -- run local --example s1_echo --payload '{"value":" Hello "}'
 ```
 
 > **Note:** When running tests inside sandboxed environments (e.g., the Codex CLI harness), set a workspace-local `CARGO_TARGET_DIR` to avoid cross-device link errors: `CARGO_TARGET_DIR=.target cargo test ...`.
+>
+> If you work with encrypted private docs locally, keep `fnox.toml` untracked and start from `fnox.example.toml` rather than committing a real secret-manager config.
 
 ### Phased Buildout
 
@@ -203,17 +237,16 @@ Outlined in the RFC (`impl-docs/rust-workflow-tdd-rfc.md`, §16):
 - **Integration:** HTTP runtime, queue dedupe & spill, Temporal workflows, plugin hosts.
 - **Certification harnesses:** Determinism replay, idempotency duplicates, policy evidence.
 
-Current repository includes unit/trybuild coverage for macros, Flow IR builder tests in `dag-core`, kernel-plan validation tests, and exporter smoke tests.
+Current repository includes unit/trybuild coverage for macros, Flow IR builder tests in `dag-core`, kernel-plan validation tests, exporter smoke tests, workerd/Miniflare coverage for `host-workers`, and runnable connector-owned example packages.
 
 ## Roadmap & Next Steps
 
-- Extend validator coverage (delivery semantics, capability/policy checks).
-- Implement kernel executor scheduling/backpressure and Web host bridging.
-- Fill in capability providers (Redis, Reqwest, KV SQLite) with full typestate enforcement.
-- Build CLI `flows run` to execute workflows via kernel and hosts.
-- Ship connector spec codegen + initial connectors (Stripe, SendGrid, Slack).
-- Add importer pipeline for n8n JSON and harvesting automation.
-- Integrate policy engine, registry certification, and Studio backend for agent workflows.
+- Expand the real-world example suite across multiple domains, not just substrate demos.
+- Harden capability ergonomics for KV/blob/workspace-first authoring patterns.
+- Improve Workers parity for connector bindings, auth providers, and connector-bound flows.
+- Grow the connector ecosystem beyond GitHub Issues and Google Sheets, especially into richer trigger/webhook families.
+- Land clearer stability tiers for scaffold vs preview vs supported public surfaces.
+- Continue importer, registry certification, plugin, and studio work from their current scaffold baselines.
 
 Refer to `impl-docs/impl-plan.md` and `impl-docs/surface-and-buildout.md` for detailed sequencing.
 

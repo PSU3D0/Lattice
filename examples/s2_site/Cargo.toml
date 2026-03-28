@@ -24,3 +24,4 @@ async-stream = "0.3"
 [features]
 default = ["host-bundle"]
 host-bundle = []
+flow-registry = ["dag-core/flow-registry", "dag-macros/flow-registry"]

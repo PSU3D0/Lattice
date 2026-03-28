@@ -22,3 +22,4 @@ serde_json.workspace = true
 [features]
 default = ["host-bundle"]
 host-bundle = []
+flow-registry = ["dag-core/flow-registry", "dag-macros/flow-registry"]

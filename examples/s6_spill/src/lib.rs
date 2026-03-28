@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use capabilities::context;
 use dag_core::{FlowIR, NodeError, NodeResult};
-use dag_macros::{def_node, node};
+use dag_macros::def_node;
 #[cfg(feature = "host-bundle")]
 use futures_timer::Delay;
 use kernel_plan::{ValidatedIR, validate};
@@ -38,7 +38,9 @@ pub struct Ack {
 #[def_node(
     trigger,
     name = "BatchTrigger",
-    summary = "Ingress trigger for batch ingest"
+    summary = "Ingress trigger for batch ingest",
+    effects = "Pure",
+    determinism = "Strict"
 )]
 async fn batch_trigger(request: BatchRequest) -> NodeResult<BatchRequest> {
     Ok(request)

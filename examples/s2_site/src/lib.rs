@@ -88,7 +88,9 @@ impl serde::Serialize for SiteEventStream {
 #[def_node(
     trigger,
     name = "SiteHttpTrigger",
-    summary = "Ingress trigger for site status requests"
+    summary = "Ingress trigger for site status requests",
+    effects = "Pure",
+    determinism = "Strict"
 )]
 async fn http_trigger(request: SiteRequest) -> NodeResult<SiteRequest> {
     Ok(request)

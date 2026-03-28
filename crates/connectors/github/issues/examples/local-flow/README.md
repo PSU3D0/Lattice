@@ -40,7 +40,7 @@ cargo run -p example-connector-github-issues-local-flow
 Optional auth:
 
 ```bash
-export LATTICE_CONNECTOR_AUTH_GITHUB_PAT=ghp_your_token_here
+export LATTICE_CONNECTOR_AUTH_GITHUB_PAT=<github_personal_access_token>
 ```
 
 ## Why this crate exists

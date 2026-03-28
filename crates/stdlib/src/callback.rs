@@ -29,6 +29,7 @@ pub struct CallbackWaitOutput {
     determinism = "Nondeterministic",
     halts = true
 )]
+#[allow(dead_code)]
 async fn callback_wait(input: CallbackWaitInput) -> NodeResult<CallbackWaitOutput> {
     let timeout = input.timeout;
     let context_value = input.context;

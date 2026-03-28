@@ -30,6 +30,7 @@ pub struct TimerWaitOutput {
     determinism = "Nondeterministic",
     halts = true
 )]
+#[allow(dead_code)]
 async fn timer_wait(input: TimerWaitInput) -> NodeResult<TimerWaitOutput> {
     let (duration, until) = match (input.duration, input.until) {
         (Some(_), Some(_)) => {
