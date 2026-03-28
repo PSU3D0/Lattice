@@ -80,15 +80,19 @@ pub struct WorkspaceDeleteOutput {
     idempotency(key = "workspace.write.path", scope = "Node")
 )]
 pub async fn workspace_write(input: WorkspaceWriteInput) -> NodeResult<WorkspaceWriteOutput> {
-    let normalized_path = normalize_path(&input.path)
-        .map_err(|err| workspace_operation_error("write", err))?;
+    let normalized_path =
+        normalize_path(&input.path).map_err(|err| workspace_operation_error("write", err))?;
 
     context::with_current_async(|resources| async move {
         let workspace = resources
             .workspace()
             .ok_or_else(|| missing_workspace_error("write"))?;
         let result = workspace
-            .write_normalized(&normalized_path, &input.bytes, WorkspaceWriteOptions::default())
+            .write_normalized(
+                &normalized_path,
+                &input.bytes,
+                WorkspaceWriteOptions::default(),
+            )
             .await
             .map_err(|err| workspace_operation_error("write", err))?;
         Ok(WorkspaceWriteOutput {
@@ -110,8 +114,8 @@ pub async fn workspace_write(input: WorkspaceWriteInput) -> NodeResult<Workspace
     resources(workspace_read(capabilities::workspace::Workspace))
 )]
 pub async fn workspace_read(input: WorkspaceReadInput) -> NodeResult<WorkspaceReadOutput> {
-    let normalized_path = normalize_path(&input.path)
-        .map_err(|err| workspace_operation_error("read", err))?;
+    let normalized_path =
+        normalize_path(&input.path).map_err(|err| workspace_operation_error("read", err))?;
 
     context::with_current_async(|resources| async move {
         let workspace = resources
@@ -179,8 +183,8 @@ pub async fn workspace_list(input: WorkspaceListInput) -> NodeResult<WorkspaceLi
     idempotency(key = "workspace.delete.path", scope = "Node")
 )]
 pub async fn workspace_delete(input: WorkspaceDeleteInput) -> NodeResult<WorkspaceDeleteOutput> {
-    let normalized_path = normalize_path(&input.path)
-        .map_err(|err| workspace_operation_error("delete", err))?;
+    let normalized_path =
+        normalize_path(&input.path).map_err(|err| workspace_operation_error("delete", err))?;
 
     context::with_current_async(|resources| async move {
         let workspace = resources
@@ -468,19 +472,11 @@ mod tests {
     async fn list_maps_workspace_entries() {
         let workspace = Arc::new(MemoryWorkspace::default());
         workspace
-            .write(
-                "artifacts/b.txt",
-                b"bbb",
-                WorkspaceWriteOptions::default(),
-            )
+            .write("artifacts/b.txt", b"bbb", WorkspaceWriteOptions::default())
             .await
             .expect("seed b");
         workspace
-            .write(
-                "artifacts/a.txt",
-                b"a",
-                WorkspaceWriteOptions::default(),
-            )
+            .write("artifacts/a.txt", b"a", WorkspaceWriteOptions::default())
             .await
             .expect("seed a");
 
@@ -619,8 +615,9 @@ mod tests {
         .await
         .expect_err("missing context should fail");
 
-        assert!(err
-            .to_string()
-            .contains("std.workspace.read missing ResourceAccess context"));
+        assert!(
+            err.to_string()
+                .contains("std.workspace.read missing ResourceAccess context")
+        );
     }
 }

@@ -2,10 +2,10 @@ pub mod ext;
 pub mod generated;
 pub mod runtime;
 
+pub use generated::actions::*;
 pub use generated::manifest::*;
 pub use generated::profiles::*;
 pub use generated::types::*;
-pub use generated::actions::*;
 pub mod ops {
     pub use crate::generated::ops::*;
 }

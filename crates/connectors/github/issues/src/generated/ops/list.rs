@@ -1,12 +1,26 @@
 use crate::generated::types::{GithubIssuesListInput, GithubIssuesListOutput};
-use crate::runtime::transport::{ActionDescriptor, FieldBinding, RequestDescriptor, ResponseDescriptor, run_action_from_current};
 use crate::runtime::transport::PaginationDescriptor;
+use crate::runtime::transport::{
+    ActionDescriptor, FieldBinding, RequestDescriptor, ResponseDescriptor, run_action_from_current,
+};
 
 const GITHUB_ISSUES_LIST_REQUEST: RequestDescriptor = RequestDescriptor {
     method: capabilities::http::HttpMethod::Get,
     path_template: "/repos/{owner}/{repo}/issues",
-    path_params: &[FieldBinding { wire_name: "owner", input_field: "owner" }, FieldBinding { wire_name: "repo", input_field: "repo" }],
-    query: &[FieldBinding { wire_name: "state", input_field: "state" }],
+    path_params: &[
+        FieldBinding {
+            wire_name: "owner",
+            input_field: "owner",
+        },
+        FieldBinding {
+            wire_name: "repo",
+            input_field: "repo",
+        },
+    ],
+    query: &[FieldBinding {
+        wire_name: "state",
+        input_field: "state",
+    }],
     body: &[],
     headers: &[],
 };
@@ -43,10 +57,16 @@ impl GithubIssuesList {
         max_determinism: ::dag_core::Determinism::BestEffort,
         determinism_hints: &[capabilities::http::HINT_HTTP],
         effect_hints: &[capabilities::http::HINT_HTTP_READ],
-        roles: &[::dag_core::ConnectorRoleRequirement { kind: ::dag_core::ConnectorRoleKindDecl::EndpointProfile, name: "github_default", expected_handle_kind: "endpoint.profile" }],
+        roles: &[::dag_core::ConnectorRoleRequirement {
+            kind: ::dag_core::ConnectorRoleKindDecl::EndpointProfile,
+            name: "github_default",
+            expected_handle_kind: "endpoint.profile",
+        }],
     };
 
-    pub async fn invoke(input: &GithubIssuesListInput) -> Result<GithubIssuesListOutput, crate::runtime::errors::ConnectorRuntimeError> {
+    pub async fn invoke(
+        input: &GithubIssuesListInput,
+    ) -> Result<GithubIssuesListOutput, crate::runtime::errors::ConnectorRuntimeError> {
         run_action_from_current(input, &GITHUB_ISSUES_LIST_ACTION).await
     }
 }

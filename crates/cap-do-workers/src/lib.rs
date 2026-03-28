@@ -1100,7 +1100,10 @@ mod wasm {
                 }
 
                 if schedule.fires_at_ms <= now_ms {
-                    self.spawn_resume_dispatch(schedule.checkpoint_handle.clone(), schedule.fires_at_ms);
+                    self.spawn_resume_dispatch(
+                        schedule.checkpoint_handle.clone(),
+                        schedule.fires_at_ms,
+                    );
                     schedule.status = StoredScheduleStatus::Fired {
                         fired_at_ms: now_ms,
                     };
@@ -1173,8 +1176,8 @@ mod wasm {
             let mut init = RequestInit::new();
             init.with_method(Method::Post);
             init.with_body(Some(JsValue::from_str(&body)));
-            let mut request =
-                Request::new_with_init(&dispatch_url, &init).map_err(|e| DoError::FetchError(e.to_string()))?;
+            let mut request = Request::new_with_init(&dispatch_url, &init)
+                .map_err(|e| DoError::FetchError(e.to_string()))?;
             request
                 .headers_mut()
                 .map_err(|e| DoError::FetchError(e.to_string()))?
@@ -1196,8 +1199,7 @@ mod wasm {
                     .fetch_request(request)
                     .await
                     .map_err(|e| DoError::FetchError(e.to_string()))?;
-                Response::try_from(http_response)
-                    .map_err(|e| DoError::FetchError(e.to_string()))?
+                Response::try_from(http_response).map_err(|e| DoError::FetchError(e.to_string()))?
             } else {
                 Fetch::Request(request)
                     .send()
