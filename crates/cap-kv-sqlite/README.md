@@ -1,17 +1,18 @@
 # cap-kv-sqlite
 
-`cap-kv-sqlite` provides a lightweight SQLite-backed KV capability for development and test profiles. It allows Strict/Stable reads via content-addressing and offers simple local persistence.
+`cap-kv-sqlite` is currently **deferred / under review**.
 
-## Surface
-- `KvRead`/`KvWrite` implementations with optional TTL and transactional guards.
-- Schema migration helpers for evolving local state.
-- Utilities for test harnesses to seed fixtures.
+The current preferred direction for local/native KV is to use:
+- `cap-kv-opendal`
+- with an OpenDAL SQLite backend when SQLite-backed local persistence is desired
 
-## Next steps
-- Implement CRUD operations with deterministic read options and JSON value storage.
-- Cover optimistic-locking and conflict scenarios in unit tests.
-- Integrate with spill/cache policies once `capabilities` exposes them.
+That keeps `resource::kv` provider selection cleaner and avoids introducing a one-off local KV crate unless we discover a concrete semantic gap that OpenDAL SQLite cannot cover.
 
-## Depends on
-- Trait contracts from `capabilities`.
-- Optionally consumes shared type definitions from `types-common` when available.
+## Why it is deferred
+A dedicated crate only becomes worth implementing if we need SQLite-specific KV semantics that are meaningfully stronger than the OpenDAL path, for example:
+- richer local list/metadata/expiration support,
+- explicit schema/migration ownership in the adapter,
+- or stronger local transaction/performance guarantees.
+
+## Important boundary
+If Lattice later grows a true SQL/DB capability, that should be modeled as a **separate capability family**, not as an extension of `resource::kv` just because some KV providers use SQLite internally.

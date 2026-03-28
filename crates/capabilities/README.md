@@ -8,10 +8,10 @@
 - Policy metadata linking capabilities to effects, determinism, and residency rules.
 
 ## Next steps
-- Implement trait signatures from RFC §6.3 and integrate tracing/metrics guards.
-- Provide a registry data structure with permission checks and capability version tracking.
-- Add unit tests ensuring effect/determinism contracts are enforced at compile time.
+- Continue tightening effect/determinism and runtime-policy guardrails around the existing traits.
+- Improve builder-facing docs for the canonical local stacks (HTTP/Workspace/Blob/KV).
+- Add more example-driven coverage that demonstrates when to prefer workspace vs blob and KV vs future SQL-like surfaces.
 
 ## Depends on
 - Builds on `dag-core` type definitions.
-- Adapter crates (`cap-http-reqwest`, `cap-kv-sqlite`, etc.) will use these traits once finalised.
+- Adapter crates (`cap-http-reqwest`, `cap-kv-opendal`, `cap-kv-workers`, `cap-blob-opendal`, etc.) use these traits.

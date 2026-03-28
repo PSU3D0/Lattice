@@ -143,6 +143,10 @@ Additional rules (delivery requirements, capability overlap, policy waivers) are
 ## Capabilities & Connectors
 
 - **Capabilities:** Traits in `capabilities` ensure compile-time enforcement of effect/determinism contracts (e.g., stable reads require pinned resources). Concrete providers live in `cap-*` crates.
+- **Current recommended local stack:** `cap-http-reqwest`, `cap-workspace-fs`, `cap-blob-opendal` (filesystem backend where appropriate), and `cap-kv-opendal` (SQLite backend where appropriate).
+- **Current recommended Workers stack:** `cap-http-workers`, `cap-workspace-workers`, `cap-kv-workers`, and `cap-do-workers`.
+- **Important distinction:** workspace is run-scoped scratch; blob is durable artifact/object storage. Keep those capabilities separate even if they share a filesystem-backed implementation locally.
+- **Future SQL note:** if Lattice grows a real SQL/DB capability, it should remain separate from `resource::kv` even when a KV provider happens to use SQLite internally.
 - **ConnectorSpec:** Declarative YAML schema + Rust codegen for connectors, including manifest metadata (effects, determinism, egress, rate limits, tests).
 - **connectors-std:** Umbrella crate re-exporting provider-specific connectors once generated.
 - **Registry:** `registry-client` and `registry-cert` coordinate publishing, sigstore signing, SBOM snapshots, determinism/idempotency/test harness runs.
