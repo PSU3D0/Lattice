@@ -4,6 +4,7 @@ min_version = { soft = "2024.9.0", hard = "2024.11.1" }
 rust = "1.93.0"
 age = "latest"
 fnox = "latest"
+gitleaks = "latest"
 uv = "latest"
 "npm:wrangler" = "latest"
 
@@ -76,7 +77,11 @@ description = "Aggregate validation task for CI"
 depends = ["fmt", "clippy", "test"]
 run = "echo finished validation checks"
 
+[tasks.secret-scan]
+description = "Scan the repo for committed secrets"
+run = "gitleaks dir . --config .gitleaks.toml"
+
 [tasks.validate-ci]
-description = "Full CI validation (native + wasm lanes)"
-depends = ["validate", "validate-wasm"]
+description = "Full CI validation (native + wasm lanes + secret scan)"
+depends = ["validate", "validate-wasm", "secret-scan"]
 run = "echo finished full CI validation"

@@ -1,0 +1,9 @@
+# Copy to `fnox.toml` for local-only encrypted-doc workflows.
+# Do not commit the copied file.
+
+[providers.age]
+type = "age"
+recipients = ["age1replace_me_with_your_public_recipient"]
+
+[secrets]
+AGE_SECRET_KEY = { provider = "age", value = "REPLACE_WITH_BASE64_AGE_SECRET_KEY" }

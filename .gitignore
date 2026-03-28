@@ -9,3 +9,6 @@ docs/plans/
 # Decrypted private docs (never commit plaintext)
 private/
 ref-libs/
+
+# Local secret-manager config (copy from fnox.example.toml when needed)
+fnox.toml

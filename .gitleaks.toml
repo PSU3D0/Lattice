@@ -1,0 +1,18 @@
+title = "Lattice gitleaks config"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Generated lockfiles and local reference material may contain false positives"
+paths = [
+  '''^Cargo\.lock$''',
+  '''^ref-libs/''',
+]
+
+[[allowlists]]
+description = "Deterministic test-only RSA fixtures for CLI auth-provider coverage"
+paths = [
+  '''^crates/cli/src/main\.rs$''',
+  '''^crates/cli/tests/bindings_lock\.rs$''',
+]

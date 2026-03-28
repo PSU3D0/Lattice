@@ -1,0 +1,53 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Set up mise tools
+        uses: jdx/mise-action@v2
+        with:
+          cache: true
+
+      - name: Install Rust components
+        run: rustup component add rustfmt clippy
+
+      - name: Run native validation
+        run: mise run validate
+
+  validate-wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Set up mise tools
+        uses: jdx/mise-action@v2
+        with:
+          cache: true
+
+      - name: Install wasm target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Run wasm validation
+        run: mise run validate-wasm

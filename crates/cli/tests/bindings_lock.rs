@@ -13,6 +13,8 @@ fn temp_lock_path() -> PathBuf {
     path
 }
 
+// Deterministic test-only RSA fixture used for service-account JWT coverage.
+// This path is allowlisted in `.gitleaks.toml`.
 const TEST_RSA_PRIVATE_KEY_PEM: &str = r#"-----BEGIN PRIVATE KEY-----
 MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQDIA/LEAPFqnUft
 gmeGPFVtcWpJSkDfOtqucdzB7lhvV3qKjHgAijwySNPWYbwq+PqjULtMmD5ishZj
@@ -365,7 +367,9 @@ async fn run_local_google_sheets_example_succeeds_with_service_account_bindings_
         }))
     }
 
-    async fn values_get_handler(Path((_spreadsheet_id, _tail)): Path<(String, String)>) -> impl IntoResponse {
+    async fn values_get_handler(
+        Path((_spreadsheet_id, _tail)): Path<(String, String)>,
+    ) -> impl IntoResponse {
         Json(serde_json::json!({
             "range": "'Leads'!A1:ZZZ",
             "values": [["email", "name", "summary"]]

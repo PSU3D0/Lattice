@@ -36,6 +36,7 @@ Some docs are intentionally private and must never be committed as plaintext.
 - Decrypted (local-only, gitignored): `private/impl-docs/...`
 - Encrypted (committed): `impl-docs/_encrypted/.../*.age`
 - Recipients file: `.age-recipients`
+- Local secret-manager config: `fnox.toml` (keep untracked; start from `fnox.example.toml`)
 - Tooling:
   - `mise run encrypt`
   - `mise run decrypt`
