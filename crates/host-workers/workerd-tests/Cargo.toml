@@ -18,6 +18,7 @@ flow-registry = []
 
 [dependencies]
 async-stream = "0.3"
+async-trait = "0.1"
 cap-do-workers = { path = "../../cap-do-workers" }
 cap-workspace-workers = { path = "../../cap-workspace-workers" }
 capabilities = { path = "../../capabilities" }

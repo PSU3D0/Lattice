@@ -132,6 +132,14 @@ Completed scope aligns with early contract/runtime milestones; older planning re
 - Acceptance gates: `cargo test -p flows-cli --test bundle`, `cargo test -p flows-cli --test serve load_s11_lead_intake_wasm_bundle_preserves_route_metadata -- --nocapture`.
 - Notes: the guest still carries wasm-bindgen imports, so this slice stops at bundle/load metadata proof rather than full wasmtime execution.
 
+## 2026-03-31 — S11 workerd/miniflare proof (Epic 05.5)
+
+- Added a dedicated `/leads` proof route in `crates/host-workers/workerd-tests/src/lib.rs` that runs the high-priority lead-intake path under Miniflare, exercises mocked OpenAI extraction/draft/image responses, and persists the generated hero image into the Workers workspace backend.
+- Added a small test-only `lattice` package shim in `crates/host-workers/workerd-tests/lattice/` so the workerd bundle resolves the wasm guest import cleanly during build.
+- Extended `crates/host-workers/workerd-tests/src/index.test.ts` with an end-to-end proof that POST `/leads` returns an `EmailPackage` carrying `image_artifact_path`, inspects the R2 object listing for the stored artifact, and cleans up the object afterward.
+- Acceptance gates: `npm run test -- --run -t "s11 lead intake example"` in `crates/host-workers/workerd-tests`.
+- Notes: the proof is intentionally test-scoped and keeps the example’s production architecture unchanged; the object listing proves R2 persistence and the cleanup route removes the artifact after verification.
+
 ## 2026-03-31 — OpenAI image wiring and structured-output proof (Epic 05.2)
 
 - Enabled the OpenAI provider's image-generation client surface by default (`crates/llm-provider-openai/Cargo.toml`, `crates/llm-provider-openai/src/client.rs`) so `Client` now satisfies the `llm-agent` image capability path for `DALL_E_3`.

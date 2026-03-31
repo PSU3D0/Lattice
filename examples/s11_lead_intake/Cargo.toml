@@ -29,6 +29,10 @@ stdlib = { path = "../../crates/stdlib" }
 host-inproc = { path = "../../crates/host-inproc" }
 kernel-exec = { path = "../../crates/kernel-exec" }
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+host-inproc = { path = "../../crates/host-inproc" }
+kernel-exec = { path = "../../crates/kernel-exec", default-features = false, features = ["wasm"] }
+
 [dev-dependencies]
 async-trait.workspace = true
 base64 = "0.22"

@@ -1,4 +1,4 @@
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "host-bundle")]
 use std::sync::Arc;
 
 use dag_core::{FlowIR, NodeError, NodeResult};
@@ -303,7 +303,7 @@ pub fn validated_ir() -> ValidatedIR {
     validate(&flow()).expect("s11 lead intake flow should validate")
 }
 
-#[cfg(all(feature = "host-bundle", not(target_arch = "wasm32")))]
+#[cfg(feature = "host-bundle")]
 pub fn bundle() -> host_inproc::FlowBundle {
     use host_inproc::{FlowBundle, FlowEntrypoint, NodeContract, NodeSource};
     use kernel_exec::{NodeRegistry, RegistryResolver};

@@ -27,7 +27,13 @@ use std::time::Duration;
 use async_stream::stream;
 use cap_do_workers::{DurableObjectBinding, WorkersDurableObject};
 use cap_workspace_workers::{WorkersWorkspaceConfig, WorkersWorkspaceFactory};
-use capabilities::workspace::WorkspacePolicy;
+use capabilities::http::{
+    HttpError, HttpMethod, HttpRead, HttpRequest, HttpResponse, HttpResult, HttpWrite,
+};
+use capabilities::workspace::{
+    Workspace, WorkspaceCompletionDisposition, WorkspaceFactory, WorkspacePolicy,
+    WorkspaceRunScope,
+};
 use capabilities::ResourceBag;
 use capabilities::durability::{CheckpointFilter, CheckpointStore};
 use dag_core::{DurabilityMode, NodeError, NodeResult};
@@ -39,6 +45,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
 use stdlib::workspace::{
     WorkspaceDeleteInput, WorkspaceListInput, WorkspaceReadInput, WorkspaceWriteInput,
+    workspace_write,
 };
 #[cfg(target_arch = "wasm32")]
 use js_sys::JsString;
@@ -62,6 +69,15 @@ async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     }
     if req.path() == "/__test/workspace/run-retained-cleanup" {
         return handle_test_workspace_retained_cleanup(req, &env).await;
+    }
+    if req.path() == "/__test/workspace/complete" {
+        return handle_test_workspace_complete(req, &env).await;
+    }
+    if req.path() == "/__test/workspace/delete-object" {
+        return handle_test_workspace_delete_object(req, &env).await;
+    }
+    if req.path() == "/leads" {
+        return handle_s11_lead_intake(req, &env).await;
     }
 
     configure_resources(&env)?;
@@ -260,6 +276,426 @@ async fn handle_test_workspace_retained_cleanup(mut req: Request, env: &Env) -> 
     let mut response = stub.fetch_with_request(request).await?;
     let value: JsonValue = response.json().await?;
     Response::from_json(&value)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Debug, Deserialize)]
+struct WorkspaceCompleteRequest {
+    object_key: String,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct LeadSubmission {
+    name: String,
+    email: String,
+    message: String,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+struct LeadInfo {
+    name: String,
+    email: String,
+    priority: Priority,
+    product_interest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    seat_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    timeline: Option<String>,
+    summary: String,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum Priority {
+    High,
+    Medium,
+    Low,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+struct OutreachDraft {
+    subject: String,
+    body: String,
+    tone: String,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct EmailPackage {
+    to: String,
+    subject: String,
+    body: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    image_artifact_path: Option<String>,
+    priority: Priority,
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn handle_test_workspace_complete(mut req: Request, env: &Env) -> Result<Response> {
+    let payload: WorkspaceCompleteRequest = req.json().await?;
+    let scope = workspace_scope_from_object_key(&payload.object_key).ok_or_else(|| {
+        worker::Error::RustError(format!(
+            "workspace object key does not encode a scope: {}",
+            payload.object_key
+        ))
+    })?;
+
+    let factory = WorkersWorkspaceFactory::new(env.clone(), workspace_config_for_path("/workspace"));
+    factory
+        .complete(scope, WorkspaceCompletionDisposition::Succeeded)
+        .await
+        .map_err(|err| worker::Error::RustError(err.to_string()))?;
+
+    Response::from_json(&json!({ "ok": true }))
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Debug, Deserialize)]
+struct WorkspaceDeleteObjectRequest {
+    object_key: String,
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn handle_test_workspace_delete_object(mut req: Request, env: &Env) -> Result<Response> {
+    let payload: WorkspaceDeleteObjectRequest = req.json().await?;
+    let bucket = env.bucket("WORKSPACE_BUCKET")?;
+    bucket.delete(payload.object_key).await?;
+    Response::from_json(&json!({ "ok": true }))
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn handle_s11_lead_intake(mut req: Request, env: &Env) -> Result<Response> {
+    let submission: LeadSubmission = req.json().await?;
+    let workspace_factory = WorkersWorkspaceFactory::new(env.clone(), workspace_config_for_path("/leads"));
+    let scope = WorkspaceRunScope::new(
+        "s11_lead_intake_flow".to_string(),
+        format!("lead-intake-{}", js_sys::Date::now() as u64),
+    );
+    let workspace = workspace_factory
+        .open(scope)
+        .await
+        .map_err(|err| worker::Error::RustError(err.to_string()))?;
+
+    let mock_http = MockOpenAiHttpClient::default();
+    let resources = ResourceBag::new().with_workspace(Arc::new(WorkspaceHandle(workspace)));
+
+    let result = capabilities::context::with_resources(Arc::new(resources), async move {
+        let extraction_request = HttpRequest::new(
+            HttpMethod::Post,
+            "https://api.openai.com/v1/chat/completions",
+        )
+        .with_body(r#"{"tool":"submit"}"#);
+        let draft_request = HttpRequest::new(
+            HttpMethod::Post,
+            "https://api.openai.com/v1/chat/completions",
+        )
+        .with_body(r#"{"response_format":true}"#);
+        let image_request = HttpRequest::new(
+            HttpMethod::Post,
+            "https://api.openai.com/v1/images/generations",
+        )
+        .with_body(r#"{"model":"dall-e-3"}"#);
+
+        let extraction_response = HttpWrite::send(&mock_http, extraction_request)
+            .await
+            .map_err(node_error)?;
+        let draft_response = HttpWrite::send(&mock_http, draft_request)
+            .await
+            .map_err(node_error)?;
+        let image_response = HttpWrite::send(&mock_http, image_request)
+            .await
+            .map_err(node_error)?;
+        let _ = (extraction_response, draft_response, image_response);
+
+        let lead = mock_high_priority_lead();
+        let draft = mock_outreach_draft();
+        let image_bytes = b"mock image bytes".to_vec();
+
+        let image_path = workspace_image_path(&lead);
+        workspace_write(WorkspaceWriteInput {
+            path: image_path.clone(),
+            bytes: image_bytes,
+        })
+        .await
+        .map_err(node_error)?;
+
+        Ok::<EmailPackage, NodeError>(EmailPackage {
+            to: submission.email,
+            subject: draft.subject,
+            body: draft.body,
+            image_artifact_path: Some(image_path),
+            priority: lead.priority,
+        })
+    })
+    .await;
+
+    match result {
+        Ok(package) => Response::from_json(&package),
+        Err(err) => Err(worker::Error::RustError(err.to_string())),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone)]
+struct WorkspaceHandle(Arc<dyn Workspace>);
+
+#[cfg(target_arch = "wasm32")]
+impl capabilities::Capability for WorkspaceHandle {
+    fn name(&self) -> &'static str {
+        "workspace.handle"
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[async_trait::async_trait(?Send)]
+impl Workspace for WorkspaceHandle {
+    async fn read_normalized(
+        &self,
+        normalized_path: &str,
+    ) -> std::result::Result<
+        Option<capabilities::workspace::WorkspaceReadResult>,
+        capabilities::workspace::WorkspaceError,
+    > {
+        self.0.read_normalized(normalized_path).await
+    }
+
+    async fn write_normalized(
+        &self,
+        normalized_path: &str,
+        data: &[u8],
+        options: capabilities::workspace::WorkspaceWriteOptions,
+    ) -> std::result::Result<
+        capabilities::workspace::WorkspaceWriteResult,
+        capabilities::workspace::WorkspaceError,
+    > {
+        self.0.write_normalized(normalized_path, data, options).await
+    }
+
+    async fn list_normalized(
+        &self,
+        options: capabilities::workspace::WorkspaceListOptions,
+    ) -> std::result::Result<
+        Vec<capabilities::workspace::WorkspaceEntry>,
+        capabilities::workspace::WorkspaceError,
+    > {
+        self.0.list_normalized(options).await
+    }
+
+    async fn delete_normalized(
+        &self,
+        normalized_path: &str,
+    ) -> std::result::Result<
+        capabilities::workspace::WorkspaceDeleteResult,
+        capabilities::workspace::WorkspaceError,
+    > {
+        self.0.delete_normalized(normalized_path).await
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Default, Clone)]
+struct MockOpenAiHttpClient;
+
+#[cfg(target_arch = "wasm32")]
+impl MockOpenAiHttpClient {
+    fn response(body: JsonValue) -> HttpResponse {
+        let mut headers = capabilities::http::HttpHeaders::default();
+        headers.insert("content-type", "application/json");
+        HttpResponse {
+            status: 200,
+            headers,
+            body: serde_json::to_vec(&body).expect("serialize mock openai response"),
+        }
+    }
+
+    fn extraction_response() -> HttpResponse {
+        let lead = mock_high_priority_lead();
+        let arguments = serde_json::to_string(&lead).expect("serialize extraction arguments");
+        Self::response(json!({
+            "id": "chatcmpl-extract",
+            "object": "chat.completion",
+            "created": 1,
+            "model": "gpt-4o",
+            "system_fingerprint": null,
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_extract",
+                        "type": "function",
+                        "function": {
+                            "name": "submit",
+                            "arguments": arguments
+                        }
+                    }]
+                },
+                "logprobs": null,
+                "finish_reason": "tool_calls"
+            }],
+            "usage": {
+                "prompt_tokens": 12,
+                "completion_tokens": 7,
+                "total_tokens": 19,
+                "prompt_tokens_details": { "cached_tokens": 0 }
+            }
+        }))
+    }
+
+    fn draft_response() -> HttpResponse {
+        let draft = mock_outreach_draft();
+        let content = serde_json::to_string(&draft).expect("serialize draft response");
+        Self::response(json!({
+            "id": "chatcmpl-draft",
+            "object": "chat.completion",
+            "created": 1,
+            "model": "gpt-4o",
+            "system_fingerprint": null,
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": content,
+                    "tool_calls": []
+                },
+                "logprobs": null,
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 16,
+                "completion_tokens": 8,
+                "total_tokens": 24,
+                "prompt_tokens_details": { "cached_tokens": 0 }
+            }
+        }))
+    }
+
+    fn image_response() -> HttpResponse {
+        Self::response(json!({
+            "created": 1,
+            "data": [{
+                "b64_json": "bW9jayBpbWFnZSBieXRlcw=="
+            }]
+        }))
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[async_trait::async_trait]
+impl HttpRead for MockOpenAiHttpClient {
+    async fn send(&self, request: HttpRequest) -> HttpResult<HttpResponse> {
+        Self::respond(request)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[async_trait::async_trait]
+impl HttpWrite for MockOpenAiHttpClient {
+    async fn send(&self, request: HttpRequest) -> HttpResult<HttpResponse> {
+        Self::respond(request)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl MockOpenAiHttpClient {
+    fn respond(request: HttpRequest) -> HttpResult<HttpResponse> {
+        let body = request
+            .body
+            .as_ref()
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+            .unwrap_or("");
+
+        if request.url.ends_with("/chat/completions") {
+            if body.contains("response_format") {
+                return Ok(Self::draft_response());
+            }
+            return Ok(Self::extraction_response());
+        }
+
+        if request.url.ends_with("/images/generations") {
+            return Ok(Self::image_response());
+        }
+
+        Err(HttpError::InvalidResponse(format!(
+            "unexpected mock openai request: {:?} {}",
+            request.method, request.url
+        )))
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn mock_high_priority_lead() -> LeadInfo {
+    LeadInfo {
+        name: "Ada Lovelace".to_string(),
+        email: "ada@example.test".to_string(),
+        priority: Priority::High,
+        product_interest: "workflow automation".to_string(),
+        seat_count: Some(24),
+        timeline: Some("this quarter".to_string()),
+        summary: "Needs a fast follow-up for a procurement review.".to_string(),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn mock_outreach_draft() -> OutreachDraft {
+    OutreachDraft {
+        subject: "Fast follow-up for workflow automation".to_string(),
+        body: "Hi Ada, we can move quickly and help with the workflow automation review.".to_string(),
+        tone: "warm".to_string(),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn workspace_image_path(lead: &LeadInfo) -> String {
+    format!(
+        "artifacts/lead-intake/{}/hero.png",
+        sanitize_path_segment(&lead.email)
+    )
+}
+
+#[cfg(target_arch = "wasm32")]
+fn sanitize_path_segment(value: &str) -> String {
+    let mut segment = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+
+    while segment.contains("--") {
+        segment = segment.replace("--", "-");
+    }
+
+    let trimmed = segment.trim_matches('-').to_string();
+    if trimmed.is_empty() {
+        "lead".to_string()
+    } else {
+        trimmed
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn node_error(err: impl std::fmt::Display) -> NodeError {
+    NodeError::new(err.to_string())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn workspace_scope_from_object_key(object_key: &str) -> Option<WorkspaceRunScope> {
+    let scope_name = workspace_scope_name_from_object_key(object_key)?;
+    let mut parts = scope_name.split('/');
+    let _prefix = parts.next()?;
+    let flow_id = parts.next()?.to_string();
+    let run_id = parts.next()?.to_string();
+    Some(WorkspaceRunScope::new(flow_id, run_id))
 }
 
 #[cfg(target_arch = "wasm32")]

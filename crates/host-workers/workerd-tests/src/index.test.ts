@@ -543,6 +543,44 @@ describe("host-workers E2E", () => {
     });
   });
 
+  describe("s11 lead intake example", () => {
+    it("executes the lead intake flow and persists the generated hero image in workspace", async () => {
+      const response = await mf.dispatchFetch(`${mfUrl}leads`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "Ada Lovelace",
+          email: "ada@example.test",
+          message:
+            "We need help with workflow automation and can move this quarter.",
+        }),
+      });
+
+      expect(response.status).toBe(200);
+
+      const body = await response.json();
+      expect(body).toMatchObject({
+        to: "ada@example.test",
+        subject: "Fast follow-up for workflow automation",
+        body: "Hi Ada, we can move quickly and help with the workflow automation review.",
+        image_artifact_path: "artifacts/lead-intake/ada-example-test/hero.png",
+        priority: "high",
+      });
+
+      const keys = await listWorkspaceObjects();
+      const imageKey = keys.find((key) =>
+        key.endsWith("artifacts/lead-intake/ada-example-test/hero.png")
+      );
+      expect(imageKey).toBeDefined();
+
+      await completeWorkspaceObject(imageKey!);
+      await waitFor(async () => (await listWorkspaceObjects()).length === 0, {
+        timeoutMs: 5000,
+        intervalMs: 100,
+      });
+    });
+  });
+
   describe("error handling", () => {
     it("should return 404 for unknown routes", async () => {
       const response = await mf.dispatchFetch(`${mfUrl}unknown`);
@@ -635,5 +673,14 @@ async function runWorkspaceRetainedCleanup(
       body: JSON.stringify({ object_key: objectKey, now_ms: nowMs }),
     }
   );
+  expect(response.status).toBe(200);
+}
+
+async function completeWorkspaceObject(objectKey: string): Promise<void> {
+  const response = await mf.dispatchFetch(`${mfUrl}__test/workspace/delete-object`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ object_key: objectKey }),
+  });
   expect(response.status).toBe(200);
 }
