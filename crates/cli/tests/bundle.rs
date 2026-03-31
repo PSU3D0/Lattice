@@ -96,3 +96,46 @@ fn bundle_generates_manifest_when_missing() -> Result<(), Box<dyn std::error::Er
 
     Ok(())
 }
+
+#[test]
+fn bundle_generates_wasm_manifest_for_connector_google_sheets_example()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempdir()?;
+    let out_dir = temp.path().join("flow.bundle");
+    let target_dir = temp.path().join("target");
+
+    let output = Command::cargo_bin("flows")?
+        .args([
+            "bundle",
+            "-p",
+            "example-connector-google-sheets-local-flow",
+            "--wasm",
+            "--dev",
+            "--out-dir",
+            out_dir.to_str().expect("bundle output path"),
+        ])
+        .env("CARGO_TARGET_DIR", &target_dir)
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "expected connector example wasm bundle to succeed: status={:?}, stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(out_dir.join("manifest.json").exists());
+    assert!(
+        out_dir
+            .join("flows/connector_google_sheets_local_flow/flow_ir.json")
+            .exists()
+    );
+
+    let manifest_raw = fs::read_to_string(out_dir.join("manifest.json"))?;
+    let manifest_json: serde_json::Value = serde_json::from_str(&manifest_raw)?;
+    assert_eq!(
+        manifest_json["flows"][0]["entrypoints"][0]["method"],
+        json!("POST")
+    );
+
+    Ok(())
+}

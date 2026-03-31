@@ -189,9 +189,21 @@ enum CheckpointStoreKind {
 
 #[derive(Args, Debug)]
 struct ServeArgs {
-    /// Built-in example to serve (e.g. `s6_spill`).
-    #[arg(long, default_value = "s1_echo")]
-    example: String,
+    /// Built-in example to serve (defaults to `s1_echo` when --bundle is omitted).
+    #[arg(long, conflicts_with = "bundle")]
+    example: Option<String>,
+    /// Path to a FlowBundle directory to serve through the Axum host.
+    #[arg(long, conflicts_with = "example")]
+    bundle: Option<PathBuf>,
+    /// Flow id to serve when --bundle contains multiple flows.
+    #[arg(long, requires = "bundle")]
+    flow: Option<String>,
+    /// Trigger alias to serve from a bundle (defaults to first entrypoint).
+    #[arg(long, requires = "bundle")]
+    trigger_alias: Option<String>,
+    /// Capture alias to serve from a bundle (defaults to selected entrypoint capture).
+    #[arg(long, requires = "bundle")]
+    capture_alias: Option<String>,
     /// Bind capability providers for required `resource::*` domains.
     #[arg(long = "bind")]
     bindings: Vec<String>,
@@ -967,12 +979,51 @@ fn select_bundle_entrypoint<'a>(
 }
 
 fn run_serve(args: ServeArgs) -> Result<()> {
-    let ServeArgs {
-        example,
-        addr,
-        bindings,
-        bindings_lock,
-    } = args;
+    if args.bindings_lock.is_some() && !args.bindings.is_empty() {
+        return Err(anyhow!("--bindings-lock cannot be combined with --bind"));
+    }
+
+    let mut resources = if let Some(lock_path) = args.bindings_lock.as_ref() {
+        if let Some(bundle_dir) = args.bundle.as_ref() {
+            let flow_id = resolve_bundle_flow_id(bundle_dir, args.flow.as_deref())?;
+            resource_bag_from_bindings_lock(lock_path.as_path(), &flow_id)?
+        } else {
+            let example_name = args.example.as_deref().unwrap_or("s1_echo");
+            let example = load_example(example_name)?;
+            resource_bag_from_bindings_lock(lock_path.as_path(), example.ir.flow().id.as_str())?
+        }
+    } else {
+        resource_bag_from_bindings(&args.bindings)?
+    };
+
+    if resources.checkpoint_store().is_none() {
+        resources = attach_checkpoint_store(resources, CheckpointStoreKind::Fs, None);
+    } else if resources.max_durability_mode() == DurabilityMode::Off {
+        resources = resources.with_max_durability_mode(DurabilityMode::Partial);
+    }
+
+    let serve_label: String;
+    let handle = if let Some(bundle_dir) = args.bundle.as_ref() {
+        let bundle = load_flow_bundle(
+            bundle_dir,
+            ExecPolicy::Wasm,
+            args.flow.as_deref(),
+            Arc::new(resources.clone()),
+        )?;
+        let handle = example_from_bundle_entrypoint(
+            bundle,
+            false,
+            args.trigger_alias.as_deref(),
+            args.capture_alias.as_deref(),
+        )?;
+        serve_label = format!("bundle `{}`", bundle_dir.display());
+        handle
+    } else {
+        let example_name = args.example.as_deref().unwrap_or("s1_echo");
+        serve_label = format!("example `{example_name}`");
+        load_example(example_name)?
+    };
+
     let ExampleHandle {
         executor,
         ir,
@@ -983,24 +1034,9 @@ fn run_serve(args: ServeArgs) -> Result<()> {
         method,
         environment_plugins,
         ..
-    } = load_example(&example)?;
+    } = handle;
 
-    if bindings_lock.is_some() && !bindings.is_empty() {
-        return Err(anyhow!("--bindings-lock cannot be combined with --bind"));
-    }
-
-    let mut resources = if let Some(lock_path) = bindings_lock {
-        resource_bag_from_bindings_lock(lock_path.as_path(), ir.flow().id.as_str())?
-    } else {
-        resource_bag_from_bindings(&bindings)?
-    };
-
-    if resources.checkpoint_store().is_none() {
-        resources = attach_checkpoint_store(resources, CheckpointStoreKind::Fs, None);
-    } else if resources.max_durability_mode() == DurabilityMode::Off {
-        resources = resources.with_max_durability_mode(DurabilityMode::Partial);
-    }
-
+    let addr = args.addr;
     let runtime = RuntimeBuilder::new_multi_thread()
         .enable_all()
         .build()
@@ -1027,7 +1063,7 @@ fn run_serve(args: ServeArgs) -> Result<()> {
         let local_addr = listener
             .local_addr()
             .context("failed to determine bound address")?;
-        println!("Serving example `{example}` on http://{local_addr}{route_path} (Ctrl+C to stop)");
+        println!("Serving {serve_label} on http://{local_addr}{route_path} (Ctrl+C to stop)");
 
         let shutdown = async {
             let _ = signal::ctrl_c().await;
@@ -3093,14 +3129,12 @@ fn load_example(name: &str) -> Result<ExampleHandle> {
         "s4_preflight" => (s4_preflight::bundle(), false),
         "s5_unsupported_surface" => (s5_unsupported_surface::bundle(), false),
         "s6_spill" => (s6_spill::bundle(), false),
-        "connector_github_issues_local_flow" => (
-            example_connector_github_issues_local_flow::example_bundle(),
-            false,
-        ),
-        "connector_google_sheets_local_flow" => (
-            example_connector_google_sheets_local_flow::example_bundle(),
-            false,
-        ),
+        "connector_github_issues_local_flow" => {
+            (example_connector_github_issues_local_flow::bundle(), false)
+        }
+        "connector_google_sheets_local_flow" => {
+            (example_connector_google_sheets_local_flow::bundle(), false)
+        }
         other => return Err(anyhow!("unknown example `{other}`")),
     };
 
@@ -3111,10 +3145,19 @@ fn example_from_bundle(
     bundle: host_inproc::FlowBundle,
     is_streaming: bool,
 ) -> Result<ExampleHandle> {
-    let entrypoint = bundle
-        .entrypoints
-        .first()
-        .context("bundle has entrypoint")?;
+    example_from_bundle_entrypoint(bundle, is_streaming, None, None)
+}
+
+fn example_from_bundle_entrypoint(
+    bundle: host_inproc::FlowBundle,
+    is_streaming: bool,
+    trigger_alias: Option<&str>,
+    capture_alias: Option<&str>,
+) -> Result<ExampleHandle> {
+    let entrypoint = select_bundle_entrypoint(&bundle, trigger_alias, capture_alias)?;
+    let trigger_alias = entrypoint.trigger_alias.clone();
+    let capture_alias = entrypoint.capture_alias.clone();
+    let deadline = entrypoint.deadline;
     let method_str = entrypoint.method.as_deref().unwrap_or("POST");
     let method = method_str
         .parse::<Method>()
@@ -3124,9 +3167,9 @@ fn example_from_bundle(
     Ok(ExampleHandle {
         executor: bundle.executor(),
         ir: Arc::new(bundle.validated_ir),
-        trigger_alias: entrypoint.trigger_alias.clone(),
-        capture_alias: entrypoint.capture_alias.clone(),
-        deadline: entrypoint.deadline,
+        trigger_alias,
+        capture_alias,
+        deadline,
         route_path,
         method,
         is_streaming,

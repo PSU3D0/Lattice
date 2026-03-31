@@ -1,51 +1,48 @@
 # example-connector-github-issues-local-flow
 
-A canonical local flow example for `connector_github_issues`.
+A canonical portable flow example for `connector_github_issues`.
 
 ## What it is
 
-This is a **full example crate** that wires a small flow:
+This crate defines a small flow:
 
 - local trigger
 - `connector.github.issues.list`
 - local capture
 
-The example runs through:
-- `dag_macros::flow!`
-- `NodeRegistry`
-- `host-inproc::FlowBundle`
-- a real HTTP capability implementation (`ReqwestHttpClient`)
+The flow is intentionally shaped like the top-level examples:
+- `dag_macros::flow!` defines the workflow
+- `bundle()` is macro-generated via the standard `host-bundle` path
+- `flows run local --example ...` and `flows run serve --example ...` are the canonical native execution surfaces
+- the package can also be bundled with `flows bundle -p ... --wasm`
 
-## Default mode: mock-first
+## Native execution
 
-If no endpoint override is configured, the example starts a local mock GitHub-like
-upstream and runs the flow against it.
-
-```bash
-cd codebase/.sessions/lat-000028-impl
-cargo run -p example-connector-github-issues-local-flow
-```
-
-## Real endpoint mode
-
-Point the example at a real GitHub-compatible endpoint:
+Run locally through the standard CLI:
 
 ```bash
-export LATTICE_CONNECTOR_ENDPOINT_GITHUB_DEFAULT_BASE_URL=https://api.github.com
-export LATTICE_EXAMPLE_GITHUB_OWNER=rust-lang
-export LATTICE_EXAMPLE_GITHUB_REPO=cargo
-cargo run -p example-connector-github-issues-local-flow
+cargo run -p flows-cli -- run local \
+  --example connector_github_issues_local_flow \
+  --bindings-lock <bindings.lock.json> \
+  --payload '{"owner":"rust-lang","repo":"cargo"}'
 ```
 
-Optional auth:
+Serve over Axum through the standard CLI:
 
 ```bash
-export LATTICE_CONNECTOR_AUTH_GITHUB_PAT=<github_personal_access_token>
+cargo run -p flows-cli -- run serve \
+  --example connector_github_issues_local_flow \
+  --bindings-lock <bindings.lock.json>
 ```
+
+Then POST JSON to `/github/issues/local`.
 
 ## Why this crate exists
 
-This example is intentionally a **full Cargo package**, not just a crate-local
-`examples/*.rs` target, so that connector examples can eventually carry richer
-package/deployment/entrypoint semantics the same way the top-level workspace
-examples do.
+This example remains a full Cargo package so connector-owned examples can carry real flow/package/bundle semantics just like the numbered workspace examples.
+
+## WASM / bundle note
+
+This package is now shaped so `flows bundle -p example-connector-github-issues-local-flow --wasm` is the intended portable artifact path.
+
+Actual runtime execution of HTTP/connector-heavy bundles still depends on the current host-side WASM capability/runtime support; the package shape is now portable even where every host runtime is not yet feature-parity complete.

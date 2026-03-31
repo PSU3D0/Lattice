@@ -166,6 +166,11 @@ cargo run -p flows-cli -- run local --example s1_echo --payload '{"value":" Hell
 # Serve a built-in example over HTTP
 cargo run -p flows-cli -- run serve --example s1_echo --addr 127.0.0.1:8080
 
+# Serve a bundled workflow artifact over HTTP
+cargo run -p flows-cli -- run serve \
+  --bundle /tmp/flow.bundle \
+  --addr 127.0.0.1:8080
+
 # Execute the connector-owned Google Sheets example via bindings.lock
 cargo run -p flows-cli -- run local \
   --example connector_google_sheets_local_flow \

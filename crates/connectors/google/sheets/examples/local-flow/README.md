@@ -1,16 +1,24 @@
 # example-connector-google-sheets-local-flow
 
-Local mock-first example flow for `connector_google_sheets`.
+Portable self-bootstrapping CRM flow example for `connector_google_sheets`.
 
-The example proves:
+## What it proves
+
+This example proves:
 - connector-owned runnable flow packaging
-- canonical `connector.google.sheets.upsert_row` usage in a real flow
-- local env-runtime smoke testing by default
-- compatibility with host-owned connector bindings when launched through `flows run local --bindings-lock`
+- canonical `connector.google.sheets` usage in a real flow
+- standard native execution through `flows run local --example ...`
+- standard Axum hosting through `flows run serve --example ...`
+- compatibility with host-owned connector bindings when launched through `--bindings-lock`
+- portable package shape for `flows bundle -p ... --wasm`
 
-Default behavior:
-- if `LATTICE_CONNECTOR_ENDPOINT_GOOGLE_SHEETS_DEFAULT_BASE_URL` is unset, the example can run against a local mock server in tests
-- if `LATTICE_CONNECTOR_AUTH_GOOGLE_WORKSPACE_AUTH` is unset in that mock-first path, the example uses a demo bearer token
+The flow is now shaped like the top-level examples:
+- `dag_macros::flow!` is the source of truth
+- `bundle()` is the standard macro-generated host-bundle path
+- helper CRM nodes stay in the flow crate
+- native mock/runtime harness logic is test-only rather than the public execution surface
+
+## Native execution
 
 Representative production paths:
 - one-shot local execution:
@@ -22,7 +30,7 @@ Representative production paths:
   - `auth.service_account_jwt`, or
   - `auth.oauth2.refresh`
 
-The flow is now **self-bootstrapping**:
+The flow is **self-bootstrapping**:
 - if you provide `spreadsheet_id`, it reuses that workbook
 - if you omit `spreadsheet_id`, it creates a spreadsheet, ensures the target
   sheet exists, ensures the CRM header row exists, and then upserts the lead
@@ -47,15 +55,6 @@ Default assumptions:
 - token URL: `https://oauth2.googleapis.com/token`
 - endpoint base URL: `https://sheets.googleapis.com`
 - scope: `https://www.googleapis.com/auth/spreadsheets`
-
-Override examples:
-
-```bash
-uv run crates/connectors/google/sheets/examples/local-flow/generate_live_bindings_lock.py \
-  --out /tmp/google-sheets-live.bindings.lock.json \
-  --service-account-email-ref my_google_sa_email \
-  --private-key-ref my_google_sa_private_key
-```
 
 ## Live smoke checklist
 
@@ -84,22 +83,7 @@ cargo run -p flows-cli -- run local \
   --payload '{"spreadsheet_title":"Lattice CRM Smoke","sheet":"Leads","email":"ada@example.test","name":"Ada Lovelace","summary":"live smoke"}'
 ```
 
-The response will include:
-- `spreadsheet_id`
-- `spreadsheet_url`
-- `created_spreadsheet`
-- `created_sheet`
-- `initialized_headers`
-- upsert result fields such as `action`, `row_index`, and `updated_range`
-
-5. For repeatable follow-on runs, pass the returned `spreadsheet_id` back in:
-
-```bash
-cargo run -p flows-cli -- run local \
-  --example connector_google_sheets_local_flow \
-  --bindings-lock /tmp/google-sheets-live.bindings.lock.json \
-  --payload '{"spreadsheet_id":"YOUR_SPREADSHEET_ID","sheet":"Leads","email":"ada@example.test","name":"Ada Lovelace","summary":"follow-on upsert"}'
-```
+5. For repeatable follow-on runs, pass the returned `spreadsheet_id` back in.
 
 6. Or serve over Axum:
 
@@ -113,3 +97,9 @@ curl -sS -X POST http://127.0.0.1:8080/google/sheets/local \
   -H 'content-type: application/json' \
   -d '{"spreadsheet_title":"Lattice CRM Smoke","sheet":"Leads","email":"ada@example.test","name":"Ada Lovelace","summary":"served live smoke"}'
 ```
+
+## WASM / bundle note
+
+This package is now shaped so `flows bundle -p example-connector-google-sheets-local-flow --wasm` is the intended portable artifact path.
+
+Actual runtime execution of HTTP/connector-heavy bundles still depends on the current host-side WASM capability/runtime support; the package shape is now portable even where every host runtime is not yet feature-parity complete.

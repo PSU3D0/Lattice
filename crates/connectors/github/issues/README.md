@@ -8,16 +8,19 @@ The canonical runnable local example now lives as a **full example crate** under
 
 - `crates/connectors/github/issues/examples/local-flow/`
 
-Run it from the workspace root:
+Run it from the workspace root through the standard CLI:
 
 ```bash
-cargo run -p example-connector-github-issues-local-flow
+cargo run -p flows-cli -- run local \
+  --example connector_github_issues_local_flow \
+  --bindings-lock <bindings.lock.json> \
+  --payload '{"owner":"rust-lang","repo":"cargo"}'
 ```
 
 That example is:
-- mock-first by default,
-- runnable as a real local flow through `host-inproc`,
-- and easy to point at a real GitHub-compatible endpoint via env override.
+- a real flow crate with standard `bundle()` support,
+- runnable through the normal CLI/Axum example path,
+- and shaped for `flows bundle -p ... --wasm` as the portable artifact path.
 
 See:
 - `crates/connectors/github/issues/examples/local-flow/README.md`

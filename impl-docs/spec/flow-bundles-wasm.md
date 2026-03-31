@@ -97,6 +97,7 @@ The manifest is the primary host-facing contract. It must be stable and self-des
           "trigger": "trigger",
           "capture": "responder",
           "route_aliases": ["/echo"],
+          "method": "POST",
           "deadline_ms": 250
         }
       ],
@@ -156,6 +157,7 @@ Notes:
   hashes when they are present.
 - `entrypoints` are explicit per flow; `route_aliases` are optional and non-authoritative.
 - `route_aliases` is the only alias field; `route_alias` is invalid in 0.1.x.
+- `entrypoints[].method` is optional but, when present, preserves the intended HTTP verb for serve-capable hosts.
 - Entrypoint objects are closed; unknown fields are rejected by the schema.
 - `flows[].capabilities.required` declares binding names and capability kinds; credentials never
   live here.

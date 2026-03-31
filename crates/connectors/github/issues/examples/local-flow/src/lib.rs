@@ -1,24 +1,7 @@
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-
-use anyhow::Result;
-use cap_http_reqwest::ReqwestHttpClient;
-use capabilities::ResourceBag;
-use connector_github_issues::runtime::transport::EnvConnectorRuntime;
 use connector_github_issues::{GithubIssueState, GithubIssuesListInput, GithubIssuesListOutput};
 use dag_core::NodeResult;
 use dag_macros::{def_node, node};
-use host_inproc::{FlowBundle, FlowEntrypoint, NodeContract, NodeSource};
-use httpmock::MockServer;
-use kernel_exec::{ExecutionResult, NodeRegistry, NodeResolver, RegistryResolver};
 use serde::{Deserialize, Serialize};
-
-pub const ENDPOINT_ENV: &str = "LATTICE_CONNECTOR_ENDPOINT_GITHUB_DEFAULT_BASE_URL";
-pub const AUTH_ENV: &str = "LATTICE_CONNECTOR_AUTH_GITHUB_PAT";
-pub const OWNER_ENV: &str = "LATTICE_EXAMPLE_GITHUB_OWNER";
-pub const REPO_ENV: &str = "LATTICE_EXAMPLE_GITHUB_REPO";
-
-static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ExampleTriggerInput {
@@ -66,173 +49,103 @@ dag_macros::flow! {
     entrypoint!({
         trigger: "trigger",
         capture: "capture",
+        route_aliases: ["/github/issues/local"],
+        method: "POST",
+        deadline_ms: 5_000,
     });
-}
-
-pub struct EnvGuard {
-    key: &'static str,
-    previous: Option<String>,
-}
-
-impl EnvGuard {
-    pub fn set(key: &'static str, value: &str) -> Self {
-        let previous = std::env::var(key).ok();
-        unsafe {
-            std::env::set_var(key, value);
-        }
-        Self { key, previous }
-    }
-
-    pub fn remove(key: &'static str) -> Self {
-        let previous = std::env::var(key).ok();
-        unsafe {
-            std::env::remove_var(key);
-        }
-        Self { key, previous }
-    }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        match &self.previous {
-            Some(previous) => unsafe {
-                std::env::set_var(self.key, previous);
-            },
-            None => unsafe {
-                std::env::remove_var(self.key);
-            },
-        }
-    }
-}
-
-pub fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-    ENV_LOCK.lock().expect("env lock")
-}
-
-pub fn example_bundle() -> FlowBundle {
-    let validated_ir = validated_ir();
-    let mut registry = NodeRegistry::new();
-    example_trigger_register(&mut registry).expect("register example trigger");
-    example_capture_register(&mut registry).expect("register example capture");
-    connector_github_issues::register_all(&mut registry).expect("register connector nodes");
-    let registry = Arc::new(registry);
-    let resolver: Arc<dyn NodeResolver> = Arc::new(RegistryResolver::new(Arc::clone(&registry)));
-    let entrypoints = vec![FlowEntrypoint {
-        trigger_alias: "trigger".to_string(),
-        capture_alias: "capture".to_string(),
-        route_path: Some("/github/issues/local".to_string()),
-        method: Some("POST".to_string()),
-        deadline: Some(Duration::from_millis(5_000)),
-        route_aliases: vec!["/github/issues/local".to_string()],
-    }];
-    let node_contracts = validated_ir
-        .flow()
-        .nodes
-        .iter()
-        .map(|node| NodeContract {
-            identifier: node.identifier.clone(),
-            contract_hash: None,
-            source: NodeSource::Local,
-        })
-        .collect();
-
-    FlowBundle {
-        validated_ir,
-        entrypoints,
-        resolver,
-        node_contracts,
-        environment_plugins: Vec::new(),
-    }
-}
-
-pub fn http_resources() -> ResourceBag {
-    let client = Arc::new(ReqwestHttpClient::default());
-    ResourceBag::default()
-        .with_http_read(Arc::clone(&client))
-        .with_http_write(client)
-        .with_connector_runtime(Arc::new(EnvConnectorRuntime))
-}
-
-pub fn example_input_from_env() -> ExampleTriggerInput {
-    ExampleTriggerInput {
-        owner: std::env::var(OWNER_ENV).unwrap_or_else(|_| "rust-lang".to_string()),
-        repo: std::env::var(REPO_ENV).unwrap_or_else(|_| "cargo".to_string()),
-    }
-}
-
-pub struct LocalMockHandle {
-    _server: MockServer,
-    _endpoint: EnvGuard,
-}
-
-pub fn maybe_start_mock_server() -> Option<LocalMockHandle> {
-    if std::env::var(ENDPOINT_ENV).is_ok() {
-        println!(
-            "Using configured upstream from {ENDPOINT_ENV}; no local mock server will be started."
-        );
-        return None;
-    }
-
-    let server = MockServer::start();
-    server.mock(|_when, then| {
-        then.status(200).json_body_obj(&serde_json::json!([
-            {
-                "number": 101,
-                "title": "connector local mock issue",
-                "state": "open",
-                "html_url": "https://example.test/issues/101"
-            },
-            {
-                "number": 102,
-                "title": "flow-level connector smoke test",
-                "state": "open",
-                "html_url": "https://example.test/issues/102"
-            }
-        ]));
-    });
-
-    let endpoint = EnvGuard::set(ENDPOINT_ENV, &server.base_url());
-    println!(
-        "No {ENDPOINT_ENV} override detected; started local mock GitHub at {}",
-        server.base_url()
-    );
-    Some(LocalMockHandle {
-        _server: server,
-        _endpoint: endpoint,
-    })
-}
-
-pub async fn run_flow(input: ExampleTriggerInput) -> Result<GithubIssuesListOutput> {
-    let bundle = example_bundle();
-    let entrypoint = bundle.entrypoints.first().expect("entrypoint");
-    let payload = serde_json::to_value(&input).expect("serialize input");
-
-    let result = bundle
-        .executor()
-        .with_resource_bag(http_resources())
-        .run_once(
-            &bundle.validated_ir,
-            entrypoint.trigger_alias.as_str(),
-            payload,
-            entrypoint.capture_alias.as_str(),
-            entrypoint.deadline,
-        )
-        .await?;
-
-    let value = match result {
-        ExecutionResult::Value(value) => value,
-        ExecutionResult::Stream(_) => anyhow::bail!("expected a value response"),
-        ExecutionResult::Halt { alias, .. } => {
-            anyhow::bail!("expected a completed value response, flow halted at {alias}")
-        }
-    };
-
-    Ok(serde_json::from_value(value)?)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use cap_http_reqwest::ReqwestHttpClient;
+    use capabilities::ResourceBag;
+    use connector_github_issues::runtime::transport::EnvConnectorRuntime;
+    use host_inproc::FlowBundle;
+    use httpmock::MockServer;
+    use kernel_exec::ExecutionResult;
+
     use super::*;
+
+    const ENDPOINT_ENV: &str = "LATTICE_CONNECTOR_ENDPOINT_GITHUB_DEFAULT_BASE_URL";
+    const AUTH_ENV: &str = "LATTICE_CONNECTOR_AUTH_GITHUB_PAT";
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, previous }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var(key).ok();
+            unsafe {
+                std::env::remove_var(key);
+            }
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(previous) => unsafe {
+                    std::env::set_var(self.key, previous);
+                },
+                None => unsafe {
+                    std::env::remove_var(self.key);
+                },
+            }
+        }
+    }
+
+    fn http_resources() -> ResourceBag {
+        let client = Arc::new(ReqwestHttpClient::default());
+        ResourceBag::default()
+            .with_http_read(Arc::clone(&client))
+            .with_http_write(client)
+            .with_connector_runtime(Arc::new(EnvConnectorRuntime))
+    }
+
+    async fn execute_flow(
+        bundle: FlowBundle,
+        input: ExampleTriggerInput,
+    ) -> anyhow::Result<GithubIssuesListOutput> {
+        let entrypoint = bundle.entrypoints.first().expect("entrypoint");
+        let payload = serde_json::to_value(&input)?;
+
+        let result = bundle
+            .executor()
+            .with_resource_bag(http_resources())
+            .run_once(
+                &bundle.validated_ir,
+                entrypoint.trigger_alias.as_str(),
+                payload,
+                entrypoint.capture_alias.as_str(),
+                entrypoint.deadline,
+            )
+            .await?;
+
+        let value = match result {
+            ExecutionResult::Value(value) => value,
+            ExecutionResult::Stream(_) => anyhow::bail!("expected a value response"),
+            ExecutionResult::Halt { alias, .. } => {
+                anyhow::bail!("expected a completed value response, flow halted at {alias}")
+            }
+        };
+
+        Ok(serde_json::from_value(value)?)
+    }
 
     #[test]
     fn example_flow_contains_connector_node() {
@@ -247,7 +160,7 @@ mod tests {
 
     #[tokio::test]
     async fn local_flow_runs_against_mock_server() {
-        let _env_lock = env_lock();
+        let _env_lock = ENV_LOCK.lock().expect("env lock");
         let server = MockServer::start();
         let _endpoint = EnvGuard::set(ENDPOINT_ENV, &server.base_url());
         let _auth = EnvGuard::remove(AUTH_ENV);
@@ -269,10 +182,13 @@ mod tests {
             ]));
         });
 
-        let output = run_flow(ExampleTriggerInput {
-            owner: "octo".to_string(),
-            repo: "demo".to_string(),
-        })
+        let output = execute_flow(
+            bundle(),
+            ExampleTriggerInput {
+                owner: "octo".to_string(),
+                repo: "demo".to_string(),
+            },
+        )
         .await
         .expect("example flow runs");
 

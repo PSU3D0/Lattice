@@ -62,6 +62,8 @@ base64 = "0.22"
 assert_cmd = "2.0"
 predicates = "3.1"
 connector_github_issues = { path = "../connectors/github/issues" }
+connector_google_platform = { path = "../connectors/google/platform" }
+connector_google_sheets = { path = "../connectors/google/sheets" }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

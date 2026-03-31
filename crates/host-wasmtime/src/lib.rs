@@ -320,8 +320,8 @@ pub fn load_flow_bundle(
         .map(|entry| FlowEntrypoint {
             trigger_alias: entry.trigger.clone(),
             capture_alias: entry.capture.clone(),
-            route_path: None,
-            method: None,
+            route_path: entry.route_aliases.first().cloned(),
+            method: entry.method.clone(),
             deadline: entry.deadline_ms.map(Duration::from_millis),
             route_aliases: entry.route_aliases.clone(),
         })

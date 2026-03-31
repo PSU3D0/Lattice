@@ -2252,6 +2252,8 @@ dependencies = [
  "clap",
  "connector-spec",
  "connector_github_issues",
+ "connector_google_platform",
+ "connector_google_sheets",
  "dag-core",
  "example-connector-github-issues-local-flow",
  "example-connector-google-sheets-local-flow",

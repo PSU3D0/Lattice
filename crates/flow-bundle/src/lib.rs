@@ -132,6 +132,12 @@ pub struct Entrypoint {
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_entrypoint_method"
+    )]
+    pub method: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
         deserialize_with = "deserialize_deadline_ms"
     )]
     pub deadline_ms: Option<u64>,
@@ -266,6 +272,13 @@ where
     D: Deserializer<'de>,
 {
     deserialize_non_null_option(deserializer, "signing")
+}
+
+fn deserialize_entrypoint_method<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_non_null_option(deserializer, "entrypoints[].method")
 }
 
 fn deserialize_deadline_ms<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>

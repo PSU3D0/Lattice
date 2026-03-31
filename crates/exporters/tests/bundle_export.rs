@@ -53,6 +53,7 @@ mod flow_registry_tests {
         assert_eq!(flow.entrypoints.len(), 1);
         assert_eq!(flow.entrypoints[0].trigger, "ingress");
         assert_eq!(flow.entrypoints[0].route_aliases, vec!["/echo".to_string()]);
+        assert_eq!(flow.entrypoints[0].method.as_deref(), Some("GET"));
         assert!(flow.nodes.contains_key("step"));
 
         let ir_path = PathBuf::from("flows/registry_flow/flow_ir.json");

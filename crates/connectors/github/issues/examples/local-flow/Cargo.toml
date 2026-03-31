@@ -7,24 +7,33 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Local mock-first flow example for connector_github_issues."
+description = "Portable local flow example for connector_github_issues."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["host-bundle"]
-host-bundle = []
-flow-registry = []
+host-bundle = ["kernel-exec", "host-inproc"]
+flow-registry = ["dag-core/flow-registry", "dag-macros/flow-registry"]
 
 [dependencies]
-anyhow.workspace = true
-cap-http-reqwest = { path = "../../../../../cap-http-reqwest" }
 capabilities = { path = "../../../../../capabilities" }
 connector_github_issues = { path = "../.." }
 dag-core = { path = "../../../../../dag-core" }
 dag-macros = { path = "../../../../../dag-macros" }
-host-inproc = { path = "../../../../../host-inproc" }
-httpmock = "0.7"
-kernel-exec = { path = "../../../../../kernel-exec" }
+host-inproc = { path = "../../../../../host-inproc", optional = true }
+kernel-exec = { path = "../../../../../kernel-exec", optional = true }
 kernel-plan = { path = "../../../../../kernel-plan" }
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
+cap-http-reqwest = { path = "../../../../../cap-http-reqwest" }
+httpmock = "0.7"
 tokio = { workspace = true, features = ["full"] }
+
+[package.metadata.latticeflow]
+flows = ["connector_github_issues_local_flow"]
+default_flow = "connector_github_issues_local_flow"

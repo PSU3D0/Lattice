@@ -567,6 +567,45 @@ fn manifest_deserialize_rejects_null_signing() {
 }
 
 #[test]
+fn manifest_deserialize_rejects_null_entrypoint_method() {
+    let manifest_json = json!({
+        "bundle_version": "0.1",
+        "abi": {
+            "name": "latticeflow.wit",
+            "version": "0.1"
+        },
+        "bundle_id": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "code": {
+            "target": "wasm32-unknown-unknown",
+            "file": "flow.wasm",
+            "hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "size_bytes": 48
+        },
+        "flows": [
+            {
+                "id": "flow://demo",
+                "version": "v0.1.0",
+                "profile": "wasm",
+                "entrypoints": [
+                    {
+                        "trigger": "ingress",
+                        "capture": "out",
+                        "route_aliases": [],
+                        "method": null
+                    }
+                ]
+            }
+        ]
+    });
+
+    let manifest = serde_json::from_value::<Manifest>(manifest_json);
+    assert!(
+        manifest.is_err(),
+        "manifest deserialization accepted null entrypoints[].method"
+    );
+}
+
+#[test]
 fn manifest_deserialize_rejects_null_entrypoint_deadline_ms() {
     let manifest_json = json!({
         "bundle_version": "0.1",

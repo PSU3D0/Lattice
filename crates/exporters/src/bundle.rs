@@ -152,6 +152,7 @@ fn entrypoint_from_spec(spec: &dag_core::flow_registry::EntrypointSpec) -> Entry
             .iter()
             .map(|alias| alias.to_string())
             .collect(),
+        method: spec.method.map(str::to_string),
         deadline_ms: spec.deadline_ms,
     }
 }

@@ -1,19 +1,12 @@
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-
 use anyhow::Result;
-use cap_http_reqwest::ReqwestHttpClient;
-use capabilities::ResourceBag;
 use capabilities::http::{HttpMethod, HttpRequest};
-use connector_google_platform::sheets::{append_table_range, row_range, wide_read_range};
+use connector_google_platform::sheets::{row_range, wide_read_range};
 use connector_google_sheets::generated::profiles::{
     GOOGLE_SHEETS_DEFAULT_ENDPOINT_PROFILE, GOOGLE_WORKSPACE_AUTH_OUTBOUND_AUTH,
 };
-use connector_google_sheets::runtime::transport::EnvConnectorRuntime;
 use connector_google_sheets::{
-    GOOGLE_SHEETS_DEFAULT_ENDPOINT_ENV, GOOGLE_WORKSPACE_AUTH_ENV, GoogleSheetsCreateSheetInput,
-    GoogleSheetsCreateSpreadsheetInput, GoogleSheetsSheetSummary, GoogleSheetsUpsertAction,
-    GoogleSheetsUpsertRowInput,
+    GoogleSheetsCreateSheetInput, GoogleSheetsCreateSpreadsheetInput, GoogleSheetsSheetSummary,
+    GoogleSheetsUpsertAction, GoogleSheetsUpsertRowInput,
 };
 use connectors_std::endpoint::apply_default_headers;
 use connectors_std::errors::ConnectorRuntimeError;
@@ -24,21 +17,13 @@ use connectors_std::{
 };
 use dag_core::{NodeError, NodeResult};
 use dag_macros::{def_node, node};
-use host_inproc::{FlowBundle, FlowEntrypoint, NodeContract, NodeSource};
-use kernel_exec::{ExecutionResult, NodeRegistry, NodeResolver, RegistryResolver};
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
 
-pub const SPREADSHEET_ENV: &str = "LATTICE_EXAMPLE_GOOGLE_SHEETS_SPREADSHEET_ID";
-pub const SPREADSHEET_TITLE_ENV: &str = "LATTICE_EXAMPLE_GOOGLE_SHEETS_SPREADSHEET_TITLE";
-pub const SHEET_ENV: &str = "LATTICE_EXAMPLE_GOOGLE_SHEETS_SHEET";
-
 const DEFAULT_SPREADSHEET_TITLE: &str = "Lattice CRM Smoke";
 const DEFAULT_SHEET_TITLE: &str = "Leads";
 const CRM_HEADERS: [&str; 3] = ["email", "name", "summary"];
-
-static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ExampleSubmissionInput {
@@ -303,220 +288,10 @@ dag_macros::flow! {
     entrypoint!({
         trigger: "trigger",
         capture: "upsert",
+        route_aliases: ["/google/sheets/local"],
+        method: "POST",
+        deadline_ms: 5_000,
     });
-}
-
-pub struct EnvGuard {
-    key: &'static str,
-    previous: Option<String>,
-}
-
-impl EnvGuard {
-    pub fn set(key: &'static str, value: &str) -> Self {
-        let previous = std::env::var(key).ok();
-        unsafe {
-            std::env::set_var(key, value);
-        }
-        Self { key, previous }
-    }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        match &self.previous {
-            Some(previous) => unsafe {
-                std::env::set_var(self.key, previous);
-            },
-            None => unsafe {
-                std::env::remove_var(self.key);
-            },
-        }
-    }
-}
-
-pub struct LocalMockHandle {
-    _server: httpmock::MockServer,
-    _endpoint: EnvGuard,
-    _auth: EnvGuard,
-}
-
-pub fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-    ENV_LOCK.lock().expect("env lock")
-}
-
-pub fn example_bundle() -> FlowBundle {
-    let validated_ir = validated_ir();
-    let mut registry = NodeRegistry::new();
-    example_trigger_register(&mut registry).expect("register example trigger");
-    normalize_submission_register(&mut registry).expect("register normalize node");
-    ensure_spreadsheet_register(&mut registry).expect("register ensure_spreadsheet node");
-    ensure_sheet_headers_register(&mut registry).expect("register ensure_sheet_headers node");
-    upsert_lead_row_register(&mut registry).expect("register upsert_lead_row node");
-    connector_google_sheets::register_all(&mut registry).expect("register connector nodes");
-    let registry = Arc::new(registry);
-    let resolver: Arc<dyn NodeResolver> = Arc::new(RegistryResolver::new(Arc::clone(&registry)));
-    let entrypoints = vec![FlowEntrypoint {
-        trigger_alias: "trigger".to_string(),
-        capture_alias: "upsert".to_string(),
-        route_path: Some("/google/sheets/local".to_string()),
-        method: Some("POST".to_string()),
-        deadline: Some(Duration::from_millis(5_000)),
-        route_aliases: vec!["/google/sheets/local".to_string()],
-    }];
-    let node_contracts = validated_ir
-        .flow()
-        .nodes
-        .iter()
-        .map(|node| NodeContract {
-            identifier: node.identifier.clone(),
-            contract_hash: None,
-            source: NodeSource::Local,
-        })
-        .collect();
-
-    FlowBundle {
-        validated_ir,
-        entrypoints,
-        resolver,
-        node_contracts,
-        environment_plugins: Vec::new(),
-    }
-}
-
-pub fn http_resources() -> ResourceBag {
-    let client = Arc::new(ReqwestHttpClient::default());
-    ResourceBag::default()
-        .with_http_read(Arc::clone(&client))
-        .with_http_write(client)
-        .with_connector_runtime(Arc::new(EnvConnectorRuntime))
-}
-
-pub fn example_input_from_env() -> ExampleSubmissionInput {
-    ExampleSubmissionInput {
-        spreadsheet_id: Some(
-            std::env::var(SPREADSHEET_ENV).unwrap_or_else(|_| "demo-spreadsheet".to_string()),
-        ),
-        spreadsheet_title: Some(
-            std::env::var(SPREADSHEET_TITLE_ENV)
-                .unwrap_or_else(|_| DEFAULT_SPREADSHEET_TITLE.to_string()),
-        ),
-        sheet: Some(std::env::var(SHEET_ENV).unwrap_or_else(|_| DEFAULT_SHEET_TITLE.to_string())),
-        email: "ada@example.test".to_string(),
-        name: "Ada Lovelace".to_string(),
-        summary: "connector local mock row".to_string(),
-    }
-}
-
-pub fn maybe_start_mock_server() -> Option<LocalMockHandle> {
-    if std::env::var(GOOGLE_SHEETS_DEFAULT_ENDPOINT_ENV).is_ok() {
-        println!(
-            "Using configured upstream from {GOOGLE_SHEETS_DEFAULT_ENDPOINT_ENV}; no local mock server will be started."
-        );
-        return None;
-    }
-
-    let input = example_input_from_env();
-    let spreadsheet_id = input
-        .spreadsheet_id
-        .clone()
-        .unwrap_or_else(|| "demo-spreadsheet".to_string());
-    let sheet = input
-        .sheet
-        .clone()
-        .unwrap_or_else(|| DEFAULT_SHEET_TITLE.to_string());
-    let server = httpmock::MockServer::start();
-    let read_range = wide_read_range(&sheet, 1);
-
-    server.mock(|when, then| {
-        when.method(httpmock::Method::GET)
-            .path(values_path(&spreadsheet_id, &read_range));
-        then.status(200).json_body_obj(&json!({
-            "range": read_range,
-            "values": [["email", "name", "summary"]]
-        }));
-    });
-
-    server.mock(|when, then| {
-        when.method(httpmock::Method::POST)
-            .path(format!(
-                "{}:append",
-                values_path(
-                    &spreadsheet_id,
-                    &append_table_range(&sheet, 1, CRM_HEADERS.len())
-                )
-            ))
-            .query_param("insertDataOption", "INSERT_ROWS")
-            .query_param("valueInputOption", "RAW");
-        then.status(200).json_body_obj(&json!({
-            "updates": {
-                "updatedRange": format!("'{}'!A2:C2", sheet)
-            }
-        }));
-    });
-
-    server.mock(|when, then| {
-        when.method(httpmock::Method::GET).path(format!(
-            "/v4/spreadsheets/{}",
-            encode_path_segment(&spreadsheet_id)
-        ));
-        then.status(200).json_body_obj(&json!({
-            "spreadsheetId": spreadsheet_id,
-            "spreadsheetUrl": "https://docs.google.com/spreadsheets/d/demo-spreadsheet/edit",
-            "sheets": [
-                {
-                    "properties": {
-                        "sheetId": 0,
-                        "title": sheet,
-                        "index": 0,
-                        "gridProperties": {
-                            "rowCount": 1000,
-                            "columnCount": 26
-                        }
-                    }
-                }
-            ]
-        }));
-    });
-
-    let endpoint = EnvGuard::set(GOOGLE_SHEETS_DEFAULT_ENDPOINT_ENV, &server.base_url());
-    let auth = EnvGuard::set(GOOGLE_WORKSPACE_AUTH_ENV, "google-local-demo-token");
-    println!(
-        "No {GOOGLE_SHEETS_DEFAULT_ENDPOINT_ENV} override detected; started local mock Google Sheets at {}",
-        server.base_url()
-    );
-    Some(LocalMockHandle {
-        _server: server,
-        _endpoint: endpoint,
-        _auth: auth,
-    })
-}
-
-pub async fn run_flow(input: ExampleSubmissionInput) -> Result<ExampleFlowOutput> {
-    let bundle = example_bundle();
-    let entrypoint = bundle.entrypoints.first().expect("entrypoint");
-    let payload = serde_json::to_value(&input).expect("serialize input");
-
-    let result = bundle
-        .executor()
-        .with_resource_bag(http_resources())
-        .run_once(
-            &bundle.validated_ir,
-            entrypoint.trigger_alias.as_str(),
-            payload,
-            entrypoint.capture_alias.as_str(),
-            entrypoint.deadline,
-        )
-        .await?;
-
-    let value = match result {
-        ExecutionResult::Value(value) => value,
-        ExecutionResult::Stream(_) => anyhow::bail!("expected a value response"),
-        ExecutionResult::Halt { alias, .. } => {
-            anyhow::bail!("expected a completed value response, flow halted at {alias}")
-        }
-    };
-
-    Ok(serde_json::from_value(value)?)
 }
 
 async fn fetch_spreadsheet_metadata(
@@ -768,7 +543,87 @@ fn node_error(err: impl std::fmt::Display) -> NodeError {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use cap_http_reqwest::ReqwestHttpClient;
+    use capabilities::ResourceBag;
+    use connector_google_sheets::runtime::transport::EnvConnectorRuntime;
+    use host_inproc::FlowBundle;
+    use kernel_exec::ExecutionResult;
+
     use super::*;
+
+    const GOOGLE_SHEETS_DEFAULT_ENDPOINT_ENV: &str =
+        "LATTICE_CONNECTOR_ENDPOINT_GOOGLE_SHEETS_DEFAULT_BASE_URL";
+    const GOOGLE_WORKSPACE_AUTH_ENV: &str = "LATTICE_CONNECTOR_AUTH_GOOGLE_WORKSPACE_AUTH";
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(previous) => unsafe {
+                    std::env::set_var(self.key, previous);
+                },
+                None => unsafe {
+                    std::env::remove_var(self.key);
+                },
+            }
+        }
+    }
+
+    fn http_resources() -> ResourceBag {
+        let client = Arc::new(ReqwestHttpClient::default());
+        ResourceBag::default()
+            .with_http_read(Arc::clone(&client))
+            .with_http_write(client)
+            .with_connector_runtime(Arc::new(EnvConnectorRuntime))
+    }
+
+    async fn execute_flow(
+        bundle: FlowBundle,
+        input: ExampleSubmissionInput,
+    ) -> anyhow::Result<ExampleFlowOutput> {
+        let entrypoint = bundle.entrypoints.first().expect("entrypoint");
+        let payload = serde_json::to_value(&input)?;
+
+        let result = bundle
+            .executor()
+            .with_resource_bag(http_resources())
+            .run_once(
+                &bundle.validated_ir,
+                entrypoint.trigger_alias.as_str(),
+                payload,
+                entrypoint.capture_alias.as_str(),
+                entrypoint.deadline,
+            )
+            .await?;
+
+        let value = match result {
+            ExecutionResult::Value(value) => value,
+            ExecutionResult::Stream(_) => anyhow::bail!("expected a value response"),
+            ExecutionResult::Halt { alias, .. } => {
+                anyhow::bail!("expected a completed value response, flow halted at {alias}")
+            }
+        };
+
+        Ok(serde_json::from_value(value)?)
+    }
 
     #[test]
     fn example_flow_contains_self_bootstrap_nodes() {
@@ -802,7 +657,7 @@ mod tests {
 
     #[tokio::test]
     async fn local_flow_runs_against_existing_sheet_mock() {
-        let _env_lock = env_lock();
+        let _env_lock = ENV_LOCK.lock().expect("env lock");
         let server = httpmock::MockServer::start();
         let _endpoint = EnvGuard::set(GOOGLE_SHEETS_DEFAULT_ENDPOINT_ENV, &server.base_url());
         let _auth = EnvGuard::set(GOOGLE_WORKSPACE_AUTH_ENV, "google-local-demo-token");
@@ -881,7 +736,7 @@ mod tests {
             }));
         });
 
-        let output = run_flow(input).await.expect("flow succeeds");
+        let output = execute_flow(bundle(), input).await.expect("flow succeeds");
 
         metadata_mock.assert();
         read_mock.assert_hits(2);
