@@ -1705,6 +1705,268 @@ pub mod kv {
             assert!(matches!(err, KvError::InvalidOptions(_)));
         }
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // WASM guest transport (dynamic bundles)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Opcode family id reserved for KV operations.
+    ///
+    /// Encoding: `(family << 16) | op_id`.
+    pub const OP_FAMILY_KV: u32 = 4;
+
+    pub const OP_KV_GET: u32 = (OP_FAMILY_KV << 16) | 1;
+    pub const OP_KV_PUT: u32 = (OP_FAMILY_KV << 16) | 2;
+    pub const OP_KV_DELETE: u32 = (OP_FAMILY_KV << 16) | 3;
+    pub const OP_KV_LIST: u32 = (OP_FAMILY_KV << 16) | 4;
+
+    #[cfg(target_arch = "wasm32")]
+    const RESP_OK: u8 = 0;
+    #[cfg(target_arch = "wasm32")]
+    const RESP_NOT_FOUND: u8 = 1;
+    #[cfg(target_arch = "wasm32")]
+    const RESP_ERR: u8 = 2;
+
+    /// Transport envelope for KV get requests.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct KvGetRequest {
+        pub key: String,
+        #[serde(default)]
+        pub cache_ttl_ms: Option<u64>,
+    }
+
+    /// Transport envelope for KV put requests.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct KvPutRequest {
+        pub key: String,
+        pub value: Vec<u8>,
+        #[serde(default)]
+        pub ttl_ms: Option<u64>,
+        #[serde(default)]
+        pub metadata: Option<KvMetadata>,
+    }
+
+    /// Transport envelope for KV delete requests.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct KvDeleteRequest {
+        pub key: String,
+    }
+
+    /// Transport envelope for KV list requests.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct KvListRequest {
+        #[serde(default)]
+        pub prefix: Option<String>,
+        #[serde(default)]
+        pub cursor: Option<String>,
+        #[serde(default)]
+        pub limit: Option<usize>,
+        #[serde(default)]
+        pub include_metadata: bool,
+        #[serde(default)]
+        pub include_expiration: bool,
+    }
+
+    /// Transport envelope for KV list response entries.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct KvListEntryTransport {
+        pub key: String,
+        #[serde(default)]
+        pub expires_at_ms: Option<u64>,
+        #[serde(default)]
+        pub metadata: Option<KvMetadata>,
+    }
+
+    /// Transport envelope for KV list response.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct KvListResponseTransport {
+        pub keys: Vec<KvListEntryTransport>,
+        pub list_complete: bool,
+        #[serde(default)]
+        pub cursor: Option<String>,
+    }
+
+    /// Remote key-value capability that delegates to a host-provided import.
+    #[cfg(target_arch = "wasm32")]
+    pub struct RemoteKeyValue {
+        _private: (),
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    impl RemoteKeyValue {
+        pub fn new() -> Self {
+            ensure_registered();
+            Self { _private: () }
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    impl Default for RemoteKeyValue {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    impl Capability for RemoteKeyValue {
+        fn name(&self) -> &'static str {
+            "kv.remote"
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn decode_kv_response(bytes: &[u8]) -> Result<(u8, &[u8]), KvError> {
+        if bytes.is_empty() {
+            return Err(KvError::Other("invalid kv response: empty".to_string()));
+        }
+        Ok((bytes[0], &bytes[1..]))
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn decode_kv_error(bytes: &[u8]) -> String {
+        if bytes.is_empty() {
+            return "kv capability error".to_string();
+        }
+        match std::str::from_utf8(bytes) {
+            Ok(msg) => msg.to_string(),
+            Err(_) => "kv capability error (non-utf8)".to_string(),
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[async_trait(?Send)]
+    impl KeyValue for RemoteKeyValue {
+        async fn get_with_options(
+            &self,
+            key: &str,
+            options: KvGetOptions,
+        ) -> Result<Option<Vec<u8>>, KvError> {
+            let req = KvGetRequest {
+                key: key.to_string(),
+                cache_ttl_ms: options.cache_ttl.map(|d| d.as_millis() as u64),
+            };
+            let req_bytes = serde_json::to_vec(&req)
+                .map_err(|err| KvError::Other(format!("encode kv get: {err}")))?;
+            let resp = crate::wasm_transport::cap_call(OP_KV_GET, &req_bytes)
+                .map_err(|err| KvError::Other(err.to_string()))?;
+            let (status, payload) = decode_kv_response(&resp)?;
+            match status {
+                RESP_OK => {
+                    if payload.is_empty() {
+                        Ok(None)
+                    } else {
+                        Ok(Some(payload.to_vec()))
+                    }
+                }
+                RESP_NOT_FOUND => Ok(None),
+                RESP_ERR => Err(KvError::Other(decode_kv_error(payload))),
+                other => Err(KvError::Other(format!(
+                    "invalid kv response status {other}"
+                ))),
+            }
+        }
+
+        async fn put_with_options(
+            &self,
+            key: &str,
+            value: &[u8],
+            options: KvPutOptions,
+        ) -> Result<(), KvError> {
+            if options.ttl.is_some() && options.expires_at.is_some() {
+                return Err(KvError::InvalidOptions(
+                    "ttl and expires_at cannot both be set".to_string(),
+                ));
+            }
+            let ttl_ms = options
+                .ttl
+                .map(|d| d.as_millis() as u64)
+                .or(options.expires_at.map(|at| {
+                    at.duration_since(std::time::SystemTime::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0)
+                }));
+            let req = KvPutRequest {
+                key: key.to_string(),
+                value: value.to_vec(),
+                ttl_ms,
+                metadata: options.metadata,
+            };
+            let req_bytes = serde_json::to_vec(&req)
+                .map_err(|err| KvError::Other(format!("encode kv put: {err}")))?;
+            let resp = crate::wasm_transport::cap_call(OP_KV_PUT, &req_bytes)
+                .map_err(|err| KvError::Other(err.to_string()))?;
+            let (status, payload) = decode_kv_response(&resp)?;
+            match status {
+                RESP_OK => Ok(()),
+                RESP_ERR => Err(KvError::Other(decode_kv_error(payload))),
+                other => Err(KvError::Other(format!(
+                    "invalid kv response status {other}"
+                ))),
+            }
+        }
+
+        async fn delete(&self, key: &str) -> Result<(), KvError> {
+            let req = KvDeleteRequest {
+                key: key.to_string(),
+            };
+            let req_bytes = serde_json::to_vec(&req)
+                .map_err(|err| KvError::Other(format!("encode kv delete: {err}")))?;
+            let resp = crate::wasm_transport::cap_call(OP_KV_DELETE, &req_bytes)
+                .map_err(|err| KvError::Other(err.to_string()))?;
+            let (status, payload) = decode_kv_response(&resp)?;
+            match status {
+                RESP_OK => Ok(()),
+                RESP_NOT_FOUND => Err(KvError::NotFound),
+                RESP_ERR => Err(KvError::Other(decode_kv_error(payload))),
+                other => Err(KvError::Other(format!(
+                    "invalid kv response status {other}"
+                ))),
+            }
+        }
+
+        async fn list(&self, options: KvListOptions) -> Result<KvListResponse, KvError> {
+            let req = KvListRequest {
+                prefix: options.prefix,
+                cursor: options.cursor,
+                limit: options.limit,
+                include_metadata: options.include_metadata,
+                include_expiration: options.include_expiration,
+            };
+            let req_bytes = serde_json::to_vec(&req)
+                .map_err(|err| KvError::Other(format!("encode kv list: {err}")))?;
+            let resp = crate::wasm_transport::cap_call(OP_KV_LIST, &req_bytes)
+                .map_err(|err| KvError::Other(err.to_string()))?;
+            let (status, payload) = decode_kv_response(&resp)?;
+            match status {
+                RESP_OK => {
+                    let transport: KvListResponseTransport =
+                        serde_json::from_slice(payload).map_err(|err| {
+                            KvError::Other(format!("decode kv list response: {err}"))
+                        })?;
+                    Ok(KvListResponse {
+                        keys: transport
+                            .keys
+                            .into_iter()
+                            .map(|entry| KvListEntry {
+                                key: entry.key,
+                                expires_at: entry.expires_at_ms.map(|ms| {
+                                    std::time::SystemTime::UNIX_EPOCH
+                                        + std::time::Duration::from_millis(ms)
+                                }),
+                                metadata: entry.metadata,
+                            })
+                            .collect(),
+                        list_complete: transport.list_complete,
+                        cursor: transport.cursor,
+                    })
+                }
+                RESP_ERR => Err(KvError::Other(decode_kv_error(payload))),
+                other => Err(KvError::Other(format!(
+                    "invalid kv response status {other}"
+                ))),
+            }
+        }
+    }
 }
 
 pub mod blob {

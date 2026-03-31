@@ -307,6 +307,283 @@ pub trait Workspace: Capability {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// WASM guest transport (dynamic bundles)
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Opcode family id reserved for workspace operations.
+///
+/// Encoding: `(family << 16) | op_id`.
+pub const OP_FAMILY_WORKSPACE: u32 = 5;
+
+pub const OP_WORKSPACE_READ: u32 = (OP_FAMILY_WORKSPACE << 16) | 1;
+pub const OP_WORKSPACE_WRITE: u32 = (OP_FAMILY_WORKSPACE << 16) | 2;
+pub const OP_WORKSPACE_LIST: u32 = (OP_FAMILY_WORKSPACE << 16) | 3;
+pub const OP_WORKSPACE_DELETE: u32 = (OP_FAMILY_WORKSPACE << 16) | 4;
+
+/// Transport envelope for workspace read requests.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceReadRequest {
+    pub path: String,
+}
+
+/// Transport envelope for workspace write requests.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceWriteRequest {
+    pub path: String,
+    pub data: Vec<u8>,
+    #[serde(default)]
+    pub options: WorkspaceWriteOptions,
+}
+
+/// Transport envelope for workspace list requests.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceListRequest {
+    #[serde(default)]
+    pub prefix: Option<String>,
+}
+
+/// Transport envelope for workspace delete requests.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceDeleteRequest {
+    pub path: String,
+}
+
+/// Transport error envelope for workspace errors.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WorkspaceErrorEnvelope {
+    InvalidPath { message: String },
+    PathTraversal { message: String },
+    NotFound { message: String },
+    Unsupported { message: String },
+    Backend { message: String },
+}
+
+impl WorkspaceErrorEnvelope {
+    pub fn from_workspace_error(err: &WorkspaceError) -> Self {
+        match err {
+            WorkspaceError::InvalidPath(msg) => Self::InvalidPath {
+                message: msg.clone(),
+            },
+            WorkspaceError::PathTraversal(msg) => Self::PathTraversal {
+                message: msg.clone(),
+            },
+            WorkspaceError::NotFound(msg) => Self::NotFound {
+                message: msg.clone(),
+            },
+            WorkspaceError::Unsupported(msg) => Self::Unsupported {
+                message: msg.clone(),
+            },
+            WorkspaceError::Backend(msg) => Self::Backend {
+                message: msg.clone(),
+            },
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn into_workspace_error(self) -> WorkspaceError {
+        match self {
+            Self::InvalidPath { message } => WorkspaceError::InvalidPath(message),
+            Self::PathTraversal { message } => WorkspaceError::PathTraversal(message),
+            Self::NotFound { message } => WorkspaceError::NotFound(message),
+            Self::Unsupported { message } => WorkspaceError::Unsupported(message),
+            Self::Backend { message } => WorkspaceError::Backend(message),
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+const RESP_OK: u8 = 0;
+#[cfg(target_arch = "wasm32")]
+const RESP_NOT_FOUND: u8 = 1;
+#[cfg(target_arch = "wasm32")]
+const RESP_ERR: u8 = 2;
+
+/// Remote workspace capability that delegates to a host-provided import.
+#[cfg(target_arch = "wasm32")]
+pub struct RemoteWorkspace {
+    _private: (),
+}
+
+#[cfg(target_arch = "wasm32")]
+impl RemoteWorkspace {
+    pub fn new() -> Self {
+        ensure_registered();
+        Self { _private: () }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Default for RemoteWorkspace {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Capability for RemoteWorkspace {
+    fn name(&self) -> &'static str {
+        "workspace.remote"
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn decode_workspace_response(bytes: &[u8]) -> Result<(u8, &[u8]), WorkspaceError> {
+    if bytes.is_empty() {
+        return Err(WorkspaceError::Backend(
+            "invalid workspace response: empty".to_string(),
+        ));
+    }
+    Ok((bytes[0], &bytes[1..]))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn decode_workspace_error(payload: &[u8]) -> WorkspaceError {
+    // Try structured envelope first
+    if let Ok(envelope) = serde_json::from_slice::<WorkspaceErrorEnvelope>(payload) {
+        return envelope.into_workspace_error();
+    }
+    // Fall back to plain string
+    match std::str::from_utf8(payload) {
+        Ok(msg) => WorkspaceError::Backend(msg.to_string()),
+        Err(_) => WorkspaceError::Backend("workspace capability error (non-utf8)".to_string()),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[async_trait(?Send)]
+impl Workspace for RemoteWorkspace {
+    async fn read_normalized(
+        &self,
+        normalized_path: &str,
+    ) -> Result<Option<WorkspaceReadResult>, WorkspaceError> {
+        let req = WorkspaceReadRequest {
+            path: normalized_path.to_string(),
+        };
+        let req_bytes = serde_json::to_vec(&req)
+            .map_err(|err| WorkspaceError::Backend(format!("encode workspace read: {err}")))?;
+        let resp = crate::wasm_transport::cap_call(OP_WORKSPACE_READ, &req_bytes)
+            .map_err(|err| WorkspaceError::Backend(err.to_string()))?;
+        let (status, payload) = decode_workspace_response(&resp)?;
+        match status {
+            RESP_OK => {
+                if payload.is_empty() {
+                    Ok(None)
+                } else {
+                    let result: WorkspaceReadResult = serde_json::from_slice(payload)
+                        .map_err(|err| {
+                            WorkspaceError::Backend(format!(
+                                "decode workspace read response: {err}"
+                            ))
+                        })?;
+                    Ok(Some(result))
+                }
+            }
+            RESP_NOT_FOUND => Ok(None),
+            RESP_ERR => Err(decode_workspace_error(payload)),
+            other => Err(WorkspaceError::Backend(format!(
+                "invalid workspace response status {other}"
+            ))),
+        }
+    }
+
+    async fn write_normalized(
+        &self,
+        normalized_path: &str,
+        data: &[u8],
+        options: WorkspaceWriteOptions,
+    ) -> Result<WorkspaceWriteResult, WorkspaceError> {
+        let req = WorkspaceWriteRequest {
+            path: normalized_path.to_string(),
+            data: data.to_vec(),
+            options,
+        };
+        let req_bytes = serde_json::to_vec(&req)
+            .map_err(|err| WorkspaceError::Backend(format!("encode workspace write: {err}")))?;
+        let resp = crate::wasm_transport::cap_call(OP_WORKSPACE_WRITE, &req_bytes)
+            .map_err(|err| WorkspaceError::Backend(err.to_string()))?;
+        let (status, payload) = decode_workspace_response(&resp)?;
+        match status {
+            RESP_OK => {
+                let result: WorkspaceWriteResult = serde_json::from_slice(payload).map_err(
+                    |err| {
+                        WorkspaceError::Backend(format!(
+                            "decode workspace write response: {err}"
+                        ))
+                    },
+                )?;
+                Ok(result)
+            }
+            RESP_ERR => Err(decode_workspace_error(payload)),
+            other => Err(WorkspaceError::Backend(format!(
+                "invalid workspace response status {other}"
+            ))),
+        }
+    }
+
+    async fn list_normalized(
+        &self,
+        options: WorkspaceListOptions,
+    ) -> Result<Vec<WorkspaceEntry>, WorkspaceError> {
+        let req = WorkspaceListRequest {
+            prefix: options.prefix,
+        };
+        let req_bytes = serde_json::to_vec(&req)
+            .map_err(|err| WorkspaceError::Backend(format!("encode workspace list: {err}")))?;
+        let resp = crate::wasm_transport::cap_call(OP_WORKSPACE_LIST, &req_bytes)
+            .map_err(|err| WorkspaceError::Backend(err.to_string()))?;
+        let (status, payload) = decode_workspace_response(&resp)?;
+        match status {
+            RESP_OK => {
+                let entries: Vec<WorkspaceEntry> = serde_json::from_slice(payload).map_err(
+                    |err| {
+                        WorkspaceError::Backend(format!(
+                            "decode workspace list response: {err}"
+                        ))
+                    },
+                )?;
+                Ok(entries)
+            }
+            RESP_ERR => Err(decode_workspace_error(payload)),
+            other => Err(WorkspaceError::Backend(format!(
+                "invalid workspace response status {other}"
+            ))),
+        }
+    }
+
+    async fn delete_normalized(
+        &self,
+        normalized_path: &str,
+    ) -> Result<WorkspaceDeleteResult, WorkspaceError> {
+        let req = WorkspaceDeleteRequest {
+            path: normalized_path.to_string(),
+        };
+        let req_bytes = serde_json::to_vec(&req)
+            .map_err(|err| WorkspaceError::Backend(format!("encode workspace delete: {err}")))?;
+        let resp = crate::wasm_transport::cap_call(OP_WORKSPACE_DELETE, &req_bytes)
+            .map_err(|err| WorkspaceError::Backend(err.to_string()))?;
+        let (status, payload) = decode_workspace_response(&resp)?;
+        match status {
+            RESP_OK => {
+                let result: WorkspaceDeleteResult = serde_json::from_slice(payload).map_err(
+                    |err| {
+                        WorkspaceError::Backend(format!(
+                            "decode workspace delete response: {err}"
+                        ))
+                    },
+                )?;
+                Ok(result)
+            }
+            RESP_NOT_FOUND => Ok(WorkspaceDeleteResult { deleted: false }),
+            RESP_ERR => Err(decode_workspace_error(payload)),
+            other => Err(WorkspaceError::Backend(format!(
+                "invalid workspace response status {other}"
+            ))),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

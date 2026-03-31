@@ -4899,6 +4899,28 @@ impl WorkflowBundleInput {
                             ));
                         }
 
+                        let needs_kv = node_specs.iter().any(|spec| {
+                            spec.effect_hints
+                                .iter()
+                                .any(|hint| hint.starts_with(::capabilities::kv::HINT_KV))
+                        });
+                        if needs_kv {
+                            bag = bag.with_kv(Arc::new(
+                                ::capabilities::kv::RemoteKeyValue::new(),
+                            ));
+                        }
+
+                        let needs_workspace = node_specs.iter().any(|spec| {
+                            spec.effect_hints
+                                .iter()
+                                .any(|hint| hint.starts_with(::capabilities::workspace::HINT_WORKSPACE))
+                        });
+                        if needs_workspace {
+                            bag = bag.with_workspace(Arc::new(
+                                ::capabilities::workspace::RemoteWorkspace::new(),
+                            ));
+                        }
+
                         let needs_connector_runtime = node_specs
                             .iter()
                             .any(|spec| !spec.connector_ops.is_empty());

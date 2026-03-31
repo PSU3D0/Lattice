@@ -27,6 +27,16 @@ use serde_json::Value as JsonValue;
 use wasmtime::{Caller, Engine, Linker, Memory, Module, Store, TypedFunc};
 
 use capabilities::blob::{BlobError, OP_BLOB_DELETE, OP_BLOB_GET, OP_BLOB_PUT};
+use capabilities::kv::{
+    OP_KV_DELETE, OP_KV_GET, OP_KV_LIST, OP_KV_PUT,
+    KvDeleteRequest, KvGetRequest, KvListRequest, KvListResponseTransport,
+    KvListEntryTransport, KvPutOptions, KvPutRequest,
+};
+use capabilities::workspace::{
+    OP_WORKSPACE_DELETE, OP_WORKSPACE_LIST, OP_WORKSPACE_READ, OP_WORKSPACE_WRITE,
+    WorkspaceDeleteRequest, WorkspaceErrorEnvelope, WorkspaceListRequest,
+    WorkspaceReadRequest, WorkspaceWriteRequest,
+};
 
 /// Drive an async future to completion from inside a synchronous wasmtime import handler.
 ///
@@ -219,6 +229,22 @@ impl WasmRuntime {
                             caller.data().resources.as_ref(),
                             req,
                         )
+                    }
+                    OP_KV_GET => handle_kv_get(caller.data().resources.as_ref(), req),
+                    OP_KV_PUT => handle_kv_put(caller.data().resources.as_ref(), req),
+                    OP_KV_DELETE => handle_kv_delete(caller.data().resources.as_ref(), req),
+                    OP_KV_LIST => handle_kv_list(caller.data().resources.as_ref(), req),
+                    OP_WORKSPACE_READ => {
+                        handle_workspace_read(caller.data().resources.as_ref(), req)
+                    }
+                    OP_WORKSPACE_WRITE => {
+                        handle_workspace_write(caller.data().resources.as_ref(), req)
+                    }
+                    OP_WORKSPACE_LIST => {
+                        handle_workspace_list(caller.data().resources.as_ref(), req)
+                    }
+                    OP_WORKSPACE_DELETE => {
+                        handle_workspace_delete(caller.data().resources.as_ref(), req)
                     }
                     _ => encode_err("unsupported opcode"),
                 };
@@ -680,6 +706,197 @@ fn handle_connector_resolve_endpoint_profile(
     match result {
         Ok(profile) => encode_json_ok(&profile),
         Err(err) => encode_err(err),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// KV host handlers
+// ─────────────────────────────────────────────────────────────────────────
+
+fn handle_kv_get(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8> {
+    let request: KvGetRequest = match decode_json_request(req, "kv get") {
+        Ok(request) => request,
+        Err(err) => return encode_err(err),
+    };
+    let kv = match resources.kv() {
+        Some(kv) => kv,
+        None => return encode_err("missing kv provider"),
+    };
+    let options = capabilities::kv::KvGetOptions {
+        cache_ttl: request
+            .cache_ttl_ms
+            .map(std::time::Duration::from_millis),
+    };
+    let result = host_block_on(kv.get_with_options(&request.key, options));
+    match result {
+        Ok(Some(bytes)) => encode_ok(&bytes),
+        Ok(None) => encode_not_found(),
+        Err(err) => encode_err(err),
+    }
+}
+
+fn handle_kv_put(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8> {
+    let request: KvPutRequest = match decode_json_request(req, "kv put") {
+        Ok(request) => request,
+        Err(err) => return encode_err(err),
+    };
+    let kv = match resources.kv() {
+        Some(kv) => kv,
+        None => return encode_err("missing kv provider"),
+    };
+    let options = KvPutOptions {
+        ttl: request.ttl_ms.map(std::time::Duration::from_millis),
+        expires_at: None,
+        metadata: request.metadata,
+    };
+    let result = host_block_on(kv.put_with_options(&request.key, &request.value, options));
+    match result {
+        Ok(()) => encode_ok(&[]),
+        Err(err) => encode_err(err),
+    }
+}
+
+fn handle_kv_delete(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8> {
+    let request: KvDeleteRequest = match decode_json_request(req, "kv delete") {
+        Ok(request) => request,
+        Err(err) => return encode_err(err),
+    };
+    let kv = match resources.kv() {
+        Some(kv) => kv,
+        None => return encode_err("missing kv provider"),
+    };
+    let result = host_block_on(kv.delete(&request.key));
+    match result {
+        Ok(()) => encode_ok(&[]),
+        Err(capabilities::kv::KvError::NotFound) => encode_not_found(),
+        Err(err) => encode_err(err),
+    }
+}
+
+fn handle_kv_list(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8> {
+    let request: KvListRequest = match decode_json_request(req, "kv list") {
+        Ok(request) => request,
+        Err(err) => return encode_err(err),
+    };
+    let kv = match resources.kv() {
+        Some(kv) => kv,
+        None => return encode_err("missing kv provider"),
+    };
+    let options = capabilities::kv::KvListOptions {
+        prefix: request.prefix,
+        cursor: request.cursor,
+        limit: request.limit,
+        include_metadata: request.include_metadata,
+        include_expiration: request.include_expiration,
+    };
+    let result = host_block_on(kv.list(options));
+    match result {
+        Ok(response) => {
+            let transport = KvListResponseTransport {
+                keys: response
+                    .keys
+                    .into_iter()
+                    .map(|entry| KvListEntryTransport {
+                        key: entry.key,
+                        expires_at_ms: entry.expires_at.and_then(|at| {
+                            at.duration_since(std::time::SystemTime::UNIX_EPOCH)
+                                .ok()
+                                .map(|d| d.as_millis() as u64)
+                        }),
+                        metadata: entry.metadata,
+                    })
+                    .collect(),
+                list_complete: response.list_complete,
+                cursor: response.cursor,
+            };
+            encode_json_ok(&transport)
+        }
+        Err(err) => encode_err(err),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Workspace host handlers
+// ─────────────────────────────────────────────────────────────────────────
+
+fn handle_workspace_read(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8> {
+    let request: WorkspaceReadRequest = match decode_json_request(req, "workspace read") {
+        Ok(request) => request,
+        Err(err) => return encode_err(err),
+    };
+    let workspace = match resources.workspace() {
+        Some(ws) => ws,
+        None => return encode_err("missing workspace provider"),
+    };
+    let result = host_block_on(workspace.read_normalized(&request.path));
+    match result {
+        Ok(Some(read_result)) => encode_json_ok(&read_result),
+        Ok(None) => encode_not_found(),
+        Err(err) => encode_workspace_err(err),
+    }
+}
+
+fn handle_workspace_write(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8> {
+    let request: WorkspaceWriteRequest = match decode_json_request(req, "workspace write") {
+        Ok(request) => request,
+        Err(err) => return encode_err(err),
+    };
+    let workspace = match resources.workspace() {
+        Some(ws) => ws,
+        None => return encode_err("missing workspace provider"),
+    };
+    let result = host_block_on(workspace.write_normalized(&request.path, &request.data, request.options));
+    match result {
+        Ok(write_result) => encode_json_ok(&write_result),
+        Err(err) => encode_workspace_err(err),
+    }
+}
+
+fn handle_workspace_list(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8> {
+    let request: WorkspaceListRequest = match decode_json_request(req, "workspace list") {
+        Ok(request) => request,
+        Err(err) => return encode_err(err),
+    };
+    let workspace = match resources.workspace() {
+        Some(ws) => ws,
+        None => return encode_err("missing workspace provider"),
+    };
+    let options = capabilities::workspace::WorkspaceListOptions {
+        prefix: request.prefix,
+    };
+    let result = host_block_on(workspace.list_normalized(options));
+    match result {
+        Ok(entries) => encode_json_ok(&entries),
+        Err(err) => encode_workspace_err(err),
+    }
+}
+
+fn handle_workspace_delete(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8> {
+    let request: WorkspaceDeleteRequest = match decode_json_request(req, "workspace delete") {
+        Ok(request) => request,
+        Err(err) => return encode_err(err),
+    };
+    let workspace = match resources.workspace() {
+        Some(ws) => ws,
+        None => return encode_err("missing workspace provider"),
+    };
+    let result = host_block_on(workspace.delete_normalized(&request.path));
+    match result {
+        Ok(delete_result) => encode_json_ok(&delete_result),
+        Err(err) => encode_workspace_err(err),
+    }
+}
+
+fn encode_workspace_err(err: capabilities::workspace::WorkspaceError) -> Vec<u8> {
+    let envelope = WorkspaceErrorEnvelope::from_workspace_error(&err);
+    match serde_json::to_vec(&envelope) {
+        Ok(payload) => {
+            let mut out = Vec::with_capacity(1 + payload.len());
+            out.push(RESP_ERR);
+            out.extend_from_slice(&payload);
+            out
+        }
+        Err(ser_err) => encode_err(format!("failed to serialize workspace error: {ser_err}")),
     }
 }
 

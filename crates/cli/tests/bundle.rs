@@ -1,9 +1,19 @@
 use std::fs;
+use std::path::PathBuf;
 use std::process::Command;
 
 use assert_cmd::prelude::*;
 use serde_json::json;
 use tempfile::tempdir;
+
+fn temp_bundle_dir(label: &str) -> PathBuf {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let mut path = std::env::temp_dir();
+    let pid = std::process::id();
+    let counter = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    path.push(format!("lattice.bundle.it.{label}.{pid}.{counter}"));
+    path
+}
 
 #[test]
 fn bundle_rejects_invalid_flow_ir_path() -> Result<(), Box<dyn std::error::Error>> {
@@ -136,6 +146,66 @@ fn bundle_generates_wasm_manifest_for_connector_google_sheets_example()
         manifest_json["flows"][0]["entrypoints"][0]["method"],
         json!("POST")
     );
+
+    Ok(())
+}
+
+/// Proves that the s6_spill example (which uses blob capability) can be built
+/// as a wasm bundle and executed end-to-end through the wasmtime host.
+/// The host provides a MemoryBlobStore; the guest talks to it through the
+/// `RemoteBlobStore` → `lf_cap_call(OP_BLOB_*)` → `host_block_on` bridge.
+#[test]
+fn run_bundle_s6_spill_blob_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
+    let out_dir = temp_bundle_dir("s6-spill-blob");
+    let target_dir = out_dir.join("target");
+    fs::create_dir_all(&target_dir)?;
+
+    let build = Command::cargo_bin("flows")?
+        .args([
+            "bundle",
+            "-p",
+            "example-s6-spill",
+            "--wasm",
+            "--dev",
+            "--out-dir",
+            out_dir.to_str().expect("out dir"),
+        ])
+        .env("CARGO_TARGET_DIR", &target_dir)
+        .output()?;
+    assert!(
+        build.status.success(),
+        "s6_spill wasm bundle failed: status={:?}, stderr={}",
+        build.status,
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let output = Command::cargo_bin("flows")?
+        .args([
+            "run",
+            "bundle",
+            "--bundle",
+            out_dir.to_str().expect("out dir"),
+            "--bind",
+            "resource::blob=memory",
+            "--payload",
+            r#"{"batch_id":"wasm-test","items":["alpha","beta"]}"#,
+        ])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "s6_spill bundle run failed: status={:?}, stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8(output.stdout)?;
+    let payload: serde_json::Value = serde_json::from_str(stdout.trim())?;
+    let acks = payload.as_array().expect("output should be array of acks");
+    assert_eq!(acks.len(), 2);
+    assert_eq!(acks[0]["batch_id"], "wasm-test");
+    assert_eq!(acks[0]["stored"], true);
+    assert_eq!(acks[1]["batch_id"], "wasm-test");
+    assert_eq!(acks[1]["stored"], true);
 
     Ok(())
 }
