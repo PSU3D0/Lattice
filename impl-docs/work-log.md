@@ -124,6 +124,14 @@ Completed scope aligns with early contract/runtime milestones; older planning re
 - Acceptance gates: `cargo check -p example-s11-lead-intake`, `cargo test -p example-s11-lead-intake`, `cargo check -p example-s11-lead-intake --target wasm32-unknown-unknown --no-default-features`.
 - Compatibility notes: `image_artifact_path` is a workspace artifact path, not a durable external URL.
 
+## 2026-03-31 — S11 wasm bundle proof (Epic 05.4)
+
+- Proved `example-s11-lead-intake` bundles cleanly through `flows bundle -p example-s11-lead-intake --wasm --dev`, emitting `module.wasm` plus `manifest.json` with preserved `/leads` POST route metadata.
+- Added CLI integration coverage in `crates/cli/tests/bundle.rs` for the s11 wasm manifest and flow IR artifact layout.
+- Added a wasm bundle load proof in `crates/cli/tests/serve.rs` that loads the s11 bundle via `host_wasmtime::load_flow_bundle` and verifies route metadata preservation.
+- Acceptance gates: `cargo test -p flows-cli --test bundle`, `cargo test -p flows-cli --test serve load_s11_lead_intake_wasm_bundle_preserves_route_metadata -- --nocapture`.
+- Notes: the guest still carries wasm-bindgen imports, so this slice stops at bundle/load metadata proof rather than full wasmtime execution.
+
 ## 2026-03-31 — OpenAI image wiring and structured-output proof (Epic 05.2)
 
 - Enabled the OpenAI provider's image-generation client surface by default (`crates/llm-provider-openai/Cargo.toml`, `crates/llm-provider-openai/src/client.rs`) so `Client` now satisfies the `llm-agent` image capability path for `DALL_E_3`.

@@ -150,6 +150,59 @@ fn bundle_generates_wasm_manifest_for_connector_google_sheets_example()
     Ok(())
 }
 
+#[test]
+fn bundle_generates_wasm_manifest_for_s11_lead_intake_example()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempdir()?;
+    let out_dir = temp.path().join("flow.bundle");
+    let target_dir = temp.path().join("target");
+
+    let output = Command::cargo_bin("flows")?
+        .args([
+            "bundle",
+            "-p",
+            "example-s11-lead-intake",
+            "--wasm",
+            "--dev",
+            "--out-dir",
+            out_dir.to_str().expect("bundle output path"),
+        ])
+        .env("CARGO_TARGET_DIR", &target_dir)
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "expected s11 lead intake wasm bundle to succeed: status={:?}, stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(out_dir.join("manifest.json").exists());
+    assert!(out_dir.join("module.wasm").exists());
+    assert!(out_dir.join("flows/s11_lead_intake_flow/flow_ir.json").exists());
+
+    let manifest_raw = fs::read_to_string(out_dir.join("manifest.json"))?;
+    let manifest_json: serde_json::Value = serde_json::from_str(&manifest_raw)?;
+    assert_eq!(manifest_json["flows"][0]["profile"], json!("web"));
+    assert_eq!(
+        manifest_json["flows"][0]["entrypoints"][0]["method"],
+        json!("POST")
+    );
+    assert_eq!(
+        manifest_json["flows"][0]["entrypoints"][0]["route_aliases"],
+        json!(["/leads"])
+    );
+    assert_eq!(
+        manifest_json["flows"][0]["entrypoints"][0]["trigger"],
+        json!("trigger")
+    );
+    assert_eq!(
+        manifest_json["flows"][0]["entrypoints"][0]["capture"],
+        json!("capture")
+    );
+
+    Ok(())
+}
+
 /// Proves that the s6_spill example (which uses blob capability) can be built
 /// as a wasm bundle and executed end-to-end through the wasmtime host.
 /// The host provides a MemoryBlobStore; the guest talks to it through the

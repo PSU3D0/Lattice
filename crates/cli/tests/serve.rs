@@ -347,6 +347,48 @@ async fn load_wasm_bundle_preserves_route_metadata() -> Result<(), Box<dyn std::
 }
 
 #[tokio::test]
+async fn load_s11_lead_intake_wasm_bundle_preserves_route_metadata()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempdir()?;
+    let out_dir = temp.path().join("flow.bundle");
+    let target_dir = temp.path().join("target");
+
+    let output = Command::cargo_bin("flows")?
+        .args([
+            "bundle",
+            "-p",
+            "example-s11-lead-intake",
+            "--wasm",
+            "--dev",
+            "--out-dir",
+            out_dir.to_str().expect("bundle output path"),
+        ])
+        .env("CARGO_TARGET_DIR", &target_dir)
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "expected s11 lead intake wasm bundle build to succeed: status={:?}, stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let resources = ResourceBag::default()
+        .with_checkpoint_store(Arc::new(TestCheckpointStore::default()))
+        .with_max_durability_mode(DurabilityMode::Partial);
+
+    let bundle = load_flow_bundle(&out_dir, ExecPolicy::Wasm, None, Arc::new(resources))?;
+    let entrypoint = bundle.entrypoints.first().expect("bundle entrypoint");
+    assert_eq!(entrypoint.route_path.as_deref(), Some("/leads"));
+    assert_eq!(entrypoint.method.as_deref(), Some("POST"));
+    assert_eq!(entrypoint.trigger_alias, "trigger");
+    assert_eq!(entrypoint.capture_alias, "capture");
+    assert_eq!(entrypoint.route_aliases, vec!["/leads".to_string()]);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn serve_google_sheets_route_round_trips_connector_flow()
 -> Result<(), Box<dyn std::error::Error>> {
     static ENV_LOCK: Mutex<()> = Mutex::new(());
