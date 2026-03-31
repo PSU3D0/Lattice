@@ -34,6 +34,9 @@ impl<H> Capabilities<H> for OpenAICompletionsExt {
     type Embeddings = Capable<super::EmbeddingModel<H>>;
     type Transcription = Capable<super::TranscriptionModel<H>>;
     type ModelListing = Nothing;
+
+    #[cfg(feature = "image")]
+    type ImageGeneration = Capable<super::image_generation::ImageGenerationModel<H>>;
 }
 
 impl DebugExt for OpenAICompletionsExt {}

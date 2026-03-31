@@ -6,6 +6,7 @@ mod image {
     use crate::image_generation::{
         ImageGenerationError, ImageGenerationModel, ImageGenerationRequest, ImageGenerationResponse,
     };
+    use crate::wasm_compat::WasmCompatSend;
     use std::future::Future;
     use std::sync::Arc;
 
@@ -96,7 +97,7 @@ mod image {
             request: ImageGenerationRequest,
         ) -> impl Future<
             Output = Result<ImageGenerationResponse<Self::Response>, ImageGenerationError>,
-        > + Send {
+        > + WasmCompatSend {
             self.inner.image_generation(request)
         }
     }

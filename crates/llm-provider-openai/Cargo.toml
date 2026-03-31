@@ -12,6 +12,10 @@ description = "OpenAI provider for Lattice LLM. Derived from rig (MIT, Playgroun
 [lib]
 name = "llm_provider_openai"
 
+[features]
+default = ["image"]
+image = ["llm-agent/image"]
+
 [dependencies]
 llm-types = { path = "../llm-types" }
 llm-agent = { path = "../llm-agent" }

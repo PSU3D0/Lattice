@@ -115,6 +115,15 @@ Deferred / mostly-stubbed:
 
 Completed scope aligns with early contract/runtime milestones; older planning references below are historical:
 
+## 2026-03-31 — OpenAI image wiring and structured-output proof (Epic 05.2)
+
+- Enabled the OpenAI provider's image-generation client surface by default (`crates/llm-provider-openai/Cargo.toml`, `crates/llm-provider-openai/src/client.rs`) so `Client` now satisfies the `llm-agent` image capability path for `DALL_E_3`.
+- Added a focused OpenAI image-generation contract test that drives the provider client end-to-end through a recording HTTP backend and proves the `DALL_E_3` request path, including `POST /images/generations`, bearer auth, and `response_format = b64_json` (`crates/llm-provider-openai/tests/image_generation.rs`).
+- Added a structured-output contract proof that `CompletionRequest.output_schema` serializes to strict OpenAI `response_format.type = "json_schema"` payloads and preserves sanitized schema invariants (`crates/llm-provider-openai/tests/contract.rs`).
+- Fixed the `llm-agent` image-generation dyn handle so its async return type stays `WasmCompatSend`, which keeps the image feature compiling for `wasm32-unknown-unknown` (`crates/llm-agent/src/client/image_generation.rs`).
+- Acceptance gates: `cargo check -p llm-provider-openai`, `cargo check -p llm-provider-openai --target wasm32-unknown-unknown`, `cargo test -p llm-provider-openai`.
+- Compatibility/contract notes: structured output now maps to OpenAI strict JSON-schema response format with schema sanitization, and image generation is exposed through the provider client surface by default.
+
 ## 2026-01-28 — Cloudflare idempotent ingest example (Epic 04.1)
 
 - Added a Cloudflare Workers example flow with idempotent ingest, replay, snapshot, and SSE stream routes (`examples/s7_cloudflare_idem/src/lib.rs`).

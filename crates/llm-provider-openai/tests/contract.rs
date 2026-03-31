@@ -4,6 +4,7 @@ use llm_provider_openai::{DALL_E_3, GPT_4O, GPT_4O_MINI, TEXT_EMBEDDING_3_SMALL,
 use llm_types::completion as core;
 use llm_types::message::ToolChoice as CoreToolChoice;
 use llm_types::OneOrMany;
+use schemars::{JsonSchema, schema_for};
 use serde_json::json;
 
 #[test]
@@ -117,6 +118,13 @@ fn tool_definition_serializes_with_function_wrapper() {
     assert_eq!(value["function"]["strict"], true);
 }
 
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct StructuredOutput {
+    answer: String,
+    confidence: f32,
+}
+
 #[test]
 fn model_constants_exist() {
     assert_eq!(GPT_4O, "gpt-4o");
@@ -125,4 +133,40 @@ fn model_constants_exist() {
     assert_eq!(WHISPER_1, "whisper-1");
     assert_eq!(TTS_1, "tts-1");
     assert_eq!(DALL_E_3, "dall-e-3");
+}
+
+#[test]
+fn output_schema_maps_to_strict_json_schema_response_format() {
+    let request = core::CompletionRequest {
+        model: Some("gpt-4o-mini".to_string()),
+        preamble: None,
+        chat_history: OneOrMany::one(core::Message::user("Hello")),
+        documents: vec![],
+        tools: vec![],
+        temperature: None,
+        max_tokens: None,
+        tool_choice: None,
+        additional_params: None,
+        output_schema: Some(schema_for!(StructuredOutput)),
+    };
+
+    let openai_request = openai::CompletionRequest::try_from(openai::OpenAIRequestParams {
+        model: "gpt-4o-mini".to_string(),
+        request,
+        strict_tools: false,
+        tool_result_array_content: false,
+    })
+    .expect("request conversion should succeed");
+
+    let value = serde_json::to_value(openai_request).expect("serialization should succeed");
+    let response_format = &value["response_format"];
+
+    assert_eq!(response_format["type"], "json_schema");
+    assert_eq!(response_format["json_schema"]["name"], "StructuredOutput");
+    assert_eq!(response_format["json_schema"]["strict"], true);
+
+    let schema = &response_format["json_schema"]["schema"];
+    assert_eq!(schema["additionalProperties"], json!(false));
+    assert!(schema["required"].as_array().unwrap().contains(&json!("answer")));
+    assert!(schema["required"].as_array().unwrap().contains(&json!("confidence")));
 }
