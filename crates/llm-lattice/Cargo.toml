@@ -1,0 +1,24 @@
+[package]
+name = "llm-lattice"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT"
+repository.workspace = true
+homepage.workspace = true
+description = "Lattice bridge between HTTP resources and llm_types HTTP clients"
+
+[lib]
+name = "llm_lattice"
+
+[dependencies]
+bytes = { workspace = true }
+capabilities = { path = "../capabilities" }
+http = "1"
+llm-types = { path = "../llm-types" }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+async-trait = { workspace = true }
+futures = { workspace = true }

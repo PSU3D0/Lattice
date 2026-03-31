@@ -32,6 +32,7 @@ members = [
   "crates/dag-core",
   "crates/llm-types",
   "crates/llm-agent",
+  "crates/llm-lattice",
   "crates/llm-provider-openai",
   "crates/llm-provider-anthropic",
   "crates/dag-macros",
