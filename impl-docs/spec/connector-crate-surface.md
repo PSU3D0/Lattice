@@ -82,6 +82,26 @@ both as a canonical graph-visible node and as an in-node typed operation inside
 custom Rust nodes, see:
 - `impl-docs/spec/connector-op-reuse-and-node-declaration.md`
 
+## AI-family note
+
+AI/LLM provider families should be treated as connector-like semantic families
+under this model.
+
+However, they should not be reduced to the narrowest CRUD/action-only reading of
+"connector". AI families often need richer semantic operations such as:
+- completion,
+- structured extraction,
+- embeddings,
+- image generation,
+- and later bounded agent-loop/tool-calling helpers.
+
+So for AI families the connector model should be read as:
+- host-owned auth/endpoint/runtime bindings,
+- reusable semantic operations,
+- thin canonical nodes,
+- optional richer family clients,
+- lower-level provider APIs still available when needed.
+
 ## Connector family decomposition
 
 A connector family should be decomposed into the following conceptual surfaces.

@@ -15,8 +15,14 @@ A webhook-triggered flow that:
 5. Low-priority: generates standard acknowledgment
 6. Captures the result
 
-This is the first Lattice example that uses LLM capabilities, and the first
+This is the first Lattice example that uses AI/LLM capabilities, and the first
 designed for Cloudflare Workers deployment from day one.
+
+It is intentionally an **explicit topological example**:
+- graph-visible AI steps come first,
+- bounded agent-loop behavior is a later follow-on example,
+- the purpose of this example is to prove transport, structured output,
+  workspace persistence, wasm bundling, and Workers execution.
 
 ## Flow topology
 
@@ -86,7 +92,7 @@ struct EmailPackage {
     to: String,
     subject: String,
     body: String,
-    image_url: Option<String>,
+    image_artifact_path: Option<String>,
     priority: Priority,
 }
 ```
@@ -94,15 +100,15 @@ struct EmailPackage {
 ## Node definitions
 
 ### extract_lead
-- Effects: ReadOnly (LLM call reads, doesn't mutate external state)
+- Effects: Effectful
 - Determinism: Nondeterministic (LLM output varies)
-- Resources: http_write (for LLM API call)
+- Resources: http_write (for provider API call)
 - Implementation: Uses `llm_agent::extractor::Extractor<M, LeadInfo>` with
-  `schemars::JsonSchema` derived on `LeadInfo`. The LLM is forced to return
+  `schemars::JsonSchema` derived on `LeadInfo`. The model is forced to return
   structured output matching the schema.
 
 ### draft_outreach
-- Effects: ReadOnly
+- Effects: Effectful
 - Determinism: Nondeterministic
 - Resources: http_write
 - Implementation: Uses `CompletionModel::completion()` with a preamble that
@@ -114,7 +120,7 @@ struct EmailPackage {
 - Resources: http_write
 - Idempotency: key = "lead.email", scope = Node
 - Implementation: Uses `llm_provider_openai::image_generation::ImageGenerationModel`
-  (DALL-E 3 or GPT Image 1). Returns raw image bytes.
+  with `DALL_E_3` in the first worked proof. Returns raw image bytes.
 
 ### store_image
 - Effects: Effectful
@@ -129,6 +135,7 @@ struct EmailPackage {
 - Determinism: Strict
 - No resources needed
 - Assembles `OutreachDraft` + workspace image path into `EmailPackage`
+  (`image_artifact_path` rather than pretending the output is a permanent URL)
 
 ### template_response
 - Effects: Pure
@@ -168,18 +175,18 @@ impl HttpClientExt for LatticeHttpClient {
 
 ### API key resolution
 
-The LLM provider API key comes from the connector bindings model, not env vars.
-In the flow, the node builds the provider client with a key from the connector
-runtime:
+The long-term goal is host-owned auth/binding resolution in the same spirit as
+other connector families.
 
-```rust
-let api_key = resources.connector_runtime()
-    .resolve_secret("openai_api_key")
-    .await?;
-let http = LatticeHttpClient { write: resources.http_write() };
-let client = llm_provider_openai::Client::new(&api_key, http);
-let model = client.completion_model("gpt-4o");
-```
+For the **first worked proof**:
+- native/mock execution may use an env-backed development seam,
+- Workers execution should still treat the secret as host-owned,
+- guest code should not assume direct `std::env::var(...)` access as the final
+  portable model.
+
+So this example should be written to allow both:
+1. a temporary dev-path API key source for native tests, and
+2. a host-provided/binding-backed path for Workers-friendly follow-on work.
 
 For the mock test path, the API key is a static string and HTTP goes to a local
 mock server.
@@ -217,9 +224,10 @@ npx wrangler secret put OPENAI_API_KEY
 ```
 Mapped through bindings lock to the connector handle.
 
-**No Durable Objects needed** for this flow — it's a single-shot request/response
-with no halt/resume. If we wanted to add approval before sending the email,
-that would introduce halt/resume and need DO support.
+**No flow-level halt/resume Durable Object path is needed** for this flow — it is
+single-shot request/response. However, the Workers workspace backend still uses
+R2 + Durable Object indexing/lifecycle under `cap-workspace-workers`, so the
+Cloudflare proof should assume those bindings are present.
 
 **Streaming:** If we want to stream the LLM completion back to the client as it
 generates (SSE), that's supported by Workers and by host-workers' streaming
@@ -250,6 +258,17 @@ npx wrangler dev
 # Deploy
 npx wrangler deploy
 ```
+
+## Phased proof order
+
+The intended implementation/proof order is:
+1. native mock-server proof,
+2. wasm bundle proof via wasmtime,
+3. workerd/miniflare proof,
+4. real Cloudflare deploy later.
+
+This keeps the first example focused on portability layers before account-bound
+cloud deployment concerns.
 
 ## Test strategy
 
@@ -295,8 +314,9 @@ examples/s11_lead_intake/
 
 ## Resolved decisions
 
-1. **Image generation:** OpenAI DALL-E 3 / GPT Image 1. Already ported in
-   `llm-provider-openai::image_generation`. Returns raw bytes (base64-decoded).
+1. **Image generation:** OpenAI `DALL_E_3` is the first proved image model.
+   The ported implementation in `llm-provider-openai::image_generation`
+   returns raw bytes (base64-decoded).
 
 2. **Image storage:** Use **workspace** (not blob) to persist the generated image.
    Workspace is run-scoped, works on all three hosts (cap-workspace-fs native,
@@ -305,24 +325,30 @@ examples/s11_lead_intake/
    There is no `cap-blob-r2` for Workers yet, and the image is a run-scoped
    artifact — workspace is the right tool.
 
-3. **LLM auth:** Env-var API key for the first version. OpenAI end-to-end for
-   both structured output and image gen. Full connector model is a follow-on.
+3. **AI surface shape:** this example uses explicit graph-visible AI steps first.
+   It is not the first bounded agent-loop example.
 
-4. **Adapter crate:** Dedicated `crates/llm-lattice/` crate for the
-   `LatticeHttpClient` adapter + any Lattice-specific LLM node helpers.
+4. **Auth path:** a temporary env-backed dev seam is acceptable for native proof,
+   but the long-term model is host-owned auth/bindings for Workers-friendly
+   execution. Full generalized connector binding may remain a follow-on.
 
-5. **Workers testing:** miniflare/workerd first. Reuse s7_cloudflare_idem's
-   workerd test infrastructure (extract it for reuse). Real Cloudflare deploy
-   is a follow-on.
+5. **Adapter crate:** Dedicated `crates/llm-lattice/` crate for the
+   `LatticeHttpClient` adapter + Lattice-specific provider/client helpers.
 
-6. **Streaming:** Non-streaming for the first version. Workers SSE streaming
+6. **Workers testing:** miniflare/workerd first. Reuse or extract existing
+   host-workers workerd test infrastructure. Real Cloudflare deploy is a
+   follow-on.
+
+7. **Streaming:** Non-streaming for the first version. Workers SSE streaming
    of LLM completions is a nice follow-on.
 
-7. **Email sending:** The flow produces an `EmailPackage` but doesn't send it.
+8. **Email sending:** The flow produces an `EmailPackage` but doesn't send it.
    SendGrid/SES connector is a follow-on.
 
 ## Cross-references
 
+- `impl-docs/spec/ai-surface-and-layering.md`
+- `impl-docs/spec/agent-loop-runtime.md`
 - `impl-docs/spec/llm-crate-topology.md`
 - `impl-docs/spec/node-vs-capability-surface.md`
 - `private/impl-docs/roadmap/workflow-studio-and-agentic-authoring-2026-03-28.md`

@@ -143,6 +143,25 @@ instead of it.
 
 For 0.1.x, operation types are sufficient.
 
+### AI-family implication
+
+This same rule should apply to AI/LLM-style connector families.
+
+Conceptually:
+
+```rust
+let openai = connector_openai::client_from_current()?;
+let lead = openai.extract_structured::<LeadInfo>(req).await?;
+let image = openai.generate_image(img_req).await?;
+```
+
+Important constraint:
+- this ergonomic family client is still layered on top of declared operations,
+- it is not an ambient escape hatch around deployment/runtime validation.
+
+So AI-family helpers should remain backed by reusable operation metadata in the
+same way as CRUD-style connector families.
+
 ## New metadata type
 
 Add a reusable metadata type in `dag-core` (or equivalent neutral contract home)
@@ -501,6 +520,24 @@ When writing custom nodes:
 3. Do not manually restate low-level raw resources solely for declared
    connector operations.
 4. Still declare truthful node-level idempotency semantics.
+
+### AI-specific guidance
+
+This guidance applies directly to AI/LLM families.
+
+Examples:
+- a simple extraction stage may be best represented as a canonical
+  `ai.extract_structured` node,
+- a richer semantic node may internally perform:
+  - extraction,
+  - one or more follow-up completions,
+  - image generation,
+  - or a bounded tool loop,
+  while still remaining one semantic retry unit.
+
+The important rule is unchanged:
+- internal AI usage should be backed by declared operations,
+- not by ambient undeclared access to model providers or tool powers.
 
 ## Cross references
 

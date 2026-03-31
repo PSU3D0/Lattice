@@ -187,32 +187,77 @@ Phased, incremental, test-driven plan for building Lattice's LLM crate family fr
 - `cargo test -p llm-provider-anthropic`
 - `cargo check -p llm-provider-anthropic --target wasm32-unknown-unknown`
 
-## Phase 5: Lattice integration + proof
+## Phase 5: Lattice bridge + explicit AI example path
 
-**Goal:** A working LLM completion node that runs as both native and wasm bundle.
+**Goal:** Land the Lattice integration seam and the first explicit topological AI example.
 
-### Steps
+This phase follows the architecture in:
+- `impl-docs/spec/ai-surface-and-layering.md`
+- `impl-docs/spec/agent-loop-runtime.md`
+- `impl-docs/spec/llm-lead-intake-example.md`
 
-1. **LatticeHttpClient adapter** (~50 lines, in llm-types or a new llm-lattice crate):
+The important decision is:
+- `llm-*` crates are the provider/protocol substrate,
+- `llm-lattice` is the bridge/integration layer,
+- the first worked example should use **explicit graph-visible AI steps**, not
+  a bounded agent loop.
+
+### Phase 5a — `llm-lattice` bridge crate
+
+1. **LatticeHttpClient adapter** (new `crates/llm-lattice/`):
    - `impl HttpClientExt for LatticeHttpClient`
    - Converts `http::Request<T>` → `capabilities::http::HttpRequest`
-   - Calls `capabilities::http::HttpWrite::send()`
+   - Calls Lattice `HttpRead` / `HttpWrite`
    - Converts `capabilities::http::HttpResponse` → `http::Response<LazyBody<U>>`
 
-2. **Example flow crate** (e.g., `examples/s10_llm_completion/`):
-   - Simple trigger → llm_complete → capture flow
-   - Node uses `resources.http_write()` to build LatticeHttpClient
-   - API key from env (dev) or connector bindings (production)
-   - Test with mock HTTP server returning canned OpenAI response
+2. **Scope constraints:**
+   - non-streaming first
+   - multipart may be unsupported initially if the first example does not need it
+   - no reqwest/tokio/wasm-bindgen
 
-3. **Wasm bundle proof:**
-   - `cargo check --target wasm32-unknown-unknown --no-default-features`
-   - Bundle test similar to `run_bundle_s6_spill_blob_roundtrip`
+### Phase 5b — OpenAI image-generation wiring fix
+
+1. Verify and repair client capability exposure so the already-ported OpenAI
+   image-generation implementation is cleanly consumable through the provider
+   client path.
+2. Prefer `DALL_E_3` as the first proved image model.
+3. Add focused tests for image-generation request/response handling.
+
+### Phase 5c — structured-output contract proof
+
+1. Add a targeted OpenAI contract test proving that `output_schema` is mapped to
+   strict OpenAI `response_format = json_schema` payloads.
+2. This reduces risk before the first example depends heavily on structured
+   extraction.
+
+### Phase 5d — first serious example: `examples/s11_lead_intake/`
+
+Build the first explicit AI example with:
+- trigger → `extract_lead` → branch → `draft_outreach` → `generate_image` →
+  `store_image` → `compose_email` → capture
+- OpenAI end-to-end for first pass
+- generated image persisted to workspace
+- explicit graph-visible nodes first; bounded agent loop is later work
+
+### Phase 5e — native + wasm bundle proof
+
+1. Native proof with mock HTTP server returning canned provider responses.
+2. Wasmtime bundle proof with mock HTTP + `MemoryWorkspace`.
+3. Validate the example through standard CLI bundle paths.
+
+### Phase 5f — Workers/miniflare proof
+
+1. Reuse or extract `crates/host-workers/workerd-tests/` infrastructure.
+2. Run the example under `host-workers` with workspace backed by R2 + DO.
+3. Validate route execution and workspace image persistence under workerd/miniflare.
 
 ### Verification
-- Native: `cargo test -p example-s10-llm-completion`
-- Wasm: `cargo check -p example-s10-llm-completion --target wasm32-unknown-unknown --no-default-features`
-- Bundle: CLI integration test
+- `cargo check -p llm-lattice`
+- `cargo check -p llm-lattice --target wasm32-unknown-unknown`
+- `cargo test -p llm-provider-openai`
+- native example tests
+- wasm bundle proof for the example
+- workerd/miniflare proof for the example
 
 ## Phase 6 (optional): Additional providers
 
@@ -231,7 +276,10 @@ Evaluate rig's `telemetry/` module. If it follows OpenTelemetry spans/traces sta
 
 Each phase can be dispatched as a **fresh** subagent task. The subagent should:
 
-1. **Read first:** `impl-docs/spec/llm-crate-topology.md` and this file
+1. **Read first:** `impl-docs/spec/llm-crate-topology.md`, this file, and when working on post-extraction integration also read:
+   - `impl-docs/spec/ai-surface-and-layering.md`
+   - `impl-docs/spec/agent-loop-runtime.md`
+   - `impl-docs/spec/ai-phase-next-dispatch.md`
 2. **Reference source:** `ref-libs/rig/rig/rig-core/src/` — read actual files before copying
 3. **Copy then fix:** Copy files first, then fix imports/reqwest refs, then compile
 4. **Test incrementally:** `cargo check` after each file group, `cargo test` before declaring done
