@@ -1,0 +1,24 @@
+[package]
+name = "llm-agent"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT"
+repository.workspace = true
+homepage.workspace = true
+description = "LLM agent loop and structured extraction for Lattice. Derived from rig (MIT, Playgrounds Analytics Inc.)."
+
+[lib]
+name = "llm_agent"
+
+[dependencies]
+llm-types = { path = "../llm-types" }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+schemars = "1"
+futures = "0.3"
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }

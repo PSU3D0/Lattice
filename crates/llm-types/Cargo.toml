@@ -1,0 +1,33 @@
+[package]
+name = "llm-types"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT"
+repository.workspace = true
+homepage.workspace = true
+description = "LLM types and traits for Lattice. Derived from rig (MIT, Playgrounds Analytics Inc.)."
+
+[lib]
+name = "llm_types"
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+schemars = "1"
+thiserror = "2"
+tracing.workspace = true
+bytes = "1"
+futures = "0.3"
+http = "1"
+async-stream = "0.3"
+eventsource-stream = "0.2"
+pin-project-lite = "0.2"
+ordered-float = "5"
+mime = "0.3"
+base64 = "0.22"
+url = "2"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }

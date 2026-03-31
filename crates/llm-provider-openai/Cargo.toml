@@ -1,0 +1,23 @@
+[package]
+name = "llm-provider-openai"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT"
+repository.workspace = true
+homepage.workspace = true
+description = "OpenAI provider for Lattice LLM. Derived from rig (MIT, Playgrounds Analytics Inc.)."
+
+[lib]
+name = "llm_provider_openai"
+
+[dependencies]
+llm-types = { path = "../llm-types" }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tracing.workspace = true
+base64 = "0.22"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
