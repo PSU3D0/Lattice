@@ -1,16 +1,20 @@
 //! LLM types and traits for Lattice.
 //!
-//! Derived from [rig](https://github.com/0xPlaygrounds/rig) v0.33.0 (MIT license).
+//! Derived from [rig](https://github.com/0xPlaygrounds/rig) (MIT license).
 //! Copyright (c) 2024, Playgrounds Analytics Inc.
-//!
-//! This crate provides the foundation types for LLM integration:
-//! - `CompletionModel` trait — the provider abstraction
-//! - `CompletionRequest` / `CompletionResponse` — request/response types
-//! - `Message` types — system, user, assistant, tool messages
-//! - `Tool` trait — typed tool definitions for agent loops
-//! - `HttpClientExt` trait — pluggable HTTP layer (no reqwest dependency)
-//! - SSE streaming types and parser
-//!
-//! All types compile to `wasm32-unknown-unknown` with zero platform dependencies.
 
-// TODO: Phase 1 implementation — copy modules from ref-libs/rig/rig/rig-core/src/
+pub mod wasm_compat;
+pub mod one_or_many;
+pub mod json_utils;
+pub mod completion;
+pub mod tool;
+pub mod streaming;
+pub mod http_client;
+pub mod embeddings;
+
+pub use embeddings::embed::Embed;
+pub use one_or_many::OneOrMany;
+
+pub mod message {
+    pub use crate::completion::message::*;
+}
