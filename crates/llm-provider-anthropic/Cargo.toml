@@ -14,9 +14,16 @@ name = "llm_provider_anthropic"
 
 [dependencies]
 llm-types = { path = "../llm-types" }
+llm-agent = { path = "../llm-agent" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tracing.workspace = true
+futures = "0.3"
+bytes = "1"
+http = "1"
+async-stream = "0.3"
+tracing-futures = "0.2"
+thiserror = "2"
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["full"] }
+serde_path_to_error = "0.1"
