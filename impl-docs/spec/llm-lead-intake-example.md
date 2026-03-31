@@ -30,9 +30,11 @@ branch on lead.priority
     │     ↓
     │   draft_outreach [LLM completion, uses LeadInfo context]
     │     ↓
-    │   generate_image [LLM image generation, hero image for outreach]
+    │   generate_image [LLM image generation → bytes]
     │     ↓
-    │   compose_email [Pure, assembles outreach + image URL → EmailPackage]
+    │   store_image [workspace.write("images/hero.png", bytes)]
+    │     ↓
+    │   compose_email [Pure, assembles outreach + workspace path → EmailPackage]
     │     ↓
     │   capture
     │
@@ -111,14 +113,22 @@ struct EmailPackage {
 - Determinism: Nondeterministic
 - Resources: http_write
 - Idempotency: key = "lead.email", scope = Node
-- Implementation: Uses OpenAI image generation (DALL-E) or similar. Returns
-  a URL to the generated image.
+- Implementation: Uses `llm_provider_openai::image_generation::ImageGenerationModel`
+  (DALL-E 3 or GPT Image 1). Returns raw image bytes.
+
+### store_image
+- Effects: Effectful
+- Determinism: BestEffort
+- Resources: workspace_write
+- Implementation: Uses `std.workspace.write` to persist image bytes at
+  `images/hero.png`. On Workers this goes to R2 via `cap-workspace-workers`.
+  On native it goes to filesystem via `cap-workspace-fs`.
 
 ### compose_email
 - Effects: Pure
 - Determinism: Strict
 - No resources needed
-- Assembles `OutreachDraft` + image URL into `EmailPackage`
+- Assembles `OutreachDraft` + workspace image path into `EmailPackage`
 
 ### template_response
 - Effects: Pure
@@ -268,36 +278,48 @@ npx wrangler deploy
 ## Crate structure
 
 ```
-examples/s11_lead_intake/
-├── Cargo.toml          # depends on dag-macros, llm-types, llm-agent, llm-provider-openai
+crates/llm-lattice/                  # Adapter crate (shared by all LLM-using flows)
+├── Cargo.toml                       # depends on llm-types, capabilities
 ├── src/
-│   ├── lib.rs          # flow definition, node definitions, types
-│   └── adapter.rs      # LatticeHttpClient impl (or in a shared crate)
+│   └── lib.rs                       # LatticeHttpClient: impl HttpClientExt
+
+examples/s11_lead_intake/
+├── Cargo.toml                       # depends on dag-macros, llm-lattice, llm-provider-openai,
+│                                    #   capabilities, stdlib
+├── src/
+│   └── lib.rs                       # flow definition, node definitions, types
 ├── tests/
-│   └── integration.rs  # mock-server-based tests
-└── bindings.lock.json  # test bindings lock with mock endpoints
+│   └── integration.rs               # mock-server-based tests
+└── bindings.lock.json               # test bindings lock with mock endpoints
 ```
 
-The `LatticeHttpClient` adapter (~50-80 lines) should probably live in a shared
-`crates/llm-lattice/` crate so it's reusable across all LLM-using flows.
-Alternatively, it could live in `llm-types` behind a `lattice` feature flag.
+## Resolved decisions
 
-## Open questions
+1. **Image generation:** OpenAI DALL-E 3 / GPT Image 1. Already ported in
+   `llm-provider-openai::image_generation`. Returns raw bytes (base64-decoded).
 
-1. **Image generation API choice:** DALL-E 3 via OpenAI, or a different provider?
-   DALL-E is already in the OpenAI provider we ported.
+2. **Image storage:** Use **workspace** (not blob) to persist the generated image.
+   Workspace is run-scoped, works on all three hosts (cap-workspace-fs native,
+   cap-workspace-workers R2 on Workers, memory in tests). DALL-E URLs are
+   temporary (~1hr), so storing bytes in workspace makes the result durable.
+   There is no `cap-blob-r2` for Workers yet, and the image is a run-scoped
+   artifact — workspace is the right tool.
 
-2. **Streaming the extraction:** Should `extract_lead` stream tokens while
-   extracting, or just return the final structured output? For Workers, the
-   non-streaming path is simpler and more reliable.
+3. **LLM auth:** Env-var API key for the first version. OpenAI end-to-end for
+   both structured output and image gen. Full connector model is a follow-on.
 
-3. **Email sending:** The flow produces an `EmailPackage` but doesn't send it.
-   Sending would be a connector operation (SendGrid, SES, etc.) — nice follow-on
-   but not in scope for the first example.
+4. **Adapter crate:** Dedicated `crates/llm-lattice/` crate for the
+   `LatticeHttpClient` adapter + any Lattice-specific LLM node helpers.
 
-4. **Workspace usage:** Should the generated image be stored in workspace? This
-   would exercise workspace + LLM together. The image URL from DALL-E is
-   temporary (~1 hour), so storing the bytes in workspace would be more durable.
+5. **Workers testing:** miniflare/workerd first. Reuse s7_cloudflare_idem's
+   workerd test infrastructure (extract it for reuse). Real Cloudflare deploy
+   is a follow-on.
+
+6. **Streaming:** Non-streaming for the first version. Workers SSE streaming
+   of LLM completions is a nice follow-on.
+
+7. **Email sending:** The flow produces an `EmailPackage` but doesn't send it.
+   SendGrid/SES connector is a follow-on.
 
 ## Cross-references
 
