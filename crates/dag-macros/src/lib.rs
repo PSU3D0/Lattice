@@ -4921,6 +4921,18 @@ impl WorkflowBundleInput {
                             ));
                         }
 
+                        let needs_durability = node_specs
+                            .iter()
+                            .any(|spec| spec.durability.halts);
+                        if needs_durability {
+                            bag = bag.with_resume_scheduler(Arc::new(
+                                ::capabilities::durability::RemoteResumeScheduler::new(),
+                            ));
+                            bag = bag.with_resume_signal_source(Arc::new(
+                                ::capabilities::durability::RemoteResumeSignalSource::new(),
+                            ));
+                        }
+
                         let needs_connector_runtime = node_specs
                             .iter()
                             .any(|spec| !spec.connector_ops.is_empty());

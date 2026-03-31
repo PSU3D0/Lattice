@@ -427,7 +427,14 @@ pub mod context {
 
     #[cfg(target_arch = "wasm32")]
     pub fn current_checkpoint_handle() -> Option<CheckpointHandle> {
-        CURRENT_CHECKPOINT.with(|cell| cell.borrow().clone())
+        // First check the thread-local (set by with_checkpoint_handle in guest).
+        let local = CURRENT_CHECKPOINT.with(|cell| cell.borrow().clone());
+        if local.is_some() {
+            return local;
+        }
+        // Fall back to asking the host via opcode (the handle may have been set
+        // on the host side before invoking the wasm guest).
+        crate::durability::current_checkpoint_handle_remote()
     }
 }
 

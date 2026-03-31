@@ -37,6 +37,13 @@ use capabilities::workspace::{
     WorkspaceDeleteRequest, WorkspaceErrorEnvelope, WorkspaceListRequest,
     WorkspaceReadRequest, WorkspaceWriteRequest,
 };
+use capabilities::durability::{
+    CancelScheduleRequest, CheckpointHandle, CreateTokenRequest, ResolveTokenRequest,
+    RevokeTokenRequest, ScheduleAfterRequest, ScheduleAtRequest, ScheduleStatusRequest,
+    ScheduleStatusTransport, TokenConfig, OP_DURABILITY_GET_CHECKPOINT_HANDLE,
+    OP_RESUME_CANCEL, OP_RESUME_SCHEDULE_AFTER, OP_RESUME_SCHEDULE_AT, OP_RESUME_STATUS,
+    OP_TOKEN_CREATE, OP_TOKEN_RESOLVE, OP_TOKEN_REVOKE,
+};
 
 /// Drive an async future to completion from inside a synchronous wasmtime import handler.
 ///
@@ -129,6 +136,10 @@ struct ResolveEndpointProfileRequest {
 
 struct HostState {
     resources: Arc<dyn ResourceAccess>,
+    /// Checkpoint handle for the current invocation, set by the host before
+    /// invoking a halt-capable node. The guest reads it via
+    /// `OP_DURABILITY_GET_CHECKPOINT_HANDLE`.
+    checkpoint_handle: Option<CheckpointHandle>,
 }
 
 pub struct WasmRuntime {
@@ -181,7 +192,10 @@ impl WasmRuntime {
         input_bytes: &[u8],
         resources: Arc<dyn ResourceAccess>,
     ) -> Result<Vec<u8>> {
-        let state = HostState { resources };
+        let state = HostState {
+            resources,
+            checkpoint_handle: None,
+        };
         let mut store = Store::new(&self.engine, state);
         let mut linker = Linker::new(&self.engine);
 
@@ -245,6 +259,30 @@ impl WasmRuntime {
                     }
                     OP_WORKSPACE_DELETE => {
                         handle_workspace_delete(caller.data().resources.as_ref(), req)
+                    }
+                    OP_RESUME_SCHEDULE_AT => {
+                        handle_resume_schedule_at(caller.data().resources.as_ref(), req)
+                    }
+                    OP_RESUME_SCHEDULE_AFTER => {
+                        handle_resume_schedule_after(caller.data().resources.as_ref(), req)
+                    }
+                    OP_RESUME_CANCEL => {
+                        handle_resume_cancel(caller.data().resources.as_ref(), req)
+                    }
+                    OP_RESUME_STATUS => {
+                        handle_resume_status(caller.data().resources.as_ref(), req)
+                    }
+                    OP_TOKEN_CREATE => {
+                        handle_token_create(caller.data().resources.as_ref(), req)
+                    }
+                    OP_TOKEN_RESOLVE => {
+                        handle_token_resolve(caller.data().resources.as_ref(), req)
+                    }
+                    OP_TOKEN_REVOKE => {
+                        handle_token_revoke(caller.data().resources.as_ref(), req)
+                    }
+                    OP_DURABILITY_GET_CHECKPOINT_HANDLE => {
+                        handle_get_checkpoint_handle(caller.data())
                     }
                     _ => encode_err("unsupported opcode"),
                 };
@@ -884,6 +922,140 @@ fn handle_workspace_delete(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8
     match result {
         Ok(delete_result) => encode_json_ok(&delete_result),
         Err(err) => encode_workspace_err(err),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Durability host handlers
+// ─────────────────────────────────────────────────────────────────────────
+
+fn handle_resume_schedule_at(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8> {
+    let request: ScheduleAtRequest = match decode_json_request(req, "schedule_at") {
+        Ok(r) => r,
+        Err(err) => return encode_err(err),
+    };
+    let scheduler = match resources.resume_scheduler() {
+        Some(s) => s,
+        None => return encode_err("missing resume_scheduler provider"),
+    };
+    match host_block_on(scheduler.schedule_at(request.handle, request.at_ms)) {
+        Ok(id) => encode_ok(id.0.as_bytes()),
+        Err(err) => encode_err(err),
+    }
+}
+
+fn handle_resume_schedule_after(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8> {
+    let request: ScheduleAfterRequest = match decode_json_request(req, "schedule_after") {
+        Ok(r) => r,
+        Err(err) => return encode_err(err),
+    };
+    let scheduler = match resources.resume_scheduler() {
+        Some(s) => s,
+        None => return encode_err("missing resume_scheduler provider"),
+    };
+    let delay = std::time::Duration::from_millis(request.delay_ms);
+    match host_block_on(scheduler.schedule_after(request.handle, delay)) {
+        Ok(id) => encode_ok(id.0.as_bytes()),
+        Err(err) => encode_err(err),
+    }
+}
+
+fn handle_resume_cancel(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8> {
+    let request: CancelScheduleRequest = match decode_json_request(req, "cancel_schedule") {
+        Ok(r) => r,
+        Err(err) => return encode_err(err),
+    };
+    let scheduler = match resources.resume_scheduler() {
+        Some(s) => s,
+        None => return encode_err("missing resume_scheduler provider"),
+    };
+    match host_block_on(scheduler.cancel(capabilities::durability::ScheduleId(
+        request.schedule_id,
+    ))) {
+        Ok(()) => encode_ok(&[]),
+        Err(capabilities::durability::ScheduleError::NotFound) => encode_not_found(),
+        Err(err) => encode_err(err),
+    }
+}
+
+fn handle_resume_status(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8> {
+    let request: ScheduleStatusRequest = match decode_json_request(req, "schedule_status") {
+        Ok(r) => r,
+        Err(err) => return encode_err(err),
+    };
+    let scheduler = match resources.resume_scheduler() {
+        Some(s) => s,
+        None => return encode_err("missing resume_scheduler provider"),
+    };
+    match host_block_on(scheduler.status(capabilities::durability::ScheduleId(
+        request.schedule_id,
+    ))) {
+        Ok(status) => encode_json_ok(&ScheduleStatusTransport::from(status)),
+        Err(capabilities::durability::ScheduleError::NotFound) => encode_not_found(),
+        Err(err) => encode_err(err),
+    }
+}
+
+fn handle_token_create(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8> {
+    let request: CreateTokenRequest = match decode_json_request(req, "create_token") {
+        Ok(r) => r,
+        Err(err) => return encode_err(err),
+    };
+    let source = match resources.resume_signal_source() {
+        Some(s) => s,
+        None => return encode_err("missing resume_signal_source provider"),
+    };
+    let config = TokenConfig {
+        ttl: request.ttl_ms.map(std::time::Duration::from_millis),
+        single_use: request.single_use,
+        metadata: request.metadata,
+    };
+    match host_block_on(source.create_token(&request.handle, config)) {
+        Ok(token) => encode_ok(token.0.as_bytes()),
+        Err(err) => encode_err(err),
+    }
+}
+
+fn handle_token_resolve(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8> {
+    let request: ResolveTokenRequest = match decode_json_request(req, "resolve_token") {
+        Ok(r) => r,
+        Err(err) => return encode_err(err),
+    };
+    let source = match resources.resume_signal_source() {
+        Some(s) => s,
+        None => return encode_err("missing resume_signal_source provider"),
+    };
+    match host_block_on(source.resolve_token(&capabilities::durability::ResumeToken(
+        request.token,
+    ))) {
+        Ok(handle) => encode_json_ok(&handle),
+        Err(capabilities::durability::TokenError::NotFound) => encode_not_found(),
+        Err(err) => encode_err(err),
+    }
+}
+
+fn handle_token_revoke(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8> {
+    let request: RevokeTokenRequest = match decode_json_request(req, "revoke_token") {
+        Ok(r) => r,
+        Err(err) => return encode_err(err),
+    };
+    let source = match resources.resume_signal_source() {
+        Some(s) => s,
+        None => return encode_err("missing resume_signal_source provider"),
+    };
+    match host_block_on(source.revoke_token(&capabilities::durability::ResumeToken(
+        request.token,
+    ))) {
+        Ok(()) => encode_ok(&[]),
+        Err(capabilities::durability::TokenError::NotFound) => encode_not_found(),
+        Err(err) => encode_err(err),
+    }
+}
+
+fn handle_get_checkpoint_handle(state: &HostState) -> Vec<u8> {
+    match &state.checkpoint_handle {
+        Some(handle) => encode_json_ok(handle),
+        None => encode_not_found(),
     }
 }
 
