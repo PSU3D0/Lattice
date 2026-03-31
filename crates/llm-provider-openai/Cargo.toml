@@ -14,10 +14,16 @@ name = "llm_provider_openai"
 
 [dependencies]
 llm-types = { path = "../llm-types" }
+llm-agent = { path = "../llm-agent" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+schemars = "1"
 tracing.workspace = true
+tracing-futures = "0.2"
 base64 = "0.22"
+bytes = "1"
+futures = "0.3"
+http = "1"
+async-stream = "0.3"
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["full"] }
