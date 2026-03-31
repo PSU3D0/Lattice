@@ -26,8 +26,13 @@ serde_json.workspace = true
 stdlib = { path = "../../crates/stdlib" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+cap-http-reqwest = { path = "../../crates/cap-http-reqwest" }
+cap-workspace-fs = { path = "../../crates/cap-workspace-fs" }
 host-inproc = { path = "../../crates/host-inproc" }
 kernel-exec = { path = "../../crates/kernel-exec" }
+tokio.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 host-inproc = { path = "../../crates/host-inproc" }
@@ -36,14 +41,18 @@ kernel-exec = { path = "../../crates/kernel-exec", default-features = false, fea
 [dev-dependencies]
 async-trait.workspace = true
 base64 = "0.22"
-cap-http-reqwest = { path = "../../crates/cap-http-reqwest" }
 httpmock = "0.7"
-tokio.workspace = true
 
 [features]
 default = ["host-bundle"]
 host-bundle = []
+native-smoke = []
 flow-registry = ["dag-core/flow-registry", "dag-macros/flow-registry"]
+
+[[bin]]
+name = "live_smoke"
+path = "src/bin/live_smoke.rs"
+required-features = ["host-bundle", "native-smoke"]
 
 [package.metadata.latticeflow]
 flows = ["s11_lead_intake_flow"]

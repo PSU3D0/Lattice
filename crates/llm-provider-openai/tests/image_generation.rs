@@ -5,8 +5,10 @@ use bytes::Bytes;
 use http::{HeaderMap, Method, Response, StatusCode};
 use llm_agent::image_generation::ImageGenerationModel as _;
 use llm_agent::prelude::ImageGenerationClient;
-use llm_provider_openai::{Client, DALL_E_3};
-use llm_types::http_client::{self, HttpClientExt, LazyBody, MultipartForm, Request, StreamingResponse};
+use llm_provider_openai::{Client, DALL_E_3, GPT_IMAGE_1_5};
+use llm_types::http_client::{
+    self, HttpClientExt, LazyBody, MultipartForm, Request, StreamingResponse,
+};
 use serde_json::json;
 
 #[derive(Debug, Clone, Default)]
@@ -44,7 +46,9 @@ impl HttpClientExt for RecordingHttpClient {
     fn send<T, U>(
         &self,
         req: Request<T>,
-    ) -> impl std::future::Future<Output = http_client::Result<Response<LazyBody<U>>>> + llm_types::wasm_compat::WasmCompatSend + 'static
+    ) -> impl std::future::Future<Output = http_client::Result<Response<LazyBody<U>>>>
+    + llm_types::wasm_compat::WasmCompatSend
+    + 'static
     where
         T: Into<Bytes> + llm_types::wasm_compat::WasmCompatSend,
         U: From<Bytes> + llm_types::wasm_compat::WasmCompatSend + 'static,
@@ -64,9 +68,8 @@ impl HttpClientExt for RecordingHttpClient {
 
             *state.lock().expect("recording mutex poisoned") = Some(recorded);
 
-            let body: LazyBody<U> = Box::pin(async move {
-                Ok(U::from(Bytes::from((*response_body).clone())))
-            });
+            let body: LazyBody<U> =
+                Box::pin(async move { Ok(U::from(Bytes::from((*response_body).clone()))) });
             let response = Response::builder()
                 .status(StatusCode::OK)
                 .body(body)
@@ -79,21 +82,32 @@ impl HttpClientExt for RecordingHttpClient {
     fn send_multipart<U>(
         &self,
         _req: Request<MultipartForm>,
-    ) -> impl std::future::Future<Output = http_client::Result<Response<LazyBody<U>>>> + llm_types::wasm_compat::WasmCompatSend + 'static
+    ) -> impl std::future::Future<Output = http_client::Result<Response<LazyBody<U>>>>
+    + llm_types::wasm_compat::WasmCompatSend
+    + 'static
     where
         U: From<Bytes> + llm_types::wasm_compat::WasmCompatSend + 'static,
     {
-        async move { Err(http_client::Error::InvalidStatusCode(StatusCode::NOT_IMPLEMENTED)) }
+        async move {
+            Err(http_client::Error::InvalidStatusCode(
+                StatusCode::NOT_IMPLEMENTED,
+            ))
+        }
     }
 
     fn send_streaming<T>(
         &self,
         _req: Request<T>,
-    ) -> impl std::future::Future<Output = http_client::Result<StreamingResponse>> + llm_types::wasm_compat::WasmCompatSend
+    ) -> impl std::future::Future<Output = http_client::Result<StreamingResponse>>
+    + llm_types::wasm_compat::WasmCompatSend
     where
         T: Into<Bytes>,
     {
-        async move { Err(http_client::Error::InvalidStatusCode(StatusCode::NOT_IMPLEMENTED)) }
+        async move {
+            Err(http_client::Error::InvalidStatusCode(
+                StatusCode::NOT_IMPLEMENTED,
+            ))
+        }
     }
 }
 
@@ -150,4 +164,40 @@ fn image_generation_uses_client_surface_and_dall_e_3_payload() {
     assert_eq!(body["prompt"], "A neon sign over a rainy street");
     assert_eq!(body["size"], "1024x1024");
     assert_eq!(body["response_format"], "b64_json");
+}
+
+#[test]
+fn image_generation_uses_gpt_image_1_5_without_legacy_response_format() {
+    let response_json = json!({
+        "created": 1,
+        "data": [{
+            "b64_json": base64::engine::general_purpose::STANDARD.encode(b"gpt-image-bytes")
+        }]
+    });
+    let http = RecordingHttpClient::with_response_body(serde_json::to_vec(&response_json).unwrap());
+
+    let client = Client::<RecordingHttpClient>::builder()
+        .api_key("test-key")
+        .http_client(http.clone())
+        .build()
+        .expect("client should build");
+
+    let model = client.image_generation_model(GPT_IMAGE_1_5);
+    let response = futures::executor::block_on(
+        model
+            .image_generation_request()
+            .prompt("A modern abstract hero graphic")
+            .width(1024)
+            .height(1024)
+            .send(),
+    )
+    .expect("image generation should succeed");
+
+    assert_eq!(response.image, b"gpt-image-bytes");
+    let recorded = http.take_request();
+    let body: serde_json::Value = serde_json::from_slice(&recorded.body).unwrap();
+    assert_eq!(body["model"], GPT_IMAGE_1_5);
+    assert_eq!(body["prompt"], "A modern abstract hero graphic");
+    assert_eq!(body["size"], "1024x1024");
+    assert!(body.get("response_format").is_none());
 }

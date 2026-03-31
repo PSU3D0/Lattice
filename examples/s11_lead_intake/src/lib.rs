@@ -7,13 +7,15 @@ use kernel_plan::{ValidatedIR, validate};
 use llm_agent::image_generation::ImageGenerationModel as _;
 use llm_agent::prelude::{CompletionClient, ImageGenerationClient, TypedPrompt};
 use llm_lattice::LatticeHttpClient;
-use llm_provider_openai::{Client as OpenAIClient, DALL_E_3, GPT_4O};
+use llm_provider_openai::{Client as OpenAIClient, GPT_5_4_MINI, GPT_IMAGE_1_5};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use stdlib::workspace::{WorkspaceWriteInput, workspace_write};
 
 const DEFAULT_OPENAI_API_KEY: &str = "test-key";
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
+const DEFAULT_OPENAI_TEXT_MODEL: &str = GPT_5_4_MINI;
+const DEFAULT_OPENAI_IMAGE_MODEL: &str = GPT_IMAGE_1_5;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LeadSubmission {
@@ -105,14 +107,19 @@ async fn extract_lead(submission: LeadSubmission) -> NodeResult<LeadInfo> {
         submission.name, submission.email, submission.message
     );
 
-    let extractor = client
-        .extractor::<LeadInfo>(GPT_4O)
+    let agent = client
+        .agent(openai_text_model())
         .preamble(
-            "Extract a structured lead record. Preserve the contact fields and decide the priority. \n             Mark the lead high priority when the message signals urgency, budget, strong intent, or a\n             meaningful seat count.",
+            "Extract a structured lead record. Preserve the contact fields and decide the priority.\n\
+             Mark the lead high priority when the message signals urgency, budget, strong intent, or a\n\
+             meaningful seat count. Return only the structured fields requested by the schema.",
         )
         .build();
 
-    extractor.extract(submission_text).await.map_err(node_error)
+    agent
+        .prompt_typed::<LeadInfo>(submission_text)
+        .await
+        .map_err(node_error)
 }
 
 #[def_node(
@@ -131,7 +138,7 @@ async fn draft_outreach(lead: LeadInfo) -> NodeResult<DraftedLead> {
     );
 
     let agent = client
-        .agent(GPT_4O)
+        .agent(openai_text_model())
         .preamble(
             "You write concise, warm outreach emails for sales follow-up. Return only the structured\n             fields requested by the schema.",
         )
@@ -160,7 +167,7 @@ async fn generate_image(input: DraftedLead) -> NodeResult<HighPriorityLeadImage>
     );
 
     let image = client
-        .image_generation_model(DALL_E_3)
+        .image_generation_model(openai_image_model())
         .image_generation_request()
         .prompt(&prompt)
         .width(1024)
@@ -376,6 +383,31 @@ fn openai_base_url() -> String {
     #[cfg(not(target_arch = "wasm32"))]
     {
         std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| DEFAULT_OPENAI_BASE_URL.to_string())
+    }
+}
+
+fn openai_text_model() -> String {
+    #[cfg(target_arch = "wasm32")]
+    {
+        DEFAULT_OPENAI_TEXT_MODEL.to_string()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::env::var("OPENAI_TEXT_MODEL").unwrap_or_else(|_| DEFAULT_OPENAI_TEXT_MODEL.to_string())
+    }
+}
+
+fn openai_image_model() -> String {
+    #[cfg(target_arch = "wasm32")]
+    {
+        DEFAULT_OPENAI_IMAGE_MODEL.to_string()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::env::var("OPENAI_IMAGE_MODEL")
+            .unwrap_or_else(|_| DEFAULT_OPENAI_IMAGE_MODEL.to_string())
     }
 }
 
@@ -609,29 +641,22 @@ mod tests {
     }
 
     fn openai_response_for_extraction(lead: &LeadInfo) -> serde_json::Value {
-        let arguments = serde_json::to_string(lead).expect("serialize lead response");
+        let content = serde_json::to_string(lead).expect("serialize lead response");
         json!({
             "id": "chatcmpl-extract",
             "object": "chat.completion",
             "created": 1,
-            "model": "gpt-4o",
+            "model": "gpt-5.4-mini",
             "system_fingerprint": null,
             "choices": [{
                 "index": 0,
                 "message": {
                     "role": "assistant",
-                    "content": null,
-                    "tool_calls": [{
-                        "id": "call_extract",
-                        "type": "function",
-                        "function": {
-                            "name": "submit",
-                            "arguments": arguments
-                        }
-                    }]
+                    "content": content,
+                    "tool_calls": []
                 },
                 "logprobs": null,
-                "finish_reason": "tool_calls"
+                "finish_reason": "stop"
             }],
             "usage": {
                 "prompt_tokens": 12,
@@ -648,7 +673,7 @@ mod tests {
             "id": "chatcmpl-draft",
             "object": "chat.completion",
             "created": 1,
-            "model": "gpt-4o",
+            "model": "gpt-5.4-mini",
             "system_fingerprint": null,
             "choices": [{
                 "index": 0,
@@ -688,7 +713,7 @@ mod tests {
             when.method(POST)
                 .path("/v1/chat/completions")
                 .header("authorization", "Bearer test-key")
-                .body_contains("submit");
+                .body_contains("LeadInfo");
             then.status(200).json_body(lead_response.clone());
         });
 
@@ -696,7 +721,7 @@ mod tests {
             when.method(POST)
                 .path("/v1/chat/completions")
                 .header("authorization", "Bearer test-key")
-                .body_contains("response_format");
+                .body_contains("OutreachDraft");
             then.status(200).json_body(draft_response.clone());
         });
 
@@ -704,7 +729,7 @@ mod tests {
             when.method(POST)
                 .path("/v1/images/generations")
                 .header("authorization", "Bearer test-key")
-                .body_contains("dall-e-3");
+                .body_contains("gpt-image-1.5");
             then.status(200).json_body(image_response.clone());
         });
     }
@@ -720,7 +745,7 @@ mod tests {
             when.method(POST)
                 .path("/v1/chat/completions")
                 .header("authorization", "Bearer test-key")
-                .body_contains("submit");
+                .body_contains("LeadInfo");
             then.status(200)
                 .json_body(openai_response_for_extraction(&mock_lead));
         });
@@ -754,7 +779,7 @@ mod tests {
             when.method(POST)
                 .path("/v1/chat/completions")
                 .header("authorization", "Bearer test-key")
-                .body_contains("submit");
+                .body_contains("LeadInfo");
             then.status(200)
                 .json_body(openai_response_for_extraction(&low_lead));
         });

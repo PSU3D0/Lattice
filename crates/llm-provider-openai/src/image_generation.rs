@@ -16,6 +16,12 @@ use super::{Client, ApiResponse};
 pub const DALL_E_2: &str = "dall-e-2";
 pub const DALL_E_3: &str = "dall-e-3";
 pub const GPT_IMAGE_1: &str = "gpt-image-1";
+pub const GPT_IMAGE_1_MINI: &str = "gpt-image-1-mini";
+pub const GPT_IMAGE_1_5: &str = "gpt-image-1.5";
+
+fn is_gpt_image_model(model: &str) -> bool {
+    model.starts_with("gpt-image-")
+}
 
 #[derive(Debug, Deserialize)]
 pub struct ImageGenerationData {
@@ -86,7 +92,7 @@ where
             "size": format!("{}x{}", generation_request.width, generation_request.height),
         });
 
-        if self.model.as_str() != GPT_IMAGE_1 {
+        if !is_gpt_image_model(self.model.as_str()) {
             merge_inplace(
                 &mut request,
                 json!({

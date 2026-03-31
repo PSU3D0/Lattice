@@ -1,9 +1,12 @@
 use llm_provider_openai::completion as openai;
-use llm_provider_openai::completion::{FunctionDefinition, ToolDefinition, ToolChoice};
-use llm_provider_openai::{DALL_E_3, GPT_4O, GPT_4O_MINI, TEXT_EMBEDDING_3_SMALL, TTS_1, WHISPER_1};
+use llm_provider_openai::completion::{FunctionDefinition, ToolChoice, ToolDefinition};
+use llm_provider_openai::{
+    DALL_E_3, GPT_4O, GPT_4O_MINI, GPT_5_4, GPT_5_4_MINI, GPT_IMAGE_1_5, TEXT_EMBEDDING_3_SMALL,
+    TTS_1, WHISPER_1,
+};
+use llm_types::OneOrMany;
 use llm_types::completion as core;
 use llm_types::message::ToolChoice as CoreToolChoice;
-use llm_types::OneOrMany;
 use schemars::{JsonSchema, schema_for};
 use serde_json::json;
 
@@ -87,7 +90,12 @@ fn response_deserializes_chat_completion() {
     assert_eq!(response.choices[0].finish_reason, "stop");
     match &response.choices[0].message {
         openai::Message::Assistant { content, .. } => {
-            assert_eq!(content[0], openai::AssistantContent::Text { text: "Hello there".to_string() });
+            assert_eq!(
+                content[0],
+                openai::AssistantContent::Text {
+                    text: "Hello there".to_string()
+                }
+            );
         }
         other => panic!("expected assistant message, got {other:?}"),
     }
@@ -96,8 +104,14 @@ fn response_deserializes_chat_completion() {
 
 #[test]
 fn tool_choice_serializes_correctly() {
-    assert_eq!(serde_json::to_value(ToolChoice::Auto).unwrap(), json!("auto"));
-    assert_eq!(serde_json::to_value(ToolChoice::Required).unwrap(), json!("required"));
+    assert_eq!(
+        serde_json::to_value(ToolChoice::Auto).unwrap(),
+        json!("auto")
+    );
+    assert_eq!(
+        serde_json::to_value(ToolChoice::Required).unwrap(),
+        json!("required")
+    );
 }
 
 #[test]
@@ -129,10 +143,13 @@ struct StructuredOutput {
 fn model_constants_exist() {
     assert_eq!(GPT_4O, "gpt-4o");
     assert_eq!(GPT_4O_MINI, "gpt-4o-mini");
+    assert_eq!(GPT_5_4, "gpt-5.4");
+    assert_eq!(GPT_5_4_MINI, "gpt-5.4-mini");
     assert_eq!(TEXT_EMBEDDING_3_SMALL, "text-embedding-3-small");
     assert_eq!(WHISPER_1, "whisper-1");
     assert_eq!(TTS_1, "tts-1");
     assert_eq!(DALL_E_3, "dall-e-3");
+    assert_eq!(GPT_IMAGE_1_5, "gpt-image-1.5");
 }
 
 #[test]
@@ -167,6 +184,16 @@ fn output_schema_maps_to_strict_json_schema_response_format() {
 
     let schema = &response_format["json_schema"]["schema"];
     assert_eq!(schema["additionalProperties"], json!(false));
-    assert!(schema["required"].as_array().unwrap().contains(&json!("answer")));
-    assert!(schema["required"].as_array().unwrap().contains(&json!("confidence")));
+    assert!(
+        schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("answer"))
+    );
+    assert!(
+        schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("confidence"))
+    );
 }

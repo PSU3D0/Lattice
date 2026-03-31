@@ -388,17 +388,17 @@ async fn handle_s11_lead_intake(mut req: Request, env: &Env) -> Result<Response>
             HttpMethod::Post,
             "https://api.openai.com/v1/chat/completions",
         )
-        .with_body(r#"{"tool":"submit"}"#);
+        .with_body(r#"{"response_format":{"json_schema":{"name":"LeadInfo"}}}"#);
         let draft_request = HttpRequest::new(
             HttpMethod::Post,
             "https://api.openai.com/v1/chat/completions",
         )
-        .with_body(r#"{"response_format":true}"#);
+        .with_body(r#"{"response_format":{"json_schema":{"name":"OutreachDraft"}}}"#);
         let image_request = HttpRequest::new(
             HttpMethod::Post,
             "https://api.openai.com/v1/images/generations",
         )
-        .with_body(r#"{"model":"dall-e-3"}"#);
+        .with_body(r#"{"model":"gpt-image-1.5"}"#);
 
         let extraction_response = HttpWrite::send(&mock_http, extraction_request)
             .await
@@ -514,29 +514,22 @@ impl MockOpenAiHttpClient {
 
     fn extraction_response() -> HttpResponse {
         let lead = mock_high_priority_lead();
-        let arguments = serde_json::to_string(&lead).expect("serialize extraction arguments");
+        let content = serde_json::to_string(&lead).expect("serialize extraction response");
         Self::response(json!({
             "id": "chatcmpl-extract",
             "object": "chat.completion",
             "created": 1,
-            "model": "gpt-4o",
+            "model": "gpt-5.4-mini",
             "system_fingerprint": null,
             "choices": [{
                 "index": 0,
                 "message": {
                     "role": "assistant",
-                    "content": null,
-                    "tool_calls": [{
-                        "id": "call_extract",
-                        "type": "function",
-                        "function": {
-                            "name": "submit",
-                            "arguments": arguments
-                        }
-                    }]
+                    "content": content,
+                    "tool_calls": []
                 },
                 "logprobs": null,
-                "finish_reason": "tool_calls"
+                "finish_reason": "stop"
             }],
             "usage": {
                 "prompt_tokens": 12,
@@ -554,7 +547,7 @@ impl MockOpenAiHttpClient {
             "id": "chatcmpl-draft",
             "object": "chat.completion",
             "created": 1,
-            "model": "gpt-4o",
+            "model": "gpt-5.4-mini",
             "system_fingerprint": null,
             "choices": [{
                 "index": 0,
@@ -611,10 +604,15 @@ impl MockOpenAiHttpClient {
             .unwrap_or("");
 
         if request.url.ends_with("/chat/completions") {
-            if body.contains("response_format") {
+            if body.contains("LeadInfo") {
+                return Ok(Self::extraction_response());
+            }
+            if body.contains("OutreachDraft") {
                 return Ok(Self::draft_response());
             }
-            return Ok(Self::extraction_response());
+            return Err(HttpError::InvalidResponse(format!(
+                "unexpected mock openai chat body: {body}"
+            )));
         }
 
         if request.url.ends_with("/images/generations") {

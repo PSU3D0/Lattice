@@ -1987,9 +1987,11 @@ dependencies = [
 name = "example-s11-lead-intake"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "base64 0.22.1",
  "cap-http-reqwest",
+ "cap-workspace-fs",
  "capabilities",
  "dag-core",
  "dag-macros",

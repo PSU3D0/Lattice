@@ -40,6 +40,11 @@ where
     content.serialize(serializer)
 }
 
+/// `gpt-5.4` completion model
+pub const GPT_5_4: &str = "gpt-5.4";
+/// `gpt-5.4-mini` completion model
+pub const GPT_5_4_MINI: &str = "gpt-5.4-mini";
+
 /// `gpt-5.2` completion model
 pub const GPT_5_2: &str = "gpt-5.2";
 
