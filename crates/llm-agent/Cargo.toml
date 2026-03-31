@@ -11,6 +11,13 @@ description = "LLM agent loop and structured extraction for Lattice. Derived fro
 
 [lib]
 name = "llm_agent"
+doctest = false
+
+[features]
+audio = []
+image = []
+rmcp = []
+wasm = []
 
 [dependencies]
 llm-types = { path = "../llm-types" }
@@ -19,6 +26,8 @@ serde_json.workspace = true
 schemars = "1"
 futures = "0.3"
 tracing.workspace = true
-
-[dev-dependencies]
-tokio = { workspace = true, features = ["full"] }
+thiserror = "2"
+bytes = "1"
+http = "1"
+async-stream = "0.3"
+tracing-futures = "0.2"
