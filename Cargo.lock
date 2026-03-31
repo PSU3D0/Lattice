@@ -1984,6 +1984,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-s11-lead-intake"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "cap-http-reqwest",
+ "capabilities",
+ "dag-core",
+ "dag-macros",
+ "host-inproc",
+ "httpmock",
+ "kernel-exec",
+ "kernel-plan",
+ "llm-agent",
+ "llm-lattice",
+ "llm-provider-openai",
+ "schemars 1.0.4",
+ "serde",
+ "serde_json",
+ "stdlib",
+ "tokio",
+]
+
+[[package]]
 name = "example-s2-site"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,46 @@
+[package]
+name = "example-s11-lead-intake"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "S11 lead intake flow with explicit AI topology, OpenAI proofing, and workspace artifact persistence."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+capabilities = { path = "../../crates/capabilities" }
+dag-core = { path = "../../crates/dag-core" }
+dag-macros = { path = "../../crates/dag-macros" }
+kernel-plan = { path = "../../crates/kernel-plan" }
+llm-agent = { path = "../../crates/llm-agent", features = ["image"] }
+llm-lattice = { path = "../../crates/llm-lattice" }
+llm-provider-openai = { path = "../../crates/llm-provider-openai" }
+schemars = "1"
+serde.workspace = true
+serde_json.workspace = true
+stdlib = { path = "../../crates/stdlib" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+host-inproc = { path = "../../crates/host-inproc" }
+kernel-exec = { path = "../../crates/kernel-exec" }
+
+[dev-dependencies]
+async-trait.workspace = true
+base64 = "0.22"
+cap-http-reqwest = { path = "../../crates/cap-http-reqwest" }
+httpmock = "0.7"
+tokio.workspace = true
+
+[features]
+default = ["host-bundle"]
+host-bundle = []
+flow-registry = ["dag-core/flow-registry", "dag-macros/flow-registry"]
+
+[package.metadata.latticeflow]
+flows = ["s11_lead_intake_flow"]
+default_flow = "s11_lead_intake_flow"

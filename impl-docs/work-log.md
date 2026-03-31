@@ -115,6 +115,15 @@ Deferred / mostly-stubbed:
 
 Completed scope aligns with early contract/runtime milestones; older planning references below are historical:
 
+## 2026-03-31 — S11 lead intake example scaffold (Epic 05.3)
+
+- Added `examples/s11_lead_intake/` with an explicit AI topology: trigger -> `extract_lead` -> priority switch -> high-priority `draft_outreach` / `generate_image` / `store_image` / `compose_email`, plus low/default `template_response` -> capture.
+- Wired the example through `llm_lattice::LatticeHttpClient`, `llm_provider_openai`, and `llm_agent` structured extraction / typed prompt APIs so the native proof uses mock HTTP transport instead of a bounded agent loop.
+- Used OpenAI `DALL_E_3` for image generation and persisted the returned bytes into the run-scoped workspace, carrying `image_artifact_path` in the final `EmailPackage` instead of a permanent URL.
+- Added native mock-server tests for high-priority extraction, low/default branching, workspace image persistence, and final email-package contents; kept the wasm32 no-default-features check green.
+- Acceptance gates: `cargo check -p example-s11-lead-intake`, `cargo test -p example-s11-lead-intake`, `cargo check -p example-s11-lead-intake --target wasm32-unknown-unknown --no-default-features`.
+- Compatibility notes: `image_artifact_path` is a workspace artifact path, not a durable external URL.
+
 ## 2026-03-31 — OpenAI image wiring and structured-output proof (Epic 05.2)
 
 - Enabled the OpenAI provider's image-generation client surface by default (`crates/llm-provider-openai/Cargo.toml`, `crates/llm-provider-openai/src/client.rs`) so `Client` now satisfies the `llm-agent` image capability path for `DALL_E_3`.

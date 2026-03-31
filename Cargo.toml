@@ -64,7 +64,8 @@ members = [
   "examples/s6_spill",
   "examples/s6_spill/host",
   "examples/s7_cloudflare_idem",
-  "examples/s8_contract_surface"
+  "examples/s8_contract_surface",
+  "examples/s11_lead_intake"
 ]
 
 [workspace.package]
