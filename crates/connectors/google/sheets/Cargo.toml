@@ -11,13 +11,13 @@ description = "Semantic Google Sheets connector"
 
 [features]
 default = ["host-bundle"]
-host-bundle = ["dag-macros/host-bundle"]
+host-bundle = ["dag-macros/host-bundle", "kernel-exec"]
 
 [dependencies]
 capabilities = { path = "../../../capabilities" }
 dag-core = { path = "../../../dag-core" }
 dag-macros = { path = "../../../dag-macros" }
-kernel-exec = { path = "../../../kernel-exec" }
+kernel-exec = { path = "../../../kernel-exec", optional = true }
 connectors-std = { path = "../../../connectors-std" }
 connector_google_platform = { path = "../platform" }
 serde.workspace = true

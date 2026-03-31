@@ -14,12 +14,12 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["host-bundle"]
-host-bundle = ["kernel-exec", "host-inproc"]
+host-bundle = ["kernel-exec", "host-inproc", "connector_google_sheets/host-bundle"]
 flow-registry = ["dag-core/flow-registry", "dag-macros/flow-registry"]
 
 [dependencies]
 anyhow.workspace = true
-connector_google_sheets = { path = "../.." }
+connector_google_sheets = { path = "../..", default-features = false }
 connector_google_platform = { path = "../../../platform" }
 connectors-std = { path = "../../../../../connectors-std" }
 capabilities = { path = "../../../../../capabilities" }

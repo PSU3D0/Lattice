@@ -19,5 +19,7 @@ futures.workspace = true
 host-inproc = { path = "../host-inproc" }
 kernel-exec = { path = "../kernel-exec" }
 kernel-plan = { path = "../kernel-plan" }
+serde.workspace = true
 serde_json.workspace = true
+tokio.workspace = true
 wasmtime.workspace = true

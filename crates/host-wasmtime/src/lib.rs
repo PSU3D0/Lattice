@@ -7,6 +7,13 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use capabilities::ResourceAccess;
+use capabilities::connector::{
+    ConnectorBindingScope, OP_CONNECTOR_APPLY_OUTBOUND_AUTH, OP_CONNECTOR_GET_SCOPE,
+    OP_CONNECTOR_RESOLVE_ENDPOINT_PROFILE,
+};
+use capabilities::http::{
+    HttpError, HttpRequest, OP_HTTP_READ_SEND, OP_HTTP_WRITE_SEND, RemoteHttpErrorEnvelope,
+};
 use dag_core::{FlowIR, NodeError, NodeResult};
 use flow_bundle::{
     ExecPolicy, FlowEntry, FlowIrRef, Manifest, expand_subflow_ir, select_artifact,
@@ -15,10 +22,40 @@ use flow_bundle::{
 use host_inproc::{FlowBundle, FlowEntrypoint, NodeContract, NodeSource};
 use kernel_exec::{NodeHandler, NodeOutput, NodeResolver};
 use kernel_plan::validate;
+use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use wasmtime::{Caller, Engine, Linker, Memory, Module, Store, TypedFunc};
 
 use capabilities::blob::{BlobError, OP_BLOB_DELETE, OP_BLOB_GET, OP_BLOB_PUT};
+
+/// Drive an async future to completion from inside a synchronous wasmtime import handler.
+///
+/// Wasmtime import functions are synchronous, but host capability providers
+/// (reqwest HTTP, connector runtime token exchange, etc.) are async and often
+/// depend on Tokio I/O. We cannot call `block_on` when there is already an
+/// ambient Tokio runtime on the current thread (Tokio panics).
+///
+/// Solution: use `std::thread::scope` to run the future on a short-lived OS
+/// thread that has no ambient Tokio context. The scoped thread creates a fresh
+/// single-thread Tokio runtime, drives the future, and returns the result.
+/// `std::thread::scope` blocks the caller until the thread finishes, so borrows
+/// from the caller's stack are safe.
+fn host_block_on<F: std::future::Future + Send>(fut: F) -> F::Output
+where
+    F::Output: Send,
+{
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("host_block_on: failed to create import runtime");
+            rt.block_on(fut)
+        })
+        .join()
+        .expect("host_block_on: import thread panicked")
+    })
+}
 
 const ERRNO_ENOBUFS: i32 = -12;
 const ERRNO_EFAULT: i32 = -14;
@@ -31,6 +68,55 @@ const RESP_ERR: u8 = 2;
 const INVOKE_OK: u8 = 0;
 const INVOKE_ERR: u8 = 2;
 
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum TransportOutboundAuthKind {
+    Bearer {
+        handle_kind: String,
+    },
+    ApiKeyHeader {
+        header_name: String,
+        prefix: Option<String>,
+        handle_kind: String,
+    },
+    ApiKeyQuery {
+        query_name: String,
+        handle_kind: String,
+    },
+    Unsupported {
+        kind_name: String,
+        handle_kind: String,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+struct TransportOutboundAuthProfileDescriptor {
+    connector_id: String,
+    name: String,
+    kind: TransportOutboundAuthKind,
+}
+
+#[derive(Debug, Deserialize)]
+struct TransportEndpointProfileDescriptor {
+    connector_id: String,
+    name: String,
+    base_url: String,
+    default_headers: Vec<(String, String)>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApplyOutboundAuthRequest {
+    scope: ConnectorBindingScope,
+    profile: TransportOutboundAuthProfileDescriptor,
+    request: HttpRequest,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResolveEndpointProfileRequest {
+    scope: ConnectorBindingScope,
+    profile: TransportEndpointProfileDescriptor,
+}
+
 struct HostState {
     resources: Arc<dyn ResourceAccess>,
 }
@@ -38,26 +124,26 @@ struct HostState {
 pub struct WasmRuntime {
     engine: Engine,
     module: Module,
-    resources: Arc<dyn ResourceAccess>,
 }
 
 impl WasmRuntime {
-    pub fn new(wasm_bytes: &[u8], resources: Arc<dyn ResourceAccess>) -> Result<Self> {
+    pub fn new(wasm_bytes: &[u8]) -> Result<Self> {
         let engine = Engine::default();
         let module =
             Module::from_binary(&engine, wasm_bytes).context("failed to load guest wasm module")?;
-        Ok(Self {
-            engine,
-            module,
-            resources,
-        })
+        Ok(Self { engine, module })
     }
 
-    pub fn invoke_value(&self, identifier: &str, input: &JsonValue) -> NodeResult<JsonValue> {
+    pub fn invoke_value(
+        &self,
+        identifier: &str,
+        input: &JsonValue,
+        resources: Arc<dyn ResourceAccess>,
+    ) -> NodeResult<JsonValue> {
         let input_bytes = serde_json::to_vec(input)
             .map_err(|err| NodeError::new(format!("failed to serialize node input: {err}")))?;
         let payload = self
-            .invoke_raw(identifier.as_bytes(), &input_bytes)
+            .invoke_raw(identifier.as_bytes(), &input_bytes, resources)
             .map_err(NodeError::from)?;
         if payload.is_empty() {
             return Err(NodeError::new("empty invoke response"));
@@ -79,10 +165,13 @@ impl WasmRuntime {
         }
     }
 
-    fn invoke_raw(&self, id_bytes: &[u8], input_bytes: &[u8]) -> Result<Vec<u8>> {
-        let state = HostState {
-            resources: Arc::clone(&self.resources),
-        };
+    fn invoke_raw(
+        &self,
+        id_bytes: &[u8],
+        input_bytes: &[u8],
+        resources: Arc<dyn ResourceAccess>,
+    ) -> Result<Vec<u8>> {
+        let state = HostState { resources };
         let mut store = Store::new(&self.engine, state);
         let mut linker = Linker::new(&self.engine);
 
@@ -110,100 +199,26 @@ impl WasmRuntime {
                 let req = &data[in_ptr..in_ptr + in_len];
 
                 let response = match op {
-                    OP_BLOB_GET => {
-                        let (key, _rest) = match decode_key_prefix(req) {
-                            Ok(value) => value,
-                            Err(err) => {
-                                return write_response(
-                                    &mut caller,
-                                    &memory,
-                                    out_ptr,
-                                    out_cap,
-                                    &encode_err(err),
-                                );
-                            }
-                        };
-                        let blob = match caller.data().resources.blob() {
-                            Some(blob) => blob,
-                            None => {
-                                return write_response(
-                                    &mut caller,
-                                    &memory,
-                                    out_ptr,
-                                    out_cap,
-                                    &encode_err("missing blob provider"),
-                                );
-                            }
-                        };
-                        let result = futures::executor::block_on(blob.get(&key));
-                        match result {
-                            Ok(Some(bytes)) => encode_ok(&bytes),
-                            Ok(None) => encode_not_found(),
-                            Err(err) => encode_err(err),
-                        }
+                    OP_BLOB_GET => handle_blob_get(caller.data().resources.as_ref(), req),
+                    OP_BLOB_PUT => handle_blob_put(caller.data().resources.as_ref(), req),
+                    OP_BLOB_DELETE => handle_blob_delete(caller.data().resources.as_ref(), req),
+                    OP_HTTP_READ_SEND => {
+                        handle_http_send(caller.data().resources.as_ref(), req, true)
                     }
-                    OP_BLOB_PUT => {
-                        let (key, rest) = match decode_key_prefix(req) {
-                            Ok(value) => value,
-                            Err(err) => {
-                                return write_response(
-                                    &mut caller,
-                                    &memory,
-                                    out_ptr,
-                                    out_cap,
-                                    &encode_err(err),
-                                );
-                            }
-                        };
-                        let blob = match caller.data().resources.blob() {
-                            Some(blob) => blob,
-                            None => {
-                                return write_response(
-                                    &mut caller,
-                                    &memory,
-                                    out_ptr,
-                                    out_cap,
-                                    &encode_err("missing blob provider"),
-                                );
-                            }
-                        };
-                        let result = futures::executor::block_on(blob.put(&key, rest));
-                        match result {
-                            Ok(()) => encode_ok(&[]),
-                            Err(err) => encode_err(err),
-                        }
+                    OP_HTTP_WRITE_SEND => {
+                        handle_http_send(caller.data().resources.as_ref(), req, false)
                     }
-                    OP_BLOB_DELETE => {
-                        let (key, _rest) = match decode_key_prefix(req) {
-                            Ok(value) => value,
-                            Err(err) => {
-                                return write_response(
-                                    &mut caller,
-                                    &memory,
-                                    out_ptr,
-                                    out_cap,
-                                    &encode_err(err),
-                                );
-                            }
-                        };
-                        let blob = match caller.data().resources.blob() {
-                            Some(blob) => blob,
-                            None => {
-                                return write_response(
-                                    &mut caller,
-                                    &memory,
-                                    out_ptr,
-                                    out_cap,
-                                    &encode_err("missing blob provider"),
-                                );
-                            }
-                        };
-                        let result = futures::executor::block_on(blob.delete(&key));
-                        match result {
-                            Ok(()) => encode_ok(&[]),
-                            Err(BlobError::NotFound) => encode_not_found(),
-                            Err(err) => encode_err(err),
-                        }
+                    OP_CONNECTOR_GET_SCOPE => {
+                        handle_connector_get_scope(caller.data().resources.as_ref())
+                    }
+                    OP_CONNECTOR_APPLY_OUTBOUND_AUTH => {
+                        handle_connector_apply_outbound_auth(caller.data().resources.as_ref(), req)
+                    }
+                    OP_CONNECTOR_RESOLVE_ENDPOINT_PROFILE => {
+                        handle_connector_resolve_endpoint_profile(
+                            caller.data().resources.as_ref(),
+                            req,
+                        )
                     }
                     _ => encode_err("unsupported opcode"),
                 };
@@ -291,7 +306,9 @@ impl NodeHandler for WasmNodeHandler {
         input: JsonValue,
         _ctx: &kernel_exec::NodeContext,
     ) -> NodeResult<NodeOutput> {
-        let json = self.runtime.invoke_value(&self.identifier, &input)?;
+        let json = self
+            .runtime
+            .invoke_value(&self.identifier, &input, _ctx.resource_handle())?;
         Ok(NodeOutput::Value(json))
     }
 }
@@ -300,7 +317,7 @@ pub fn load_flow_bundle(
     bundle_dir: &Path,
     policy: ExecPolicy,
     flow_id: Option<&str>,
-    resources: Arc<dyn ResourceAccess>,
+    _resources: Arc<dyn ResourceAccess>,
 ) -> Result<FlowBundle> {
     let manifest = read_manifest(bundle_dir)?;
     let flow = select_flow(&manifest, flow_id)?;
@@ -308,7 +325,7 @@ pub fn load_flow_bundle(
     let wasm_artifact = select_artifact(&manifest, policy, "native")?;
     let wasm_path = bundle_dir.join(&wasm_artifact.file);
     let wasm_bytes = read_and_verify(&wasm_path, &wasm_artifact.hash)?;
-    let runtime = Arc::new(WasmRuntime::new(&wasm_bytes, resources)?);
+    let runtime = Arc::new(WasmRuntime::new(&wasm_bytes)?);
 
     let flow_ir = load_flow_ir(bundle_dir, &manifest, flow)?;
     let validated =
@@ -437,6 +454,233 @@ fn decode_key_prefix(req: &[u8]) -> Result<(String, &[u8])> {
         .context("invalid request: key is not utf-8")?
         .to_string();
     Ok((key, &req[4 + len..]))
+}
+
+fn decode_json_request<T>(req: &[u8], label: &str) -> Result<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    serde_json::from_slice(req).with_context(|| format!("invalid {label} request payload"))
+}
+
+fn leak_string(value: String) -> &'static str {
+    Box::leak(value.into_boxed_str())
+}
+
+fn transport_auth_profile_to_descriptor(
+    profile: TransportOutboundAuthProfileDescriptor,
+) -> capabilities::connector::OutboundAuthProfileDescriptor {
+    capabilities::connector::OutboundAuthProfileDescriptor {
+        connector_id: leak_string(profile.connector_id),
+        name: leak_string(profile.name),
+        env_var: "",
+        kind: match profile.kind {
+            TransportOutboundAuthKind::Bearer { handle_kind } => {
+                capabilities::connector::OutboundAuthKind::Bearer {
+                    handle_kind: leak_string(handle_kind),
+                }
+            }
+            TransportOutboundAuthKind::ApiKeyHeader {
+                header_name,
+                prefix,
+                handle_kind,
+            } => capabilities::connector::OutboundAuthKind::ApiKeyHeader {
+                header_name: leak_string(header_name),
+                prefix: prefix.map(leak_string),
+                handle_kind: leak_string(handle_kind),
+            },
+            TransportOutboundAuthKind::ApiKeyQuery {
+                query_name,
+                handle_kind,
+            } => capabilities::connector::OutboundAuthKind::ApiKeyQuery {
+                query_name: leak_string(query_name),
+                handle_kind: leak_string(handle_kind),
+            },
+            TransportOutboundAuthKind::Unsupported {
+                kind_name,
+                handle_kind,
+            } => capabilities::connector::OutboundAuthKind::Unsupported {
+                kind_name: leak_string(kind_name),
+                handle_kind: leak_string(handle_kind),
+            },
+        },
+    }
+}
+
+fn transport_endpoint_profile_to_descriptor(
+    profile: TransportEndpointProfileDescriptor,
+) -> capabilities::connector::EndpointProfileDescriptor {
+    let headers = profile
+        .default_headers
+        .into_iter()
+        .map(|(name, value)| (leak_string(name), leak_string(value)))
+        .collect::<Vec<_>>();
+    let headers: &'static [(&'static str, &'static str)] = Box::leak(headers.into_boxed_slice());
+    capabilities::connector::EndpointProfileDescriptor {
+        connector_id: leak_string(profile.connector_id),
+        name: leak_string(profile.name),
+        env_base_url_var: "",
+        base_url: leak_string(profile.base_url),
+        default_headers: headers,
+    }
+}
+
+fn encode_json_ok<T>(value: &T) -> Vec<u8>
+where
+    T: serde::Serialize,
+{
+    match serde_json::to_vec(value) {
+        Ok(payload) => encode_ok(&payload),
+        Err(err) => encode_err(format!("failed to serialize host response: {err}")),
+    }
+}
+
+fn encode_http_err(err: HttpError) -> Vec<u8> {
+    let envelope = RemoteHttpErrorEnvelope::from_http_error(err);
+    match serde_json::to_vec(&envelope) {
+        Ok(payload) => {
+            let mut out = Vec::with_capacity(1 + payload.len());
+            out.push(RESP_ERR);
+            out.extend_from_slice(&payload);
+            out
+        }
+        Err(err) => encode_err(format!("failed to serialize http error: {err}")),
+    }
+}
+
+fn handle_blob_get(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8> {
+    let (key, _rest) = match decode_key_prefix(req) {
+        Ok(value) => value,
+        Err(err) => return encode_err(err),
+    };
+    let blob = match resources.blob() {
+        Some(blob) => blob,
+        None => return encode_err("missing blob provider"),
+    };
+    let result = host_block_on(blob.get(&key));
+    match result {
+        Ok(Some(bytes)) => encode_ok(&bytes),
+        Ok(None) => encode_not_found(),
+        Err(err) => encode_err(err),
+    }
+}
+
+fn handle_blob_put(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8> {
+    let (key, rest) = match decode_key_prefix(req) {
+        Ok(value) => value,
+        Err(err) => return encode_err(err),
+    };
+    let blob = match resources.blob() {
+        Some(blob) => blob,
+        None => return encode_err("missing blob provider"),
+    };
+    let result = host_block_on(blob.put(&key, rest));
+    match result {
+        Ok(()) => encode_ok(&[]),
+        Err(err) => encode_err(err),
+    }
+}
+
+fn handle_blob_delete(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8> {
+    let (key, _rest) = match decode_key_prefix(req) {
+        Ok(value) => value,
+        Err(err) => return encode_err(err),
+    };
+    let blob = match resources.blob() {
+        Some(blob) => blob,
+        None => return encode_err("missing blob provider"),
+    };
+    let result = host_block_on(blob.delete(&key));
+    match result {
+        Ok(()) => encode_ok(&[]),
+        Err(BlobError::NotFound) => encode_not_found(),
+        Err(err) => encode_err(err),
+    }
+}
+
+fn handle_http_send(resources: &dyn ResourceAccess, req: &[u8], read_only: bool) -> Vec<u8> {
+    let request: HttpRequest = match decode_json_request(req, "http") {
+        Ok(request) => request,
+        Err(err) => return encode_http_err(HttpError::InvalidResponse(err.to_string())),
+    };
+
+    let result = if read_only {
+        let client = match resources.http_read() {
+            Some(client) => client,
+            None => {
+                return encode_http_err(HttpError::Transport(anyhow!(
+                    "missing http_read provider"
+                )));
+            }
+        };
+        host_block_on(client.send(request))
+    } else {
+        let client = match resources.http_write() {
+            Some(client) => client,
+            None => {
+                return encode_http_err(HttpError::Transport(anyhow!(
+                    "missing http_write provider"
+                )));
+            }
+        };
+        host_block_on(client.send(request))
+    };
+
+    match result {
+        Ok(response) => encode_json_ok(&response),
+        Err(err) => encode_http_err(err),
+    }
+}
+
+fn handle_connector_get_scope(resources: &dyn ResourceAccess) -> Vec<u8> {
+    match resources.connector_scope() {
+        Some(scope) => encode_json_ok(&scope),
+        None => encode_not_found(),
+    }
+}
+
+fn handle_connector_apply_outbound_auth(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8> {
+    let request: ApplyOutboundAuthRequest = match decode_json_request(req, "connector auth") {
+        Ok(request) => request,
+        Err(err) => return encode_err(err),
+    };
+
+    let runtime = match resources.connector_runtime() {
+        Some(runtime) => runtime,
+        None => return encode_err("missing connector runtime"),
+    };
+
+    let mut http_request = request.request;
+    let profile = transport_auth_profile_to_descriptor(request.profile);
+    let result =
+        host_block_on(runtime.apply_outbound_auth(&request.scope, &profile, &mut http_request));
+    match result {
+        Ok(()) => encode_json_ok(&http_request),
+        Err(err) => encode_err(err),
+    }
+}
+
+fn handle_connector_resolve_endpoint_profile(
+    resources: &dyn ResourceAccess,
+    req: &[u8],
+) -> Vec<u8> {
+    let request: ResolveEndpointProfileRequest =
+        match decode_json_request(req, "connector endpoint") {
+            Ok(request) => request,
+            Err(err) => return encode_err(err),
+        };
+
+    let runtime = match resources.connector_runtime() {
+        Some(runtime) => runtime,
+        None => return encode_err("missing connector runtime"),
+    };
+
+    let profile = transport_endpoint_profile_to_descriptor(request.profile);
+    let result = host_block_on(runtime.resolve_endpoint_profile(&request.scope, &profile));
+    match result {
+        Ok(profile) => encode_json_ok(&profile),
+        Err(err) => encode_err(err),
+    }
 }
 
 fn encode_ok(payload: &[u8]) -> Vec<u8> {

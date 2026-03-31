@@ -14,12 +14,12 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["host-bundle"]
-host-bundle = ["kernel-exec", "host-inproc"]
+host-bundle = ["kernel-exec", "host-inproc", "connector_github_issues/host-bundle"]
 flow-registry = ["dag-core/flow-registry", "dag-macros/flow-registry"]
 
 [dependencies]
 capabilities = { path = "../../../../../capabilities" }
-connector_github_issues = { path = "../.." }
+connector_github_issues = { path = "../..", default-features = false }
 dag-core = { path = "../../../../../dag-core" }
 dag-macros = { path = "../../../../../dag-macros" }
 host-inproc = { path = "../../../../../host-inproc", optional = true }

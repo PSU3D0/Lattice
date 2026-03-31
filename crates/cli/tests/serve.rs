@@ -492,3 +492,47 @@ async fn serve_google_sheets_route_round_trips_connector_flow()
 
     Ok(())
 }
+
+#[tokio::test]
+async fn load_google_sheets_wasm_bundle_preserves_route_metadata()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempdir()?;
+    let out_dir = temp.path().join("flow.bundle");
+    let target_dir = temp.path().join("target");
+
+    let output = Command::cargo_bin("flows")?
+        .args([
+            "bundle",
+            "-p",
+            "example-connector-google-sheets-local-flow",
+            "--wasm",
+            "--dev",
+            "--out-dir",
+            out_dir.to_str().expect("bundle output path"),
+        ])
+        .env("CARGO_TARGET_DIR", &target_dir)
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "expected google sheets wasm bundle to succeed: status={:?}, stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let resources = ResourceBag::default()
+        .with_checkpoint_store(Arc::new(TestCheckpointStore::default()))
+        .with_max_durability_mode(DurabilityMode::Partial);
+
+    let bundle = load_flow_bundle(&out_dir, ExecPolicy::Wasm, None, Arc::new(resources))?;
+    let entrypoint = bundle.entrypoints.first().expect("bundle entrypoint");
+    assert_eq!(
+        entrypoint.route_path.as_deref(),
+        Some("/google/sheets/local")
+    );
+    assert_eq!(entrypoint.method.as_deref(), Some("POST"));
+    assert_eq!(entrypoint.trigger_alias, "trigger");
+    assert_eq!(entrypoint.capture_alias, "upsert");
+
+    Ok(())
+}

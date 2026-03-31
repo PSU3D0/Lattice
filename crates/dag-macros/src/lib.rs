@@ -4864,17 +4864,53 @@ impl WorkflowBundleInput {
                         // Only attach remote providers that this flow actually declares.
                         let mut bag = ::capabilities::ResourceBag::new();
 
-                        let needs_blob = [#(#wasm_node_spec_entries),*]
-                            .iter()
-                            .any(|spec| {
-                                spec.effect_hints
-                                    .iter()
-                                    .any(|hint| hint.starts_with(::capabilities::blob::HINT_BLOB))
-                            });
+                        let node_specs = [#(#wasm_node_spec_entries),*];
+
+                        let needs_blob = node_specs.iter().any(|spec| {
+                            spec.effect_hints
+                                .iter()
+                                .any(|hint| hint.starts_with(::capabilities::blob::HINT_BLOB))
+                        });
                         if needs_blob {
                             bag = bag.with_blob(Arc::new(
                                 ::capabilities::blob::RemoteBlobStore::new(),
                             ));
+                        }
+
+                        let needs_http_read = node_specs.iter().any(|spec| {
+                            spec.effect_hints.iter().any(|hint| {
+                                hint == &::capabilities::http::HINT_HTTP_READ
+                            })
+                        });
+                        if needs_http_read {
+                            bag = bag.with_http_read(Arc::new(
+                                ::capabilities::http::RemoteHttpRead::new(),
+                            ));
+                        }
+
+                        let needs_http_write = node_specs.iter().any(|spec| {
+                            spec.effect_hints.iter().any(|hint| {
+                                hint == &::capabilities::http::HINT_HTTP_WRITE
+                            })
+                        });
+                        if needs_http_write {
+                            bag = bag.with_http_write(Arc::new(
+                                ::capabilities::http::RemoteHttpWrite::new(),
+                            ));
+                        }
+
+                        let needs_connector_runtime = node_specs
+                            .iter()
+                            .any(|spec| !spec.connector_ops.is_empty());
+                        if needs_connector_runtime {
+                            bag = bag.with_connector_runtime(Arc::new(
+                                ::capabilities::connector::RemoteConnectorRuntime::new(),
+                            ));
+                            if let Some(scope) = ::capabilities::connector::current_remote_scope()
+                                .map_err(|err| err.to_string())?
+                            {
+                                bag = bag.with_connector_scope(scope);
+                            }
                         }
 
                         let resources: Arc<dyn ::capabilities::ResourceAccess> = Arc::new(bag);

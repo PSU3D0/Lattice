@@ -13,6 +13,15 @@ fn temp_lock_path() -> PathBuf {
     path
 }
 
+fn temp_bundle_dir(label: &str) -> PathBuf {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let mut path = std::env::temp_dir();
+    let pid = std::process::id();
+    let counter = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    path.push(format!("lattice.bundle.it.{label}.{pid}.{counter}"));
+    path
+}
+
 // Deterministic test-only RSA fixture used for service-account JWT coverage.
 // This path is allowlisted in `.gitleaks.toml`.
 const TEST_RSA_PRIVATE_KEY_PEM: &str = r#"-----BEGIN PRIVATE KEY-----
@@ -320,6 +329,148 @@ fn run_local_connector_example_succeeds_with_connector_bindings_lock()
     let payload: Value = serde_json::from_str(stdout.trim())?;
     assert_eq!(payload["items"][0]["number"], 501);
     assert_eq!(payload["items"][0]["title"], "from cli bindings lock");
+    mock.assert();
+
+    std::fs::remove_file(&path).ok();
+    Ok(())
+}
+
+#[test]
+fn run_bundle_connector_example_succeeds_with_connector_bindings_lock()
+-> Result<(), Box<dyn std::error::Error>> {
+    let server = httpmock::MockServer::start();
+    let flow_id = example_connector_github_issues_local_flow::validated_ir()
+        .flow()
+        .id
+        .as_str()
+        .to_string();
+
+    let mut lock = serde_json::json!({
+        "version": 1,
+        "generated_at": "2025-12-15T00:00:00Z",
+        "content_hash": "",
+        "instances": {
+            "http1": {
+                "provider_kind": "http.reqwest",
+                "provides": ["resource::http"],
+                "connect": {},
+                "config": {},
+                "isolation": []
+            }
+        },
+        "flows": {
+            flow_id.clone(): {
+                "use": {
+                    "resource::http": "http1"
+                }
+            }
+        },
+        "connector_handles": {
+            "endpoint.github_local": {
+                "provider_kind": "endpoint.profile.static",
+                "handle_kind": "endpoint.profile",
+                "connect": {},
+                "config": {
+                    "base_url": server.base_url(),
+                    "default_headers": {
+                        "Accept": "application/json",
+                        "X-GitHub-Api-Version": "2022-11-28"
+                    }
+                },
+                "grants": {}
+            }
+        },
+        "connector_connections": {
+            "github_local": {
+                "connector_id": "connector.github.issues",
+                "roles": {
+                    "endpoint_profile.github_default": "endpoint.github_local"
+                }
+            }
+        },
+        "connector_bindings": {
+            flow_id.clone(): {
+                "defaults": {
+                    "connector.github.issues": "github_local"
+                },
+                "nodes": {}
+            }
+        }
+    });
+
+    let path = temp_lock_path();
+    let json_for_hash = lock.clone();
+
+    let mut hasher = sha2::Sha256::new();
+    let canonical = canonical_json_without_hash_for_test(&json_for_hash);
+    use sha2::Digest;
+    hasher.update(canonical.as_bytes());
+    let digest = hasher.finalize();
+    let hash = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    lock["content_hash"] = serde_json::json!(hash);
+    std::fs::write(&path, serde_json::to_vec_pretty(&lock)?)?;
+
+    let mock = server.mock(|_when, then| {
+        then.status(200).json_body_obj(&serde_json::json!([
+            {
+                "number": 502,
+                "title": "from bundle bindings lock",
+                "state": "open",
+                "html_url": "https://example.test/issues/502"
+            }
+        ]));
+    });
+
+    let out_dir = temp_bundle_dir("github-issues");
+    let target_dir = out_dir.join("target");
+    std::fs::create_dir_all(&target_dir)?;
+    let bundle_output = Command::cargo_bin("flows")?
+        .args([
+            "bundle",
+            "-p",
+            "example-connector-github-issues-local-flow",
+            "--wasm",
+            "--dev",
+            "--out-dir",
+            out_dir.to_str().expect("out dir"),
+        ])
+        .env("CARGO_TARGET_DIR", &target_dir)
+        .output()?;
+
+    assert!(
+        bundle_output.status.success(),
+        "connector bundle build failed: status={:?}, stderr={}",
+        bundle_output.status,
+        String::from_utf8_lossy(&bundle_output.stderr)
+    );
+
+    let output = Command::cargo_bin("flows")?
+        .args([
+            "run",
+            "bundle",
+            "--bundle",
+            out_dir.to_str().expect("out dir"),
+            "--bindings-lock",
+            path.to_str().expect("path"),
+            "--payload",
+            r#"{"owner":"rust-lang","repo":"cargo"}"#,
+        ])
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "connector run bundle failed: status={:?}, stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8(output.stdout)?;
+    let payload: Value = serde_json::from_str(stdout.trim())?;
+    assert_eq!(payload["items"][0]["number"], 502);
+    assert_eq!(payload["items"][0]["title"], "from bundle bindings lock");
     mock.assert();
 
     std::fs::remove_file(&path).ok();

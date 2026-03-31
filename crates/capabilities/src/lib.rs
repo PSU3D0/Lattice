@@ -530,6 +530,18 @@ pub mod http {
     pub const HINT_HTTP_READ: &str = "resource::http::read";
     pub const HINT_HTTP_WRITE: &str = "resource::http::write";
 
+    /// Opcode family id reserved for HTTP capability operations.
+    ///
+    /// Encoding: `(family << 16) | op_id`.
+    pub const OP_FAMILY_HTTP: u32 = 2;
+    pub const OP_HTTP_READ_SEND: u32 = (OP_FAMILY_HTTP << 16) | 1;
+    pub const OP_HTTP_WRITE_SEND: u32 = (OP_FAMILY_HTTP << 16) | 2;
+
+    #[cfg(target_arch = "wasm32")]
+    const RESP_OK: u8 = 0;
+    #[cfg(target_arch = "wasm32")]
+    const RESP_ERR: u8 = 2;
+
     static REGISTRATION: OnceLock<()> = OnceLock::new();
 
     /// Ensure HTTP capability hints are registered with the shared effect/determinism registries.
@@ -658,6 +670,35 @@ pub mod http {
         InvalidResponse(String),
     }
 
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(tag = "kind", rename_all = "snake_case")]
+    pub enum RemoteHttpErrorEnvelope {
+        Transport { message: String },
+        Timeout { timeout_ms: u64 },
+        InvalidResponse { message: String },
+    }
+
+    impl RemoteHttpErrorEnvelope {
+        pub fn from_http_error(err: HttpError) -> Self {
+            match err {
+                HttpError::Transport(err) => Self::Transport {
+                    message: err.to_string(),
+                },
+                HttpError::Timeout(timeout_ms) => Self::Timeout { timeout_ms },
+                HttpError::InvalidResponse(message) => Self::InvalidResponse { message },
+            }
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        fn into_http_error(self) -> HttpError {
+            match self {
+                Self::Transport { message } => HttpError::Transport(anyhow::anyhow!(message)),
+                Self::Timeout { timeout_ms } => HttpError::Timeout(timeout_ms),
+                Self::InvalidResponse { message } => HttpError::InvalidResponse(message),
+            }
+        }
+    }
+
     pub type HttpResult<T> = Result<T, HttpError>;
 
     #[async_trait]
@@ -668,6 +709,117 @@ pub mod http {
     #[async_trait]
     pub trait HttpWrite: Send + Sync {
         async fn send(&self, request: HttpRequest) -> HttpResult<HttpResponse>;
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn decode_remote_http_response(bytes: &[u8]) -> HttpResult<HttpResponse> {
+        if bytes.is_empty() {
+            return Err(HttpError::InvalidResponse(
+                "invalid http response: empty".to_string(),
+            ));
+        }
+        match bytes[0] {
+            RESP_OK => serde_json::from_slice(&bytes[1..]).map_err(|err| {
+                HttpError::InvalidResponse(format!("invalid http success payload: {err}"))
+            }),
+            RESP_ERR => {
+                let payload = &bytes[1..];
+                match serde_json::from_slice::<RemoteHttpErrorEnvelope>(payload) {
+                    Ok(err) => Err(err.into_http_error()),
+                    Err(_) => match std::str::from_utf8(payload) {
+                        Ok(message) => {
+                            Err(HttpError::Transport(anyhow::anyhow!(message.to_string())))
+                        }
+                        Err(_) => Err(HttpError::InvalidResponse(
+                            "invalid http error payload".to_string(),
+                        )),
+                    },
+                }
+            }
+            other => Err(HttpError::InvalidResponse(format!(
+                "invalid http response status {other}"
+            ))),
+        }
+    }
+
+    /// Remote HTTP read capability that delegates to a host-provided import.
+    #[cfg(target_arch = "wasm32")]
+    pub struct RemoteHttpRead {
+        _private: (),
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    impl RemoteHttpRead {
+        pub fn new() -> Self {
+            ensure_registered();
+            Self { _private: () }
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    impl Default for RemoteHttpRead {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    impl Capability for RemoteHttpRead {
+        fn name(&self) -> &'static str {
+            "http.read.remote"
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[async_trait]
+    impl HttpRead for RemoteHttpRead {
+        async fn send(&self, request: HttpRequest) -> HttpResult<HttpResponse> {
+            let req = serde_json::to_vec(&request)
+                .map_err(|err| HttpError::InvalidResponse(format!("encode http request: {err}")))?;
+            let resp = crate::wasm_transport::cap_call(OP_HTTP_READ_SEND, &req)
+                .map_err(|err| HttpError::Transport(anyhow::anyhow!(err.to_string())))?;
+            decode_remote_http_response(&resp)
+        }
+    }
+
+    /// Remote HTTP write capability that delegates to a host-provided import.
+    #[cfg(target_arch = "wasm32")]
+    pub struct RemoteHttpWrite {
+        _private: (),
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    impl RemoteHttpWrite {
+        pub fn new() -> Self {
+            ensure_registered();
+            Self { _private: () }
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    impl Default for RemoteHttpWrite {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    impl Capability for RemoteHttpWrite {
+        fn name(&self) -> &'static str {
+            "http.write.remote"
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[async_trait]
+    impl HttpWrite for RemoteHttpWrite {
+        async fn send(&self, request: HttpRequest) -> HttpResult<HttpResponse> {
+            let req = serde_json::to_vec(&request)
+                .map_err(|err| HttpError::InvalidResponse(format!("encode http request: {err}")))?;
+            let resp = crate::wasm_transport::cap_call(OP_HTTP_WRITE_SEND, &req)
+                .map_err(|err| HttpError::Transport(anyhow::anyhow!(err.to_string())))?;
+            decode_remote_http_response(&resp)
+        }
     }
 
     #[cfg(test)]
@@ -690,6 +842,14 @@ pub mod http {
             let det = dag_core::determinism::constraint_for_hint(HINT_HTTP)
                 .expect("http determinism constraint registered");
             assert_eq!(det.minimum, dag_core::Determinism::BestEffort);
+        }
+
+        #[test]
+        fn remote_http_error_envelope_preserves_variants() {
+            let err = RemoteHttpErrorEnvelope::from_http_error(HttpError::Timeout(1_000));
+            let json = serde_json::to_value(&err).expect("json");
+            assert_eq!(json["kind"], "timeout");
+            assert_eq!(json["timeout_ms"], 1_000);
         }
     }
 }

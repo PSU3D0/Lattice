@@ -2811,7 +2811,9 @@ dependencies = [
  "host-inproc",
  "kernel-exec",
  "kernel-plan",
+ "serde",
  "serde_json",
+ "tokio",
  "wasmtime",
 ]
 

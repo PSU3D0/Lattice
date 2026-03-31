@@ -102,7 +102,7 @@ proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full"] }
 serde_with = "3"
-uuid = { version = "1", features = ["v5", "serde", "js"] }
+uuid = { version = "1", features = ["v5", "serde"] }
 wasmtime = { version = "16", features = ["async"] }
 wit-bindgen = "0.24"
 rustls = { version = "0.23", features = ["ring"] }
