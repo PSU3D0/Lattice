@@ -1,7 +1,10 @@
 #[cfg(feature = "host-bundle")]
 use std::sync::Arc;
 
-use dag_core::{FlowIR, NodeError, NodeResult};
+use dag_core::{
+    ConnectorOpMetadata, ConnectorRoleKindDecl, ConnectorRoleRequirement, Determinism, Effects,
+    FlowIR, NodeError, NodeResult,
+};
 use dag_macros::def_node;
 use kernel_plan::{ValidatedIR, validate};
 use llm_agent::image_generation::ImageGenerationModel as _;
@@ -10,12 +13,109 @@ use llm_lattice::LatticeHttpClient;
 use llm_provider_openai::{Client as OpenAIClient, GPT_5_4_MINI, GPT_IMAGE_1_5};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use stdlib::workspace::{WorkspaceWriteInput, workspace_write};
+
+use capabilities::connector::{
+    EndpointProfileDescriptor, OutboundAuthKind, OutboundAuthProfileDescriptor,
+};
+use capabilities::http::{HttpMethod, HttpRequest};
 
 const DEFAULT_OPENAI_API_KEY: &str = "test-key";
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_OPENAI_TEXT_MODEL: &str = GPT_5_4_MINI;
 const DEFAULT_OPENAI_IMAGE_MODEL: &str = GPT_IMAGE_1_5;
+const OPENAI_CONNECTOR_ID: &str = "connector.openai";
+
+const OPENAI_ENDPOINT_PROFILE: EndpointProfileDescriptor = EndpointProfileDescriptor {
+    connector_id: OPENAI_CONNECTOR_ID,
+    name: "default_api",
+    env_base_url_var: "OPENAI_BASE_URL",
+    base_url: DEFAULT_OPENAI_BASE_URL,
+    default_headers: &[],
+};
+
+const OPENAI_AUTH_PROFILE: OutboundAuthProfileDescriptor = OutboundAuthProfileDescriptor {
+    connector_id: OPENAI_CONNECTOR_ID,
+    name: "default_auth",
+    env_var: "OPENAI_API_KEY",
+    kind: OutboundAuthKind::Bearer {
+        handle_kind: "http.bearer",
+    },
+};
+
+struct OpenAiStructuredExtractOp;
+impl OpenAiStructuredExtractOp {
+    pub const META: ConnectorOpMetadata = ConnectorOpMetadata {
+        operation_id: "connector.openai.extract_structured",
+        connector_id: OPENAI_CONNECTOR_ID,
+        summary: "Extract structured data with OpenAI structured outputs",
+        min_effects: Effects::Effectful,
+        max_determinism: Determinism::Nondeterministic,
+        determinism_hints: &[capabilities::http::HINT_HTTP],
+        effect_hints: &[capabilities::http::HINT_HTTP_WRITE],
+        roles: &[
+            ConnectorRoleRequirement {
+                kind: ConnectorRoleKindDecl::EndpointProfile,
+                name: OPENAI_ENDPOINT_PROFILE.name,
+                expected_handle_kind: "endpoint.profile",
+            },
+            ConnectorRoleRequirement {
+                kind: ConnectorRoleKindDecl::OutboundAuth,
+                name: OPENAI_AUTH_PROFILE.name,
+                expected_handle_kind: "http.bearer",
+            },
+        ],
+    };
+}
+
+struct OpenAiDraftOp;
+impl OpenAiDraftOp {
+    pub const META: ConnectorOpMetadata = ConnectorOpMetadata {
+        operation_id: "connector.openai.complete",
+        connector_id: OPENAI_CONNECTOR_ID,
+        summary: "Generate typed text completions with OpenAI",
+        min_effects: Effects::Effectful,
+        max_determinism: Determinism::Nondeterministic,
+        determinism_hints: &[capabilities::http::HINT_HTTP],
+        effect_hints: &[capabilities::http::HINT_HTTP_WRITE],
+        roles: &[
+            ConnectorRoleRequirement {
+                kind: ConnectorRoleKindDecl::EndpointProfile,
+                name: OPENAI_ENDPOINT_PROFILE.name,
+                expected_handle_kind: "endpoint.profile",
+            },
+            ConnectorRoleRequirement {
+                kind: ConnectorRoleKindDecl::OutboundAuth,
+                name: OPENAI_AUTH_PROFILE.name,
+                expected_handle_kind: "http.bearer",
+            },
+        ],
+    };
+}
+
+struct OpenAiImageGenOp;
+impl OpenAiImageGenOp {
+    pub const META: ConnectorOpMetadata = ConnectorOpMetadata {
+        operation_id: "connector.openai.generate_image",
+        connector_id: OPENAI_CONNECTOR_ID,
+        summary: "Generate an image with OpenAI image models",
+        min_effects: Effects::Effectful,
+        max_determinism: Determinism::Nondeterministic,
+        determinism_hints: &[capabilities::http::HINT_HTTP],
+        effect_hints: &[capabilities::http::HINT_HTTP_WRITE],
+        roles: &[
+            ConnectorRoleRequirement {
+                kind: ConnectorRoleKindDecl::EndpointProfile,
+                name: OPENAI_ENDPOINT_PROFILE.name,
+                expected_handle_kind: "endpoint.profile",
+            },
+            ConnectorRoleRequirement {
+                kind: ConnectorRoleKindDecl::OutboundAuth,
+                name: OPENAI_AUTH_PROFILE.name,
+                expected_handle_kind: "http.bearer",
+            },
+        ],
+    };
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LeadSubmission {
@@ -98,10 +198,11 @@ async fn lead_submission_trigger(input: LeadSubmission) -> NodeResult<LeadSubmis
     summary = "Extract structured lead details from the inbound submission",
     effects = "Effectful",
     determinism = "Nondeterministic",
-    resources(http_write(capabilities::http::HttpWrite))
+    resources(http_write(capabilities::http::HttpWrite)),
+    connector_ops(OpenAiStructuredExtractOp)
 )]
 async fn extract_lead(submission: LeadSubmission) -> NodeResult<LeadInfo> {
-    let client = openai_client();
+    let client = openai_client().await?;
     let submission_text = format!(
         "Lead submission:\nname: {}\nemail: {}\nmessage: {}",
         submission.name, submission.email, submission.message
@@ -127,10 +228,11 @@ async fn extract_lead(submission: LeadSubmission) -> NodeResult<LeadInfo> {
     summary = "Draft a personalized outreach email for a high-priority lead",
     effects = "Effectful",
     determinism = "Nondeterministic",
-    resources(http_write(capabilities::http::HttpWrite))
+    resources(http_write(capabilities::http::HttpWrite)),
+    connector_ops(OpenAiDraftOp)
 )]
 async fn draft_outreach(lead: LeadInfo) -> NodeResult<DraftedLead> {
-    let client = openai_client();
+    let client = openai_client().await?;
     let prompt = format!(
         "Write a concise outreach email for the following lead.\n\n{}",
         serde_json::to_string_pretty(&lead)
@@ -157,10 +259,11 @@ async fn draft_outreach(lead: LeadInfo) -> NodeResult<DraftedLead> {
     summary = "Generate a hero image for the high-priority lead",
     effects = "Effectful",
     determinism = "Nondeterministic",
-    resources(http_write(capabilities::http::HttpWrite))
+    resources(http_write(capabilities::http::HttpWrite)),
+    connector_ops(OpenAiImageGenOp)
 )]
 async fn generate_image(input: DraftedLead) -> NodeResult<HighPriorityLeadImage> {
-    let client = openai_client();
+    let client = openai_client().await?;
     let prompt = format!(
         "Create a polished hero image for a high-priority lead.\n\nLead:\n{}\n\nDraft subject: {}\nDraft tone: {}",
         input.lead.name, input.draft.subject, input.draft.tone
@@ -192,12 +295,22 @@ async fn generate_image(input: DraftedLead) -> NodeResult<HighPriorityLeadImage>
 )]
 async fn store_image(input: HighPriorityLeadImage) -> NodeResult<StoredLeadPackage> {
     let image_path = workspace_image_path(&input.lead);
-    let written = workspace_write(WorkspaceWriteInput {
-        path: image_path,
-        bytes: input.image_bytes,
+    let image_bytes = input.image_bytes;
+    let written = capabilities::context::with_current_async(|resources| async move {
+        let workspace = resources
+            .workspace()
+            .ok_or_else(|| NodeError::new("store_image requires Workspace"))?;
+        workspace
+            .write_normalized(
+                &image_path,
+                &image_bytes,
+                capabilities::workspace::WorkspaceWriteOptions::default(),
+            )
+            .await
+            .map_err(node_error)
     })
     .await
-    .map_err(node_error)?;
+    .ok_or_else(|| NodeError::new("store_image missing ResourceAccess context"))??;
 
     Ok(StoredLeadPackage {
         lead: input.lead,
@@ -310,7 +423,7 @@ pub fn validated_ir() -> ValidatedIR {
     validate(&flow()).expect("s11 lead intake flow should validate")
 }
 
-#[cfg(feature = "host-bundle")]
+#[cfg(all(feature = "host-bundle", not(target_arch = "wasm32")))]
 pub fn bundle() -> host_inproc::FlowBundle {
     use host_inproc::{FlowBundle, FlowEntrypoint, NodeContract, NodeSource};
     use kernel_exec::{NodeRegistry, RegistryResolver};
@@ -353,16 +466,75 @@ pub fn bundle() -> host_inproc::FlowBundle {
     }
 }
 
-fn openai_client() -> OpenAIClient<LatticeHttpClient> {
-    OpenAIClient::<LatticeHttpClient>::builder()
-        .base_url(openai_base_url())
-        .api_key(openai_api_key())
-        .http_client(LatticeHttpClient::from_current_resources().unwrap_or_default())
-        .build()
-        .expect("openai client should build")
+#[derive(Clone, Debug)]
+struct OpenAiSettings {
+    api_key: String,
+    base_url: String,
 }
 
-fn openai_api_key() -> String {
+async fn openai_client() -> NodeResult<OpenAIClient<LatticeHttpClient>> {
+    let settings = openai_settings().await?;
+    OpenAIClient::<LatticeHttpClient>::builder()
+        .base_url(settings.base_url)
+        .api_key(settings.api_key)
+        .http_client(LatticeHttpClient::from_current_resources().unwrap_or_default())
+        .build()
+        .map_err(node_error)
+}
+
+async fn openai_settings() -> NodeResult<OpenAiSettings> {
+    if let Some(result) = capabilities::context::with_current_async(|resources| async move {
+        let runtime = match resources.connector_runtime() {
+            Some(runtime) => runtime,
+            None => return Ok::<Option<OpenAiSettings>, NodeError>(None),
+        };
+        let scope = match resources.connector_scope() {
+            Some(scope) => scope,
+            None => return Ok::<Option<OpenAiSettings>, NodeError>(None),
+        };
+
+        let endpoint = runtime
+            .resolve_endpoint_profile(&scope, &OPENAI_ENDPOINT_PROFILE)
+            .await
+            .map_err(node_error)?;
+        let mut request = HttpRequest::new(HttpMethod::Get, endpoint.base_url.clone());
+        runtime
+            .apply_outbound_auth(&scope, &OPENAI_AUTH_PROFILE, &mut request)
+            .await
+            .map_err(node_error)?;
+        let api_key = bearer_api_key(&request)?;
+
+        Ok(Some(OpenAiSettings {
+            api_key,
+            base_url: endpoint.base_url,
+        }))
+    })
+    .await
+    {
+        if let Some(settings) = result? {
+            return Ok(settings);
+        }
+    }
+
+    Ok(OpenAiSettings {
+        api_key: openai_api_key_fallback(),
+        base_url: openai_base_url_fallback(),
+    })
+}
+
+fn bearer_api_key(request: &HttpRequest) -> NodeResult<String> {
+    let header = request
+        .headers
+        .get("authorization")
+        .or_else(|| request.headers.get("Authorization"))
+        .ok_or_else(|| NodeError::new("missing authorization header from connector runtime"))?;
+    let token = header
+        .strip_prefix("Bearer ")
+        .ok_or_else(|| NodeError::new(format!("unsupported authorization header `{header}`")))?;
+    Ok(token.to_string())
+}
+
+fn openai_api_key_fallback() -> String {
     #[cfg(target_arch = "wasm32")]
     {
         DEFAULT_OPENAI_API_KEY.to_string()
@@ -374,7 +546,7 @@ fn openai_api_key() -> String {
     }
 }
 
-fn openai_base_url() -> String {
+fn openai_base_url_fallback() -> String {
     #[cfg(target_arch = "wasm32")]
     {
         DEFAULT_OPENAI_BASE_URL.to_string()

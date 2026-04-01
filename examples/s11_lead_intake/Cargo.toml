@@ -23,20 +23,15 @@ llm-provider-openai = { path = "../../crates/llm-provider-openai" }
 schemars = "1"
 serde.workspace = true
 serde_json.workspace = true
-stdlib = { path = "../../crates/stdlib" }
+host-inproc = { path = "../../crates/host-inproc", optional = true }
+kernel-exec = { path = "../../crates/kernel-exec", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
 cap-http-reqwest = { path = "../../crates/cap-http-reqwest" }
 cap-workspace-fs = { path = "../../crates/cap-workspace-fs" }
-host-inproc = { path = "../../crates/host-inproc" }
-kernel-exec = { path = "../../crates/kernel-exec" }
 tokio.workspace = true
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-host-inproc = { path = "../../crates/host-inproc" }
-kernel-exec = { path = "../../crates/kernel-exec", default-features = false, features = ["wasm"] }
 
 [dev-dependencies]
 async-trait.workspace = true
@@ -45,7 +40,7 @@ httpmock = "0.7"
 
 [features]
 default = ["host-bundle"]
-host-bundle = []
+host-bundle = ["kernel-exec", "host-inproc"]
 native-smoke = []
 flow-registry = ["dag-core/flow-registry", "dag-macros/flow-registry"]
 
