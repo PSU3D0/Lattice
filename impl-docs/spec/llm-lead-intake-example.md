@@ -103,9 +103,7 @@ struct EmailPackage {
 - Effects: Effectful
 - Determinism: Nondeterministic (LLM output varies)
 - Resources: http_write (for provider API call)
-- Implementation: Uses `llm_agent::extractor::Extractor<M, LeadInfo>` with
-  `schemars::JsonSchema` derived on `LeadInfo`. The model is forced to return
-  structured output matching the schema.
+- Implementation: Uses typed structured output (`prompt_typed::<LeadInfo>(...)`) so the OpenAI provider emits `response_format = json_schema` with a strict schema-constrained response.
 
 ### draft_outreach
 - Effects: Effectful
@@ -120,7 +118,7 @@ struct EmailPackage {
 - Resources: http_write
 - Idempotency: key = "lead.email", scope = Node
 - Implementation: Uses `llm_provider_openai::image_generation::ImageGenerationModel`
-  with `DALL_E_3` in the first worked proof. Returns raw image bytes.
+  with `gpt-image-1.5`. Returns raw image bytes.
 
 ### store_image
 - Effects: Effectful
@@ -178,15 +176,15 @@ impl HttpClientExt for LatticeHttpClient {
 The long-term goal is host-owned auth/binding resolution in the same spirit as
 other connector families.
 
-For the **first worked proof**:
-- native/mock execution may use an env-backed development seam,
-- Workers execution should still treat the secret as host-owned,
-- guest code should not assume direct `std::env::var(...)` access as the final
-  portable model.
+For the implemented path now:
+- native/mock execution can still use an env-backed development seam,
+- real native smoke uses that path with `OPENAI_API_KEY`,
+- wasm/workerd and wasmtime execution prefer host-provided connector-runtime endpoint/auth resolution when present,
+- guest code still keeps env fallback only as a pragmatic local/dev bridge.
 
-So this example should be written to allow both:
-1. a temporary dev-path API key source for native tests, and
-2. a host-provided/binding-backed path for Workers-friendly follow-on work.
+So this example now supports both:
+1. a temporary native dev/live path via env vars, and
+2. a host-provided/binding-backed path for wasm-hosted execution.
 
 For the mock test path, the API key is a static string and HTTP goes to a local
 mock server.
@@ -314,7 +312,7 @@ examples/s11_lead_intake/
 
 ## Resolved decisions
 
-1. **Image generation:** OpenAI `DALL_E_3` is the first proved image model.
+1. **Image generation:** OpenAI `gpt-image-1.5` is the current proved image model.
    The ported implementation in `llm-provider-openai::image_generation`
    returns raw bytes (base64-decoded).
 
@@ -325,24 +323,31 @@ examples/s11_lead_intake/
    There is no `cap-blob-r2` for Workers yet, and the image is a run-scoped
    artifact — workspace is the right tool.
 
-3. **AI surface shape:** this example uses explicit graph-visible AI steps first.
+3. **Structured extraction shape:** the example now proves the stricter OpenAI
+   `json_schema` structured-output path rather than the earlier tool-call
+   extractor path.
+
+4. **AI surface shape:** this example uses explicit graph-visible AI steps first.
    It is not the first bounded agent-loop example.
 
-4. **Auth path:** a temporary env-backed dev seam is acceptable for native proof,
-   but the long-term model is host-owned auth/bindings for Workers-friendly
-   execution. Full generalized connector binding may remain a follow-on.
+5. **Auth path:** native env-backed live proof exists, but wasm-hosted execution
+   now prefers host-provided connector-runtime endpoint/auth resolution when
+   available. Full generalized connection management remains a follow-on.
 
-5. **Adapter crate:** Dedicated `crates/llm-lattice/` crate for the
+6. **Adapter crate:** Dedicated `crates/llm-lattice/` crate for the
    `LatticeHttpClient` adapter + Lattice-specific provider/client helpers.
 
-6. **Workers testing:** miniflare/workerd first. Reuse or extract existing
+7. **Workers testing:** miniflare/workerd first. Reuse or extract existing
    host-workers workerd test infrastructure. Real Cloudflare deploy is a
    follow-on.
 
-7. **Streaming:** Non-streaming for the first version. Workers SSE streaming
+8. **Wasm execution proof:** both bundle metadata/load proof and full
+   host-wasmtime execution proof now exist for the example.
+
+9. **Streaming:** Non-streaming for the first version. Workers SSE streaming
    of LLM completions is a nice follow-on.
 
-8. **Email sending:** The flow produces an `EmailPackage` but doesn't send it.
+10. **Email sending:** The flow produces an `EmailPackage` but doesn't send it.
    SendGrid/SES connector is a follow-on.
 
 ## Cross-references

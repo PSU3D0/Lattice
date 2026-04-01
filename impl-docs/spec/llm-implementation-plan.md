@@ -220,7 +220,7 @@ The important decision is:
 1. Verify and repair client capability exposure so the already-ported OpenAI
    image-generation implementation is cleanly consumable through the provider
    client path.
-2. Prefer `DALL_E_3` as the first proved image model.
+2. Current proved image path uses `gpt-image-1.5`.
 3. Add focused tests for image-generation request/response handling.
 
 ### Phase 5c — structured-output contract proof
@@ -244,6 +244,7 @@ Build the first explicit AI example with:
 1. Native proof with mock HTTP server returning canned provider responses.
 2. Wasmtime bundle proof with mock HTTP + `MemoryWorkspace`.
 3. Validate the example through standard CLI bundle paths.
+4. Real native live smoke with OpenAI credentials and artifact output.
 
 ### Phase 5f — Workers/miniflare proof
 
@@ -257,7 +258,24 @@ Build the first explicit AI example with:
 - `cargo test -p llm-provider-openai`
 - native example tests
 - wasm bundle proof for the example
+- full host-wasmtime execution proof for the example
 - workerd/miniflare proof for the example
+- real native live smoke with artifact output
+
+### Phase 5 status snapshot
+
+As of the current state, the following are landed:
+- `llm-lattice` bridge crate
+- OpenAI structured-output and image-generation proofs
+- `example-s11-lead-intake`
+- bundle metadata/load proof
+- full host-wasmtime execution proof for s11
+- workerd/miniflare proof for s11
+- real native live smoke for s11 using `gpt-5.4-mini` + `gpt-image-1.5`
+
+The remaining follow-on is no longer “make s11 run”, but rather broader AI
+surface/product work: more examples, bounded agent loop runtime, additional
+providers, and deployment UX.
 
 ## Phase 6 (optional): Additional providers
 

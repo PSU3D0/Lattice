@@ -26,6 +26,20 @@ without re-litigating the architecture.
 - A bounded agent loop is a **later semantic node-local runtime**, not the first
   example.
 
+## Status note
+
+The original sequence below has now been completed for `example-s11-lead-intake`.
+It remains useful as a historical implementation pattern for future examples.
+
+What is now landed:
+- `llm-lattice`
+- OpenAI structured-output + image-generation wiring
+- `example-s11-lead-intake`
+- native tests
+- real native live smoke
+- host-wasmtime execution proof
+- workerd/miniflare proof
+
 ## Immediate implementation sequence
 
 ## Slice 1 — `crates/llm-lattice/`
@@ -92,7 +106,7 @@ Build the first explicit topological AI example.
 
 ### Constraints
 - use OpenAI end-to-end for first pass
-- prefer `DALL_E_3` first
+- current proved image path is `gpt-image-1.5`
 - store generated image bytes in workspace
 - explicit topology first, not bounded agent loop
 
@@ -163,7 +177,9 @@ Use **fresh** subagents with narrow scopes.
 
 A worked example is considered ready when all are true:
 - native test proof passes
+- real native live smoke passes
 - wasm bundle proof passes
+- full host-wasmtime execution proof passes
 - workerd/miniflare proof passes
 - workspace artifact path is exercised on Workers via R2/DO
 - OpenAI completion + image generation both flow through the Lattice bridge

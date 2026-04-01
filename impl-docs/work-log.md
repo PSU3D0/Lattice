@@ -130,7 +130,14 @@ Completed scope aligns with early contract/runtime milestones; older planning re
 - Added CLI integration coverage in `crates/cli/tests/bundle.rs` for the s11 wasm manifest and flow IR artifact layout.
 - Added a wasm bundle load proof in `crates/cli/tests/serve.rs` that loads the s11 bundle via `host_wasmtime::load_flow_bundle` and verifies route metadata preservation.
 - Acceptance gates: `cargo test -p flows-cli --test bundle`, `cargo test -p flows-cli --test serve load_s11_lead_intake_wasm_bundle_preserves_route_metadata -- --nocapture`.
-- Notes: the guest still carries wasm-bindgen imports, so this slice stops at bundle/load metadata proof rather than full wasmtime execution.
+- Follow-on note (now completed below): this originally stopped at metadata/load proof before the wasmtime execution gap was closed.
+
+## 2026-03-31 — AI surface + bridge + example completion arc
+
+- Added architecture specs for AI layering, bounded agent loops, and the post-extraction dispatch path (`impl-docs/spec/ai-surface-and-layering.md`, `impl-docs/spec/agent-loop-runtime.md`, `impl-docs/spec/ai-phase-next-dispatch.md`).
+- Landed the `llm-lattice` bridge crate so Lattice HTTP capabilities can drive portable AI/provider clients (`crates/llm-lattice/`).
+- Hardened the OpenAI provider for structured-output and image-generation use, including strict `json_schema` request proofs and client-surface image-generation tests (`crates/llm-provider-openai/tests/*`).
+- Acceptance gates: `cargo test -p llm-lattice`, `cargo test -p llm-provider-openai`.
 
 ## 2026-03-31 — S11 workerd/miniflare proof (Epic 05.5)
 
@@ -139,6 +146,22 @@ Completed scope aligns with early contract/runtime milestones; older planning re
 - Extended `crates/host-workers/workerd-tests/src/index.test.ts` with an end-to-end proof that POST `/leads` returns an `EmailPackage` carrying `image_artifact_path`, inspects the R2 object listing for the stored artifact, and cleans up the object afterward.
 - Acceptance gates: `npm run test -- --run -t "s11 lead intake example"` in `crates/host-workers/workerd-tests`.
 - Notes: the proof is intentionally test-scoped and keeps the example’s production architecture unchanged; the object listing proves R2 persistence and the cleanup route removes the artifact after verification.
+
+## 2026-03-31 — S11 rebaseline to 2026 OpenAI models + live native smoke
+
+- Rebased the example onto `gpt-5.4-mini` for extraction + drafting and `gpt-image-1.5` for image generation (`examples/s11_lead_intake/src/lib.rs`).
+- Switched `extract_lead` from the earlier tool-call extractor path to the stricter OpenAI `json_schema` / typed structured-output path.
+- Broadened OpenAI image-model handling so GPT image family models are treated correctly (`crates/llm-provider-openai/src/image_generation.rs`).
+- Added a native live smoke harness and realistic sample payload (`examples/s11_lead_intake/src/bin/live_smoke.rs`, `examples/s11_lead_intake/payloads/live-sample.json`).
+- Ran a real live smoke against OpenAI using fnox-provided credentials; artifacts were written under `scratch/s11-lead-intake-live/` including `email_package.json`, `workspace_entries.json`, and a generated `hero.png`.
+- Acceptance gates: `cargo run -p example-s11-lead-intake --bin live_smoke --features native-smoke` plus the existing example/provider tests.
+
+## 2026-03-31 — S11 host-wasmtime execution gap closed
+
+- Removed the remaining wasm-bindgen/browser import surface from the example bundle path by eliminating the stdlib workspace helper dependency from the guest and writing workspace artifacts directly through the capability context.
+- Declared local OpenAI connector-style operations on the AI nodes so wasm guests auto-inject the remote connector runtime and can resolve endpoint/auth from the current execution context.
+- Added a real host-wasmtime execution proof in `crates/cli/tests/bundle.rs` (`run_bundle_s11_lead_intake_wasmtime_roundtrip`) that builds the wasm bundle, loads it through `host_wasmtime`, executes it with mock OpenAI HTTP + connector runtime + memory workspace, and asserts the image artifact write.
+- Acceptance gates: `cargo test -p flows-cli --test bundle run_bundle_s11_lead_intake_wasmtime_roundtrip -- --nocapture`, `cargo test -p flows-cli --test bundle --test serve`, `cargo check -p example-s11-lead-intake --target wasm32-unknown-unknown --no-default-features`.
 
 ## 2026-03-31 — OpenAI image wiring and structured-output proof (Epic 05.2)
 
