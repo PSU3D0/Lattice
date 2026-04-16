@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "S14 meeting transcript sync example proving flow-local reconciliation semantics with example-local D1/R2 integration while deferring the scheduled wrapper."
+description = "S14 meeting transcript sync example with a safe example-owned execution seam, example-local D1/R2 adapters, and a thin scheduled-wrapper helper path."
 
 [lib]
 crate-type = ["cdylib", "rlib"]

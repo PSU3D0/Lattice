@@ -1,5 +1,4 @@
-use std::future::Future;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Arc;
 
 use anyhow::{Context, anyhow};
 use schemars::JsonSchema;
@@ -28,7 +27,6 @@ pub struct TranscriptSyncServices {
 }
 
 impl TranscriptSyncServices {
-    #[cfg(test)]
     pub fn new(
         meeting_source: Arc<dyn MeetingSource>,
         resolver: Arc<dyn TranscriptSourceResolver>,
@@ -43,19 +41,6 @@ impl TranscriptSyncServices {
             uploader,
             store,
         }
-    }
-}
-
-#[derive(Clone)]
-pub(crate) struct InstalledRuntime {
-    pub(crate) config: TranscriptSyncConfig,
-    pub(crate) services: TranscriptSyncServices,
-}
-
-impl InstalledRuntime {
-    #[cfg(test)]
-    pub(crate) fn new(config: TranscriptSyncConfig, services: TranscriptSyncServices) -> Self {
-        Self { config, services }
     }
 }
 
@@ -94,42 +79,10 @@ struct ProcessedJob {
     disposition: ProcessDisposition,
 }
 
-static INSTALLED_RUNTIME: OnceLock<Mutex<Option<Arc<InstalledRuntime>>>> = OnceLock::new();
-
-fn runtime_slot() -> &'static Mutex<Option<Arc<InstalledRuntime>>> {
-    INSTALLED_RUNTIME.get_or_init(|| Mutex::new(None))
-}
-
-#[cfg(test)]
-pub(crate) struct InstalledRuntimeGuard {
-    previous: Option<Arc<InstalledRuntime>>,
-}
-
-#[cfg(test)]
-impl Drop for InstalledRuntimeGuard {
-    fn drop(&mut self) {
-        *runtime_slot().lock().expect("installed runtime lock") = self.previous.take();
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn install_runtime(runtime: Arc<InstalledRuntime>) -> InstalledRuntimeGuard {
-    let mut slot = runtime_slot().lock().expect("installed runtime lock");
-    let previous = slot.replace(runtime);
-    InstalledRuntimeGuard { previous }
-}
-
-pub(crate) async fn with_installed_runtime<F, Fut, T>(f: F) -> anyhow::Result<T>
-where
-    F: FnOnce(Arc<InstalledRuntime>) -> Fut,
-    Fut: Future<Output = anyhow::Result<T>>,
-{
-    let runtime = runtime_slot()
-        .lock()
-        .expect("installed runtime lock")
-        .clone()
-        .ok_or_else(|| anyhow!("meeting transcript sync runtime is not installed"))?;
-    f(runtime).await
+pub(crate) fn bundle_execution_error(node_name: &str) -> anyhow::Error {
+    anyhow!(
+        "s14 node `{node_name}` is not wired to a production host runtime; use TranscriptSyncExecutor::execute(...) or TranscriptSyncExecutor::execute_scheduled_tick(...) instead"
+    )
 }
 
 pub(crate) async fn fetch_recent_completed_meetings(

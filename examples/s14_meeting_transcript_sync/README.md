@@ -2,14 +2,17 @@
 
 Serious first-party workflow example for a polling/reconciliation transcript sync.
 
-## What it proves in this tranche
+## What this tranche lands honestly
 
 - explicit outer reconcile topology for meeting transcript sync
 - flow-local ownership of meeting-key, retry, waiting, ambiguity, and upload policy
-- typed config, domain, and state modules
-- flow-local fake adapters and fake-driven semantic tests
+- typed config, domain, state, and scheduled-trigger modules
+- a safe example-owned execution seam: `TranscriptSyncExecutor`
 - example-local Cloudflare storage helpers for a D1-shaped job ledger and an R2-shaped transcript uploader
-- serious example crate shape with standard `flow()` / `validated_ir()` / `bundle()` entrypoints, while keeping the scheduled-wrapper/deploy seam deferred
+- a thin example-owned scheduled wrapper path:
+  - generic `ScheduledTick` -> `TranscriptSyncExecutor::execute_scheduled_tick(...)`
+  - Cloudflare adapter surface: `worker::ScheduledEvent` -> `cloudflare::execute_scheduled_event(...)` (compile-checked; not yet runtime-proved)
+- standard `flow()` / `validated_ir()` / `bundle()` entrypoints, with truthful limits on what the bundle path does today
 
 ## Current flow shape
 
@@ -22,9 +25,51 @@ Serious first-party workflow example for a polling/reconciliation transcript syn
 
 Important honest note:
 - per-meeting classify / resolve / fetch / upload semantics are implemented explicitly in the example crate's reconciliation engine
-- they are not yet split into graph-visible per-item nodes because this tranche still stops short of a truthful scheduled-wrapper / fanout seam
+- they are not yet split into graph-visible per-item nodes because this example still keeps the per-item reconciliation loop local rather than inventing a broader scheduler/fanout platform
 
-## Declared invocation contract
+## Safe execution seam
+
+Use `TranscriptSyncExecutor` when you want to run the workflow with supplied config and services:
+
+```rust
+let services = TranscriptSyncServices::new(
+    meeting_source,
+    resolver,
+    fetcher,
+    uploader,
+    store,
+);
+let executor = TranscriptSyncExecutor::new(config, services);
+let summary = executor.execute(request).await?;
+```
+
+Properties of this seam:
+- config and services are owned by the executor instance
+- overlapping executions do not share a process-global installed runtime
+- the seam is example-local and does not change host/runtime core crates
+- the same seam is used by the scheduled helper path
+
+## Scheduled wrapper path
+
+The landed thin scheduled path is:
+
+```rust
+let tick = ScheduledTick::new("2026-04-16T10:00:00Z", "*/5 * * * *");
+let summary = executor.execute_scheduled_tick(&tick).await?;
+```
+
+For Cloudflare Workers, the example also exposes:
+- `cloudflare::scheduled_tick_from_event(...)`
+- `cloudflare::execute_scheduled_event(...)`
+
+Those helpers convert `worker::ScheduledEvent` into the same `ScheduledTick` shape and then delegate to `TranscriptSyncExecutor`.
+
+Important honest limits:
+- the generic scheduled composition seam is runtime-proved in crate tests
+- the Cloudflare-specific `worker::ScheduledEvent` adapter is currently compile-checked, not separately runtime-proved
+- the remaining deployment blocker is narrow: this example still does not ship real Google Calendar / Docs / Drive or Zoom meeting-source / resolver / fetcher implementations, so deploy code must still compose those services before calling the wrapper
+
+## Bundle and route contract
 
 The flow preserves route metadata for:
 - `POST /meeting-transcript-sync/run`
@@ -33,11 +78,10 @@ Current payload examples:
 - `payloads/sample.json`
 - `payloads/backfill-sample.json`
 
-Current honest note:
-- this route remains part of the example's bundle/entrypoint contract
-- crate semantic tests still exercise effectful execution via the existing test-only installed runtime seam
-- this tranche does **not** add a production/non-test global runtime installation path
-- a safe scheduled Worker wrapper remains deferred to the later D2 tranche
+Important honest note:
+- the bundle remains a truthful topology/bundle artifact
+- the effectful production execution seam is `TranscriptSyncExecutor`, not a process-global installed runtime behind `bundle()`
+- executing the bundle directly returns an explicit error pointing callers at `TranscriptSyncExecutor`
 
 ## Cloudflare storage slice
 
@@ -72,13 +116,13 @@ Implemented here:
 - retry vs permanent failure behavior
 - upload retry semantics
 - idempotent discovered-job upsert and org-scoped due-job selection
+- example-owned direct execution seam and scheduled-tick composition seam
 - D1/R2 integration adapters kept local to the example crate
 
 Deferred here:
 - real Google Calendar / Drive / Docs integration
 - real Zoom transcript retrieval
-- safe scheduled Worker wrapper
-- any non-test execution seam beyond the current test harness
+- a fully assembled deployable Worker entrypoint with live provider services wired from env/bindings
 - host-wasmtime or workerd proofing
 
 ## Provider groundwork usage
@@ -92,7 +136,8 @@ Business policy remains flow-local.
 ## Verification
 
 Current honest proof path:
-- crate semantic tests with flow-local fake adapters
+- crate semantic tests through `TranscriptSyncExecutor`
+- scheduled-tick tests proving the thin wrapper path
 - example-local D1/R2 tests under `src/cloudflare/`
 - native crate checks plus wasm guest check without default features
 

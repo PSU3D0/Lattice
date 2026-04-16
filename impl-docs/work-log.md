@@ -651,3 +651,19 @@ Acceptance gates:
   - `CARGO_TARGET_DIR=.target cargo check -p example-s14-meeting-transcript-sync`
   - `CARGO_TARGET_DIR=.target cargo check -p example-s14-meeting-transcript-sync --target wasm32-unknown-unknown --no-default-features`
 - Compatibility/contract notes: no scheduled-wrapper/runtime seam was added in this tranche; effectful execution outside the existing test harness remains deferred to the later D2 work.
+
+## 2026-04-16 — S14 safe executor + thin scheduled wrapper seam (Epic 05.6)
+
+- Added `TranscriptSyncExecutor` and `ScheduledTick` under `examples/s14_meeting_transcript_sync/src/execution.rs` and `examples/s14_meeting_transcript_sync/src/scheduled.rs` so s14 can execute with explicitly supplied config/services outside the rejected installed-runtime pattern.
+- Kept the seam example-local: `TranscriptSyncServices` is now a public constructor surface owned by the example, and execution still routes through the existing reconciliation engine rather than any host/runtime-core redesign.
+- Added a wasm-only Cloudflare helper in `examples/s14_meeting_transcript_sync/src/cloudflare/scheduled.rs` that converts `worker::ScheduledEvent` into the example's `ScheduledTick` and delegates to `TranscriptSyncExecutor::execute_scheduled_tick(...)`.
+- Made the bundle/runtime claim truthful: effectful bundle execution now returns explicit guidance to use `TranscriptSyncExecutor`, and the README documents the remaining narrow blocker as live provider service assembly rather than hiding another unsafe global seam.
+- Added regression coverage for scheduled request derivation, scheduled execution through the direct seam, concurrent executor isolation, and the explicit bundle guidance path while preserving the existing semantic and D1/R2 tests.
+- Acceptance gates:
+  - `CARGO_TARGET_DIR=.target cargo test -p example-s14-meeting-transcript-sync bundle_execution_points_callers_at_direct_executor -- --test-threads=1`
+  - `CARGO_TARGET_DIR=.target cargo test -p example-s14-meeting-transcript-sync scheduled_tick_executes_via_direct_executor -- --test-threads=1`
+  - `CARGO_TARGET_DIR=.target cargo test -p example-s14-meeting-transcript-sync concurrent_direct_executors_keep_config_and_services_isolated -- --test-threads=1`
+  - `CARGO_TARGET_DIR=.target cargo test -p example-s14-meeting-transcript-sync -- --test-threads=1`
+  - `CARGO_TARGET_DIR=.target cargo check -p example-s14-meeting-transcript-sync`
+  - `CARGO_TARGET_DIR=.target cargo check -p example-s14-meeting-transcript-sync --target wasm32-unknown-unknown --no-default-features`
+- Compatibility/contract notes: no process-global installed runtime remains as the production seam for s14; the real scheduled helper is example-owned and thin, while live provider wiring stays an explicit deployment-layer follow-up.

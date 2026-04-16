@@ -10,15 +10,24 @@ pub mod cloudflare;
 pub mod config;
 pub mod domain;
 mod engine;
+pub mod execution;
+pub mod scheduled;
 pub mod state;
 
 pub use adapters::fake;
+pub use adapters::{
+    FetchOutcome, MeetingSource, SourceResolution, TranscriptFetcher, TranscriptJobStore,
+    TranscriptSourceResolver, TranscriptUploader,
+};
 pub use config::TranscriptSyncConfig;
 pub use domain::{
     CompletedMeeting, ConferenceKind, ConferenceLocator, TranscriptArtifact, TranscriptSourceKind,
     TranscriptSourceRef, TranscriptSyncRequest, TranscriptSyncSummary, UploadedTranscript,
     meeting_key_from_event,
 };
+pub use engine::TranscriptSyncServices;
+pub use execution::TranscriptSyncExecutor;
+pub use scheduled::{ScheduledTick, request_for_scheduled_tick};
 pub use state::{JobStatus, MeetingJob};
 
 #[def_node(
@@ -41,13 +50,11 @@ async fn transcript_sync_trigger(
     determinism = "BestEffort"
 )]
 async fn fetch_recent_completed_meetings(
-    request: TranscriptSyncRequest,
+    _request: TranscriptSyncRequest,
 ) -> NodeResult<engine::DiscoveredMeetingsBatch> {
-    engine::with_installed_runtime(|runtime| async move {
-        engine::fetch_recent_completed_meetings(&runtime.services, &runtime.config, &request).await
-    })
-    .await
-    .map_err(node_error)
+    Err(node_error(engine::bundle_execution_error(
+        "FetchRecentCompletedMeetings",
+    )))
 }
 
 #[def_node(
@@ -57,13 +64,11 @@ async fn fetch_recent_completed_meetings(
     determinism = "BestEffort"
 )]
 async fn upsert_meeting_jobs(
-    batch: engine::DiscoveredMeetingsBatch,
+    _batch: engine::DiscoveredMeetingsBatch,
 ) -> NodeResult<engine::UpsertedMeetingsBatch> {
-    engine::with_installed_runtime(|runtime| async move {
-        engine::upsert_meeting_jobs(&runtime.services, batch).await
-    })
-    .await
-    .map_err(node_error)
+    Err(node_error(engine::bundle_execution_error(
+        "UpsertMeetingJobs",
+    )))
 }
 
 #[def_node(
@@ -72,12 +77,10 @@ async fn upsert_meeting_jobs(
     effects = "ReadOnly",
     determinism = "BestEffort"
 )]
-async fn select_due_jobs(batch: engine::UpsertedMeetingsBatch) -> NodeResult<engine::DueJobsBatch> {
-    engine::with_installed_runtime(|runtime| async move {
-        engine::select_due_jobs(&runtime.services, &runtime.config, batch).await
-    })
-    .await
-    .map_err(node_error)
+async fn select_due_jobs(
+    _batch: engine::UpsertedMeetingsBatch,
+) -> NodeResult<engine::DueJobsBatch> {
+    Err(node_error(engine::bundle_execution_error("SelectDueJobs")))
 }
 
 #[def_node(
@@ -86,12 +89,10 @@ async fn select_due_jobs(batch: engine::UpsertedMeetingsBatch) -> NodeResult<eng
     effects = "Effectful",
     determinism = "BestEffort"
 )]
-async fn reconcile_due_jobs(batch: engine::DueJobsBatch) -> NodeResult<TranscriptSyncSummary> {
-    engine::with_installed_runtime(|runtime| async move {
-        engine::reconcile_due_jobs(&runtime.services, &runtime.config, batch).await
-    })
-    .await
-    .map_err(node_error)
+async fn reconcile_due_jobs(_batch: engine::DueJobsBatch) -> NodeResult<TranscriptSyncSummary> {
+    Err(node_error(engine::bundle_execution_error(
+        "ReconcileDueJobs",
+    )))
 }
 
 #[def_node(

@@ -1,9 +1,9 @@
 #![cfg(not(target_arch = "wasm32"))]
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
+use async_trait::async_trait;
 use capabilities::ResourceBag;
-use host_inproc::HostExecutionResult;
 
 use crate::adapters::fake::{
     FakeMeetingSource, FakeTranscriptFetcher, FakeTranscriptSourceResolver, FakeTranscriptUploader,
@@ -15,11 +15,11 @@ use crate::domain::{
     CompletedMeeting, TranscriptArtifact, TranscriptSourceRef, TranscriptSyncRequest,
     TranscriptSyncSummary, UploadedTranscript,
 };
-use crate::engine::{InstalledRuntime, TranscriptSyncServices, install_runtime};
 use crate::state::{JobStatus, MeetingJob};
-use crate::{bundle, flow, meeting_key_from_event};
-
-static TEST_LOCK: Mutex<()> = Mutex::new(());
+use crate::{
+    MeetingSource, ScheduledTick, TranscriptSyncExecutor, TranscriptSyncServices, bundle, flow,
+    meeting_key_from_event, request_for_scheduled_tick,
+};
 
 #[derive(Clone)]
 struct TestHarness {
@@ -45,26 +45,22 @@ impl Default for TestHarness {
 }
 
 impl TestHarness {
-    async fn execute(&self, request: TranscriptSyncRequest) -> TranscriptSyncSummary {
-        let runtime = Arc::new(InstalledRuntime::new(self.config.clone(), self.services()));
-        let _guard = install_runtime(runtime);
-        let payload = serde_json::to_value(request).expect("serialize request");
-        let result = bundle()
-            .executor()
-            .with_resource_bag(ResourceBag::default())
-            .run_once(&bundle().validated_ir, "trigger", payload, "capture", None)
-            .await
-            .expect("flow execution succeeds");
+    fn executor(&self) -> TranscriptSyncExecutor {
+        TranscriptSyncExecutor::new(self.config.clone(), self.services())
+    }
 
-        match result {
-            HostExecutionResult::Value(value) => {
-                serde_json::from_value(value).expect("decode summary")
-            }
-            HostExecutionResult::Stream(_) => panic!("expected a value result"),
-            HostExecutionResult::Halt { alias, .. } => {
-                panic!("unexpected halt at {alias}")
-            }
-        }
+    async fn execute(&self, request: TranscriptSyncRequest) -> TranscriptSyncSummary {
+        self.executor()
+            .execute(request)
+            .await
+            .expect("direct execution succeeds")
+    }
+
+    async fn execute_scheduled(&self, tick: ScheduledTick) -> TranscriptSyncSummary {
+        self.executor()
+            .execute_scheduled_tick(&tick)
+            .await
+            .expect("scheduled execution succeeds")
     }
 
     fn services(&self) -> TranscriptSyncServices {
@@ -75,6 +71,24 @@ impl TestHarness {
             Arc::new(self.uploader.clone()),
             Arc::new(self.store.clone()),
         )
+    }
+}
+
+#[derive(Clone)]
+struct BarrierMeetingSource {
+    barrier: Arc<tokio::sync::Barrier>,
+    meetings: Vec<CompletedMeeting>,
+}
+
+#[async_trait]
+impl MeetingSource for BarrierMeetingSource {
+    async fn fetch_recent_completed_meetings(
+        &self,
+        _request: &TranscriptSyncRequest,
+        _config: &TranscriptSyncConfig,
+    ) -> anyhow::Result<Vec<CompletedMeeting>> {
+        self.barrier.wait().await;
+        Ok(self.meetings.clone())
     }
 }
 
@@ -96,12 +110,24 @@ fn sample_request() -> TranscriptSyncRequest {
 }
 
 fn request_ending_at(window_end: &str) -> TranscriptSyncRequest {
+    request_for_org("studio", window_end)
+}
+
+fn request_for_org(org_scope: &str, window_end: &str) -> TranscriptSyncRequest {
     TranscriptSyncRequest {
-        org_scope: "studio".to_string(),
+        org_scope: org_scope.to_string(),
         window_start: "2026-04-16T09:30:00Z".to_string(),
         window_end: window_end.to_string(),
         source: "cron".to_string(),
         backfill_reason: None,
+    }
+}
+
+fn config_for_org(org_scope: &str, destination_prefix: &str) -> TranscriptSyncConfig {
+    TranscriptSyncConfig {
+        org_scope: org_scope.to_string(),
+        destination_prefix: destination_prefix.to_string(),
+        ..sample_config()
     }
 }
 
@@ -177,8 +203,7 @@ fn flow_contains_explicit_reconcile_nodes() {
 }
 
 #[tokio::test]
-async fn bundle_without_installed_runtime_fails_with_explicit_message() {
-    let _lock = TEST_LOCK.lock().expect("test lock");
+async fn bundle_execution_points_callers_at_direct_executor() {
     let payload = serde_json::to_value(sample_request()).expect("serialize request");
 
     let result = bundle()
@@ -188,20 +213,140 @@ async fn bundle_without_installed_runtime_fails_with_explicit_message() {
         .await;
 
     let error = match result {
-        Ok(_) => panic!("bundle execution should fail without installed runtime"),
+        Ok(_) => panic!("bundle execution should fail with direct-executor guidance"),
         Err(error) => error,
     };
 
     assert!(
         error
             .to_string()
-            .contains("meeting transcript sync runtime is not installed")
+            .contains("use TranscriptSyncExecutor::execute(...)")
+    );
+}
+
+#[test]
+fn scheduled_request_uses_config_lookback_and_scope() {
+    let request = request_for_scheduled_tick(
+        &sample_config(),
+        &ScheduledTick::new("2026-04-16T10:00:00Z", "* * * * *"),
+    )
+    .expect("build scheduled request");
+
+    assert_eq!(request.org_scope, "studio");
+    assert_eq!(request.window_start, "2026-04-16T09:30:00Z");
+    assert_eq!(request.window_end, "2026-04-16T10:00:00Z");
+    assert_eq!(request.source, "cron:* * * * *");
+}
+
+#[tokio::test]
+async fn scheduled_tick_executes_via_direct_executor() {
+    let meeting = zoom_meeting("evt-scheduled", "2026-04-16T10:00:00Z");
+    let source_ref = zoom_source_ref("zoom-scheduled-source");
+    let harness = TestHarness {
+        meeting_source: FakeMeetingSource::new(vec![meeting.clone()]),
+        resolver: FakeTranscriptSourceResolver::default().with_outcome(
+            meeting.meeting_key.clone(),
+            SourceResolution::Resolved(source_ref.clone()),
+        ),
+        fetcher: FakeTranscriptFetcher::default().with_outcome(
+            source_ref.cache_key(),
+            FetchOutcome::Ready(artifact(source_ref.clone(), "scheduled transcript")),
+        ),
+        ..TestHarness::default()
+    };
+
+    let summary = harness
+        .execute_scheduled(ScheduledTick::new("2026-04-16T10:00:00Z", "*/5 * * * *"))
+        .await;
+    let job = harness.store.get(&meeting.meeting_key).expect("job exists");
+
+    assert_eq!(summary.uploaded, 1);
+    assert_eq!(job.status, JobStatus::Uploaded);
+    assert_eq!(
+        job.uploaded_destination_uri.as_deref(),
+        Some(
+            "r2://meeting-transcripts/transcripts/evt-scheduled:2026-04-16T10:00:00Z/transcript.txt"
+        )
+    );
+}
+
+#[tokio::test]
+async fn concurrent_direct_executors_keep_config_and_services_isolated() {
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+
+    let meeting_a = zoom_meeting("evt-concurrent-a", "2026-04-16T10:00:00Z");
+    let source_a = zoom_source_ref("zoom-concurrent-a");
+    let store_a = InMemoryTranscriptJobStore::default();
+    let executor_a = TranscriptSyncExecutor::new(
+        config_for_org("alpha", "r2://meeting-transcripts/alpha"),
+        TranscriptSyncServices::new(
+            Arc::new(BarrierMeetingSource {
+                barrier: Arc::clone(&barrier),
+                meetings: vec![meeting_a.clone()],
+            }),
+            Arc::new(FakeTranscriptSourceResolver::default().with_outcome(
+                meeting_a.meeting_key.clone(),
+                SourceResolution::Resolved(source_a.clone()),
+            )),
+            Arc::new(FakeTranscriptFetcher::default().with_outcome(
+                source_a.cache_key(),
+                FetchOutcome::Ready(artifact(source_a.clone(), "alpha transcript")),
+            )),
+            Arc::new(FakeTranscriptUploader::default()),
+            Arc::new(store_a.clone()),
+        ),
+    );
+
+    let meeting_b = zoom_meeting("evt-concurrent-b", "2026-04-16T10:00:00Z");
+    let source_b = zoom_source_ref("zoom-concurrent-b");
+    let store_b = InMemoryTranscriptJobStore::default();
+    let executor_b = TranscriptSyncExecutor::new(
+        config_for_org("beta", "r2://meeting-transcripts/beta"),
+        TranscriptSyncServices::new(
+            Arc::new(BarrierMeetingSource {
+                barrier,
+                meetings: vec![meeting_b.clone()],
+            }),
+            Arc::new(FakeTranscriptSourceResolver::default().with_outcome(
+                meeting_b.meeting_key.clone(),
+                SourceResolution::Resolved(source_b.clone()),
+            )),
+            Arc::new(FakeTranscriptFetcher::default().with_outcome(
+                source_b.cache_key(),
+                FetchOutcome::Ready(artifact(source_b.clone(), "beta transcript")),
+            )),
+            Arc::new(FakeTranscriptUploader::default()),
+            Arc::new(store_b.clone()),
+        ),
+    );
+
+    let (summary_a, summary_b) = tokio::join!(
+        executor_a.execute(request_for_org("alpha", "2026-04-16T10:00:00Z")),
+        executor_b.execute(request_for_org("beta", "2026-04-16T10:00:00Z")),
+    );
+
+    assert_eq!(summary_a.expect("alpha summary").uploaded, 1);
+    assert_eq!(summary_b.expect("beta summary").uploaded, 1);
+    assert_eq!(
+        store_a
+            .get(&meeting_a.meeting_key)
+            .expect("alpha job exists")
+            .uploaded_destination_uri
+            .as_deref(),
+        Some("r2://meeting-transcripts/alpha/evt-concurrent-a:2026-04-16T10:00:00Z/transcript.txt")
+    );
+    assert_eq!(
+        store_b
+            .get(&meeting_b.meeting_key)
+            .expect("beta job exists")
+            .uploaded_destination_uri
+            .as_deref(),
+        Some("r2://meeting-transcripts/beta/evt-concurrent-b:2026-04-16T10:00:00Z/transcript.txt")
     );
 }
 
 #[tokio::test]
 async fn zoom_ready_transcript_uploads_successfully() {
-    let _lock = TEST_LOCK.lock().expect("test lock");
     let meeting = zoom_meeting("evt-zoom-ready", "2026-04-16T10:00:00Z");
     let source_ref = zoom_source_ref("zoom-transcript-1");
     let harness = TestHarness {
@@ -234,7 +379,6 @@ async fn zoom_ready_transcript_uploads_successfully() {
 
 #[tokio::test]
 async fn zoom_not_ready_moves_to_waiting_state() {
-    let _lock = TEST_LOCK.lock().expect("test lock");
     let meeting = zoom_meeting("evt-zoom-wait", "2026-04-16T10:00:00Z");
     let source_ref = zoom_source_ref("zoom-transcript-2");
     let harness = TestHarness {
@@ -260,7 +404,6 @@ async fn zoom_not_ready_moves_to_waiting_state() {
 
 #[tokio::test]
 async fn gmeet_doc_resolves_and_uploads_successfully() {
-    let _lock = TEST_LOCK.lock().expect("test lock");
     let meeting = gmeet_meeting("evt-gmeet-ready", "2026-04-16T10:00:00Z");
     let source_ref = google_doc_source_ref("doc-1");
     let harness = TestHarness {
@@ -291,7 +434,6 @@ async fn gmeet_doc_resolves_and_uploads_successfully() {
 
 #[tokio::test]
 async fn gmeet_doc_ambiguous_becomes_explicit_non_success_state() {
-    let _lock = TEST_LOCK.lock().expect("test lock");
     let meeting = gmeet_meeting("evt-gmeet-ambiguous", "2026-04-16T10:00:00Z");
     let source_a = google_doc_source_ref("doc-a");
     let source_b = google_doc_source_ref("doc-b");
@@ -317,7 +459,6 @@ async fn gmeet_doc_ambiguous_becomes_explicit_non_success_state() {
 
 #[tokio::test]
 async fn unknown_conference_kind_is_not_blindly_guessed() {
-    let _lock = TEST_LOCK.lock().expect("test lock");
     let meeting = unknown_meeting("evt-unknown", "2026-04-16T10:00:00Z");
     let harness = TestHarness {
         meeting_source: FakeMeetingSource::new(vec![meeting.clone()]),
@@ -338,7 +479,6 @@ async fn unknown_conference_kind_is_not_blindly_guessed() {
 
 #[tokio::test]
 async fn already_uploaded_job_is_skipped_idempotently() {
-    let _lock = TEST_LOCK.lock().expect("test lock");
     let meeting = zoom_meeting("evt-uploaded", "2026-04-16T10:00:00Z");
     let source_ref = zoom_source_ref("zoom-uploaded-source");
     let harness = TestHarness {
@@ -371,7 +511,6 @@ async fn already_uploaded_job_is_skipped_idempotently() {
 
 #[tokio::test]
 async fn upsert_discovered_is_idempotent_for_same_meeting_key() {
-    let _lock = TEST_LOCK.lock().expect("test lock");
     let meeting = zoom_meeting("evt-idempotent-upsert", "2026-04-16T10:00:00Z");
     let source_ref = zoom_source_ref("zoom-upsert-source");
     let harness = TestHarness {
@@ -395,7 +534,6 @@ async fn upsert_discovered_is_idempotent_for_same_meeting_key() {
 
 #[tokio::test]
 async fn only_due_jobs_are_selected_for_processing() {
-    let _lock = TEST_LOCK.lock().expect("test lock");
     let due_meeting = zoom_meeting("evt-due", "2026-04-16T09:55:00Z");
     let future_meeting = zoom_meeting("evt-future", "2026-04-16T09:56:00Z");
     let due_source = zoom_source_ref("zoom-due-source");
@@ -447,7 +585,6 @@ async fn only_due_jobs_are_selected_for_processing() {
 
 #[tokio::test]
 async fn offset_rfc3339_due_selection_uses_real_instants() {
-    let _lock = TEST_LOCK.lock().expect("test lock");
     let utc_meeting = zoom_meeting("evt-offset-utc", "2026-04-16T12:00:00Z");
     let offset_due_meeting = zoom_meeting("evt-offset-due", "2026-04-16T12:05:00Z");
     let offset_future_meeting = zoom_meeting("evt-offset-future", "2026-04-16T12:10:00Z");
@@ -530,7 +667,6 @@ async fn offset_rfc3339_due_selection_uses_real_instants() {
 
 #[tokio::test]
 async fn due_selection_respects_request_org_scope() {
-    let _lock = TEST_LOCK.lock().expect("test lock");
     let studio_meeting = zoom_meeting("evt-studio", "2026-04-16T09:50:00Z");
     let ops_meeting = zoom_meeting("evt-ops", "2026-04-16T09:51:00Z");
 
@@ -593,7 +729,6 @@ async fn due_selection_respects_request_org_scope() {
 
 #[tokio::test]
 async fn batch_limit_caps_work_per_tick() {
-    let _lock = TEST_LOCK.lock().expect("test lock");
     let meeting_a = zoom_meeting("evt-batch-a", "2026-04-16T09:50:00Z");
     let meeting_b = zoom_meeting("evt-batch-b", "2026-04-16T09:51:00Z");
     let meeting_c = zoom_meeting("evt-batch-c", "2026-04-16T09:52:00Z");
@@ -678,7 +813,6 @@ async fn batch_limit_caps_work_per_tick() {
 
 #[tokio::test]
 async fn upload_failure_records_retryable_error() {
-    let _lock = TEST_LOCK.lock().expect("test lock");
     let meeting = zoom_meeting("evt-upload-failure", "2026-04-16T10:00:00Z");
     let source_ref = zoom_source_ref("upload-failure-source");
     let harness = TestHarness {
@@ -710,7 +844,6 @@ async fn upload_failure_records_retryable_error() {
 
 #[tokio::test]
 async fn permanent_source_failure_stops_retry_loop() {
-    let _lock = TEST_LOCK.lock().expect("test lock");
     let meeting = gmeet_meeting("evt-permanent-failure", "2026-04-16T10:00:00Z");
     let source_ref = google_doc_source_ref("permanent-doc");
     let harness = TestHarness {
@@ -743,7 +876,6 @@ async fn permanent_source_failure_stops_retry_loop() {
 
 #[tokio::test]
 async fn summary_counts_match_processed_results() {
-    let _lock = TEST_LOCK.lock().expect("test lock");
     let uploaded_meeting = zoom_meeting("evt-summary-uploaded", "2026-04-16T09:50:00Z");
     let waiting_meeting = zoom_meeting("evt-summary-waiting", "2026-04-16T09:51:00Z");
     let permanent_meeting = gmeet_meeting("evt-summary-permanent", "2026-04-16T09:52:00Z");
