@@ -115,4 +115,3 @@ pub trait HttpClientExt: WasmCompatSend + WasmCompatSync {
     where
         T: Into<Bytes>;
 }
-

@@ -6,8 +6,8 @@ use super::{
     completion::{DynamicContextStore, build_completion_request},
 };
 use crate::{
-    compat::{MessageRagTextExt, PromptErrorExt},
     OneOrMany,
+    compat::{MessageRagTextExt, PromptErrorExt},
     completion::{CompletionModel, Document, Message, PromptError, Usage},
     json_utils,
     message::{AssistantContent, ToolChoice, ToolResultContent, UserContent},

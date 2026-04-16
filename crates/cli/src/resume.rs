@@ -194,6 +194,9 @@ fn detect_example_for_flow(flow_id: &FlowId) -> Result<Option<String>> {
         "s4_preflight",
         "s5_unsupported_surface",
         "s6_spill",
+        "s11_lead_intake",
+        "s12_sheetport_quote",
+        "s13_github_issue_investigator",
     ];
 
     for candidate in EXAMPLES {

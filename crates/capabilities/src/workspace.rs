@@ -471,8 +471,8 @@ impl Workspace for RemoteWorkspace {
                 if payload.is_empty() {
                     Ok(None)
                 } else {
-                    let result: WorkspaceReadResult = serde_json::from_slice(payload)
-                        .map_err(|err| {
+                    let result: WorkspaceReadResult =
+                        serde_json::from_slice(payload).map_err(|err| {
                             WorkspaceError::Backend(format!(
                                 "decode workspace read response: {err}"
                             ))
@@ -506,13 +506,10 @@ impl Workspace for RemoteWorkspace {
         let (status, payload) = decode_workspace_response(&resp)?;
         match status {
             RESP_OK => {
-                let result: WorkspaceWriteResult = serde_json::from_slice(payload).map_err(
-                    |err| {
-                        WorkspaceError::Backend(format!(
-                            "decode workspace write response: {err}"
-                        ))
-                    },
-                )?;
+                let result: WorkspaceWriteResult =
+                    serde_json::from_slice(payload).map_err(|err| {
+                        WorkspaceError::Backend(format!("decode workspace write response: {err}"))
+                    })?;
                 Ok(result)
             }
             RESP_ERR => Err(decode_workspace_error(payload)),
@@ -536,13 +533,10 @@ impl Workspace for RemoteWorkspace {
         let (status, payload) = decode_workspace_response(&resp)?;
         match status {
             RESP_OK => {
-                let entries: Vec<WorkspaceEntry> = serde_json::from_slice(payload).map_err(
-                    |err| {
-                        WorkspaceError::Backend(format!(
-                            "decode workspace list response: {err}"
-                        ))
-                    },
-                )?;
+                let entries: Vec<WorkspaceEntry> =
+                    serde_json::from_slice(payload).map_err(|err| {
+                        WorkspaceError::Backend(format!("decode workspace list response: {err}"))
+                    })?;
                 Ok(entries)
             }
             RESP_ERR => Err(decode_workspace_error(payload)),
@@ -566,13 +560,10 @@ impl Workspace for RemoteWorkspace {
         let (status, payload) = decode_workspace_response(&resp)?;
         match status {
             RESP_OK => {
-                let result: WorkspaceDeleteResult = serde_json::from_slice(payload).map_err(
-                    |err| {
-                        WorkspaceError::Backend(format!(
-                            "decode workspace delete response: {err}"
-                        ))
-                    },
-                )?;
+                let result: WorkspaceDeleteResult =
+                    serde_json::from_slice(payload).map_err(|err| {
+                        WorkspaceError::Backend(format!("decode workspace delete response: {err}"))
+                    })?;
                 Ok(result)
             }
             RESP_NOT_FOUND => Ok(WorkspaceDeleteResult { deleted: false }),

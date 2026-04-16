@@ -598,9 +598,18 @@ validator rejects flows that rely on it.
 
 ### 7.1.1 Resume Endpoint (Host Internal)
 
-Hosts expose a private resume endpoint used by timers, webhooks, and operators. This endpoint is not
-part of Flow IR triggers and should not be externally discoverable by default. The concrete request/
-response shape is host-specific and defined in Epic 04 implementation notes.
+Hosts expose a private resume endpoint used by timers, webhooks, operators, and host-owned external
+job/sandbox callback flows. This endpoint is not part of Flow IR triggers and should not be externally
+discoverable by default. The concrete request/response shape is host-specific and defined in Epic 04
+implementation notes.
+
+For the broader 0.1.x runtime split between flow-facing external completion semantics and
+backend-facing completion transport, see:
+- `impl-docs/spec/external-completion-runtime.md`
+
+For the concrete 0.1.x contract used when a flow dispatches work to an external sandbox and later
+resumes via callback token, see:
+- `impl-docs/spec/external-sandbox-dispatch-and-callback-resume.md`
 
 ### 7.2 Resume Invocation
 

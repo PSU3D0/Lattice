@@ -14,7 +14,12 @@ resume evidence validation, and workspace backend integration coverage.
 - `/workspace-invalid-path` for traversal rejection checks
 - `/workspace-mutation` for overwrite/delete accounting checks
 - `/workspace-blocked-prefix` for blocked-prefix/path-policy checks
+- `/github/issues` for the `s13` GitHub issue investigator halt/resume proof
 - `/__test/workspace/objects` for R2 object inspection
+
+The `s13` proof uses a test-only bundle selector header so the shared worker
+fixture can route `/github/issues` and the matching `/__lattice/resume` request
+to the example bundle while other routes keep using the default fixture bundle.
 - `/__test/workspace/run-retained-cleanup` for retained-cleanup test dispatch
 
 ## Config files

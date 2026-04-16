@@ -21,7 +21,7 @@ fn main() -> Result<()> {
     let wasm_bytes = std::fs::read(&wasm_path)
         .with_context(|| format!("failed to read wasm module at {wasm_path}"))?;
     let resources = ResourceBag::new().with_blob(Arc::new(MemoryBlobStore::new()));
-    let runtime = WasmRuntime::new(&wasm_bytes)?;
+    let runtime = WasmRuntime::new(&wasm_bytes, None)?;
     let input: serde_json::Value =
         serde_json::from_str(&input_json).context("input_json is not valid JSON")?;
     let output = runtime.invoke_value(&node_identifier, &input, Arc::new(resources))?;

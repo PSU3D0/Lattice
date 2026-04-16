@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use thiserror::Error;
 
 use crate::http::HttpRequest;
@@ -105,6 +106,13 @@ pub struct ResolvedEndpointProfile {
     pub default_headers: Vec<(String, String)>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedConnectorConnection {
+    pub connection_name: Option<String>,
+    pub connector_id: String,
+    pub config: JsonValue,
+}
+
 #[derive(Debug, Error)]
 pub enum ConnectorRuntimeError {
     #[error("connector auth profile `{role_name}` requires local env override `{env_var}`")]
@@ -140,6 +148,21 @@ pub trait ConnectorRuntime: Send + Sync {
         scope: &ConnectorBindingScope,
         profile: &EndpointProfileDescriptor,
     ) -> Result<ResolvedEndpointProfile, ConnectorRuntimeError>;
+
+    async fn resolve_connection(
+        &self,
+        _scope: &ConnectorBindingScope,
+    ) -> Result<Option<ResolvedConnectorConnection>, ConnectorRuntimeError> {
+        Ok(None)
+    }
+
+    async fn resolve_required_effect_hints(
+        &self,
+        _scope: &ConnectorBindingScope,
+        _selected_mode: dag_core::ConnectorResolutionModeDecl,
+    ) -> Result<Vec<String>, ConnectorRuntimeError> {
+        Ok(Vec::new())
+    }
 }
 
 /// Opcode family reserved for connector runtime bridge operations.
@@ -149,6 +172,7 @@ pub const OP_FAMILY_CONNECTOR: u32 = 3;
 pub const OP_CONNECTOR_GET_SCOPE: u32 = (OP_FAMILY_CONNECTOR << 16) | 1;
 pub const OP_CONNECTOR_APPLY_OUTBOUND_AUTH: u32 = (OP_FAMILY_CONNECTOR << 16) | 2;
 pub const OP_CONNECTOR_RESOLVE_ENDPOINT_PROFILE: u32 = (OP_FAMILY_CONNECTOR << 16) | 3;
+pub const OP_CONNECTOR_RESOLVE_CONNECTION: u32 = (OP_FAMILY_CONNECTOR << 16) | 4;
 
 #[cfg(target_arch = "wasm32")]
 const RESP_OK: u8 = 0;
@@ -273,6 +297,12 @@ struct ResolveEndpointProfileRequest {
 }
 
 #[cfg(target_arch = "wasm32")]
+#[derive(Debug, Serialize, Deserialize)]
+struct ResolveConnectionRequest {
+    scope: ConnectorBindingScope,
+}
+
+#[cfg(target_arch = "wasm32")]
 fn decode_remote_scope(
     bytes: &[u8],
 ) -> Result<Option<ConnectorBindingScope>, ConnectorRuntimeError> {
@@ -295,6 +325,33 @@ fn decode_remote_scope(
         ))),
         other => Err(ConnectorRuntimeError::Provider(anyhow::anyhow!(
             "invalid remote connector scope status {other}"
+        ))),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn decode_remote_connection(
+    bytes: &[u8],
+) -> Result<Option<ResolvedConnectorConnection>, ConnectorRuntimeError> {
+    if bytes.is_empty() {
+        return Err(ConnectorRuntimeError::Provider(anyhow::anyhow!(
+            "invalid remote connector connection response: empty"
+        )));
+    }
+    match bytes[0] {
+        RESP_OK => serde_json::from_slice(&bytes[1..])
+            .map(Some)
+            .map_err(|err| {
+                ConnectorRuntimeError::Provider(anyhow::anyhow!(
+                    "invalid remote connector connection payload: {err}"
+                ))
+            }),
+        RESP_NOT_FOUND => Ok(None),
+        RESP_ERR => Err(ConnectorRuntimeError::Provider(anyhow::anyhow!(
+            decode_remote_error_message(&bytes[1..])
+        ))),
+        other => Err(ConnectorRuntimeError::Provider(anyhow::anyhow!(
+            "invalid remote connector connection status {other}"
         ))),
     }
 }
@@ -392,6 +449,25 @@ impl ConnectorRuntime for RemoteConnectorRuntime {
             crate::wasm_transport::cap_call(OP_CONNECTOR_RESOLVE_ENDPOINT_PROFILE, &payload)
                 .map_err(|err| ConnectorRuntimeError::Provider(anyhow::anyhow!(err.to_string())))?;
         decode_remote_success(&response, "resolve_endpoint_profile")
+    }
+
+    async fn resolve_connection(
+        &self,
+        scope: &ConnectorBindingScope,
+    ) -> Result<Option<ResolvedConnectorConnection>, ConnectorRuntimeError> {
+        let payload = serde_json::to_vec(&ResolveConnectionRequest {
+            scope: scope.clone(),
+        })
+        .map_err(|err| {
+            ConnectorRuntimeError::Provider(anyhow::anyhow!(
+                "failed to encode remote connector connection request: {err}"
+            ))
+        })?;
+
+        let response =
+            crate::wasm_transport::cap_call(OP_CONNECTOR_RESOLVE_CONNECTION, &payload)
+                .map_err(|err| ConnectorRuntimeError::Provider(anyhow::anyhow!(err.to_string())))?;
+        decode_remote_connection(&response)
     }
 }
 

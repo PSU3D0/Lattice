@@ -1,0 +1,33 @@
+[package]
+name = "connector_formualizer_sheetport"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Draft SheetPort connector skeleton"
+
+[features]
+default = ["host-bundle", "native-xlsx"]
+host-bundle = ["dag-macros/host-bundle", "kernel-exec"]
+native-xlsx = ["formualizer-sheetport/umya", "formualizer-workbook/umya"]
+
+[dependencies]
+capabilities = { path = "../../../capabilities" }
+dag-core = { path = "../../../dag-core" }
+dag-macros = { path = "../../../dag-macros" }
+kernel-exec = { path = "../../../kernel-exec", optional = true }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+formualizer-common = { path = "../../../../../ref-libs/formualizer/crates/formualizer-common" }
+formualizer-sheetport = { path = "../../../../../ref-libs/formualizer/crates/formualizer-sheetport", default-features = false }
+formualizer-workbook = { path = "../../../../../ref-libs/formualizer/crates/formualizer-workbook", default-features = false, features = ["json"] }
+sheetport-spec = { path = "../../../../../ref-libs/formualizer/crates/sheetport-spec" }
+
+[dev-dependencies]
+async-trait.workspace = true
+tokio = { workspace = true, features = ["full"] }
+umya-spreadsheet = "=2.3.2"

@@ -1,6 +1,6 @@
 use flow_bundle::{
     AbiRef, ArtifactDescriptor, Capabilities, CodeDescriptor, ExecPolicy, FlowEntry, Manifest,
-    compute_bundle_id, select_artifact,
+    compute_bundle_id, select_artifact, wasm_guest_exports_for_flow_name,
 };
 use jsonschema::{Draft, JSONSchema};
 use serde_json::json;
@@ -48,6 +48,7 @@ fn sample_manifest_with_artifacts() -> Manifest {
             nodes: BTreeMap::new(),
             capabilities: Capabilities::default(),
             subflows: Vec::new(),
+            wasm_guest_exports: None,
         }],
         subflows: Vec::new(),
         default_flow: None,
@@ -164,6 +165,24 @@ fn selects_deterministic_wasm_without_default_target() {
     let reordered =
         select_artifact(&manifest, ExecPolicy::Wasm, "x86_64-unknown-linux-gnu").expect("artifact");
     assert_eq!(artifact.file, reordered.file);
+}
+
+#[test]
+fn manifest_schema_accepts_wasm_guest_exports() {
+    let mut manifest = sample_manifest_with_artifacts();
+    manifest.flows[0].wasm_guest_exports = Some(wasm_guest_exports_for_flow_name("demo_flow"));
+    manifest.bundle_id = compute_bundle_id(&manifest).expect("bundle id");
+
+    let schema: serde_json::Value = serde_json::from_str(FLOW_BUNDLE_SCHEMA).expect("schema");
+    let compiled = JSONSchema::options()
+        .with_draft(Draft::Draft202012)
+        .compile(&schema)
+        .expect("compile schema");
+    let instance = serde_json::to_value(&manifest).expect("manifest json");
+    if let Err(errors) = compiled.validate(&instance) {
+        let messages: Vec<String> = errors.map(|error| error.to_string()).collect();
+        panic!("schema validation failed: {}", messages.join("; "));
+    }
 }
 
 #[test]

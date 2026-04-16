@@ -8,7 +8,7 @@ use dag_core::{Determinism, Effects, FlowIR, Profile, SchemaRef};
 use flow_bundle::{
     AbiRef, BUNDLE_VERSION, Capabilities, CodeDescriptor, DEFAULT_ABI_NAME, DEFAULT_ABI_VERSION,
     DurabilityProfile, Entrypoint, FlowEntry, FlowIrRef, Manifest, NodeDeterminism, NodeEffects,
-    NodeSpec, compute_bundle_id, sha256_prefixed,
+    NodeSpec, compute_bundle_id, sha256_prefixed, wasm_guest_exports_for_flow_name,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -71,6 +71,7 @@ pub fn build_manifest_from_registry(config: &BundleConfig) -> Result<ExportBundl
             nodes: nodes_from_flow_ir(&flow),
             capabilities: Capabilities::default(),
             subflows: Vec::new(),
+            wasm_guest_exports: Some(wasm_guest_exports_for_flow_name(reg.name)),
         };
 
         flow_ids_by_name.insert(reg.name.to_string(), flow_entry.id.clone());

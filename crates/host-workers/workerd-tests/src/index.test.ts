@@ -581,6 +581,94 @@ describe("host-workers E2E", () => {
     });
   });
 
+  describe("s13 GitHub issue investigator", () => {
+    it("halts on dispatch and resumes through the internal resume route with a typed result", async () => {
+      const initial = await mf.dispatchFetch(`${mfUrl}github/issues`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-lattice-test-bundle": "s13",
+        },
+        body: JSON.stringify({
+          owner: "PSU3D0",
+          repo: "Lattice",
+          issue_number: 417,
+          title: "panic when config file is missing",
+          body: "The CLI panics when a config file is absent instead of returning a typed error.",
+          comments: [
+            {
+              author: "maintainer",
+              body: "Please confirm whether this reproduces on main.",
+            },
+          ],
+        }),
+      });
+
+      expect(initial.status).toBe(202);
+      const halted = await initial.json();
+      expect(halted.halted).toBe(true);
+      expect(halted.node).toBe("dispatch_investigation_job");
+      expect(halted.payload?.state).toBe("waiting");
+      expect(typeof halted.payload?.resume_token).toBe("string");
+      expect(halted.payload?.resume_token.length).toBeGreaterThan(0);
+      expect(halted.payload?.dispatch_receipt?.backend_kind).toBe("sandbox_http");
+      expect(halted.payload?.dispatch_receipt?.metadata?.http_status).toBe(202);
+
+      const checkpointId = halted?.payload?.checkpoint_id;
+      expect(typeof checkpointId).toBe("string");
+      expect(await checkpointFound(checkpointId)).toBe(true);
+
+      const resumeResponse = await mf.dispatchFetch(`${mfUrl}__lattice/resume`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-lattice-internal-token": "test-resume-token",
+          "x-lattice-test-bundle": "s13",
+        },
+        body: JSON.stringify({
+          token: halted.payload.resume_token,
+          payload: {
+            state: "completed",
+            plan: halted.payload.plan,
+            job_id: halted.payload.job_id,
+            result: {
+              summary: "Likely null dereference in config loader when the file is absent.",
+              confidence: 0.83,
+              findings: [
+                {
+                  kind: "root_cause",
+                  path: "src/config.rs",
+                  detail: "Missing config path falls through to unwrap() instead of a typed error.",
+                },
+              ],
+              proposed_actions: [
+                {
+                  kind: "comment",
+                  body: "I reproduced the panic and traced it to the config loader unwrap path.",
+                },
+              ],
+              artifacts: [
+                {
+                  kind: "report",
+                  uri: "blob://reports/issue-417.json",
+                },
+              ],
+            },
+          },
+        }),
+      });
+
+      expect(resumeResponse.status).toBe(200);
+      const resumed = await resumeResponse.json();
+      expect(resumed.resumed).toBe(true);
+      expect(resumed.result?.resolution).toBe("investigation_completed");
+      expect(resumed.result?.issue_number).toBe(417);
+      expect(resumed.result?.triage?.needs_investigation).toBe(true);
+      expect(resumed.result?.investigation?.summary).toContain("config loader");
+      expect(await checkpointFound(checkpointId)).toBe(false);
+    });
+  });
+
   describe("error handling", () => {
     it("should return 404 for unknown routes", async () => {
       const response = await mf.dispatchFetch(`${mfUrl}unknown`);

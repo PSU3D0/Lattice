@@ -5,7 +5,7 @@ use std::fmt;
 use dag_core::{FlowIR, NodeKind};
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use serde_json::{Map as JsonMap, Value as JsonValue};
-use sha2::Digest;
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, thiserror::Error)]
 pub enum BundleError {
@@ -42,6 +42,9 @@ pub const BUNDLE_VERSION: &str = "0.1";
 pub const DEFAULT_ABI_NAME: &str = "latticeflow.wit";
 pub const DEFAULT_ABI_VERSION: &str = "0.1";
 pub const MANIFEST_SECTION: &str = "latticeflow.bundle_manifest";
+pub const LEGACY_WASM_EXPORT_ALLOC: &str = "lf_guest_alloc";
+pub const LEGACY_WASM_EXPORT_FREE: &str = "lf_guest_free";
+pub const LEGACY_WASM_EXPORT_INVOKE: &str = "lf_invoke_node";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
@@ -114,6 +117,15 @@ pub struct FlowEntry {
     pub capabilities: Capabilities,
     #[serde(default)]
     pub subflows: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wasm_guest_exports: Option<WasmGuestExports>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WasmGuestExports {
+    pub alloc: String,
+    pub free: String,
+    pub invoke: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -197,6 +209,35 @@ pub struct SubflowDescriptor {
         deserialize_with = "deserialize_flow_ir"
     )]
     pub flow_ir: Option<FlowIrRef>,
+}
+
+pub fn wasm_guest_exports_for_flow_name(name: &str) -> WasmGuestExports {
+    let mut sanitized = String::with_capacity(name.len());
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            sanitized.push(ch);
+        } else {
+            sanitized.push('_');
+        }
+    }
+    if sanitized.is_empty() {
+        sanitized.push_str("flow");
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(name.as_bytes());
+    let digest = hasher.finalize();
+    let suffix = digest[..6]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let stem = format!("{sanitized}__{suffix}");
+
+    WasmGuestExports {
+        alloc: format!("{LEGACY_WASM_EXPORT_ALLOC}__{stem}"),
+        free: format!("{LEGACY_WASM_EXPORT_FREE}__{stem}"),
+        invoke: format!("{LEGACY_WASM_EXPORT_INVOKE}__{stem}"),
+    }
 }
 
 fn deserialize_constraints<'de, D>(
@@ -664,6 +705,22 @@ pub fn validate_manifest(manifest: &Manifest) -> Result<(), BundleError> {
                 ));
             }
         }
+        if let Some(exports) = flow.wasm_guest_exports.as_ref() {
+            let export_names = [&exports.alloc, &exports.free, &exports.invoke];
+            if export_names.iter().any(|name| name.trim().is_empty()) {
+                return Err(BundleError::ManifestValidation(
+                    "flows[].wasm_guest_exports fields must be non-empty strings".to_string(),
+                ));
+            }
+            let unique = export_names
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>();
+            if unique.len() != export_names.len() {
+                return Err(BundleError::ManifestValidation(
+                    "flows[].wasm_guest_exports fields must be distinct".to_string(),
+                ));
+            }
+        }
     }
     for artifact in &manifest.artifacts {
         if !is_sha256_prefixed(&artifact.hash) {
@@ -925,6 +982,7 @@ mod tests {
                 nodes: std::collections::BTreeMap::new(),
                 capabilities: Capabilities::default(),
                 subflows: Vec::new(),
+                wasm_guest_exports: None,
             }],
             subflows: Vec::new(),
             default_flow: None,
@@ -965,6 +1023,7 @@ mod tests {
                 nodes: std::collections::BTreeMap::new(),
                 capabilities: Capabilities::default(),
                 subflows: Vec::new(),
+                wasm_guest_exports: None,
             }],
             subflows: Vec::new(),
             default_flow: None,
@@ -1010,6 +1069,7 @@ mod tests {
                 nodes: std::collections::BTreeMap::new(),
                 capabilities: Capabilities::default(),
                 subflows: Vec::new(),
+                wasm_guest_exports: None,
             }],
             subflows: Vec::new(),
             default_flow: None,
@@ -1054,6 +1114,7 @@ mod tests {
                 nodes: std::collections::BTreeMap::new(),
                 capabilities: Capabilities::default(),
                 subflows: Vec::new(),
+                wasm_guest_exports: None,
             }],
             subflows: Vec::new(),
             default_flow: None,
@@ -1068,6 +1129,62 @@ mod tests {
         manifest.bundle_id = wrong;
         let result = validate_manifest(&manifest);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn wasm_guest_exports_are_stable_and_distinct() {
+        let left = wasm_guest_exports_for_flow_name("s12_sheetport_quote_flow");
+        let right = wasm_guest_exports_for_flow_name("s12_sheetport_quote_flow");
+        let other = wasm_guest_exports_for_flow_name("s12_sheetport_quote_internal_flow");
+
+        assert_eq!(left, right);
+        assert_ne!(left.alloc, left.free);
+        assert_ne!(left.alloc, left.invoke);
+        assert_ne!(left.free, left.invoke);
+        assert_ne!(left.invoke, other.invoke);
+    }
+
+    #[test]
+    fn manifest_rejects_duplicate_wasm_guest_exports() {
+        let mut manifest = Manifest {
+            bundle_version: "0.1".to_string(),
+            abi: AbiRef {
+                name: "latticeflow.wit".to_string(),
+                version: "0.1".to_string(),
+            },
+            bundle_id: "".to_string(),
+            code: CodeDescriptor {
+                target: "wasm32-unknown-unknown".to_string(),
+                file: "flow.wasm".to_string(),
+                hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .to_string(),
+                size_bytes: 4,
+            },
+            artifacts: Vec::new(),
+            flows: vec![FlowEntry {
+                id: "flow://demo".to_string(),
+                version: "v0.1.0".to_string(),
+                profile: "wasm".to_string(),
+                flow_ir: None,
+                flow_ir_expanded: None,
+                entrypoints: Vec::new(),
+                nodes: std::collections::BTreeMap::new(),
+                capabilities: Capabilities::default(),
+                subflows: Vec::new(),
+                wasm_guest_exports: Some(WasmGuestExports {
+                    alloc: "same".to_string(),
+                    free: "same".to_string(),
+                    invoke: "other".to_string(),
+                }),
+            }],
+            subflows: Vec::new(),
+            default_flow: None,
+            signing: None,
+        };
+        manifest.bundle_id = compute_bundle_id(&manifest).expect("bundle id");
+
+        let err = validate_manifest(&manifest).expect_err("duplicate exports should fail");
+        assert!(err.to_string().contains("wasm_guest_exports"));
     }
 
     #[test]

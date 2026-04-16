@@ -1,7 +1,7 @@
 use std::sync::{Arc, RwLock};
 
-use futures::executor::block_on;
 use crate::vector_store::VectorStoreIndexDyn;
+use futures::executor::block_on;
 use llm_types::completion::ToolDefinition;
 use llm_types::tool::{ToolDyn, ToolSet, ToolSetError};
 

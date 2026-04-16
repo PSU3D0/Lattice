@@ -35,6 +35,9 @@ example-s3-branching = { path = "../../examples/s3_branching" }
 example-s4-preflight = { path = "../../examples/s4_preflight" }
 example-s5-unsupported-surface = { path = "../../examples/s5_unsupported_surface" }
 example-s6-spill-host = { path = "../../examples/s6_spill/host" }
+example-s11-lead-intake = { path = "../../examples/s11_lead_intake" }
+example-s12-sheetport-quote = { path = "../../examples/s12_sheetport_quote" }
+example-s13-github-issue-investigator = { path = "../../examples/s13_github_issue_investigator" }
 example-connector-github-issues-local-flow = { path = "../connectors/github/issues/examples/local-flow" }
 example-connector-google-sheets-local-flow = { path = "../connectors/google/sheets/examples/local-flow" }
 host-inproc = { path = "../host-inproc" }
@@ -64,9 +67,11 @@ predicates = "3.1"
 connector_github_issues = { path = "../connectors/github/issues" }
 connector_google_platform = { path = "../connectors/google/platform" }
 connector_google_sheets = { path = "../connectors/google/sheets" }
+connector_formualizer_sheetport = { path = "../connectors/formualizer/sheetport" }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 proptest.workspace = true
 httpmock = "0.7"
+example-s10-multiflow-bundle = { path = "../../examples/s10_multiflow_bundle" }

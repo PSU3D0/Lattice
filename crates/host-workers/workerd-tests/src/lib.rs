@@ -17,7 +17,10 @@
 //! - POST /workspace-stdlib-read - stdlib read via host-workers runtime path
 //! - POST /workspace-stdlib-list - stdlib list via host-workers runtime path
 //! - POST /workspace-stdlib-delete - stdlib delete via host-workers runtime path
+//! - POST /github/issues - s13 GitHub issue investigator halt/resume proof
 
+#[cfg(target_arch = "wasm32")]
+use std::cell::RefCell;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -27,6 +30,9 @@ use std::time::Duration;
 use async_stream::stream;
 use cap_do_workers::{DurableObjectBinding, WorkersDurableObject};
 use cap_workspace_workers::{WorkersWorkspaceConfig, WorkersWorkspaceFactory};
+use capabilities::connector::{
+    ConnectorBindingScope, ConnectorRuntime, ConnectorRuntimeError, ResolvedEndpointProfile,
+};
 use capabilities::http::{
     HttpError, HttpMethod, HttpRead, HttpRequest, HttpResponse, HttpResult, HttpWrite,
 };
@@ -56,6 +62,50 @@ pub use cap_do_workers::FlowDurableObject;
 pub use cap_workspace_workers::WorkspaceDurableObject;
 
 #[cfg(target_arch = "wasm32")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TestBundleSelector {
+    Default,
+    S13,
+}
+
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    static TEST_BUNDLE_SELECTOR: RefCell<TestBundleSelector> = const { RefCell::new(TestBundleSelector::Default) };
+}
+
+#[cfg(target_arch = "wasm32")]
+fn set_bundle_selector(selector: TestBundleSelector) {
+    TEST_BUNDLE_SELECTOR.with(|slot| {
+        *slot.borrow_mut() = selector;
+    });
+}
+
+#[cfg(target_arch = "wasm32")]
+fn current_bundle_selector() -> TestBundleSelector {
+    TEST_BUNDLE_SELECTOR.with(|slot| *slot.borrow())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn request_header(req: &Request, name: &str) -> Option<String> {
+    req.headers().get(name).ok().flatten()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn bundle_selector_for_request(req: &Request) -> TestBundleSelector {
+    if req.path() == "/github/issues" {
+        return TestBundleSelector::S13;
+    }
+
+    if req.path() == "/__lattice/resume"
+        && request_header(req, "x-lattice-test-bundle").as_deref() == Some("s13")
+    {
+        return TestBundleSelector::S13;
+    }
+
+    TestBundleSelector::Default
+}
+
+#[cfg(target_arch = "wasm32")]
 #[event(fetch)]
 async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     if req.path() == "/__test/checkpoint" {
@@ -80,7 +130,12 @@ async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         return handle_s11_lead_intake(req, &env).await;
     }
 
-    configure_resources(&env)?;
+    let selector = bundle_selector_for_request(&req);
+    set_bundle_selector(selector);
+    match selector {
+        TestBundleSelector::Default => configure_resources(&env)?,
+        TestBundleSelector::S13 => configure_s13_resources(&env)?,
+    }
     configure_workspace_factory(req.path().as_str(), &env)?;
     host_workers::handle_fetch(req, env, ctx).await
 }
@@ -107,6 +162,125 @@ fn configure_resources(env: &Env) -> Result<()> {
         .with_checkpoint_store(Arc::clone(&durability))
         .with_resume_scheduler(Arc::clone(&durability))
         .with_resume_signal_source(Arc::clone(&durability))
+        .with_max_durability_mode(DurabilityMode::Partial);
+    host_workers::set_resource_bag(resources);
+    Ok(())
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Default)]
+struct S13MockHttpClient;
+
+#[cfg(target_arch = "wasm32")]
+#[async_trait::async_trait]
+impl HttpWrite for S13MockHttpClient {
+    async fn send(&self, request: HttpRequest) -> HttpResult<HttpResponse> {
+        match (request.method, request.url.as_str()) {
+            (HttpMethod::Post, url) if url.ends_with("/chat/completions") => Ok(HttpResponse {
+                status: 200,
+                headers: Default::default(),
+                body: serde_json::to_vec(&s13_openai_triage_response()).expect("serialize triage response"),
+            }),
+            (HttpMethod::Post, url) if url.ends_with("/jobs/investigate") => Ok(HttpResponse {
+                status: 202,
+                headers: Default::default(),
+                body: br#"{"accepted":true}"#.to_vec(),
+            }),
+            _ => Err(HttpError::InvalidResponse(format!(
+                "unexpected s13 mock request: {} {}",
+                request.method.as_str(),
+                request.url
+            ))),
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[async_trait::async_trait]
+impl HttpRead for S13MockHttpClient {
+    async fn send(&self, request: HttpRequest) -> HttpResult<HttpResponse> {
+        HttpWrite::send(self, request).await
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+struct S13TestConnectorRuntime;
+
+#[cfg(target_arch = "wasm32")]
+#[async_trait::async_trait]
+impl ConnectorRuntime for S13TestConnectorRuntime {
+    async fn apply_outbound_auth(
+        &self,
+        _scope: &ConnectorBindingScope,
+        _profile: &capabilities::connector::OutboundAuthProfileDescriptor,
+        request: &mut HttpRequest,
+    ) -> Result<(), ConnectorRuntimeError> {
+        request
+            .headers
+            .insert("authorization".to_string(), "Bearer test-key".to_string());
+        Ok(())
+    }
+
+    async fn resolve_endpoint_profile(
+        &self,
+        _scope: &ConnectorBindingScope,
+        profile: &capabilities::connector::EndpointProfileDescriptor,
+    ) -> Result<ResolvedEndpointProfile, ConnectorRuntimeError> {
+        Ok(ResolvedEndpointProfile {
+            base_url: profile.base_url.to_string(),
+            default_headers: profile
+                .default_headers
+                .iter()
+                .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
+                .collect(),
+        })
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn s13_openai_triage_response() -> JsonValue {
+    json!({
+        "id": "chatcmpl-triage",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "gpt-5.4-mini",
+        "system_fingerprint": null,
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": serde_json::to_string(&json!({
+                    "category": "bug",
+                    "severity": "high",
+                    "needs_investigation": true,
+                    "suggested_labels": ["bug", "investigate"],
+                    "rationale": "This appears reproducible, actionable, and worth repo-local investigation."
+                })).expect("serialize triage payload"),
+                "tool_calls": []
+            },
+            "logprobs": null,
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 14,
+            "completion_tokens": 9,
+            "total_tokens": 23,
+            "prompt_tokens_details": { "cached_tokens": 0 }
+        }
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+fn configure_s13_resources(env: &Env) -> Result<()> {
+    let durability = durability_capability(env)?;
+    let http = Arc::new(S13MockHttpClient);
+    let resources = ResourceBag::new()
+        .with_http_read(Arc::clone(&http))
+        .with_http_write(http)
+        .with_checkpoint_store(Arc::clone(&durability))
+        .with_resume_scheduler(Arc::clone(&durability))
+        .with_resume_signal_source(Arc::clone(&durability))
+        .with_connector_runtime(Arc::new(S13TestConnectorRuntime))
         .with_max_durability_mode(DurabilityMode::Partial);
     host_workers::set_resource_bag(resources);
     Ok(())
@@ -2190,5 +2364,16 @@ fn register_nodes(registry: &mut NodeRegistry) {
 
 #[unsafe(no_mangle)]
 pub extern "Rust" fn get_bundle() -> host_inproc::FlowBundle {
-    bundle_with_policies()
+    #[cfg(target_arch = "wasm32")]
+    {
+        return match current_bundle_selector() {
+            TestBundleSelector::Default => bundle_with_policies(),
+            TestBundleSelector::S13 => example_s13_github_issue_investigator::bundle(),
+        };
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        bundle_with_policies()
+    }
 }

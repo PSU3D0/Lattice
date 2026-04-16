@@ -1,0 +1,27 @@
+spec: fio
+spec_version: "0.3.0"
+manifest:
+  id: quote-model
+  name: Quote Model
+  description: Deterministic quote workbook exposed through SheetPort.
+ports:
+  - id: base_price
+    dir: in
+    shape: scalar
+    location: { a1: "Quote!A1" }
+    schema: { type: number }
+  - id: quantity
+    dir: in
+    shape: scalar
+    location: { a1: "Quote!A2" }
+    schema: { type: integer }
+  - id: discount
+    dir: in
+    shape: scalar
+    location: { a1: "Quote!A3" }
+    schema: { type: number }
+  - id: total
+    dir: out
+    shape: scalar
+    location: { a1: "Quote!A4" }
+    schema: { type: number }

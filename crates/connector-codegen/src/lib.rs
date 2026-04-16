@@ -579,6 +579,12 @@ fn emit_op_file(manifest: &ConnectorManifest, action: &ActionSurface) -> String 
         "        roles: &{},\n",
         emit_connector_role_requirements(manifest, action)
     ));
+    out.push_str("        resolution: ::dag_core::ConnectorResolutionContract {\n");
+    out.push_str("            supported_modes: &[::dag_core::ConnectorResolutionModeDecl::BoundConnection],\n");
+    out.push_str(
+        "            default_mode: ::dag_core::ConnectorResolutionModeDecl::BoundConnection,\n",
+    );
+    out.push_str("        },\n");
     out.push_str("    };\n\n");
     out.push_str(&format!(
         "    pub async fn invoke(input: &{}) -> Result<{}, crate::runtime::errors::ConnectorRuntimeError> {{\n",

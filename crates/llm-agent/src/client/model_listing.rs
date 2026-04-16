@@ -167,10 +167,9 @@ mod tests {
         ];
         let lister = MockModelLister::new(models);
 
-        let result = futures::executor::block_on(
-            <MockModelLister as ModelLister<()>>::list_all(&lister),
-        )
-        .unwrap();
+        let result =
+            futures::executor::block_on(<MockModelLister as ModelLister<()>>::list_all(&lister))
+                .unwrap();
         assert_eq!(result.len(), 2);
     }
 }

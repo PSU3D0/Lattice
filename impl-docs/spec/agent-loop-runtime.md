@@ -260,4 +260,5 @@ This document does **not** require:
 - `impl-docs/spec/ai-surface-and-layering.md`
 - `impl-docs/spec/node-vs-capability-surface.md`
 - `impl-docs/spec/connector-op-reuse-and-node-declaration.md`
+- `impl-docs/spec/external-sandbox-dispatch-and-callback-resume.md`
 - `impl-docs/spec/llm-lead-intake-example.md`

@@ -19,6 +19,7 @@ host-bundle = []
 [dependencies]
 dag-core = { path = "../dag-core" }
 capabilities = { path = "../capabilities" }
+flow-bundle = { path = "../flow-bundle" }
 proc-macro2.workspace = true
 quote.workspace = true
 syn.workspace = true

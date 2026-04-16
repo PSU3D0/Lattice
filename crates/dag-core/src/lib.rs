@@ -200,6 +200,7 @@ mod tests {
             determinism_hints: &[],
             effect_hints: &[],
             connector_ops: &[],
+            connector_resolution_mode: None,
             effects_declared: true,
             determinism_declared: true,
             durability: DurabilityProfile::default(),

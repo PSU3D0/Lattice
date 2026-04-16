@@ -5,18 +5,17 @@
 
 use bytes::Bytes;
 use capabilities::{
-    context,
+    ResourceAccess, context,
     http::{
         HttpMethod as CapabilityMethod, HttpRead, HttpRequest as CapabilityRequest,
         HttpResponse as CapabilityResponse, HttpWrite,
     },
-    ResourceAccess,
 };
 use http::{HeaderValue, Method, StatusCode};
+use llm_types::http_client::{self as http_client};
 pub use llm_types::http_client::{
     Error, HttpClientExt, LazyBody, MultipartForm, NoBody, Request, Response, StreamingResponse,
 };
-use llm_types::http_client::{self as http_client};
 use llm_types::wasm_compat::WasmCompatSend;
 use std::{fmt, future::Future, sync::Arc};
 
@@ -149,7 +148,9 @@ where
     let mut request = CapabilityRequest::new(method, parts.uri.to_string());
     for (name, value) in parts.headers.iter() {
         let value = value.to_str().map_err(instance_error)?;
-        request.headers.insert(name.as_str().to_owned(), value.to_owned());
+        request
+            .headers
+            .insert(name.as_str().to_owned(), value.to_owned());
     }
 
     let body = body.into();
@@ -377,7 +378,10 @@ mod tests {
 
         assert_eq!(capability.method, CapabilityMethod::Patch);
         assert_eq!(capability.url, "https://example.test/items/42");
-        assert_eq!(capability.headers.get("x-test").map(String::as_str), Some("lattice"));
+        assert_eq!(
+            capability.headers.get("x-test").map(String::as_str),
+            Some("lattice")
+        );
         assert_eq!(
             capability.headers.get("content-type").map(String::as_str),
             Some("application/json")
@@ -405,7 +409,10 @@ mod tests {
             Some("application/json")
         );
         assert_eq!(
-            response.headers().get("x-test").and_then(|value| value.to_str().ok()),
+            response
+                .headers()
+                .get("x-test")
+                .and_then(|value| value.to_str().ok()),
             Some("bridge")
         );
 
@@ -431,7 +438,10 @@ mod tests {
 
         let response = block_on(client.send::<Bytes, Bytes>(get_request)).expect("get response");
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(block_on(response.into_body()).expect("get body"), Bytes::from_static(b"read-ok"));
+        assert_eq!(
+            block_on(response.into_body()).expect("get body"),
+            Bytes::from_static(b"read-ok")
+        );
 
         let post_request = Request::builder()
             .method(Method::POST)
@@ -442,7 +452,10 @@ mod tests {
 
         let response = block_on(client.send::<Bytes, Bytes>(post_request)).expect("post response");
         assert_eq!(response.status(), StatusCode::ACCEPTED);
-        assert_eq!(block_on(response.into_body()).expect("post body"), Bytes::from_static(b"write-ok"));
+        assert_eq!(
+            block_on(response.into_body()).expect("post body"),
+            Bytes::from_static(b"write-ok")
+        );
 
         let state = state.lock().expect("state mutex poisoned");
         assert_eq!(state.read_calls, 1);
@@ -451,13 +464,19 @@ mod tests {
         let read_request = state.read_request.as_ref().expect("read request");
         assert_eq!(read_request.method, CapabilityMethod::Get);
         assert_eq!(read_request.url, "https://example.test/read");
-        assert_eq!(read_request.headers.get("x-test").map(String::as_str), Some("lattice"));
+        assert_eq!(
+            read_request.headers.get("x-test").map(String::as_str),
+            Some("lattice")
+        );
         assert_eq!(read_request.body.as_deref(), Some(b"payload".as_ref()));
 
         let write_request = state.write_request.as_ref().expect("write request");
         assert_eq!(write_request.method, CapabilityMethod::Post);
         assert_eq!(write_request.url, "https://example.test/write");
-        assert_eq!(write_request.headers.get("x-test").map(String::as_str), Some("lattice"));
+        assert_eq!(
+            write_request.headers.get("x-test").map(String::as_str),
+            Some("lattice")
+        );
         assert_eq!(write_request.body.as_deref(), Some(b"payload".as_ref()));
     }
 
@@ -473,7 +492,11 @@ mod tests {
         let streaming_error = block_on(client.send_streaming(streaming_request))
             .err()
             .expect("streaming error");
-        assert!(streaming_error.to_string().contains("streaming requests are unsupported"));
+        assert!(
+            streaming_error
+                .to_string()
+                .contains("streaming requests are unsupported")
+        );
 
         let multipart_request = Request::builder()
             .method(Method::POST)
@@ -483,6 +506,10 @@ mod tests {
         let multipart_error = block_on(client.send_multipart::<Bytes>(multipart_request))
             .err()
             .expect("multipart error");
-        assert!(multipart_error.to_string().contains("multipart requests are unsupported"));
+        assert!(
+            multipart_error
+                .to_string()
+                .contains("multipart requests are unsupported")
+        );
     }
 }

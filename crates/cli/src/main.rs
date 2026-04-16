@@ -9,10 +9,11 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use axum::http::Method;
+use cargo_metadata::MetadataCommand;
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use dag_core::{Diagnostic, DurabilityMode, Severity};
-use exporters::{to_dot, to_json_value};
-use flow_bundle::ExecPolicy;
+use dag_core::{Diagnostic, DurabilityMode, FlowIR, Severity};
+use exporters::{harness::HarnessConfig, to_dot, to_json_value};
+use flow_bundle::{ExecPolicy, Manifest};
 use futures::StreamExt;
 use host_wasmtime::load_flow_bundle;
 use host_web_axum::{HostHandle, RouteConfig};
@@ -22,6 +23,7 @@ use kernel_plan::{ValidatedIR, validate};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
 use sha2::{Digest, Sha256};
+use tempfile::tempdir;
 use tokio::net::TcpListener;
 use tokio::runtime::Builder as RuntimeBuilder;
 use tokio::signal;
@@ -30,7 +32,7 @@ use capabilities::Capability;
 use capabilities::connector::{
     ConnectorBindingScope, ConnectorRoleKind, ConnectorRuntime, ConnectorRuntimeError,
     EndpointProfileDescriptor, OutboundAuthKind, OutboundAuthProfileDescriptor,
-    ResolvedEndpointProfile,
+    ResolvedConnectorConnection, ResolvedEndpointProfile,
 };
 use capabilities::durability::{
     CheckpointError, CheckpointFilter, CheckpointHandle, CheckpointRecord, CheckpointStore, Lease,
@@ -48,6 +50,9 @@ use example_s3_branching as s3_branching;
 use example_s4_preflight as s4_preflight;
 use example_s5_unsupported_surface as s5_unsupported_surface;
 use example_s6_spill_host as s6_spill;
+use example_s11_lead_intake as s11_lead_intake;
+use example_s12_sheetport_quote as s12_sheetport_quote;
+use example_s13_github_issue_investigator as s13_github_issue_investigator;
 
 mod bundle;
 mod local_durability;
@@ -117,15 +122,24 @@ enum BindingsCommand {
 
 #[derive(Subcommand, Debug)]
 enum LockCommand {
-    /// Generate a bindings.lock.json for a built-in example.
+    /// Generate a bindings.lock.json for a built-in example, package, or bundle.
     Generate(LockGenerateArgs),
 }
 
 #[derive(Args, Debug)]
 struct LockGenerateArgs {
     /// Built-in example name (e.g. `s6_spill`).
+    #[arg(long, conflicts_with_all = ["package", "bundle"])]
+    example: Option<String>,
+    /// Cargo package name to inspect using the flow-registry exporter harness.
+    #[arg(long, conflicts_with_all = ["example", "bundle"])]
+    package: Option<String>,
+    /// Path to a FlowBundle directory containing manifest.json and artifacts.
+    #[arg(long, conflicts_with_all = ["example", "package"])]
+    bundle: Option<PathBuf>,
+    /// Optional flow id to target when --package or --bundle contains multiple flows.
     #[arg(long)]
-    example: String,
+    flow: Option<String>,
     /// Bind capability providers for required `resource::*` domains.
     ///
     /// Examples:
@@ -140,6 +154,20 @@ struct LockGenerateArgs {
     /// Output path for the generated bindings.lock.json.
     #[arg(long)]
     out: PathBuf,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct PackageMetadata {
+    #[serde(default)]
+    latticeflow: Option<LatticeflowMetadata>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct LatticeflowMetadata {
+    #[serde(default)]
+    flows: Option<Vec<String>>,
+    #[serde(default)]
+    default_flow: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -1456,6 +1484,8 @@ struct ConnectorConnectionInstance {
     connector_id: String,
     #[serde(default)]
     roles: BTreeMap<String, String>,
+    #[serde(default = "default_json_object")]
+    config: JsonValue,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1464,6 +1494,10 @@ struct ConnectorFlowBindings {
     defaults: BTreeMap<String, String>,
     #[serde(default)]
     nodes: BTreeMap<String, String>,
+}
+
+fn default_json_object() -> JsonValue {
+    JsonValue::Object(serde_json::Map::new())
 }
 
 fn canonical_json(value: &JsonValue) -> String {
@@ -1528,6 +1562,148 @@ fn required_resource_hints(flow: &dag_core::FlowIR) -> BTreeSet<String> {
         }
     }
     required
+}
+
+fn load_manifest_from_dir(dir: &Path) -> Result<Manifest> {
+    let path = dir.join("manifest.json");
+    let bytes = fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
+    serde_json::from_slice(&bytes)
+        .with_context(|| format!("{} is not valid manifest JSON", path.display()))
+}
+
+fn load_flow_irs_from_manifest(
+    manifest: &Manifest,
+    artifact_root: &Path,
+    selected_flow: Option<&str>,
+) -> Result<BTreeMap<String, FlowIR>> {
+    let mut flows = BTreeMap::new();
+
+    for entry in &manifest.flows {
+        if let Some(selected) = selected_flow {
+            if entry.id != selected {
+                continue;
+            }
+        }
+
+        let flow_ir = entry.flow_ir.as_ref().ok_or_else(|| {
+            anyhow!(
+                "manifest flow `{}` is missing flow_ir; cannot generate bindings.lock",
+                entry.id
+            )
+        })?;
+        let ir_path = artifact_root.join(&flow_ir.artifact);
+        let bytes =
+            fs::read(&ir_path).with_context(|| format!("failed to read {}", ir_path.display()))?;
+        let flow: FlowIR = serde_json::from_slice(&bytes)
+            .with_context(|| format!("{} is not valid Flow IR JSON", ir_path.display()))?;
+        flows.insert(flow.id.as_str().to_string(), flow);
+    }
+
+    if let Some(selected) = selected_flow {
+        if flows.is_empty() {
+            return Err(anyhow!(
+                "manifest does not define flow `{selected}` for bindings lock generation"
+            ));
+        }
+    }
+
+    if flows.is_empty() {
+        return Err(anyhow!(
+            "manifest does not define any flows for bindings lock generation"
+        ));
+    }
+
+    Ok(flows)
+}
+
+fn resolve_package_export_config(package_name: &str) -> Result<(PathBuf, HarnessConfig)> {
+    let metadata = MetadataCommand::new()
+        .no_deps()
+        .exec()
+        .context("failed to load cargo metadata")?;
+    let package = metadata
+        .packages
+        .iter()
+        .find(|candidate| candidate.name == package_name)
+        .ok_or_else(|| anyhow!("package not found in workspace: {package_name}"))?;
+    let manifest_dir = package
+        .manifest_path
+        .parent()
+        .ok_or_else(|| anyhow!("missing manifest path for {package_name}"))?;
+
+    let metadata: PackageMetadata =
+        serde_json::from_value(package.metadata.clone()).unwrap_or_default();
+    let latticeflow = metadata.latticeflow.unwrap_or_default();
+    let config = HarnessConfig {
+        default_flow: latticeflow.default_flow,
+        flows: latticeflow.flows,
+    };
+
+    Ok((manifest_dir.to_path_buf().into(), config))
+}
+
+fn load_flow_irs_from_package(
+    package_name: &str,
+    selected_flow: Option<&str>,
+) -> Result<BTreeMap<String, FlowIR>> {
+    let (package_dir, config) = resolve_package_export_config(package_name)?;
+    let export_temp = tempdir().context("failed to create exporter temp dir")?;
+    let export_crate_dir = export_temp.path().join("exporter");
+    let export_out_dir = export_temp.path().join("bundle");
+    let export_manifest_path = exporters::harness::write_exporter_crate(
+        &export_crate_dir,
+        &package_dir,
+        package_name,
+        &config,
+    )?;
+
+    let status = std::process::Command::new("cargo")
+        .arg("run")
+        .arg("--quiet")
+        .arg("--manifest-path")
+        .arg(&export_manifest_path)
+        .arg("--")
+        .arg("--out-dir")
+        .arg(&export_out_dir)
+        .status()
+        .context("failed to run exporter harness")?;
+    if !status.success() {
+        return Err(anyhow!("exporter harness failed with status {}", status));
+    }
+
+    let manifest = load_manifest_from_dir(&export_out_dir)?;
+    load_flow_irs_from_manifest(&manifest, &export_out_dir, selected_flow)
+}
+
+fn resolve_lock_generate_flows(args: &LockGenerateArgs) -> Result<BTreeMap<String, FlowIR>> {
+    match (
+        args.example.as_deref(),
+        args.package.as_deref(),
+        args.bundle.as_deref(),
+    ) {
+        (Some(example), None, None) => {
+            let handle = load_example(example)?;
+            let flow = handle.ir.flow().clone();
+            if let Some(selected) = args.flow.as_deref() {
+                if flow.id.as_str() != selected {
+                    return Err(anyhow!(
+                        "example `{example}` does not define flow `{selected}`"
+                    ));
+                }
+            }
+            let mut flows = BTreeMap::new();
+            flows.insert(flow.id.as_str().to_string(), flow);
+            Ok(flows)
+        }
+        (None, Some(package), None) => load_flow_irs_from_package(package, args.flow.as_deref()),
+        (None, None, Some(bundle_dir)) => {
+            let manifest = load_manifest_from_dir(bundle_dir)?;
+            load_flow_irs_from_manifest(&manifest, bundle_dir, args.flow.as_deref())
+        }
+        _ => Err(anyhow!(
+            "exactly one of --example, --package, or --bundle must be provided"
+        )),
+    }
 }
 
 fn provider_kind_from_binding(key: &str, token: &str) -> Option<&'static str> {
@@ -1665,34 +1841,34 @@ fn run_bindings_lock_generate(args: LockGenerateArgs) -> Result<()> {
         return Err(anyhow!("--generated-at cannot be empty"));
     }
 
-    let handle = load_example(&args.example)?;
-    let flow = handle.ir.flow();
-    let flow_id = flow.id.as_str().to_string();
-
+    let flows_for_lock = resolve_lock_generate_flows(&args)?;
     let overrides = parse_bindings_for_lock(&args.bindings)?;
-    let mut required = required_resource_hints(flow);
-    for (key, _) in &overrides {
-        required.insert(key.clone());
-    }
-
-    let mut use_map: BTreeMap<String, String> = BTreeMap::new();
-    let mut instances: BTreeMap<String, LockInstance> = BTreeMap::new();
-
-    for hint in required {
-        let provider_kind = select_provider_kind_for_required_hint(&overrides, &hint)?;
-        let instance_name = instance_name_for_provider_kind(&provider_kind);
-        use_map.insert(hint, instance_name.clone());
-
-        match instances.entry(instance_name) {
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(lock_instance_for_provider_kind(&provider_kind)?);
-            }
-            std::collections::btree_map::Entry::Occupied(_) => {}
-        }
-    }
 
     let mut flows = BTreeMap::new();
-    flows.insert(flow_id, LockFlow { use_map });
+    let mut instances: BTreeMap<String, LockInstance> = BTreeMap::new();
+
+    for (flow_id, flow) in flows_for_lock {
+        let mut required = required_resource_hints(&flow);
+        for (key, _) in &overrides {
+            required.insert(key.clone());
+        }
+
+        let mut use_map: BTreeMap<String, String> = BTreeMap::new();
+        for hint in required {
+            let provider_kind = select_provider_kind_for_required_hint(&overrides, &hint)?;
+            let instance_name = instance_name_for_provider_kind(&provider_kind);
+            use_map.insert(hint, instance_name.clone());
+
+            match instances.entry(instance_name) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(lock_instance_for_provider_kind(&provider_kind)?);
+                }
+                std::collections::btree_map::Entry::Occupied(_) => {}
+            }
+        }
+
+        flows.insert(flow_id, LockFlow { use_map });
+    }
 
     let mut lock = BindingsLock {
         version: 1,
@@ -2180,6 +2356,12 @@ fn validate_connector_connection_well_formed(
         ));
     }
 
+    if !connection.config.is_object() {
+        return Err(anyhow!(
+            "bindings.lock connector connection `{name}` has invalid `config` (expected object)"
+        ));
+    }
+
     for (role_key, handle_name) in &connection.roles {
         let handle = handles.get(handle_name).ok_or_else(|| {
             anyhow!(
@@ -2189,7 +2371,165 @@ fn validate_connector_connection_well_formed(
         validate_connector_role_provider_compatibility(name, role_key, handle_name, handle)?;
     }
 
+    validate_connector_connection_config(name, connection)?;
+
     Ok(())
+}
+
+fn validate_connector_connection_config(
+    name: &str,
+    connection: &ConnectorConnectionInstance,
+) -> Result<()> {
+    match connection.connector_id.as_str() {
+        "connector.formualizer.sheetport" => validate_sheetport_connection_config(name, connection),
+        _ => Ok(()),
+    }
+}
+
+fn validate_sheetport_connection_config(
+    name: &str,
+    connection: &ConnectorConnectionInstance,
+) -> Result<()> {
+    let config = connection.config.as_object().ok_or_else(|| {
+        anyhow!(
+            "bindings.lock connector connection `{name}` has invalid `config` (expected object)"
+        )
+    })?;
+
+    let workbook_source = config.get("workbook_source").ok_or_else(|| {
+        anyhow!(
+            "bindings.lock connector connection `{name}` for `connector.formualizer.sheetport` is missing required `config.workbook_source` object"
+        )
+    })?;
+    let workbook_source = workbook_source.as_object().ok_or_else(|| {
+        anyhow!(
+            "bindings.lock connector connection `{name}` has invalid `config.workbook_source` (expected object)"
+        )
+    })?;
+    let workbook_kind = required_nonempty_string_field(
+        workbook_source,
+        &format!("bindings.lock connector connection `{name}` config.workbook_source"),
+        "kind",
+    )?;
+    match workbook_kind {
+        "blob" => {
+            required_nonempty_string_field(
+                workbook_source,
+                &format!("bindings.lock connector connection `{name}` config.workbook_source"),
+                "key",
+            )?;
+        }
+        "materialized_blob" => {
+            required_nonempty_string_field(
+                workbook_source,
+                &format!("bindings.lock connector connection `{name}` config.workbook_source"),
+                "key",
+            )?;
+            let format = required_nonempty_string_field(
+                workbook_source,
+                &format!("bindings.lock connector connection `{name}` config.workbook_source"),
+                "format",
+            )?;
+            match format {
+                "workbook_json_v1" => {}
+                other => {
+                    return Err(anyhow!(
+                        "bindings.lock connector connection `{name}` has unsupported `config.workbook_source.format` `{other}`; expected `workbook_json_v1`"
+                    ));
+                }
+            }
+        }
+        "file_path" => {
+            required_nonempty_string_field(
+                workbook_source,
+                &format!("bindings.lock connector connection `{name}` config.workbook_source"),
+                "path",
+            )?;
+        }
+        other => {
+            return Err(anyhow!(
+                "bindings.lock connector connection `{name}` has unsupported `config.workbook_source.kind` `{other}`; expected one of: blob, materialized_blob, file_path"
+            ));
+        }
+    }
+
+    let manifest_source = config.get("manifest_source").ok_or_else(|| {
+        anyhow!(
+            "bindings.lock connector connection `{name}` for `connector.formualizer.sheetport` is missing required `config.manifest_source` object"
+        )
+    })?;
+    let manifest_source = manifest_source.as_object().ok_or_else(|| {
+        anyhow!(
+            "bindings.lock connector connection `{name}` has invalid `config.manifest_source` (expected object)"
+        )
+    })?;
+    let manifest_kind = required_nonempty_string_field(
+        manifest_source,
+        &format!("bindings.lock connector connection `{name}` config.manifest_source"),
+        "kind",
+    )?;
+    match manifest_kind {
+        "inline_yaml" => {
+            required_nonempty_string_field(
+                manifest_source,
+                &format!("bindings.lock connector connection `{name}` config.manifest_source"),
+                "value",
+            )?;
+        }
+        "blob" => {
+            required_nonempty_string_field(
+                manifest_source,
+                &format!("bindings.lock connector connection `{name}` config.manifest_source"),
+                "key",
+            )?;
+        }
+        "file_path" => {
+            required_nonempty_string_field(
+                manifest_source,
+                &format!("bindings.lock connector connection `{name}` config.manifest_source"),
+                "path",
+            )?;
+        }
+        other => {
+            return Err(anyhow!(
+                "bindings.lock connector connection `{name}` has unsupported `config.manifest_source.kind` `{other}`; expected one of: inline_yaml, blob, file_path"
+            ));
+        }
+    }
+
+    if let Some(eval_defaults) = config.get("eval_defaults")
+        && !eval_defaults.is_object()
+    {
+        return Err(anyhow!(
+            "bindings.lock connector connection `{name}` has invalid `config.eval_defaults` (expected object)"
+        ));
+    }
+
+    if let Some(artifact_policy) = config.get("artifact_policy")
+        && !artifact_policy.is_object()
+    {
+        return Err(anyhow!(
+            "bindings.lock connector connection `{name}` has invalid `config.artifact_policy` (expected object)"
+        ));
+    }
+
+    Ok(())
+}
+
+fn required_nonempty_string_field<'a>(
+    object: &'a serde_json::Map<String, JsonValue>,
+    context: &str,
+    field: &str,
+) -> Result<&'a str> {
+    let value = object
+        .get(field)
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| anyhow!("{context} is missing required `{field}` string"))?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("{context} has empty `{field}`"));
+    }
+    Ok(trimmed)
 }
 
 #[derive(Clone)]
@@ -2304,7 +2644,7 @@ impl BindingsLockConnectorRuntime {
         ))
     }
 
-    fn resolve_connection<'a>(
+    fn resolve_bound_connection<'a>(
         &'a self,
         scope: &ConnectorBindingScope,
     ) -> Result<(&'a str, &'a ConnectorConnectionInstance)> {
@@ -2329,7 +2669,7 @@ impl BindingsLockConnectorRuntime {
         scope: &ConnectorBindingScope,
         role_key: &str,
     ) -> Result<(&'a str, &'a ConnectorHandleInstance)> {
-        let (connection_name, connection) = self.resolve_connection(scope)?;
+        let (connection_name, connection) = self.resolve_bound_connection(scope)?;
         let handle_name = connection.roles.get(role_key).ok_or_else(|| {
             anyhow!(
                 "connector connection `{connection_name}` does not bind required role `{role_key}`"
@@ -2603,6 +2943,69 @@ impl ConnectorRuntime for BindingsLockConnectorRuntime {
             ))),
         }
     }
+
+    async fn resolve_connection(
+        &self,
+        scope: &ConnectorBindingScope,
+    ) -> Result<Option<ResolvedConnectorConnection>, ConnectorRuntimeError> {
+        let (connection_name, connection) =
+            BindingsLockConnectorRuntime::resolve_bound_connection(self, scope)
+                .map_err(ConnectorRuntimeError::Provider)?;
+        Ok(Some(ResolvedConnectorConnection {
+            connection_name: Some(connection_name.to_string()),
+            connector_id: connection.connector_id.clone(),
+            config: connection.config.clone(),
+        }))
+    }
+
+    async fn resolve_required_effect_hints(
+        &self,
+        scope: &ConnectorBindingScope,
+        selected_mode: dag_core::ConnectorResolutionModeDecl,
+    ) -> Result<Vec<String>, ConnectorRuntimeError> {
+        if selected_mode != dag_core::ConnectorResolutionModeDecl::BoundConnection {
+            return Ok(Vec::new());
+        }
+
+        let Some(resolved) = self.resolve_connection(scope).await? else {
+            return Ok(Vec::new());
+        };
+
+        match resolved.connector_id.as_str() {
+            "connector.formualizer.sheetport" => {
+                let mut hints = Vec::new();
+                let config = resolved.config.as_object().ok_or_else(|| {
+                    ConnectorRuntimeError::Provider(anyhow!(
+                        "sheetport connection config must be an object"
+                    ))
+                })?;
+
+                if source_kind_is_blob(config.get("workbook_source"))? {
+                    hints.push(capabilities::blob::HINT_BLOB_READ.to_string());
+                }
+                if source_kind_is_blob(config.get("manifest_source"))? {
+                    hints.push(capabilities::blob::HINT_BLOB_READ.to_string());
+                }
+                hints.sort();
+                hints.dedup();
+                Ok(hints)
+            }
+            _ => Ok(Vec::new()),
+        }
+    }
+}
+
+fn source_kind_is_blob(value: Option<&JsonValue>) -> Result<bool, ConnectorRuntimeError> {
+    let Some(value) = value else {
+        return Ok(false);
+    };
+    let object = value.as_object().ok_or_else(|| {
+        ConnectorRuntimeError::Provider(anyhow!("connector source config must be an object"))
+    })?;
+    Ok(matches!(
+        object.get("kind").and_then(JsonValue::as_str),
+        Some("blob") | Some("materialized_blob")
+    ))
 }
 
 fn named_connect_secret_ref<'a>(
@@ -3129,12 +3532,15 @@ fn load_example(name: &str) -> Result<ExampleHandle> {
         "s4_preflight" => (s4_preflight::bundle(), false),
         "s5_unsupported_surface" => (s5_unsupported_surface::bundle(), false),
         "s6_spill" => (s6_spill::bundle(), false),
+        "s11_lead_intake" => (s11_lead_intake::bundle(), false),
         "connector_github_issues_local_flow" => {
             (example_connector_github_issues_local_flow::bundle(), false)
         }
         "connector_google_sheets_local_flow" => {
             (example_connector_google_sheets_local_flow::bundle(), false)
         }
+        "s12_sheetport_quote" => (s12_sheetport_quote::bound_bundle(), false),
+        "s13_github_issue_investigator" => (s13_github_issue_investigator::bundle(), false),
         other => return Err(anyhow!("unknown example `{other}`")),
     };
 
@@ -3599,6 +4005,428 @@ RGKOKF9RKKgFGiXk5I97qQ==
             .expect("expected connector mismatch");
         let msg = err.to_string();
         assert!(msg.contains("targeting `connector.slack.events`"), "{msg}");
+    }
+
+    #[test]
+    fn bindings_lock_rejects_non_object_connector_connection_config() {
+        let flow_id = "test-flow";
+        let lock = json!({
+            "version": 1,
+            "generated_at": "2025-12-15T00:00:00Z",
+            "content_hash": "",
+            "instances": {},
+            "flows": {
+                flow_id: { "use": {} }
+            },
+            "connector_handles": {},
+            "connector_connections": {
+                "sheetport_primary": {
+                    "connector_id": "connector.formualizer.sheetport",
+                    "roles": {},
+                    "config": "not-an-object"
+                }
+            },
+            "connector_bindings": {
+                flow_id: {
+                    "defaults": {
+                        "connector.formualizer.sheetport": "sheetport_primary"
+                    },
+                    "nodes": {}
+                }
+            }
+        });
+
+        let err = BindingsLockConnectorRuntime::new(&lock_from_json(lock), flow_id)
+            .err()
+            .expect("expected non-object config reject");
+        let msg = err.to_string();
+        assert!(msg.contains("invalid `config` (expected object)"), "{msg}");
+    }
+
+    #[test]
+    fn bindings_lock_rejects_sheetport_connection_without_workbook_source() {
+        let flow_id = "test-flow";
+        let lock = json!({
+            "version": 1,
+            "generated_at": "2025-12-15T00:00:00Z",
+            "content_hash": "",
+            "instances": {},
+            "flows": {
+                flow_id: { "use": {} }
+            },
+            "connector_handles": {},
+            "connector_connections": {
+                "sheetport_primary": {
+                    "connector_id": "connector.formualizer.sheetport",
+                    "roles": {},
+                    "config": {
+                        "manifest_source": {
+                            "kind": "inline_yaml",
+                            "value": "spec: fio\n..."
+                        }
+                    }
+                }
+            },
+            "connector_bindings": {
+                flow_id: {
+                    "defaults": {
+                        "connector.formualizer.sheetport": "sheetport_primary"
+                    },
+                    "nodes": {}
+                }
+            }
+        });
+
+        let err = BindingsLockConnectorRuntime::new(&lock_from_json(lock), flow_id)
+            .err()
+            .expect("expected missing workbook_source reject");
+        let msg = err.to_string();
+        assert!(msg.contains("config.workbook_source"), "{msg}");
+    }
+
+    #[test]
+    fn bindings_lock_rejects_sheetport_connection_with_invalid_manifest_kind() {
+        let flow_id = "test-flow";
+        let lock = json!({
+            "version": 1,
+            "generated_at": "2025-12-15T00:00:00Z",
+            "content_hash": "",
+            "instances": {},
+            "flows": {
+                flow_id: { "use": {} }
+            },
+            "connector_handles": {},
+            "connector_connections": {
+                "sheetport_primary": {
+                    "connector_id": "connector.formualizer.sheetport",
+                    "roles": {},
+                    "config": {
+                        "workbook_source": {
+                            "kind": "blob",
+                            "key": "models/quote.xlsx"
+                        },
+                        "manifest_source": {
+                            "kind": "remote_url",
+                            "value": "https://example.test/model.fio.yaml"
+                        }
+                    }
+                }
+            },
+            "connector_bindings": {
+                flow_id: {
+                    "defaults": {
+                        "connector.formualizer.sheetport": "sheetport_primary"
+                    },
+                    "nodes": {}
+                }
+            }
+        });
+
+        let err = BindingsLockConnectorRuntime::new(&lock_from_json(lock), flow_id)
+            .err()
+            .expect("expected invalid manifest kind reject");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("config.manifest_source.kind` `remote_url`"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn bindings_lock_accepts_sheetport_materialized_blob_workbook_source() {
+        let flow_id = "test-flow";
+        let runtime = connector_runtime_from_json(
+            json!({
+                "version": 1,
+                "generated_at": "2025-12-15T00:00:00Z",
+                "content_hash": "",
+                "instances": {},
+                "flows": {
+                    flow_id: { "use": {} }
+                },
+                "connector_handles": {},
+                "connector_connections": {
+                    "sheetport_primary": {
+                        "connector_id": "connector.formualizer.sheetport",
+                        "roles": {},
+                        "config": {
+                            "workbook_source": {
+                                "kind": "materialized_blob",
+                                "key": "models/quote.materialized.json",
+                                "format": "workbook_json_v1"
+                            },
+                            "manifest_source": {
+                                "kind": "inline_yaml",
+                                "value": "spec: fio\n..."
+                            }
+                        }
+                    }
+                },
+                "connector_bindings": {
+                    flow_id: {
+                        "defaults": {
+                            "connector.formualizer.sheetport": "sheetport_primary"
+                        },
+                        "nodes": {}
+                    }
+                }
+            }),
+            flow_id,
+        );
+
+        let resolved = RuntimeBuilder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(runtime.resolve_connection(&connector_scope(
+                flow_id,
+                "node",
+                "connector.formualizer.sheetport",
+            )))
+            .expect("resolve connection")
+            .expect("resolved connection");
+
+        assert_eq!(resolved.connector_id, "connector.formualizer.sheetport");
+        assert_eq!(
+            resolved.config["workbook_source"]["kind"],
+            json!("materialized_blob")
+        );
+        assert_eq!(
+            resolved.config["workbook_source"]["format"],
+            json!("workbook_json_v1")
+        );
+    }
+
+    #[test]
+    fn bindings_lock_runtime_derives_sheetport_blob_hint_for_bound_mode() {
+        let flow_id = "test-flow";
+        let runtime = connector_runtime_from_json(
+            json!({
+                "version": 1,
+                "generated_at": "2025-12-15T00:00:00Z",
+                "content_hash": "",
+                "instances": {},
+                "flows": {
+                    flow_id: { "use": {} }
+                },
+                "connector_handles": {},
+                "connector_connections": {
+                    "sheetport_primary": {
+                        "connector_id": "connector.formualizer.sheetport",
+                        "roles": {},
+                        "config": {
+                            "workbook_source": {
+                                "kind": "blob",
+                                "key": "models/quote.xlsx"
+                            },
+                            "manifest_source": {
+                                "kind": "inline_yaml",
+                                "value": "spec: fio\n..."
+                            }
+                        }
+                    }
+                },
+                "connector_bindings": {
+                    flow_id: {
+                        "defaults": {
+                            "connector.formualizer.sheetport": "sheetport_primary"
+                        },
+                        "nodes": {}
+                    }
+                }
+            }),
+            flow_id,
+        );
+
+        let hints = RuntimeBuilder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(runtime.resolve_required_effect_hints(
+                &connector_scope(flow_id, "node", "connector.formualizer.sheetport"),
+                dag_core::ConnectorResolutionModeDecl::BoundConnection,
+            ))
+            .expect("derive hints");
+
+        assert_eq!(hints, vec![capabilities::blob::HINT_BLOB_READ.to_string()]);
+    }
+
+    #[test]
+    fn bindings_lock_runtime_derives_sheetport_blob_hint_for_materialized_blob_bound_mode() {
+        let flow_id = "test-flow";
+        let runtime = connector_runtime_from_json(
+            json!({
+                "version": 1,
+                "generated_at": "2025-12-15T00:00:00Z",
+                "content_hash": "",
+                "instances": {},
+                "flows": {
+                    flow_id: { "use": {} }
+                },
+                "connector_handles": {},
+                "connector_connections": {
+                    "sheetport_primary": {
+                        "connector_id": "connector.formualizer.sheetport",
+                        "roles": {},
+                        "config": {
+                            "workbook_source": {
+                                "kind": "materialized_blob",
+                                "key": "models/quote.materialized.json",
+                                "format": "workbook_json_v1"
+                            },
+                            "manifest_source": {
+                                "kind": "inline_yaml",
+                                "value": "spec: fio\n..."
+                            }
+                        }
+                    }
+                },
+                "connector_bindings": {
+                    flow_id: {
+                        "defaults": {
+                            "connector.formualizer.sheetport": "sheetport_primary"
+                        },
+                        "nodes": {}
+                    }
+                }
+            }),
+            flow_id,
+        );
+
+        let hints = RuntimeBuilder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(runtime.resolve_required_effect_hints(
+                &connector_scope(flow_id, "node", "connector.formualizer.sheetport"),
+                dag_core::ConnectorResolutionModeDecl::BoundConnection,
+            ))
+            .expect("derive hints");
+
+        assert_eq!(hints, vec![capabilities::blob::HINT_BLOB_READ.to_string()]);
+    }
+
+    #[test]
+    fn bindings_lock_runtime_skips_sheetport_blob_hint_for_late_bound_mode() {
+        let flow_id = "test-flow";
+        let runtime = connector_runtime_from_json(
+            json!({
+                "version": 1,
+                "generated_at": "2025-12-15T00:00:00Z",
+                "content_hash": "",
+                "instances": {},
+                "flows": {
+                    flow_id: { "use": {} }
+                },
+                "connector_handles": {},
+                "connector_connections": {
+                    "sheetport_primary": {
+                        "connector_id": "connector.formualizer.sheetport",
+                        "roles": {},
+                        "config": {
+                            "workbook_source": {
+                                "kind": "blob",
+                                "key": "models/quote.xlsx"
+                            },
+                            "manifest_source": {
+                                "kind": "inline_yaml",
+                                "value": "spec: fio\n..."
+                            }
+                        }
+                    }
+                },
+                "connector_bindings": {
+                    flow_id: {
+                        "defaults": {
+                            "connector.formualizer.sheetport": "sheetport_primary"
+                        },
+                        "nodes": {}
+                    }
+                }
+            }),
+            flow_id,
+        );
+
+        let hints = RuntimeBuilder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(runtime.resolve_required_effect_hints(
+                &connector_scope(flow_id, "node", "connector.formualizer.sheetport"),
+                dag_core::ConnectorResolutionModeDecl::LateBoundRefs,
+            ))
+            .expect("derive hints");
+
+        assert!(hints.is_empty());
+    }
+
+    #[test]
+    fn bindings_lock_runtime_resolves_connector_connection_config() {
+        let flow_id = "test-flow";
+        let runtime = connector_runtime_from_json(
+            json!({
+                "version": 1,
+                "generated_at": "2025-12-15T00:00:00Z",
+                "content_hash": "",
+                "instances": {},
+                "flows": {
+                    flow_id: { "use": {} }
+                },
+                "connector_handles": {},
+                "connector_connections": {
+                    "sheetport_primary": {
+                        "connector_id": "connector.formualizer.sheetport",
+                        "roles": {},
+                        "config": {
+                            "workbook_source": {
+                                "kind": "blob",
+                                "key": "models/quote.xlsx"
+                            },
+                            "manifest_source": {
+                                "kind": "inline_yaml",
+                                "value": "spec: fio\n..."
+                            },
+                            "eval_defaults": {
+                                "freeze_volatile": true,
+                                "rng_seed": 7
+                            }
+                        }
+                    }
+                },
+                "connector_bindings": {
+                    flow_id: {
+                        "defaults": {
+                            "connector.formualizer.sheetport": "sheetport_primary"
+                        },
+                        "nodes": {}
+                    }
+                }
+            }),
+            flow_id,
+        );
+
+        let resolved = RuntimeBuilder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(runtime.resolve_connection(&connector_scope(
+                flow_id,
+                "node",
+                "connector.formualizer.sheetport",
+            )))
+            .expect("connection resolution")
+            .expect("bound connection present");
+
+        assert_eq!(
+            resolved.connection_name.as_deref(),
+            Some("sheetport_primary")
+        );
+        assert_eq!(resolved.connector_id, "connector.formualizer.sheetport");
+        assert_eq!(
+            resolved.config["workbook_source"]["key"],
+            json!("models/quote.xlsx")
+        );
+        assert_eq!(resolved.config["eval_defaults"]["rng_seed"], json!(7));
     }
 
     #[test]

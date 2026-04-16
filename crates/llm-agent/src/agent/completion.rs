@@ -1,7 +1,7 @@
 use super::prompt_request::{self, PromptRequest, hooks::PromptHook};
 use crate::{
-    compat::MessageRagTextExt,
     agent::prompt_request::streaming::StreamingPromptRequest,
+    compat::MessageRagTextExt,
     completion::{
         Chat, Completion, CompletionError, CompletionModel, CompletionRequestBuilder, Document,
         GetTokenUsage, Message, Prompt, PromptError, TypedPrompt,

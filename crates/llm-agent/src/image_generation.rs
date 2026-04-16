@@ -113,7 +113,8 @@ impl ImageGenerationModel for ImageGenerationModelHandle<'_> {
     fn image_generation(
         &self,
         request: ImageGenerationRequest,
-    ) -> WasmBoxedFuture<'_, Result<ImageGenerationResponse<Self::Response>, ImageGenerationError>> {
+    ) -> WasmBoxedFuture<'_, Result<ImageGenerationResponse<Self::Response>, ImageGenerationError>>
+    {
         self.inner.image_generation(request)
     }
 }

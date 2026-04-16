@@ -1,0 +1,43 @@
+[package]
+name = "example-s13-github-issue-investigator"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "S13 GitHub issue investigator example proving bounded triage and explicit orchestration ahead of external sandbox dispatch/resume."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+capabilities = { path = "../../crates/capabilities" }
+dag-core = { path = "../../crates/dag-core" }
+dag-macros = { path = "../../crates/dag-macros" }
+dispatch-backend = { path = "../../crates/dispatch-backend" }
+kernel-plan = { path = "../../crates/kernel-plan" }
+llm-agent = { path = "../../crates/llm-agent" }
+llm-lattice = { path = "../../crates/llm-lattice" }
+llm-provider-openai = { path = "../../crates/llm-provider-openai" }
+schemars = "1"
+serde.workspace = true
+serde_json.workspace = true
+host-inproc = { path = "../../crates/host-inproc", optional = true }
+kernel-exec = { path = "../../crates/kernel-exec", optional = true }
+
+[dev-dependencies]
+async-trait.workspace = true
+cap-http-reqwest = { path = "../../crates/cap-http-reqwest" }
+httpmock = "0.7"
+tokio = { workspace = true, features = ["full"] }
+
+[features]
+default = ["host-bundle"]
+host-bundle = ["kernel-exec", "host-inproc"]
+flow-registry = ["dag-core/flow-registry", "dag-macros/flow-registry"]
+
+[package.metadata.latticeflow]
+flows = ["s13_github_issue_investigator_flow"]
+default_flow = "s13_github_issue_investigator_flow"

@@ -1,0 +1,38 @@
+[package]
+name = "example-s12-sheetport-quote"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "S12 representative SheetPort quote example proving canonical bound-node and internal late-bound connector usage."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+capabilities = { path = "../../crates/capabilities" }
+connector_formualizer_sheetport = { path = "../../crates/connectors/formualizer/sheetport", default-features = false }
+dag-core = { path = "../../crates/dag-core" }
+dag-macros = { path = "../../crates/dag-macros" }
+kernel-plan = { path = "../../crates/kernel-plan" }
+serde.workspace = true
+serde_json.workspace = true
+host-inproc = { path = "../../crates/host-inproc", optional = true }
+kernel-exec = { path = "../../crates/kernel-exec", optional = true }
+
+[dev-dependencies]
+async-trait.workspace = true
+tokio = { workspace = true, features = ["full"] }
+
+[features]
+default = ["host-bundle", "native-xlsx"]
+host-bundle = ["kernel-exec", "host-inproc", "connector_formualizer_sheetport/host-bundle"]
+native-xlsx = ["connector_formualizer_sheetport/native-xlsx"]
+flow-registry = ["dag-core/flow-registry", "dag-macros/flow-registry"]
+
+[package.metadata.latticeflow]
+flows = ["s12_sheetport_quote_flow", "s12_sheetport_quote_internal_flow"]
+default_flow = "s12_sheetport_quote_flow"

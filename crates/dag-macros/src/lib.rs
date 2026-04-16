@@ -313,6 +313,7 @@ struct NodeArgs {
     output_schema: Option<LitStr>,
     resources: Vec<ResourceSpec>,
     connector_ops: Vec<Path>,
+    connector_resolution_mode: Option<TokenStream2>,
     checkpointable: Option<LitBool>,
     replayable: Option<LitBool>,
     halts: Option<LitBool>,
@@ -341,6 +342,7 @@ impl NodeArgs {
             output_schema: None,
             resources: Vec::new(),
             connector_ops: Vec::new(),
+            connector_resolution_mode: None,
             checkpointable: None,
             replayable: None,
             halts: None,
@@ -401,6 +403,16 @@ impl NodeArgs {
                                 return Err(syn::Error::new(lit.span(), "node kind already set"));
                             }
                             parsed.kind = Some(parse_node_kind(&lit)?);
+                        }
+                        "connector_resolution" | "connectorResolution" => {
+                            if parsed.connector_resolution_mode.is_some() {
+                                return Err(syn::Error::new(
+                                    lit.span(),
+                                    "connector resolution mode already set",
+                                ));
+                            }
+                            parsed.connector_resolution_mode =
+                                Some(parse_connector_resolution_mode(&lit)?);
                         }
                         "in" => match lit {
                             Lit::Str(s) => parsed.input_schema = Some(s),
@@ -674,6 +686,11 @@ fn node_impl(
         let entries = config.connector_ops.iter().map(|path| quote!(&#path::META));
         quote!(&[#(#entries),*])
     };
+    let connector_resolution_expr = if let Some(mode) = &config.connector_resolution_mode {
+        quote!(Some(#mode))
+    } else {
+        quote!(None)
+    };
     let effects_expr = &effects.tokens;
     let determinism_expr = &determinism.tokens;
     let effects_declared_expr = if config.effects_provided {
@@ -785,6 +802,7 @@ fn node_impl(
             determinism_hints: #determinism_hints_expr,
             effect_hints: #effect_hints_expr,
             connector_ops: #connector_ops_expr,
+            connector_resolution_mode: #connector_resolution_expr,
             effects_declared: #effects_declared_expr,
             determinism_declared: #determinism_declared_expr,
             durability: ::dag_core::DurabilityProfile {
@@ -1335,6 +1353,31 @@ fn parse_node_kind(lit: &Lit) -> Result<TokenStream2> {
     }
 }
 
+fn parse_connector_resolution_mode(lit: &Lit) -> Result<TokenStream2> {
+    let value = lit_to_string(lit)?;
+    match value.as_str() {
+        "bound_connection" | "BoundConnection" | "boundConnection" => Ok(enum_expr(
+            "ConnectorResolutionModeDecl",
+            "BoundConnection",
+            lit.span(),
+        )),
+        "late_bound_refs" | "LateBoundRefs" | "lateBoundRefs" => Ok(enum_expr(
+            "ConnectorResolutionModeDecl",
+            "LateBoundRefs",
+            lit.span(),
+        )),
+        "inline_payload" | "InlinePayload" | "inlinePayload" => Ok(enum_expr(
+            "ConnectorResolutionModeDecl",
+            "InlinePayload",
+            lit.span(),
+        )),
+        other => Err(syn::Error::new(
+            lit.span(),
+            format!("[DAG003] unknown connector resolution mode `{other}`"),
+        )),
+    }
+}
+
 fn enum_expr(enum_name: &str, variant: &str, span: Span) -> TokenStream2 {
     let enum_ident = Ident::new(enum_name, span);
     let variant_ident = Ident::new(variant, span);
@@ -1628,6 +1671,7 @@ fn subflow_spec_from_path(path: &Path) -> Result<TokenStream2> {
                     determinism_hints: descriptor.determinism_hints,
                     effect_hints: descriptor.effect_hints,
                     connector_ops: &[],
+                    connector_resolution_mode: None,
                     effects_declared: true,
                     determinism_declared: true,
                     durability: descriptor.durability,
@@ -4789,6 +4833,11 @@ impl WorkflowBundleInput {
             });
         }
 
+        let wasm_export_names = flow_bundle::wasm_guest_exports_for_flow_name(&flow_name);
+        let wasm_guest_alloc_export = LitStr::new(&wasm_export_names.alloc, self.name.span());
+        let wasm_guest_free_export = LitStr::new(&wasm_export_names.free, self.name.span());
+        let wasm_guest_invoke_export = LitStr::new(&wasm_export_names.invoke, self.name.span());
+
         let wasm_guest_exports = if wasm_node_dispatch_entries.is_empty() {
             quote!()
         } else {
@@ -4937,8 +4986,18 @@ impl WorkflowBundleInput {
                             .iter()
                             .any(|spec| !spec.connector_ops.is_empty());
                         if needs_connector_runtime {
+                            // Connector ops may derive additional resource needs from
+                            // runtime-resolved connection config (for example SheetPort bound
+                            // connections that resolve workbook payloads through blob). Inject
+                            // the remote connector runtime and a remote blob store so the guest
+                            // can satisfy those runtime-selected paths without requiring every
+                            // connector family to hard-code static blob hints into its op
+                            // metadata.
                             bag = bag.with_connector_runtime(Arc::new(
                                 ::capabilities::connector::RemoteConnectorRuntime::new(),
+                            ));
+                            bag = bag.with_blob(Arc::new(
+                                ::capabilities::blob::RemoteBlobStore::new(),
                             ));
                             if let Some(scope) = ::capabilities::connector::current_remote_scope()
                                 .map_err(|err| err.to_string())?
@@ -4956,7 +5015,7 @@ impl WorkflowBundleInput {
                         .await
                     }
 
-                    #[unsafe(no_mangle)]
+                    #[unsafe(export_name = #wasm_guest_alloc_export)]
                     pub extern "C" fn lf_guest_alloc(len: u32) -> u32 {
                         let mut buf = Vec::<u8>::with_capacity(len as usize);
                         let ptr = buf.as_mut_ptr();
@@ -4964,12 +5023,12 @@ impl WorkflowBundleInput {
                         ptr as u32
                     }
 
-                    #[unsafe(no_mangle)]
+                    #[unsafe(export_name = #wasm_guest_free_export)]
                     pub unsafe extern "C" fn lf_guest_free(ptr: u32, len: u32) {
                         let _ = Vec::from_raw_parts(ptr as *mut u8, len as usize, len as usize);
                     }
 
-                    #[unsafe(no_mangle)]
+                    #[unsafe(export_name = #wasm_guest_invoke_export)]
                     pub unsafe extern "C" fn lf_invoke_node(
                         id_ptr: u32,
                         id_len: u32,

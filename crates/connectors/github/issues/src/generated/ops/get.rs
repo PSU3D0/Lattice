@@ -55,6 +55,10 @@ impl GithubIssuesGet {
             name: "github_default",
             expected_handle_kind: "endpoint.profile",
         }],
+        resolution: ::dag_core::ConnectorResolutionContract {
+            supported_modes: &[::dag_core::ConnectorResolutionModeDecl::BoundConnection],
+            default_mode: ::dag_core::ConnectorResolutionModeDecl::BoundConnection,
+        },
     };
 
     pub async fn invoke(

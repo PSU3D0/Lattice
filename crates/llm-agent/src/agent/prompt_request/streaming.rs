@@ -1,8 +1,8 @@
 use crate::{
-    compat::{MessageRagTextExt, PromptErrorExt},
     OneOrMany,
     agent::completion::{DynamicContextStore, build_completion_request},
     agent::prompt_request::{HookAction, hooks::PromptHook},
+    compat::{MessageRagTextExt, PromptErrorExt},
     completion::{Document, GetTokenUsage},
     json_utils,
     message::{AssistantContent, ToolChoice, ToolResult, ToolResultContent, UserContent},

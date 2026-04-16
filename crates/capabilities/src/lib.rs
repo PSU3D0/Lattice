@@ -1946,10 +1946,8 @@ pub mod kv {
             let (status, payload) = decode_kv_response(&resp)?;
             match status {
                 RESP_OK => {
-                    let transport: KvListResponseTransport =
-                        serde_json::from_slice(payload).map_err(|err| {
-                            KvError::Other(format!("decode kv list response: {err}"))
-                        })?;
+                    let transport: KvListResponseTransport = serde_json::from_slice(payload)
+                        .map_err(|err| KvError::Other(format!("decode kv list response: {err}")))?;
                     Ok(KvListResponse {
                         keys: transport
                             .keys

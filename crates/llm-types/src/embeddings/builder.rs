@@ -272,34 +272,34 @@ mod tests {
     #[test]
     fn test_build_multiple_text() {
         futures::executor::block_on(async {
-        let fake_definitions = definitions_multiple_text();
+            let fake_definitions = definitions_multiple_text();
 
-        let fake_model = MockEmbeddingModel;
-        let mut result = EmbeddingsBuilder::new(fake_model)
-            .documents(fake_definitions)
-            .unwrap()
-            .build()
-            .await
-            .unwrap();
+            let fake_model = MockEmbeddingModel;
+            let mut result = EmbeddingsBuilder::new(fake_model)
+                .documents(fake_definitions)
+                .unwrap()
+                .build()
+                .await
+                .unwrap();
 
-        result.sort_by(|(fake_definition_1, _), (fake_definition_2, _)| {
-            fake_definition_1.id.cmp(&fake_definition_2.id)
-        });
+            result.sort_by(|(fake_definition_1, _), (fake_definition_2, _)| {
+                fake_definition_1.id.cmp(&fake_definition_2.id)
+            });
 
-        assert_eq!(result.len(), 2);
+            assert_eq!(result.len(), 2);
 
-        let first_definition = &result[0];
-        assert_eq!(first_definition.0.id, "doc0");
-        assert_eq!(first_definition.1.len(), 2);
-        assert_eq!(
-            first_definition.1.first().document,
-            "A green alien that lives on cold planets.".to_string()
-        );
+            let first_definition = &result[0];
+            assert_eq!(first_definition.0.id, "doc0");
+            assert_eq!(first_definition.1.len(), 2);
+            assert_eq!(
+                first_definition.1.first().document,
+                "A green alien that lives on cold planets.".to_string()
+            );
 
-        let second_definition = &result[1];
-        assert_eq!(second_definition.0.id, "doc1");
-        assert_eq!(second_definition.1.len(), 2);
-        assert_eq!(
+            let second_definition = &result[1];
+            assert_eq!(second_definition.0.id, "doc1");
+            assert_eq!(second_definition.1.len(), 2);
+            assert_eq!(
             second_definition.1.rest()[0].document, "A fictional creature found in the distant, swampy marshlands of the planet Glibbo in the Andromeda galaxy.".to_string()
         )
         });
@@ -308,34 +308,34 @@ mod tests {
     #[test]
     fn test_build_single_text() {
         futures::executor::block_on(async {
-        let fake_definitions = definitions_single_text();
+            let fake_definitions = definitions_single_text();
 
-        let fake_model = MockEmbeddingModel;
-        let mut result = EmbeddingsBuilder::new(fake_model)
-            .documents(fake_definitions)
-            .unwrap()
-            .build()
-            .await
-            .unwrap();
+            let fake_model = MockEmbeddingModel;
+            let mut result = EmbeddingsBuilder::new(fake_model)
+                .documents(fake_definitions)
+                .unwrap()
+                .build()
+                .await
+                .unwrap();
 
-        result.sort_by(|(fake_definition_1, _), (fake_definition_2, _)| {
-            fake_definition_1.id.cmp(&fake_definition_2.id)
-        });
+            result.sort_by(|(fake_definition_1, _), (fake_definition_2, _)| {
+                fake_definition_1.id.cmp(&fake_definition_2.id)
+            });
 
-        assert_eq!(result.len(), 2);
+            assert_eq!(result.len(), 2);
 
-        let first_definition = &result[0];
-        assert_eq!(first_definition.0.id, "doc0");
-        assert_eq!(first_definition.1.len(), 1);
-        assert_eq!(
-            first_definition.1.first().document,
-            "A green alien that lives on cold planets.".to_string()
-        );
+            let first_definition = &result[0];
+            assert_eq!(first_definition.0.id, "doc0");
+            assert_eq!(first_definition.1.len(), 1);
+            assert_eq!(
+                first_definition.1.first().document,
+                "A green alien that lives on cold planets.".to_string()
+            );
 
-        let second_definition = &result[1];
-        assert_eq!(second_definition.0.id, "doc1");
-        assert_eq!(second_definition.1.len(), 1);
-        assert_eq!(
+            let second_definition = &result[1];
+            assert_eq!(second_definition.0.id, "doc1");
+            assert_eq!(second_definition.1.len(), 1);
+            assert_eq!(
             second_definition.1.first().document, "An ancient tool used by the ancestors of the inhabitants of planet Jiro to farm the land.".to_string()
         )
         });
@@ -344,72 +344,72 @@ mod tests {
     #[test]
     fn test_build_multiple_and_single_text() {
         futures::executor::block_on(async {
-        let fake_definitions = definitions_multiple_text();
-        let fake_definitions_single = definitions_multiple_text_2();
+            let fake_definitions = definitions_multiple_text();
+            let fake_definitions_single = definitions_multiple_text_2();
 
-        let fake_model = MockEmbeddingModel;
-        let mut result = EmbeddingsBuilder::new(fake_model)
-            .documents(fake_definitions)
-            .unwrap()
-            .documents(fake_definitions_single)
-            .unwrap()
-            .build()
-            .await
-            .unwrap();
+            let fake_model = MockEmbeddingModel;
+            let mut result = EmbeddingsBuilder::new(fake_model)
+                .documents(fake_definitions)
+                .unwrap()
+                .documents(fake_definitions_single)
+                .unwrap()
+                .build()
+                .await
+                .unwrap();
 
-        result.sort_by(|(fake_definition_1, _), (fake_definition_2, _)| {
-            fake_definition_1.id.cmp(&fake_definition_2.id)
-        });
+            result.sort_by(|(fake_definition_1, _), (fake_definition_2, _)| {
+                fake_definition_1.id.cmp(&fake_definition_2.id)
+            });
 
-        assert_eq!(result.len(), 4);
+            assert_eq!(result.len(), 4);
 
-        let second_definition = &result[1];
-        assert_eq!(second_definition.0.id, "doc1");
-        assert_eq!(second_definition.1.len(), 2);
-        assert_eq!(
+            let second_definition = &result[1];
+            assert_eq!(second_definition.0.id, "doc1");
+            assert_eq!(second_definition.1.len(), 2);
+            assert_eq!(
             second_definition.1.first().document, "An ancient tool used by the ancestors of the inhabitants of planet Jiro to farm the land.".to_string()
         );
 
-        let third_definition = &result[2];
-        assert_eq!(third_definition.0.id, "doc2");
-        assert_eq!(third_definition.1.len(), 1);
-        assert_eq!(
-            third_definition.1.first().document,
-            "Another fake definitions".to_string()
-        )
+            let third_definition = &result[2];
+            assert_eq!(third_definition.0.id, "doc2");
+            assert_eq!(third_definition.1.len(), 1);
+            assert_eq!(
+                third_definition.1.first().document,
+                "Another fake definitions".to_string()
+            )
         });
     }
 
     #[test]
     fn test_build_string() {
         futures::executor::block_on(async {
-        let bindings = definitions_multiple_text();
-        let fake_definitions = bindings.iter().map(|def| def.definitions.clone());
+            let bindings = definitions_multiple_text();
+            let fake_definitions = bindings.iter().map(|def| def.definitions.clone());
 
-        let fake_model = MockEmbeddingModel;
-        let mut result = EmbeddingsBuilder::new(fake_model)
-            .documents(fake_definitions)
-            .unwrap()
-            .build()
-            .await
-            .unwrap();
+            let fake_model = MockEmbeddingModel;
+            let mut result = EmbeddingsBuilder::new(fake_model)
+                .documents(fake_definitions)
+                .unwrap()
+                .build()
+                .await
+                .unwrap();
 
-        result.sort_by(|(fake_definition_1, _), (fake_definition_2, _)| {
-            fake_definition_1.cmp(fake_definition_2)
-        });
+            result.sort_by(|(fake_definition_1, _), (fake_definition_2, _)| {
+                fake_definition_1.cmp(fake_definition_2)
+            });
 
-        assert_eq!(result.len(), 2);
+            assert_eq!(result.len(), 2);
 
-        let first_definition = &result[0];
-        assert_eq!(first_definition.1.len(), 2);
-        assert_eq!(
-            first_definition.1.first().document,
-            "A green alien that lives on cold planets.".to_string()
-        );
+            let first_definition = &result[0];
+            assert_eq!(first_definition.1.len(), 2);
+            assert_eq!(
+                first_definition.1.first().document,
+                "A green alien that lives on cold planets.".to_string()
+            );
 
-        let second_definition = &result[1];
-        assert_eq!(second_definition.1.len(), 2);
-        assert_eq!(
+            let second_definition = &result[1];
+            assert_eq!(second_definition.1.len(), 2);
+            assert_eq!(
             second_definition.1.rest()[0].document, "A fictional creature found in the distant, swampy marshlands of the planet Glibbo in the Andromeda galaxy.".to_string()
         )
         });

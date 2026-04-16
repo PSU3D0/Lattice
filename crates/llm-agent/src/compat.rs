@@ -1,5 +1,5 @@
 use crate::completion::request::PromptError;
-use crate::message::{Message, UserContent, Text};
+use crate::message::{Message, Text, UserContent};
 
 pub trait MessageRagTextExt {
     fn rag_text(&self) -> Option<String>;

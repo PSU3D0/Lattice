@@ -1,0 +1,17 @@
+{
+  "owner": "PSU3D0",
+  "repo": "Lattice",
+  "issue_number": 417,
+  "title": "panic when config file is missing",
+  "body": "When I run the CLI without a local config file, the process panics instead of returning a normal error.",
+  "comments": [
+    {
+      "author": "reporter",
+      "body": "I can reproduce this on main with a clean checkout."
+    },
+    {
+      "author": "maintainer",
+      "body": "We should confirm whether this is a parser unwrap or an initialization-path assumption."
+    }
+  ]
+}

@@ -1,8 +1,23 @@
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
 
 use assert_cmd::prelude::*;
+use example_s12_sheetport_quote as s12_sheetport_quote;
 use serde_json::Value;
+
+const BUILD_JOBS_LIMIT: &str = "4";
+
+fn build_heavy_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn shared_target_dir() -> PathBuf {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/flows-cli-it");
+    std::fs::create_dir_all(&path).expect("create shared target dir");
+    path
+}
 
 fn temp_lock_path() -> PathBuf {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -53,12 +68,76 @@ qIbhEamp5tjBbAdxLON1Q3Qpyt/uemzi+TSKJbcZ3OQHe2bylylyYYh+4zGCSGMY
 RGKOKF9RKKgFGiXk5I97qQ==
 -----END PRIVATE KEY-----"#;
 
-fn values_path_for_test(spreadsheet_id: &str, range: &str) -> String {
-    format!(
-        "/v4/spreadsheets/{}/values/{}",
-        percent_encoding::utf8_percent_encode(spreadsheet_id, percent_encoding::NON_ALPHANUMERIC),
-        percent_encoding::utf8_percent_encode(range, percent_encoding::NON_ALPHANUMERIC)
-    )
+fn s12_asset_path(relative: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/s12_sheetport_quote")
+        .join(relative)
+        .canonicalize()?;
+    Ok(path)
+}
+
+fn write_s12_file_path_lock() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let flow_id = s12_sheetport_quote::validated_bound_ir()
+        .flow()
+        .id
+        .as_str()
+        .to_string();
+    let workbook_path = s12_asset_path("assets/quote_model.xlsx")?;
+    let manifest_path = s12_asset_path("assets/quote_model.fio.yaml")?;
+
+    let mut lock = serde_json::json!({
+        "version": 1,
+        "generated_at": "2026-04-01T00:00:00Z",
+        "content_hash": "",
+        "instances": {},
+        "flows": {
+            flow_id.clone(): {
+                "use": {}
+            }
+        },
+        "connector_handles": {},
+        "connector_connections": {
+            "sheetport_quote_local": {
+                "connector_id": "connector.formualizer.sheetport",
+                "roles": {},
+                "config": {
+                    "workbook_source": {
+                        "kind": "file_path",
+                        "path": workbook_path
+                    },
+                    "manifest_source": {
+                        "kind": "file_path",
+                        "path": manifest_path
+                    }
+                }
+            }
+        },
+        "connector_bindings": {
+            flow_id.clone(): {
+                "defaults": {
+                    "connector.formualizer.sheetport": "sheetport_quote_local"
+                },
+                "nodes": {}
+            }
+        }
+    });
+
+    let path = temp_lock_path();
+    let hash = {
+        let json_for_hash = lock.clone();
+        let mut hasher = sha2::Sha256::new();
+        let canonical = canonical_json_without_hash_for_test(&json_for_hash);
+        use sha2::Digest;
+        hasher.update(canonical.as_bytes());
+        let digest = hasher.finalize();
+        digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    lock["content_hash"] = serde_json::json!(hash);
+    std::fs::write(&path, serde_json::to_vec_pretty(&lock)?)?;
+    Ok(path)
 }
 
 fn generate_lock(
@@ -90,6 +169,262 @@ fn generate_lock(
     );
 
     Ok(path)
+}
+
+fn generate_lock_for_package(
+    package: &str,
+    flow: Option<&str>,
+    extra_binds: &[&str],
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let path = temp_lock_path();
+    let mut cmd = Command::cargo_bin("flows")?;
+    cmd.args([
+        "bindings",
+        "lock",
+        "generate",
+        "--package",
+        package,
+        "--out",
+        path.to_str().expect("path"),
+    ]);
+
+    if let Some(flow) = flow {
+        cmd.args(["--flow", flow]);
+    }
+
+    for bind in extra_binds {
+        cmd.args(["--bind", bind]);
+    }
+
+    let output = cmd.output()?;
+    assert!(
+        output.status.success(),
+        "package lock generate failed: status={:?}, stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    Ok(path)
+}
+
+fn build_bundle(package: &str, label: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let _guard = build_heavy_lock().lock().expect("build lock");
+    let dir = temp_bundle_dir(label);
+    let output = Command::cargo_bin("flows")?
+        .env("CARGO_TARGET_DIR", shared_target_dir())
+        .env("CARGO_BUILD_JOBS", BUILD_JOBS_LIMIT)
+        .args([
+            "bundle",
+            "-p",
+            package,
+            "--wasm",
+            "--dev",
+            "--out-dir",
+            dir.to_str().expect("bundle dir"),
+        ])
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "bundle failed: status={:?}, stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    Ok(dir)
+}
+
+fn generate_lock_for_bundle(
+    bundle: &PathBuf,
+    flow: Option<&str>,
+    extra_binds: &[&str],
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let path = temp_lock_path();
+    let mut cmd = Command::cargo_bin("flows")?;
+    cmd.args([
+        "bindings",
+        "lock",
+        "generate",
+        "--bundle",
+        bundle.to_str().expect("bundle path"),
+        "--out",
+        path.to_str().expect("path"),
+    ]);
+
+    if let Some(flow) = flow {
+        cmd.args(["--flow", flow]);
+    }
+
+    for bind in extra_binds {
+        cmd.args(["--bind", bind]);
+    }
+
+    let output = cmd.output()?;
+    assert!(
+        output.status.success(),
+        "bundle lock generate failed: status={:?}, stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    Ok(path)
+}
+
+#[test]
+fn generate_bindings_lock_for_builtin_s11_example_fails_honestly_on_workspace_provider_gap()
+-> Result<(), Box<dyn std::error::Error>> {
+    let path = temp_lock_path();
+    let output = Command::cargo_bin("flows")?
+        .args([
+            "bindings",
+            "lock",
+            "generate",
+            "--example",
+            "s11_lead_intake",
+            "--bind",
+            "resource::http::write=reqwest",
+            "--out",
+            path.to_str().expect("path"),
+        ])
+        .output()?;
+
+    assert!(!output.status.success(), "expected failure: {output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("resource::workspace::write"),
+        "unexpected stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("unknown example `s11_lead_intake`"),
+        "unexpected stderr: {stderr}"
+    );
+
+    std::fs::remove_file(&path).ok();
+    Ok(())
+}
+
+#[test]
+fn generate_bindings_lock_for_builtin_s13_example_exports_resource_hints()
+-> Result<(), Box<dyn std::error::Error>> {
+    let lock_path = generate_lock(
+        "s13_github_issue_investigator",
+        &[
+            "resource::http::write=reqwest",
+            "durability::checkpoint_store=memory",
+        ],
+    )?;
+
+    let raw = std::fs::read_to_string(&lock_path)?;
+    let lock: Value = serde_json::from_str(&raw)?;
+    let flows = lock["flows"].as_object().expect("flows object");
+    assert_eq!(flows.len(), 1);
+    let flow = flows.values().next().expect("single flow");
+    let use_map = flow["use"].as_object().expect("use map");
+    assert_eq!(
+        use_map.get("resource::http::write").and_then(Value::as_str),
+        Some("http_reqwest")
+    );
+    assert_eq!(
+        use_map
+            .get("durability::checkpoint_store")
+            .and_then(Value::as_str),
+        Some("checkpoint_store_memory")
+    );
+
+    std::fs::remove_file(&lock_path).ok();
+    Ok(())
+}
+
+#[test]
+fn generate_bindings_lock_for_package_flow_exports_resource_hints()
+-> Result<(), Box<dyn std::error::Error>> {
+    let lock_path = generate_lock_for_package(
+        "example-s13-github-issue-investigator",
+        None,
+        &[
+            "resource::http::write=reqwest",
+            "durability::checkpoint_store=memory",
+        ],
+    )?;
+
+    let raw = std::fs::read_to_string(&lock_path)?;
+    let lock: Value = serde_json::from_str(&raw)?;
+    let flows = lock["flows"].as_object().expect("flows object");
+    assert_eq!(flows.len(), 1);
+    let flow = flows.values().next().expect("single flow");
+    let use_map = flow["use"].as_object().expect("use map");
+    assert_eq!(
+        use_map.get("resource::http::write").and_then(Value::as_str),
+        Some("http_reqwest")
+    );
+    assert_eq!(
+        use_map
+            .get("durability::checkpoint_store")
+            .and_then(Value::as_str),
+        Some("checkpoint_store_memory")
+    );
+
+    std::fs::remove_file(&lock_path).ok();
+    Ok(())
+}
+
+#[test]
+fn generate_bindings_lock_for_bundle_flow_exports_resource_hints()
+-> Result<(), Box<dyn std::error::Error>> {
+    let bundle_dir = build_bundle("example-s13-github-issue-investigator", "s13-lock-generate")?;
+    let lock_path = generate_lock_for_bundle(
+        &bundle_dir,
+        None,
+        &[
+            "resource::http::write=reqwest",
+            "durability::checkpoint_store=memory",
+        ],
+    )?;
+
+    let raw = std::fs::read_to_string(&lock_path)?;
+    let lock: Value = serde_json::from_str(&raw)?;
+    let flows = lock["flows"].as_object().expect("flows object");
+    assert_eq!(flows.len(), 1);
+    let flow = flows.values().next().expect("single flow");
+    let use_map = flow["use"].as_object().expect("use map");
+    assert_eq!(
+        use_map.get("resource::http::write").and_then(Value::as_str),
+        Some("http_reqwest")
+    );
+    assert_eq!(
+        use_map
+            .get("durability::checkpoint_store")
+            .and_then(Value::as_str),
+        Some("checkpoint_store_memory")
+    );
+
+    std::fs::remove_file(&lock_path).ok();
+    std::fs::remove_dir_all(&bundle_dir).ok();
+    Ok(())
+}
+
+#[test]
+fn generate_bindings_lock_for_package_selected_flow_restricts_output()
+-> Result<(), Box<dyn std::error::Error>> {
+    let flow_id = s12_sheetport_quote::validated_bound_ir()
+        .flow()
+        .id
+        .as_str()
+        .to_string();
+    let lock_path = generate_lock_for_package(
+        "example-s12-sheetport-quote",
+        Some(&flow_id),
+        &["resource::blob=memory"],
+    )?;
+
+    let raw = std::fs::read_to_string(&lock_path)?;
+    let lock: Value = serde_json::from_str(&raw)?;
+    let flows = lock["flows"].as_object().expect("flows object");
+    assert_eq!(flows.len(), 1);
+    assert!(flows.contains_key(&flow_id));
+
+    std::fs::remove_file(&lock_path).ok();
+    Ok(())
 }
 
 #[test]
@@ -211,6 +546,43 @@ fn run_local_rejects_lock_missing_flow_id() -> Result<(), Box<dyn std::error::Er
         stderr.contains("does not define bindings for flow_id"),
         "unexpected stderr: {stderr}"
     );
+
+    std::fs::remove_file(&lock_path).ok();
+    Ok(())
+}
+
+#[test]
+fn run_local_s12_sheetport_quote_succeeds_with_file_path_bindings_lock()
+-> Result<(), Box<dyn std::error::Error>> {
+    let lock_path = write_s12_file_path_lock()?;
+    let payload_path = s12_asset_path("payloads/sample.json")?;
+
+    let output = Command::cargo_bin("flows")?
+        .args([
+            "run",
+            "local",
+            "--example",
+            "s12_sheetport_quote",
+            "--bindings-lock",
+            lock_path.to_str().expect("lock path"),
+            "--payload-file",
+            payload_path.to_str().expect("payload path"),
+        ])
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "s12 run local failed: status={:?}, stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8(output.stdout)?;
+    let payload: Value = serde_json::from_str(stdout.trim())?;
+    assert_eq!(payload["manifest_id"], "quote-model");
+    assert_eq!(payload["connection_name"], "sheetport_quote_local");
+    assert_eq!(payload["mode"], "bound");
+    assert_eq!(payload["total"], serde_json::json!(180.0));
 
     std::fs::remove_file(&lock_path).ok();
     Ok(())
@@ -425,20 +797,22 @@ fn run_bundle_connector_example_succeeds_with_connector_bindings_lock()
     });
 
     let out_dir = temp_bundle_dir("github-issues");
-    let target_dir = out_dir.join("target");
-    std::fs::create_dir_all(&target_dir)?;
-    let bundle_output = Command::cargo_bin("flows")?
-        .args([
-            "bundle",
-            "-p",
-            "example-connector-github-issues-local-flow",
-            "--wasm",
-            "--dev",
-            "--out-dir",
-            out_dir.to_str().expect("out dir"),
-        ])
-        .env("CARGO_TARGET_DIR", &target_dir)
-        .output()?;
+    let bundle_output = {
+        let _build_guard = build_heavy_lock().lock().expect("build lock");
+        Command::cargo_bin("flows")?
+            .args([
+                "bundle",
+                "-p",
+                "example-connector-github-issues-local-flow",
+                "--wasm",
+                "--dev",
+                "--out-dir",
+                out_dir.to_str().expect("out dir"),
+            ])
+            .env("CARGO_TARGET_DIR", shared_target_dir())
+            .env("CARGO_BUILD_JOBS", BUILD_JOBS_LIMIT)
+            .output()?
+    };
 
     assert!(
         bundle_output.status.success(),

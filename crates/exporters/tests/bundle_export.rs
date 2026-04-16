@@ -6,6 +6,7 @@ mod flow_registry_tests {
         Determinism, Effects, FlowBuilder, NodeSpec, Profile, SchemaSpec,
         flow_registry::{EntrypointSpec, FlowRegistration},
     };
+    use flow_bundle::wasm_guest_exports_for_flow_name;
     use semver::Version;
 
     fn sample_flow() -> dag_core::FlowIR {
@@ -55,6 +56,10 @@ mod flow_registry_tests {
         assert_eq!(flow.entrypoints[0].route_aliases, vec!["/echo".to_string()]);
         assert_eq!(flow.entrypoints[0].method.as_deref(), Some("GET"));
         assert!(flow.nodes.contains_key("step"));
+        assert_eq!(
+            flow.wasm_guest_exports.as_ref(),
+            Some(&wasm_guest_exports_for_flow_name("registry_flow"))
+        );
 
         let ir_path = PathBuf::from("flows/registry_flow/flow_ir.json");
         assert!(export.ir_files.contains_key(&ir_path));

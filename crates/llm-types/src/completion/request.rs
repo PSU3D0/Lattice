@@ -67,7 +67,7 @@ use super::message::{AssistantContent, DocumentMediaType};
 use crate::message::ToolChoice;
 use crate::streaming::StreamingCompletionResponse;
 use crate::wasm_compat::{WasmCompatSend, WasmCompatSync};
-use crate::{http_client, OneOrMany};
+use crate::{OneOrMany, http_client};
 use crate::{
     json_utils,
     message::{Message, UserContent},

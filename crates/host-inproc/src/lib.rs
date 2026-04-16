@@ -4,11 +4,15 @@ use std::time::Duration;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(not(target_arch = "wasm32"))]
+use capabilities::connector::ConnectorBindingScope;
 use capabilities::durability::{CheckpointError, CheckpointFilter, CheckpointHandle, FlowFrontier};
 use capabilities::workspace::{
     Workspace, WorkspaceCompletionDisposition, WorkspaceFactory, WorkspaceRunScope,
 };
 use capabilities::{ResourceAccess, ResourceBag};
+#[cfg(not(target_arch = "wasm32"))]
+use dag_core::ConnectorResolutionModeDecl;
 use dag_core::DurabilityMode;
 use kernel_exec::{ExecutionError, ExecutionResult, FlowExecutor, NodeResolver};
 use kernel_plan::ValidatedIR;
@@ -240,6 +244,78 @@ fn collect_required_effect_hints(ir: &ValidatedIR) -> Vec<String> {
     set.into_iter().collect()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn collect_resolution_aware_effect_hints(
+    ir: &ValidatedIR,
+    resources: &dyn ResourceAccess,
+) -> Result<Vec<String>, ExecutionError> {
+    let Some(runtime) = resources.connector_runtime() else {
+        let needs_bound = ir.flow().nodes.iter().any(|node| {
+            node.connector_ops.iter().any(|op| {
+                op.selected_resolution_mode == ConnectorResolutionModeDecl::BoundConnection
+            })
+        });
+        if needs_bound {
+            return Err(ExecutionError::HostEnvironment(anyhow::anyhow!(
+                "missing connector runtime for bound-connection preflight"
+            )));
+        }
+        return Ok(Vec::new());
+    };
+
+    let mut hints = BTreeSet::new();
+    for node in &ir.flow().nodes {
+        for op in &node.connector_ops {
+            if op.selected_resolution_mode != ConnectorResolutionModeDecl::BoundConnection {
+                continue;
+            }
+            let scope = ConnectorBindingScope::new(
+                ir.flow().id.as_str(),
+                node.alias.clone(),
+                node.identifier.clone(),
+                op.connector_id.clone(),
+            );
+            let derived =
+                host_block_on_preflight(runtime.clone(), scope, op.selected_resolution_mode)
+                    .map_err(|err| ExecutionError::HostEnvironment(anyhow::anyhow!(err)))?;
+            for hint in derived {
+                if hint.starts_with("resource::") {
+                    hints.insert(hint);
+                }
+            }
+        }
+    }
+
+    Ok(hints.into_iter().collect())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn host_block_on_preflight(
+    runtime: Arc<dyn capabilities::connector::ConnectorRuntime>,
+    scope: ConnectorBindingScope,
+    selected_mode: ConnectorResolutionModeDecl,
+) -> Result<Vec<String>, capabilities::connector::ConnectorRuntimeError> {
+    std::thread::scope(|s| {
+        s.spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("host_block_on_preflight: runtime");
+            rt.block_on(runtime.resolve_required_effect_hints(&scope, selected_mode))
+        })
+        .join()
+        .expect("host_block_on_preflight: thread panicked")
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+fn collect_resolution_aware_effect_hints(
+    _ir: &ValidatedIR,
+    _resources: &dyn ResourceAccess,
+) -> Result<Vec<String>, ExecutionError> {
+    Ok(Vec::new())
+}
+
 fn is_hint_satisfied_by_resources(hint: &str, resources: &dyn ResourceAccess) -> bool {
     match hint {
         capabilities::http::HINT_HTTP_READ => resources.http_read().is_some(),
@@ -466,8 +542,12 @@ impl HostRuntime {
             });
         }
 
-        let mut missing: Vec<String> = self
-            .required_effect_hints
+        let mut required: BTreeSet<String> = self.required_effect_hints.iter().cloned().collect();
+        for hint in collect_resolution_aware_effect_hints(self.ir.as_ref(), resources)? {
+            required.insert(hint);
+        }
+
+        let mut missing: Vec<String> = required
             .iter()
             .filter(|hint| !is_hint_satisfied_by_resources(hint.as_str(), resources))
             .cloned()
@@ -592,8 +672,26 @@ impl HostRuntime {
         }
     }
 
-    /// Resume execution from an existing checkpoint id.
+    /// Resume execution from an existing checkpoint id using the checkpoint's stored halt payload.
     pub async fn resume(&self, checkpoint_id: &str) -> Result<ExecutionResult, ExecutionError> {
+        self.resume_internal(checkpoint_id, None).await
+    }
+
+    /// Resume execution from an existing checkpoint id using an explicit payload override.
+    pub async fn resume_with_payload(
+        &self,
+        checkpoint_id: &str,
+        resume_payload: JsonValue,
+    ) -> Result<ExecutionResult, ExecutionError> {
+        self.resume_internal(checkpoint_id, Some(resume_payload))
+            .await
+    }
+
+    async fn resume_internal(
+        &self,
+        checkpoint_id: &str,
+        resume_payload_override: Option<JsonValue>,
+    ) -> Result<ExecutionResult, ExecutionError> {
         let Some(store) = self.resources.checkpoint_store() else {
             return Err(ExecutionError::MissingDurabilityServices {
                 missing: vec!["durability::checkpoint_store".to_string()],
@@ -692,6 +790,7 @@ impl HostRuntime {
                 return Err(err);
             }
         };
+        let halt_payload = resume_payload_override.unwrap_or_else(|| frame.halt_payload.clone());
 
         let workspace_scope =
             WorkspaceRunScope::new(self.ir.flow().id.0.clone(), handle.run_id.clone());
@@ -742,7 +841,7 @@ impl HostRuntime {
             .resume_once(
                 self.ir.as_ref(),
                 &frame.halt_alias,
-                frame.halt_payload,
+                halt_payload,
                 &frame.pending,
                 &frame.capture_alias,
                 &handle.run_id,

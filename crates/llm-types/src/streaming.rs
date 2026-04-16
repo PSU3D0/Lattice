@@ -58,7 +58,10 @@ impl Default for PauseControl {
 
 fn next_internal_call_id() -> String {
     static NEXT_INTERNAL_CALL_ID: AtomicU64 = AtomicU64::new(1);
-    format!("call-{}", NEXT_INTERNAL_CALL_ID.fetch_add(1, Ordering::Relaxed))
+    format!(
+        "call-{}",
+        NEXT_INTERNAL_CALL_ID.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 /// The content of a tool call delta - either the tool name or argument data
@@ -553,166 +556,168 @@ mod tests {
     #[test]
     fn test_stream_cancellation() {
         futures::executor::block_on(async {
-        let mut stream = create_mock_stream();
+            let mut stream = create_mock_stream();
 
-        println!("Response: ");
-        let mut chunk_count = 0;
-        while let Some(chunk) = stream.next().await {
-            match chunk {
-                Ok(StreamedAssistantContent::Text(text)) => {
-                    print!("{}", text.text);
-                    std::io::Write::flush(&mut std::io::stdout()).unwrap();
-                    chunk_count += 1;
+            println!("Response: ");
+            let mut chunk_count = 0;
+            while let Some(chunk) = stream.next().await {
+                match chunk {
+                    Ok(StreamedAssistantContent::Text(text)) => {
+                        print!("{}", text.text);
+                        std::io::Write::flush(&mut std::io::stdout()).unwrap();
+                        chunk_count += 1;
+                    }
+                    Ok(StreamedAssistantContent::ToolCall {
+                        tool_call,
+                        internal_call_id,
+                    }) => {
+                        println!(
+                            "\nTool Call: {tool_call:?}, internal_call_id={internal_call_id:?}"
+                        );
+                        chunk_count += 1;
+                    }
+                    Ok(StreamedAssistantContent::ToolCallDelta {
+                        id,
+                        internal_call_id,
+                        content,
+                    }) => {
+                        println!(
+                            "\nTool Call delta: id={id:?}, internal_call_id={internal_call_id:?}, content={content:?}"
+                        );
+                        chunk_count += 1;
+                    }
+                    Ok(StreamedAssistantContent::Final(res)) => {
+                        println!("\nFinal response: {res:?}");
+                    }
+                    Ok(StreamedAssistantContent::Reasoning(reasoning)) => {
+                        let reasoning = reasoning.display_text();
+                        print!("{reasoning}");
+                        std::io::Write::flush(&mut std::io::stdout()).unwrap();
+                    }
+                    Ok(StreamedAssistantContent::ReasoningDelta { reasoning, .. }) => {
+                        println!("Reasoning delta: {reasoning}");
+                        chunk_count += 1;
+                    }
+                    Err(e) => {
+                        eprintln!("Error: {e:?}");
+                        break;
+                    }
                 }
-                Ok(StreamedAssistantContent::ToolCall {
-                    tool_call,
-                    internal_call_id,
-                }) => {
-                    println!("\nTool Call: {tool_call:?}, internal_call_id={internal_call_id:?}");
-                    chunk_count += 1;
-                }
-                Ok(StreamedAssistantContent::ToolCallDelta {
-                    id,
-                    internal_call_id,
-                    content,
-                }) => {
-                    println!(
-                        "\nTool Call delta: id={id:?}, internal_call_id={internal_call_id:?}, content={content:?}"
-                    );
-                    chunk_count += 1;
-                }
-                Ok(StreamedAssistantContent::Final(res)) => {
-                    println!("\nFinal response: {res:?}");
-                }
-                Ok(StreamedAssistantContent::Reasoning(reasoning)) => {
-                    let reasoning = reasoning.display_text();
-                    print!("{reasoning}");
-                    std::io::Write::flush(&mut std::io::stdout()).unwrap();
-                }
-                Ok(StreamedAssistantContent::ReasoningDelta { reasoning, .. }) => {
-                    println!("Reasoning delta: {reasoning}");
-                    chunk_count += 1;
-                }
-                Err(e) => {
-                    eprintln!("Error: {e:?}");
+
+                if chunk_count >= 2 {
+                    println!("\nCancelling stream...");
+                    stream.cancel();
+                    println!("Stream cancelled.");
                     break;
                 }
             }
 
-            if chunk_count >= 2 {
-                println!("\nCancelling stream...");
-                stream.cancel();
-                println!("Stream cancelled.");
-                break;
-            }
-        }
-
-        let next_chunk = stream.next().await;
-        assert!(
-            next_chunk.is_none(),
-            "Expected no further chunks after cancellation, got {next_chunk:?}"
-        );
+            let next_chunk = stream.next().await;
+            assert!(
+                next_chunk.is_none(),
+                "Expected no further chunks after cancellation, got {next_chunk:?}"
+            );
         });
     }
 
     #[test]
     fn test_stream_pause_resume() {
         futures::executor::block_on(async {
-        let stream = create_mock_stream();
+            let stream = create_mock_stream();
 
-        // Test pause
-        stream.pause();
-        assert!(stream.is_paused());
+            // Test pause
+            stream.pause();
+            assert!(stream.is_paused());
 
-        // Test resume
-        stream.resume();
-        assert!(!stream.is_paused());
+            // Test resume
+            stream.resume();
+            assert!(!stream.is_paused());
         });
     }
 
     #[test]
     fn test_stream_aggregates_reasoning_content() {
         futures::executor::block_on(async {
-        let mut stream = create_reasoning_stream();
-        while stream.next().await.is_some() {}
+            let mut stream = create_reasoning_stream();
+            while stream.next().await.is_some() {}
 
-        let choice_items: Vec<AssistantContent> = stream.choice.clone().into_iter().collect();
+            let choice_items: Vec<AssistantContent> = stream.choice.clone().into_iter().collect();
 
-        assert!(choice_items.iter().any(|item| matches!(
-            item,
-            AssistantContent::Reasoning(Reasoning {
-                id: Some(id),
-                content
-            }) if id == "rs_1"
-                && matches!(
-                    content.first(),
-                    Some(ReasoningContent::Text {
-                        text,
-                        signature: Some(signature)
-                    }) if text == "step one" && signature == "sig_1"
-                )
-        )));
+            assert!(choice_items.iter().any(|item| matches!(
+                item,
+                AssistantContent::Reasoning(Reasoning {
+                    id: Some(id),
+                    content
+                }) if id == "rs_1"
+                    && matches!(
+                        content.first(),
+                        Some(ReasoningContent::Text {
+                            text,
+                            signature: Some(signature)
+                        }) if text == "step one" && signature == "sig_1"
+                    )
+            )));
         });
     }
 
     #[test]
     fn test_stream_reasoning_only_does_not_inject_empty_text() {
         futures::executor::block_on(async {
-        let mut stream = create_reasoning_only_stream();
-        while stream.next().await.is_some() {}
+            let mut stream = create_reasoning_only_stream();
+            while stream.next().await.is_some() {}
 
-        let choice_items: Vec<AssistantContent> = stream.choice.clone().into_iter().collect();
-        assert_eq!(choice_items.len(), 1);
-        assert!(matches!(
-            choice_items.first(),
-            Some(AssistantContent::Reasoning(Reasoning { id: Some(id), .. })) if id == "rs_only"
-        ));
+            let choice_items: Vec<AssistantContent> = stream.choice.clone().into_iter().collect();
+            assert_eq!(choice_items.len(), 1);
+            assert!(matches!(
+                choice_items.first(),
+                Some(AssistantContent::Reasoning(Reasoning { id: Some(id), .. })) if id == "rs_only"
+            ));
         });
     }
 
     #[test]
     fn test_stream_aggregates_assistant_items_in_arrival_order() {
         futures::executor::block_on(async {
-        let mut stream = create_interleaved_stream();
-        while stream.next().await.is_some() {}
+            let mut stream = create_interleaved_stream();
+            while stream.next().await.is_some() {}
 
-        let choice_items: Vec<AssistantContent> = stream.choice.clone().into_iter().collect();
-        assert_eq!(choice_items.len(), 3);
-        assert!(matches!(
-            choice_items.first(),
-            Some(AssistantContent::Reasoning(Reasoning { id: Some(id), .. })) if id == "rs_interleaved"
-        ));
-        assert!(matches!(
-            choice_items.get(1),
-            Some(AssistantContent::Text(Text { text })) if text == "final-text"
-        ));
-        assert!(matches!(
-            choice_items.get(2),
-            Some(AssistantContent::ToolCall(ToolCall { id, .. })) if id == "tool_1"
-        ));
+            let choice_items: Vec<AssistantContent> = stream.choice.clone().into_iter().collect();
+            assert_eq!(choice_items.len(), 3);
+            assert!(matches!(
+                choice_items.first(),
+                Some(AssistantContent::Reasoning(Reasoning { id: Some(id), .. })) if id == "rs_interleaved"
+            ));
+            assert!(matches!(
+                choice_items.get(1),
+                Some(AssistantContent::Text(Text { text })) if text == "final-text"
+            ));
+            assert!(matches!(
+                choice_items.get(2),
+                Some(AssistantContent::ToolCall(ToolCall { id, .. })) if id == "tool_1"
+            ));
         });
     }
 
     #[test]
     fn test_stream_keeps_non_contiguous_text_chunks_split_by_tool_call() {
         futures::executor::block_on(async {
-        let mut stream = create_text_tool_text_stream();
-        while stream.next().await.is_some() {}
+            let mut stream = create_text_tool_text_stream();
+            while stream.next().await.is_some() {}
 
-        let choice_items: Vec<AssistantContent> = stream.choice.clone().into_iter().collect();
-        assert_eq!(choice_items.len(), 3);
-        assert!(matches!(
-            choice_items.first(),
-            Some(AssistantContent::Text(Text { text })) if text == "first"
-        ));
-        assert!(matches!(
-            choice_items.get(1),
-            Some(AssistantContent::ToolCall(ToolCall { id, .. })) if id == "tool_split"
-        ));
-        assert!(matches!(
-            choice_items.get(2),
-            Some(AssistantContent::Text(Text { text })) if text == "second"
-        ));
+            let choice_items: Vec<AssistantContent> = stream.choice.clone().into_iter().collect();
+            assert_eq!(choice_items.len(), 3);
+            assert!(matches!(
+                choice_items.first(),
+                Some(AssistantContent::Text(Text { text })) if text == "first"
+            ));
+            assert!(matches!(
+                choice_items.get(1),
+                Some(AssistantContent::ToolCall(ToolCall { id, .. })) if id == "tool_split"
+            ));
+            assert!(matches!(
+                choice_items.get(2),
+                Some(AssistantContent::Text(Text { text })) if text == "second"
+            ));
         });
     }
 }

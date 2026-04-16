@@ -87,9 +87,9 @@ pub mod tool {
     pub mod server;
 }
 
+pub mod audio_generation;
+pub mod image_generation;
 pub mod model;
 pub mod prelude;
 pub mod transcription;
-pub mod audio_generation;
-pub mod image_generation;
 pub mod vector_store;

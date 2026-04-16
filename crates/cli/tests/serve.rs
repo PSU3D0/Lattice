@@ -1,11 +1,15 @@
 use std::collections::HashMap;
 use std::process::Command;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use assert_cmd::prelude::*;
 use async_trait::async_trait;
 use cap_http_reqwest::ReqwestHttpClient;
+use capabilities::connector::{
+    ConnectorBindingScope, ConnectorRuntime, ConnectorRuntimeError, EndpointProfileDescriptor,
+    OutboundAuthProfileDescriptor, ResolvedConnectorConnection, ResolvedEndpointProfile,
+};
 use capabilities::durability::{
     CheckpointError, CheckpointFilter, CheckpointHandle, CheckpointRecord, CheckpointStore, Lease,
 };
@@ -15,6 +19,7 @@ use dag_core::{DurabilityMode, FlowId};
 use example_connector_google_sheets_local_flow as google_sheets_local;
 use example_s1_echo as s1_echo;
 use example_s2_site as s2_site;
+use example_s12_sheetport_quote as s12_sheetport_quote;
 use flow_bundle::ExecPolicy;
 use host_wasmtime::load_flow_bundle;
 use host_web_axum::{HostHandle, RouteConfig};
@@ -24,6 +29,21 @@ use tempfile::tempdir;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
+
+const WASM_GETRANDOM_RUSTFLAGS: &str = "--cfg getrandom_backend=\"wasm_js\"";
+const BUILD_JOBS_LIMIT: &str = "4";
+
+fn build_heavy_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn shared_target_dir() -> std::path::PathBuf {
+    let path =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/flows-cli-it");
+    std::fs::create_dir_all(&path).expect("create shared target dir");
+    path
+}
 
 #[derive(Default)]
 struct TestCheckpointStore {
@@ -175,6 +195,82 @@ fn google_values_path(spreadsheet_id: &str, range: &str) -> String {
     )
 }
 
+fn s12_asset_path(relative: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/s12_sheetport_quote")
+        .join(relative)
+        .canonicalize()
+        .expect("s12 asset path")
+}
+
+#[derive(Clone)]
+struct SheetPortFileRuntime {
+    workbook_path: String,
+    manifest_path: String,
+    connection_name: String,
+}
+
+#[async_trait]
+impl ConnectorRuntime for SheetPortFileRuntime {
+    async fn apply_outbound_auth(
+        &self,
+        _scope: &ConnectorBindingScope,
+        profile: &OutboundAuthProfileDescriptor,
+        _request: &mut capabilities::http::HttpRequest,
+    ) -> Result<(), ConnectorRuntimeError> {
+        Err(ConnectorRuntimeError::Provider(anyhow::anyhow!(
+            "unexpected outbound auth request for role `{}` in s12 serve test",
+            profile.name
+        )))
+    }
+
+    async fn resolve_endpoint_profile(
+        &self,
+        _scope: &ConnectorBindingScope,
+        profile: &EndpointProfileDescriptor,
+    ) -> Result<ResolvedEndpointProfile, ConnectorRuntimeError> {
+        Err(ConnectorRuntimeError::Provider(anyhow::anyhow!(
+            "unexpected endpoint profile request for role `{}` in s12 serve test",
+            profile.name
+        )))
+    }
+
+    async fn resolve_connection(
+        &self,
+        _scope: &ConnectorBindingScope,
+    ) -> Result<Option<ResolvedConnectorConnection>, ConnectorRuntimeError> {
+        Ok(Some(ResolvedConnectorConnection {
+            connection_name: Some(self.connection_name.clone()),
+            connector_id: "connector.formualizer.sheetport".to_string(),
+            config: json!({
+                "workbook_source": {
+                    "kind": "file_path",
+                    "path": self.workbook_path
+                },
+                "manifest_source": {
+                    "kind": "file_path",
+                    "path": self.manifest_path
+                }
+            }),
+        }))
+    }
+}
+
+fn s12_test_resources() -> ResourceBag {
+    ResourceBag::default()
+        .with_connector_runtime(Arc::new(SheetPortFileRuntime {
+            workbook_path: s12_asset_path("assets/quote_model.xlsx")
+                .to_string_lossy()
+                .into_owned(),
+            manifest_path: s12_asset_path("assets/quote_model.fio.yaml")
+                .to_string_lossy()
+                .into_owned(),
+            connection_name: "sheetport_quote_local".to_string(),
+        }))
+        .with_checkpoint_store(Arc::new(TestCheckpointStore::default()))
+        .with_max_durability_mode(DurabilityMode::Partial)
+}
+
 #[tokio::test]
 async fn serve_echo_route_round_trips_json() -> Result<(), Box<dyn std::error::Error>> {
     let bundle = s1_echo::bundle();
@@ -309,20 +405,23 @@ async fn serve_streaming_route_emits_sse() -> Result<(), Box<dyn std::error::Err
 async fn load_wasm_bundle_preserves_route_metadata() -> Result<(), Box<dyn std::error::Error>> {
     let temp = tempdir()?;
     let out_dir = temp.path().join("flow.bundle");
-    let target_dir = temp.path().join("target");
 
-    let output = Command::cargo_bin("flows")?
-        .args([
-            "bundle",
-            "-p",
-            "example-s6-spill",
-            "--wasm",
-            "--dev",
-            "--out-dir",
-            out_dir.to_str().expect("bundle output path"),
-        ])
-        .env("CARGO_TARGET_DIR", &target_dir)
-        .output()?;
+    let output = {
+        let _build_guard = build_heavy_lock().lock().expect("build lock");
+        Command::cargo_bin("flows")?
+            .args([
+                "bundle",
+                "-p",
+                "example-s6-spill",
+                "--wasm",
+                "--dev",
+                "--out-dir",
+                out_dir.to_str().expect("bundle output path"),
+            ])
+            .env("CARGO_TARGET_DIR", shared_target_dir())
+            .env("CARGO_BUILD_JOBS", BUILD_JOBS_LIMIT)
+            .output()?
+    };
 
     assert!(
         output.status.success(),
@@ -351,20 +450,23 @@ async fn load_s11_lead_intake_wasm_bundle_preserves_route_metadata()
 -> Result<(), Box<dyn std::error::Error>> {
     let temp = tempdir()?;
     let out_dir = temp.path().join("flow.bundle");
-    let target_dir = temp.path().join("target");
 
-    let output = Command::cargo_bin("flows")?
-        .args([
-            "bundle",
-            "-p",
-            "example-s11-lead-intake",
-            "--wasm",
-            "--dev",
-            "--out-dir",
-            out_dir.to_str().expect("bundle output path"),
-        ])
-        .env("CARGO_TARGET_DIR", &target_dir)
-        .output()?;
+    let output = {
+        let _build_guard = build_heavy_lock().lock().expect("build lock");
+        Command::cargo_bin("flows")?
+            .args([
+                "bundle",
+                "-p",
+                "example-s11-lead-intake",
+                "--wasm",
+                "--dev",
+                "--out-dir",
+                out_dir.to_str().expect("bundle output path"),
+            ])
+            .env("CARGO_TARGET_DIR", shared_target_dir())
+            .env("CARGO_BUILD_JOBS", BUILD_JOBS_LIMIT)
+            .output()?
+    };
 
     assert!(
         output.status.success(),
@@ -384,6 +486,89 @@ async fn load_s11_lead_intake_wasm_bundle_preserves_route_metadata()
     assert_eq!(entrypoint.trigger_alias, "trigger");
     assert_eq!(entrypoint.capture_alias, "capture");
     assert_eq!(entrypoint.route_aliases, vec!["/leads".to_string()]);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_s12_sheetport_multiflow_wasm_bundle_preserves_selected_route_metadata()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempdir()?;
+    let out_dir = temp.path().join("flow.bundle");
+
+    let output = {
+        let _build_guard = build_heavy_lock().lock().expect("build lock");
+        Command::cargo_bin("flows")?
+            .args([
+                "bundle",
+                "-p",
+                "example-s12-sheetport-quote",
+                "--wasm",
+                "--dev",
+                "--out-dir",
+                out_dir.to_str().expect("bundle output path"),
+            ])
+            .env("CARGO_TARGET_DIR", shared_target_dir())
+            .env("CARGO_BUILD_JOBS", BUILD_JOBS_LIMIT)
+            .env(
+                "CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS",
+                WASM_GETRANDOM_RUSTFLAGS,
+            )
+            .output()?
+    };
+
+    assert!(
+        output.status.success(),
+        "expected s12 sheetport wasm bundle build to succeed: status={:?}, stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let resources = ResourceBag::default()
+        .with_checkpoint_store(Arc::new(TestCheckpointStore::default()))
+        .with_max_durability_mode(DurabilityMode::Partial);
+
+    let default_bundle = load_flow_bundle(
+        &out_dir,
+        ExecPolicy::Wasm,
+        None,
+        Arc::new(resources.clone()),
+    )?;
+    let default_entrypoint = default_bundle
+        .entrypoints
+        .first()
+        .expect("default entrypoint");
+    assert_eq!(default_entrypoint.route_path.as_deref(), Some("/quote"));
+    assert_eq!(default_entrypoint.method.as_deref(), Some("POST"));
+    assert_eq!(default_entrypoint.trigger_alias, "trigger");
+    assert_eq!(default_entrypoint.capture_alias, "capture");
+
+    let internal_flow_id = s12_sheetport_quote::validated_internal_ir()
+        .flow()
+        .id
+        .as_str()
+        .to_string();
+    let internal_bundle = load_flow_bundle(
+        &out_dir,
+        ExecPolicy::Wasm,
+        Some(&internal_flow_id),
+        Arc::new(resources),
+    )?;
+    let internal_entrypoint = internal_bundle
+        .entrypoints
+        .first()
+        .expect("internal entrypoint");
+    assert_eq!(
+        internal_entrypoint.route_path.as_deref(),
+        Some("/quote/internal")
+    );
+    assert_eq!(internal_entrypoint.method.as_deref(), Some("POST"));
+    assert_eq!(internal_entrypoint.trigger_alias, "trigger");
+    assert_eq!(internal_entrypoint.capture_alias, "capture");
+    assert_eq!(
+        internal_entrypoint.route_aliases,
+        vec!["/quote/internal".to_string()]
+    );
 
     Ok(())
 }
@@ -536,24 +721,90 @@ async fn serve_google_sheets_route_round_trips_connector_flow()
 }
 
 #[tokio::test]
+async fn serve_s12_sheetport_quote_route_round_trips_bound_connector_flow()
+-> Result<(), Box<dyn std::error::Error>> {
+    let bundle = s12_sheetport_quote::bound_bundle();
+    let entrypoint = bundle.entrypoints.first().expect("bundle entrypoint");
+    let executor = bundle.executor();
+    let ir = Arc::new(bundle.validated_ir);
+    let route_path = entrypoint.route_path.as_deref().unwrap_or("/");
+    let method_str = entrypoint.method.as_deref().unwrap_or("POST");
+    let method = method_str.parse::<axum::http::Method>()?;
+    let mut config = RouteConfig::new(route_path)
+        .with_method(method)
+        .with_trigger_alias(entrypoint.trigger_alias.clone())
+        .with_capture_alias(entrypoint.capture_alias.clone())
+        .with_resources(s12_test_resources());
+    if let Some(deadline) = entrypoint.deadline {
+        config = config.with_deadline(deadline);
+    }
+
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+    let host = HostHandle::new(executor, ir, config);
+    let server_task = tokio::spawn(async move {
+        axum::serve(listener, host.into_service())
+            .with_graceful_shutdown(async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+    });
+
+    let client = reqwest::Client::new();
+    let url = format!("http://{addr}{route_path}");
+    let response = timeout(
+        Duration::from_secs(5),
+        client
+            .post(url)
+            .json(&json!({
+                "base_price": 100.0,
+                "quantity": 2,
+                "discount": 0.1
+            }))
+            .send(),
+    )
+    .await??;
+
+    let status = response.status();
+    let response_text = response.text().await?;
+    assert_eq!(status, 200, "unexpected body: {response_text}");
+    let body: serde_json::Value = serde_json::from_str(&response_text)?;
+    assert_eq!(body["manifest_id"], json!("quote-model"));
+    assert_eq!(body["connection_name"], json!("sheetport_quote_local"));
+    assert_eq!(body["mode"], json!("bound"));
+    assert_eq!(body["total"], json!(180.0));
+
+    let _ = shutdown_tx.send(());
+    let server_result = timeout(Duration::from_secs(2), server_task).await??;
+    server_result?;
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn load_google_sheets_wasm_bundle_preserves_route_metadata()
 -> Result<(), Box<dyn std::error::Error>> {
     let temp = tempdir()?;
     let out_dir = temp.path().join("flow.bundle");
-    let target_dir = temp.path().join("target");
 
-    let output = Command::cargo_bin("flows")?
-        .args([
-            "bundle",
-            "-p",
-            "example-connector-google-sheets-local-flow",
-            "--wasm",
-            "--dev",
-            "--out-dir",
-            out_dir.to_str().expect("bundle output path"),
-        ])
-        .env("CARGO_TARGET_DIR", &target_dir)
-        .output()?;
+    let output = {
+        let _build_guard = build_heavy_lock().lock().expect("build lock");
+        Command::cargo_bin("flows")?
+            .args([
+                "bundle",
+                "-p",
+                "example-connector-google-sheets-local-flow",
+                "--wasm",
+                "--dev",
+                "--out-dir",
+                out_dir.to_str().expect("bundle output path"),
+            ])
+            .env("CARGO_TARGET_DIR", shared_target_dir())
+            .env("CARGO_BUILD_JOBS", BUILD_JOBS_LIMIT)
+            .output()?
+    };
 
     assert!(
         output.status.success(),

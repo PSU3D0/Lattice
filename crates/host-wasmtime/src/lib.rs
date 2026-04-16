@@ -9,14 +9,15 @@ use async_trait::async_trait;
 use capabilities::ResourceAccess;
 use capabilities::connector::{
     ConnectorBindingScope, OP_CONNECTOR_APPLY_OUTBOUND_AUTH, OP_CONNECTOR_GET_SCOPE,
-    OP_CONNECTOR_RESOLVE_ENDPOINT_PROFILE,
+    OP_CONNECTOR_RESOLVE_CONNECTION, OP_CONNECTOR_RESOLVE_ENDPOINT_PROFILE,
 };
 use capabilities::http::{
     HttpError, HttpRequest, OP_HTTP_READ_SEND, OP_HTTP_WRITE_SEND, RemoteHttpErrorEnvelope,
 };
 use dag_core::{FlowIR, NodeError, NodeResult};
 use flow_bundle::{
-    ExecPolicy, FlowEntry, FlowIrRef, Manifest, expand_subflow_ir, select_artifact,
+    ExecPolicy, FlowEntry, FlowIrRef, LEGACY_WASM_EXPORT_ALLOC, LEGACY_WASM_EXPORT_FREE,
+    LEGACY_WASM_EXPORT_INVOKE, Manifest, WasmGuestExports, expand_subflow_ir, select_artifact,
     sha256_prefixed, validate_manifest,
 };
 use host_inproc::{FlowBundle, FlowEntrypoint, NodeContract, NodeSource};
@@ -27,22 +28,21 @@ use serde_json::Value as JsonValue;
 use wasmtime::{Caller, Engine, Linker, Memory, Module, Store, TypedFunc};
 
 use capabilities::blob::{BlobError, OP_BLOB_DELETE, OP_BLOB_GET, OP_BLOB_PUT};
+use capabilities::durability::{
+    CancelScheduleRequest, CheckpointHandle, CreateTokenRequest,
+    OP_DURABILITY_GET_CHECKPOINT_HANDLE, OP_RESUME_CANCEL, OP_RESUME_SCHEDULE_AFTER,
+    OP_RESUME_SCHEDULE_AT, OP_RESUME_STATUS, OP_TOKEN_CREATE, OP_TOKEN_RESOLVE, OP_TOKEN_REVOKE,
+    ResolveTokenRequest, RevokeTokenRequest, ScheduleAfterRequest, ScheduleAtRequest,
+    ScheduleStatusRequest, ScheduleStatusTransport, TokenConfig,
+};
 use capabilities::kv::{
-    OP_KV_DELETE, OP_KV_GET, OP_KV_LIST, OP_KV_PUT,
-    KvDeleteRequest, KvGetRequest, KvListRequest, KvListResponseTransport,
-    KvListEntryTransport, KvPutOptions, KvPutRequest,
+    KvDeleteRequest, KvGetRequest, KvListEntryTransport, KvListRequest, KvListResponseTransport,
+    KvPutOptions, KvPutRequest, OP_KV_DELETE, OP_KV_GET, OP_KV_LIST, OP_KV_PUT,
 };
 use capabilities::workspace::{
     OP_WORKSPACE_DELETE, OP_WORKSPACE_LIST, OP_WORKSPACE_READ, OP_WORKSPACE_WRITE,
-    WorkspaceDeleteRequest, WorkspaceErrorEnvelope, WorkspaceListRequest,
-    WorkspaceReadRequest, WorkspaceWriteRequest,
-};
-use capabilities::durability::{
-    CancelScheduleRequest, CheckpointHandle, CreateTokenRequest, ResolveTokenRequest,
-    RevokeTokenRequest, ScheduleAfterRequest, ScheduleAtRequest, ScheduleStatusRequest,
-    ScheduleStatusTransport, TokenConfig, OP_DURABILITY_GET_CHECKPOINT_HANDLE,
-    OP_RESUME_CANCEL, OP_RESUME_SCHEDULE_AFTER, OP_RESUME_SCHEDULE_AT, OP_RESUME_STATUS,
-    OP_TOKEN_CREATE, OP_TOKEN_RESOLVE, OP_TOKEN_REVOKE,
+    WorkspaceDeleteRequest, WorkspaceErrorEnvelope, WorkspaceListRequest, WorkspaceReadRequest,
+    WorkspaceWriteRequest,
 };
 
 /// Drive an async future to completion from inside a synchronous wasmtime import handler.
@@ -84,6 +84,14 @@ const RESP_ERR: u8 = 2;
 
 const INVOKE_OK: u8 = 0;
 const INVOKE_ERR: u8 = 2;
+
+fn legacy_wasm_guest_exports() -> WasmGuestExports {
+    WasmGuestExports {
+        alloc: LEGACY_WASM_EXPORT_ALLOC.to_string(),
+        free: LEGACY_WASM_EXPORT_FREE.to_string(),
+        invoke: LEGACY_WASM_EXPORT_INVOKE.to_string(),
+    }
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -134,6 +142,11 @@ struct ResolveEndpointProfileRequest {
     profile: TransportEndpointProfileDescriptor,
 }
 
+#[derive(Debug, Deserialize)]
+struct ResolveConnectionRequest {
+    scope: ConnectorBindingScope,
+}
+
 struct HostState {
     resources: Arc<dyn ResourceAccess>,
     /// Checkpoint handle for the current invocation, set by the host before
@@ -145,14 +158,19 @@ struct HostState {
 pub struct WasmRuntime {
     engine: Engine,
     module: Module,
+    guest_exports: WasmGuestExports,
 }
 
 impl WasmRuntime {
-    pub fn new(wasm_bytes: &[u8]) -> Result<Self> {
+    pub fn new(wasm_bytes: &[u8], guest_exports: Option<WasmGuestExports>) -> Result<Self> {
         let engine = Engine::default();
         let module =
             Module::from_binary(&engine, wasm_bytes).context("failed to load guest wasm module")?;
-        Ok(Self { engine, module })
+        Ok(Self {
+            engine,
+            module,
+            guest_exports: guest_exports.unwrap_or_else(legacy_wasm_guest_exports),
+        })
     }
 
     pub fn invoke_value(
@@ -244,6 +262,9 @@ impl WasmRuntime {
                             req,
                         )
                     }
+                    OP_CONNECTOR_RESOLVE_CONNECTION => {
+                        handle_connector_resolve_connection(caller.data().resources.as_ref(), req)
+                    }
                     OP_KV_GET => handle_kv_get(caller.data().resources.as_ref(), req),
                     OP_KV_PUT => handle_kv_put(caller.data().resources.as_ref(), req),
                     OP_KV_DELETE => handle_kv_delete(caller.data().resources.as_ref(), req),
@@ -266,21 +287,11 @@ impl WasmRuntime {
                     OP_RESUME_SCHEDULE_AFTER => {
                         handle_resume_schedule_after(caller.data().resources.as_ref(), req)
                     }
-                    OP_RESUME_CANCEL => {
-                        handle_resume_cancel(caller.data().resources.as_ref(), req)
-                    }
-                    OP_RESUME_STATUS => {
-                        handle_resume_status(caller.data().resources.as_ref(), req)
-                    }
-                    OP_TOKEN_CREATE => {
-                        handle_token_create(caller.data().resources.as_ref(), req)
-                    }
-                    OP_TOKEN_RESOLVE => {
-                        handle_token_resolve(caller.data().resources.as_ref(), req)
-                    }
-                    OP_TOKEN_REVOKE => {
-                        handle_token_revoke(caller.data().resources.as_ref(), req)
-                    }
+                    OP_RESUME_CANCEL => handle_resume_cancel(caller.data().resources.as_ref(), req),
+                    OP_RESUME_STATUS => handle_resume_status(caller.data().resources.as_ref(), req),
+                    OP_TOKEN_CREATE => handle_token_create(caller.data().resources.as_ref(), req),
+                    OP_TOKEN_RESOLVE => handle_token_resolve(caller.data().resources.as_ref(), req),
+                    OP_TOKEN_REVOKE => handle_token_revoke(caller.data().resources.as_ref(), req),
                     OP_DURABILITY_GET_CHECKPOINT_HANDLE => {
                         handle_get_checkpoint_handle(caller.data())
                     }
@@ -297,14 +308,29 @@ impl WasmRuntime {
             .context("guest wasm does not export memory")?;
 
         let alloc: TypedFunc<u32, u32> = instance
-            .get_typed_func(&mut store, "lf_guest_alloc")
-            .context("guest wasm missing export lf_guest_alloc")?;
+            .get_typed_func(&mut store, self.guest_exports.alloc.as_str())
+            .with_context(|| {
+                format!(
+                    "guest wasm missing export {}",
+                    self.guest_exports.alloc.as_str()
+                )
+            })?;
         let free: TypedFunc<(u32, u32), ()> = instance
-            .get_typed_func(&mut store, "lf_guest_free")
-            .context("guest wasm missing export lf_guest_free")?;
+            .get_typed_func(&mut store, self.guest_exports.free.as_str())
+            .with_context(|| {
+                format!(
+                    "guest wasm missing export {}",
+                    self.guest_exports.free.as_str()
+                )
+            })?;
         let invoke: TypedFunc<(u32, u32, u32, u32), u64> = instance
-            .get_typed_func(&mut store, "lf_invoke_node")
-            .context("guest wasm missing export lf_invoke_node")?;
+            .get_typed_func(&mut store, self.guest_exports.invoke.as_str())
+            .with_context(|| {
+                format!(
+                    "guest wasm missing export {}",
+                    self.guest_exports.invoke.as_str()
+                )
+            })?;
 
         let id_ptr = alloc.call(&mut store, id_bytes.len() as u32)?;
         memory.write(&mut store, id_ptr as usize, id_bytes)?;
@@ -389,7 +415,10 @@ pub fn load_flow_bundle(
     let wasm_artifact = select_artifact(&manifest, policy, "native")?;
     let wasm_path = bundle_dir.join(&wasm_artifact.file);
     let wasm_bytes = read_and_verify(&wasm_path, &wasm_artifact.hash)?;
-    let runtime = Arc::new(WasmRuntime::new(&wasm_bytes)?);
+    let runtime = Arc::new(WasmRuntime::new(
+        &wasm_bytes,
+        flow.wasm_guest_exports.clone(),
+    )?);
 
     let flow_ir = load_flow_ir(bundle_dir, &manifest, flow)?;
     let validated =
@@ -747,6 +776,25 @@ fn handle_connector_resolve_endpoint_profile(
     }
 }
 
+fn handle_connector_resolve_connection(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8> {
+    let request: ResolveConnectionRequest = match decode_json_request(req, "connector connection") {
+        Ok(request) => request,
+        Err(err) => return encode_err(err),
+    };
+
+    let runtime = match resources.connector_runtime() {
+        Some(runtime) => runtime,
+        None => return encode_err("missing connector runtime"),
+    };
+
+    let result = host_block_on(runtime.resolve_connection(&request.scope));
+    match result {
+        Ok(Some(connection)) => encode_json_ok(&connection),
+        Ok(None) => encode_not_found(),
+        Err(err) => encode_err(err),
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // KV host handlers
 // ─────────────────────────────────────────────────────────────────────────
@@ -761,9 +809,7 @@ fn handle_kv_get(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8> {
         None => return encode_err("missing kv provider"),
     };
     let options = capabilities::kv::KvGetOptions {
-        cache_ttl: request
-            .cache_ttl_ms
-            .map(std::time::Duration::from_millis),
+        cache_ttl: request.cache_ttl_ms.map(std::time::Duration::from_millis),
     };
     let result = host_block_on(kv.get_with_options(&request.key, options));
     match result {
@@ -883,7 +929,8 @@ fn handle_workspace_write(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8>
         Some(ws) => ws,
         None => return encode_err("missing workspace provider"),
     };
-    let result = host_block_on(workspace.write_normalized(&request.path, &request.data, request.options));
+    let result =
+        host_block_on(workspace.write_normalized(&request.path, &request.data, request.options));
     match result {
         Ok(write_result) => encode_json_ok(&write_result),
         Err(err) => encode_workspace_err(err),
@@ -969,9 +1016,8 @@ fn handle_resume_cancel(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8> {
         Some(s) => s,
         None => return encode_err("missing resume_scheduler provider"),
     };
-    match host_block_on(scheduler.cancel(capabilities::durability::ScheduleId(
-        request.schedule_id,
-    ))) {
+    match host_block_on(scheduler.cancel(capabilities::durability::ScheduleId(request.schedule_id)))
+    {
         Ok(()) => encode_ok(&[]),
         Err(capabilities::durability::ScheduleError::NotFound) => encode_not_found(),
         Err(err) => encode_err(err),
@@ -987,9 +1033,8 @@ fn handle_resume_status(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8> {
         Some(s) => s,
         None => return encode_err("missing resume_scheduler provider"),
     };
-    match host_block_on(scheduler.status(capabilities::durability::ScheduleId(
-        request.schedule_id,
-    ))) {
+    match host_block_on(scheduler.status(capabilities::durability::ScheduleId(request.schedule_id)))
+    {
         Ok(status) => encode_json_ok(&ScheduleStatusTransport::from(status)),
         Err(capabilities::durability::ScheduleError::NotFound) => encode_not_found(),
         Err(err) => encode_err(err),
@@ -1025,9 +1070,8 @@ fn handle_token_resolve(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8> {
         Some(s) => s,
         None => return encode_err("missing resume_signal_source provider"),
     };
-    match host_block_on(source.resolve_token(&capabilities::durability::ResumeToken(
-        request.token,
-    ))) {
+    match host_block_on(source.resolve_token(&capabilities::durability::ResumeToken(request.token)))
+    {
         Ok(handle) => encode_json_ok(&handle),
         Err(capabilities::durability::TokenError::NotFound) => encode_not_found(),
         Err(err) => encode_err(err),
@@ -1043,9 +1087,8 @@ fn handle_token_revoke(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8> {
         Some(s) => s,
         None => return encode_err("missing resume_signal_source provider"),
     };
-    match host_block_on(source.revoke_token(&capabilities::durability::ResumeToken(
-        request.token,
-    ))) {
+    match host_block_on(source.revoke_token(&capabilities::durability::ResumeToken(request.token)))
+    {
         Ok(()) => encode_ok(&[]),
         Err(capabilities::durability::TokenError::NotFound) => encode_not_found(),
         Err(err) => encode_err(err),

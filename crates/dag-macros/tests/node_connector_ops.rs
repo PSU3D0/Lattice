@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
 use dag_core::{
-    ConnectorOpMetadata, ConnectorRoleKindDecl, ConnectorRoleRequirement, Determinism, Effects,
-    NodeResult,
+    ConnectorOpMetadata, ConnectorResolutionContract, ConnectorResolutionModeDecl,
+    ConnectorRoleKindDecl, ConnectorRoleRequirement, Determinism, Effects, NodeResult,
 };
 use dag_macros::{def_node, node};
 
@@ -29,6 +29,10 @@ impl DemoAppendRow {
                 expected_handle_kind: "http.bearer",
             },
         ],
+        resolution: ConnectorResolutionContract {
+            supported_modes: &[ConnectorResolutionModeDecl::BoundConnection],
+            default_mode: ConnectorResolutionModeDecl::BoundConnection,
+        },
     };
 }
 
@@ -60,4 +64,27 @@ fn def_node_connector_ops_auto_hoist_effects_and_hints() {
         "connector.demo.append_row"
     );
     assert_eq!(spec.connector_ops[0].connector_id, "connector.demo");
+    assert_eq!(
+        spec.connector_ops[0].resolution.default_mode,
+        ConnectorResolutionModeDecl::BoundConnection
+    );
+    assert_eq!(
+        spec.connector_ops[0].resolution.supported_modes,
+        &[ConnectorResolutionModeDecl::BoundConnection]
+    );
+
+    let refs = spec.connector_op_refs();
+    assert_eq!(refs.len(), 1);
+    assert_eq!(
+        refs[0].default_resolution_mode,
+        ConnectorResolutionModeDecl::BoundConnection
+    );
+    assert_eq!(
+        refs[0].selected_resolution_mode,
+        ConnectorResolutionModeDecl::BoundConnection
+    );
+    assert_eq!(
+        refs[0].supported_resolution_modes,
+        vec![ConnectorResolutionModeDecl::BoundConnection]
+    );
 }

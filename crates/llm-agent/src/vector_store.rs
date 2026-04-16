@@ -51,20 +51,14 @@ pub mod request {
 }
 
 pub trait VectorStoreIndexDyn: WasmCompatSend + WasmCompatSync {
-    fn top_n<'a>(
-        &'a self,
-        req: request::VectorSearchRequest,
-    ) -> BoxFuture<'a, TopNResults>;
+    fn top_n<'a>(&'a self, req: request::VectorSearchRequest) -> BoxFuture<'a, TopNResults>;
 }
 
 impl<T> VectorStoreIndexDyn for T
 where
     T: WasmCompatSend + WasmCompatSync + Send + Sync,
 {
-    fn top_n<'a>(
-        &'a self,
-        _req: request::VectorSearchRequest,
-    ) -> BoxFuture<'a, TopNResults> {
+    fn top_n<'a>(&'a self, _req: request::VectorSearchRequest) -> BoxFuture<'a, TopNResults> {
         Box::pin(async { Ok(Vec::new()) })
     }
 }

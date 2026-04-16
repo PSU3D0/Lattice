@@ -199,7 +199,6 @@ impl<T: Tool> ToolDyn for T {
     }
 }
 
-
 /// Wrapper trait to allow for dynamic dispatch of raggable tools
 pub trait ToolEmbeddingDyn: ToolDyn {
     fn context(&self) -> serde_json::Result<serde_json::Value>;
@@ -531,9 +530,9 @@ mod tests {
     #[test]
     fn test_get_tool_definitions() {
         futures::executor::block_on(async {
-        let toolset = get_test_toolset();
-        let tools = toolset.get_tool_definitions().await.unwrap();
-        assert_eq!(tools.len(), 2);
+            let toolset = get_test_toolset();
+            let tools = toolset.get_tool_definitions().await.unwrap();
+            assert_eq!(tools.len(), 2);
         });
     }
 

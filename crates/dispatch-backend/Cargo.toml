@@ -1,0 +1,21 @@
+[package]
+name = "dispatch-backend"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Minimal host-agnostic dispatch backend contract for external completion backends in Lattice."
+
+[dependencies]
+async-trait.workspace = true
+capabilities = { path = "../capabilities" }
+schemars = "1"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+futures.workspace = true

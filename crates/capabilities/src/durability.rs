@@ -372,12 +372,13 @@ impl ResumeScheduler for RemoteResumeScheduler {
             .map_err(|err| ScheduleError::Unavailable(format!("encode schedule_at: {err}")))?;
         let resp = crate::wasm_transport::cap_call(OP_RESUME_SCHEDULE_AT, &req_bytes)
             .map_err(|err| ScheduleError::Unavailable(err.to_string()))?;
-        let (status, payload) = decode_response(&resp, "schedule_at")
-            .map_err(ScheduleError::Unavailable)?;
+        let (status, payload) =
+            decode_response(&resp, "schedule_at").map_err(ScheduleError::Unavailable)?;
         match status {
             RESP_OK => {
-                let id = std::str::from_utf8(payload)
-                    .map_err(|err| ScheduleError::Unavailable(format!("decode schedule id: {err}")))?;
+                let id = std::str::from_utf8(payload).map_err(|err| {
+                    ScheduleError::Unavailable(format!("decode schedule id: {err}"))
+                })?;
                 Ok(ScheduleId(id.to_string()))
             }
             RESP_ERR => Err(ScheduleError::Unavailable(decode_error_message(payload))),
@@ -400,12 +401,13 @@ impl ResumeScheduler for RemoteResumeScheduler {
             .map_err(|err| ScheduleError::Unavailable(format!("encode schedule_after: {err}")))?;
         let resp = crate::wasm_transport::cap_call(OP_RESUME_SCHEDULE_AFTER, &req_bytes)
             .map_err(|err| ScheduleError::Unavailable(err.to_string()))?;
-        let (status, payload) = decode_response(&resp, "schedule_after")
-            .map_err(ScheduleError::Unavailable)?;
+        let (status, payload) =
+            decode_response(&resp, "schedule_after").map_err(ScheduleError::Unavailable)?;
         match status {
             RESP_OK => {
-                let id = std::str::from_utf8(payload)
-                    .map_err(|err| ScheduleError::Unavailable(format!("decode schedule id: {err}")))?;
+                let id = std::str::from_utf8(payload).map_err(|err| {
+                    ScheduleError::Unavailable(format!("decode schedule id: {err}"))
+                })?;
                 Ok(ScheduleId(id.to_string()))
             }
             RESP_ERR => Err(ScheduleError::Unavailable(decode_error_message(payload))),
@@ -423,8 +425,8 @@ impl ResumeScheduler for RemoteResumeScheduler {
             .map_err(|err| ScheduleError::Unavailable(format!("encode cancel: {err}")))?;
         let resp = crate::wasm_transport::cap_call(OP_RESUME_CANCEL, &req_bytes)
             .map_err(|err| ScheduleError::Unavailable(err.to_string()))?;
-        let (status, payload) = decode_response(&resp, "cancel")
-            .map_err(ScheduleError::Unavailable)?;
+        let (status, payload) =
+            decode_response(&resp, "cancel").map_err(ScheduleError::Unavailable)?;
         match status {
             RESP_OK => Ok(()),
             RESP_NOT_FOUND => Err(ScheduleError::NotFound),
@@ -443,8 +445,8 @@ impl ResumeScheduler for RemoteResumeScheduler {
             .map_err(|err| ScheduleError::Unavailable(format!("encode status: {err}")))?;
         let resp = crate::wasm_transport::cap_call(OP_RESUME_STATUS, &req_bytes)
             .map_err(|err| ScheduleError::Unavailable(err.to_string()))?;
-        let (status, payload) = decode_response(&resp, "status")
-            .map_err(ScheduleError::Unavailable)?;
+        let (status, payload) =
+            decode_response(&resp, "status").map_err(ScheduleError::Unavailable)?;
         match status {
             RESP_OK => {
                 let transport: ScheduleStatusTransport = serde_json::from_slice(payload)
@@ -506,8 +508,8 @@ impl ResumeSignalSource for RemoteResumeSignalSource {
             .map_err(|err| TokenError::Generation(format!("encode create_token: {err}")))?;
         let resp = crate::wasm_transport::cap_call(OP_TOKEN_CREATE, &req_bytes)
             .map_err(|err| TokenError::Generation(err.to_string()))?;
-        let (status, payload) = decode_response(&resp, "create_token")
-            .map_err(TokenError::Generation)?;
+        let (status, payload) =
+            decode_response(&resp, "create_token").map_err(TokenError::Generation)?;
         match status {
             RESP_OK => {
                 let token = std::str::from_utf8(payload)
@@ -529,8 +531,8 @@ impl ResumeSignalSource for RemoteResumeSignalSource {
             .map_err(|err| TokenError::Generation(format!("encode resolve_token: {err}")))?;
         let resp = crate::wasm_transport::cap_call(OP_TOKEN_RESOLVE, &req_bytes)
             .map_err(|err| TokenError::Generation(err.to_string()))?;
-        let (status, payload) = decode_response(&resp, "resolve_token")
-            .map_err(TokenError::Generation)?;
+        let (status, payload) =
+            decode_response(&resp, "resolve_token").map_err(TokenError::Generation)?;
         match status {
             RESP_OK => {
                 let handle: CheckpointHandle = serde_json::from_slice(payload)
@@ -553,8 +555,8 @@ impl ResumeSignalSource for RemoteResumeSignalSource {
             .map_err(|err| TokenError::Generation(format!("encode revoke_token: {err}")))?;
         let resp = crate::wasm_transport::cap_call(OP_TOKEN_REVOKE, &req_bytes)
             .map_err(|err| TokenError::Generation(err.to_string()))?;
-        let (status, payload) = decode_response(&resp, "revoke_token")
-            .map_err(TokenError::Generation)?;
+        let (status, payload) =
+            decode_response(&resp, "revoke_token").map_err(TokenError::Generation)?;
         match status {
             RESP_OK => Ok(()),
             RESP_NOT_FOUND => Err(TokenError::NotFound),

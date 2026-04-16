@@ -293,6 +293,8 @@ struct InternalResumeRequest {
     checkpoint_id: Option<String>,
     #[serde(default)]
     token: Option<String>,
+    #[serde(default)]
+    payload: Option<serde_json::Value>,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -320,6 +322,7 @@ async fn handle_internal_resume(
         InternalResumeRequest {
             checkpoint_id: None,
             token: None,
+            payload: None,
         }
     } else {
         match serde_json::from_slice::<InternalResumeRequest>(&body) {
@@ -363,7 +366,12 @@ async fn handle_internal_resume(
         );
     };
 
-    match runtime.resume(&checkpoint_id).await {
+    let resume_result = match payload.payload {
+        Some(value) => runtime.resume_with_payload(&checkpoint_id, value).await,
+        None => runtime.resume(&checkpoint_id).await,
+    };
+
+    match resume_result {
         Ok(ExecutionResult::Value(value)) => {
             json_response(200, json!({ "resumed": true, "result": value }))
         }

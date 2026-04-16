@@ -105,13 +105,16 @@ impl AudioGenerationModel for AudioGenerationModelHandle<'_> {
     type Client = Nothing;
 
     fn make(_: &Self::Client, _: impl Into<String>) -> Self {
-        panic!("Function should be unreachable as Self can only be constructed from another 'AudioGenerationModel'")
+        panic!(
+            "Function should be unreachable as Self can only be constructed from another 'AudioGenerationModel'"
+        )
     }
 
     fn audio_generation(
         &self,
         request: AudioGenerationRequest,
-    ) -> WasmBoxedFuture<'_, Result<AudioGenerationResponse<Self::Response>, AudioGenerationError>> {
+    ) -> WasmBoxedFuture<'_, Result<AudioGenerationResponse<Self::Response>, AudioGenerationError>>
+    {
         self.inner.audio_generation(request)
     }
 }

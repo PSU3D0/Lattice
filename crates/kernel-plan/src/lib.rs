@@ -3168,6 +3168,10 @@ mod tests {
                         expected_handle_kind: "http.bearer",
                     },
                 ],
+                resolution: dag_core::ConnectorResolutionContract {
+                    supported_modes: &[dag_core::ConnectorResolutionModeDecl::BoundConnection],
+                    default_mode: dag_core::ConnectorResolutionModeDecl::BoundConnection,
+                },
             };
         }
 

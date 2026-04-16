@@ -2,14 +2,16 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use assert_cmd::prelude::*;
 use async_trait::async_trait;
 use base64::Engine;
+use capabilities::blob::BlobStore;
 use capabilities::connector::{
     ConnectorBindingScope, ConnectorRuntime, ConnectorRuntimeError, EndpointProfileDescriptor,
-    OutboundAuthKind, OutboundAuthProfileDescriptor, ResolvedEndpointProfile,
+    OutboundAuthKind, OutboundAuthProfileDescriptor, ResolvedConnectorConnection,
+    ResolvedEndpointProfile,
 };
 use capabilities::http::HttpRequest;
 use capabilities::workspace::{
@@ -17,6 +19,8 @@ use capabilities::workspace::{
     WorkspaceWriteOptions, WorkspaceWriteResult,
 };
 use capabilities::{Capability, ResourceBag};
+use example_s10_multiflow_bundle as s10_multiflow_bundle;
+use example_s12_sheetport_quote as s12_sheetport_quote;
 use flow_bundle::ExecPolicy;
 use host_inproc::HostExecutionResult;
 use host_wasmtime::load_flow_bundle;
@@ -24,6 +28,20 @@ use httpmock::Method::POST;
 use httpmock::MockServer;
 use serde_json::json;
 use tempfile::tempdir;
+
+const WASM_GETRANDOM_RUSTFLAGS: &str = "--cfg getrandom_backend=\"wasm_js\"";
+const BUILD_JOBS_LIMIT: &str = "4";
+
+fn build_heavy_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn shared_target_dir() -> PathBuf {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/flows-cli-it");
+    fs::create_dir_all(&path).expect("create shared target dir");
+    path
+}
 
 fn temp_bundle_dir(label: &str) -> PathBuf {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -124,6 +142,12 @@ struct MockOpenAiConnectorRuntime {
     api_key: String,
 }
 
+#[derive(Clone)]
+struct SheetPortMaterializedBlobConnectorRuntime {
+    workbook_key: String,
+    connection_name: String,
+}
+
 #[async_trait]
 impl ConnectorRuntime for MockOpenAiConnectorRuntime {
     async fn apply_outbound_auth(
@@ -158,12 +182,58 @@ impl ConnectorRuntime for MockOpenAiConnectorRuntime {
     }
 }
 
+#[async_trait]
+impl ConnectorRuntime for SheetPortMaterializedBlobConnectorRuntime {
+    async fn apply_outbound_auth(
+        &self,
+        _scope: &ConnectorBindingScope,
+        profile: &OutboundAuthProfileDescriptor,
+        _request: &mut HttpRequest,
+    ) -> Result<(), ConnectorRuntimeError> {
+        Err(ConnectorRuntimeError::Provider(anyhow::anyhow!(
+            "unexpected outbound auth request for role `{}` in s12 bundle test",
+            profile.name
+        )))
+    }
+
+    async fn resolve_endpoint_profile(
+        &self,
+        _scope: &ConnectorBindingScope,
+        profile: &EndpointProfileDescriptor,
+    ) -> Result<ResolvedEndpointProfile, ConnectorRuntimeError> {
+        Err(ConnectorRuntimeError::Provider(anyhow::anyhow!(
+            "unexpected endpoint profile request for role `{}` in s12 bundle test",
+            profile.name
+        )))
+    }
+
+    async fn resolve_connection(
+        &self,
+        _scope: &ConnectorBindingScope,
+    ) -> Result<Option<ResolvedConnectorConnection>, ConnectorRuntimeError> {
+        Ok(Some(ResolvedConnectorConnection {
+            connection_name: Some(self.connection_name.clone()),
+            connector_id: "connector.formualizer.sheetport".to_string(),
+            config: json!({
+                "workbook_source": {
+                    "kind": "materialized_blob",
+                    "key": self.workbook_key,
+                    "format": "workbook_json_v1"
+                },
+                "manifest_source": {
+                    "kind": "inline_yaml",
+                    "value": s12_sheetport_quote::QUOTE_MANIFEST_YAML
+                }
+            }),
+        }))
+    }
+}
+
 #[test]
 fn bundle_rejects_invalid_flow_ir_path() -> Result<(), Box<dyn std::error::Error>> {
     let temp = tempdir()?;
     let manifest_path = temp.path().join("manifest.json");
     let out_dir = temp.path().join("flow.bundle");
-    let target_dir = temp.path().join("target");
 
     let manifest_json = json!({
         "bundle_version": "0.1",
@@ -193,19 +263,24 @@ fn bundle_rejects_invalid_flow_ir_path() -> Result<(), Box<dyn std::error::Error
 
     fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest_json)?)?;
 
-    let output = Command::cargo_bin("flows")?
-        .args([
-            "bundle",
-            "-p",
-            "host-workers",
-            "--manifest",
-            manifest_path.to_str().expect("manifest path"),
-            "--out-dir",
-            out_dir.to_str().expect("bundle output path"),
-            "--dev",
-        ])
-        .env("CARGO_TARGET_DIR", &target_dir)
-        .output()?;
+    let output = {
+        let _build_guard = build_heavy_lock().lock().expect("build lock");
+        Command::cargo_bin("flows")?
+            .args([
+                "bundle",
+                "-p",
+                "example-s6-spill",
+                "--native",
+                "--manifest",
+                manifest_path.to_str().expect("manifest path"),
+                "--out-dir",
+                out_dir.to_str().expect("bundle output path"),
+                "--dev",
+            ])
+            .env("CARGO_TARGET_DIR", shared_target_dir())
+            .env("CARGO_BUILD_JOBS", BUILD_JOBS_LIMIT)
+            .output()?
+    };
 
     assert!(
         !output.status.success(),
@@ -225,20 +300,23 @@ fn bundle_rejects_invalid_flow_ir_path() -> Result<(), Box<dyn std::error::Error
 fn bundle_generates_manifest_when_missing() -> Result<(), Box<dyn std::error::Error>> {
     let temp = tempdir()?;
     let out_dir = temp.path().join("flow.bundle");
-    let target_dir = temp.path().join("target");
 
-    let output = Command::cargo_bin("flows")?
-        .args([
-            "bundle",
-            "-p",
-            "example-s6-spill",
-            "--native",
-            "--dev",
-            "--out-dir",
-            out_dir.to_str().expect("bundle output path"),
-        ])
-        .env("CARGO_TARGET_DIR", &target_dir)
-        .output()?;
+    let output = {
+        let _build_guard = build_heavy_lock().lock().expect("build lock");
+        Command::cargo_bin("flows")?
+            .args([
+                "bundle",
+                "-p",
+                "example-s6-spill",
+                "--native",
+                "--dev",
+                "--out-dir",
+                out_dir.to_str().expect("bundle output path"),
+            ])
+            .env("CARGO_TARGET_DIR", shared_target_dir())
+            .env("CARGO_BUILD_JOBS", BUILD_JOBS_LIMIT)
+            .output()?
+    };
 
     assert!(
         output.status.success(),
@@ -255,20 +333,23 @@ fn bundle_generates_wasm_manifest_for_connector_google_sheets_example()
 -> Result<(), Box<dyn std::error::Error>> {
     let temp = tempdir()?;
     let out_dir = temp.path().join("flow.bundle");
-    let target_dir = temp.path().join("target");
 
-    let output = Command::cargo_bin("flows")?
-        .args([
-            "bundle",
-            "-p",
-            "example-connector-google-sheets-local-flow",
-            "--wasm",
-            "--dev",
-            "--out-dir",
-            out_dir.to_str().expect("bundle output path"),
-        ])
-        .env("CARGO_TARGET_DIR", &target_dir)
-        .output()?;
+    let output = {
+        let _build_guard = build_heavy_lock().lock().expect("build lock");
+        Command::cargo_bin("flows")?
+            .args([
+                "bundle",
+                "-p",
+                "example-connector-google-sheets-local-flow",
+                "--wasm",
+                "--dev",
+                "--out-dir",
+                out_dir.to_str().expect("bundle output path"),
+            ])
+            .env("CARGO_TARGET_DIR", shared_target_dir())
+            .env("CARGO_BUILD_JOBS", BUILD_JOBS_LIMIT)
+            .output()?
+    };
 
     assert!(
         output.status.success(),
@@ -298,20 +379,23 @@ fn bundle_generates_wasm_manifest_for_s11_lead_intake_example()
 -> Result<(), Box<dyn std::error::Error>> {
     let temp = tempdir()?;
     let out_dir = temp.path().join("flow.bundle");
-    let target_dir = temp.path().join("target");
 
-    let output = Command::cargo_bin("flows")?
-        .args([
-            "bundle",
-            "-p",
-            "example-s11-lead-intake",
-            "--wasm",
-            "--dev",
-            "--out-dir",
-            out_dir.to_str().expect("bundle output path"),
-        ])
-        .env("CARGO_TARGET_DIR", &target_dir)
-        .output()?;
+    let output = {
+        let _build_guard = build_heavy_lock().lock().expect("build lock");
+        Command::cargo_bin("flows")?
+            .args([
+                "bundle",
+                "-p",
+                "example-s11-lead-intake",
+                "--wasm",
+                "--dev",
+                "--out-dir",
+                out_dir.to_str().expect("bundle output path"),
+            ])
+            .env("CARGO_TARGET_DIR", shared_target_dir())
+            .env("CARGO_BUILD_JOBS", BUILD_JOBS_LIMIT)
+            .output()?
+    };
 
     assert!(
         output.status.success(),
@@ -350,24 +434,290 @@ fn bundle_generates_wasm_manifest_for_s11_lead_intake_example()
     Ok(())
 }
 
+#[test]
+fn bundle_generates_wasm_manifest_for_s12_sheetport_quote_example()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempdir()?;
+    let out_dir = temp.path().join("flow.bundle");
+
+    let output = {
+        let _build_guard = build_heavy_lock().lock().expect("build lock");
+        Command::cargo_bin("flows")?
+            .args([
+                "bundle",
+                "-p",
+                "example-s12-sheetport-quote",
+                "--wasm",
+                "--dev",
+                "--out-dir",
+                out_dir.to_str().expect("bundle output path"),
+            ])
+            .env("CARGO_TARGET_DIR", shared_target_dir())
+            .env("CARGO_BUILD_JOBS", BUILD_JOBS_LIMIT)
+            .env(
+                "CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS",
+                WASM_GETRANDOM_RUSTFLAGS,
+            )
+            .output()?
+    };
+
+    assert!(
+        output.status.success(),
+        "expected s12 sheetport wasm bundle to succeed: status={:?}, stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(out_dir.join("manifest.json").exists());
+    assert!(out_dir.join("module.wasm").exists());
+    assert!(
+        out_dir
+            .join("flows/s12_sheetport_quote_flow/flow_ir.json")
+            .exists()
+    );
+    assert!(
+        out_dir
+            .join("flows/s12_sheetport_quote_internal_flow/flow_ir.json")
+            .exists()
+    );
+
+    let manifest_raw = fs::read_to_string(out_dir.join("manifest.json"))?;
+    let manifest_json: serde_json::Value = serde_json::from_str(&manifest_raw)?;
+    let flows = manifest_json["flows"].as_array().expect("flows array");
+    assert_eq!(flows.len(), 2);
+    let default_flow = manifest_json["default_flow"]
+        .as_str()
+        .expect("default flow id");
+    let bound_flow_id = s12_sheetport_quote::validated_bound_ir()
+        .flow()
+        .id
+        .as_str()
+        .to_string();
+    let internal_flow_id = s12_sheetport_quote::validated_internal_ir()
+        .flow()
+        .id
+        .as_str()
+        .to_string();
+    assert_eq!(default_flow, bound_flow_id);
+
+    let bound = flows
+        .iter()
+        .find(|flow| flow["id"] == json!(bound_flow_id))
+        .expect("bound flow entry");
+    let internal = flows
+        .iter()
+        .find(|flow| flow["id"] == json!(internal_flow_id))
+        .expect("internal flow entry");
+
+    assert_eq!(bound["entrypoints"][0]["route_aliases"], json!(["/quote"]));
+    assert_eq!(
+        internal["entrypoints"][0]["route_aliases"],
+        json!(["/quote/internal"])
+    );
+    assert!(bound.get("wasm_guest_exports").is_some());
+    assert!(internal.get("wasm_guest_exports").is_some());
+    assert_ne!(
+        bound["wasm_guest_exports"]["invoke"],
+        internal["wasm_guest_exports"]["invoke"]
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn run_bundle_s12_sheetport_quote_wasmtime_roundtrip_with_materialized_blob()
+-> Result<(), Box<dyn std::error::Error>> {
+    let out_dir = temp_bundle_dir("s12-sheetport-materialized-wasmtime");
+
+    let build = {
+        let _build_guard = build_heavy_lock().lock().expect("build lock");
+        Command::cargo_bin("flows")?
+            .args([
+                "bundle",
+                "-p",
+                "example-s12-sheetport-quote",
+                "--wasm",
+                "--dev",
+                "--out-dir",
+                out_dir.to_str().expect("out dir"),
+            ])
+            .env("CARGO_TARGET_DIR", shared_target_dir())
+            .env("CARGO_BUILD_JOBS", BUILD_JOBS_LIMIT)
+            .output()?
+    };
+    assert!(
+        build.status.success(),
+        "s12 sheetport wasm bundle failed: status={:?}, stderr={}",
+        build.status,
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let materialized = connector_formualizer_sheetport::runtime::materialize_xlsx_workbook_bytes_to_workbook_json_v1(
+        s12_sheetport_quote::QUOTE_WORKBOOK_BYTES,
+    )?;
+    let blob = Arc::new(capabilities::blob::MemoryBlobStore::new());
+    blob.put("models/quote.materialized.json", &materialized)
+        .await?;
+
+    let flow_id = s12_sheetport_quote::validated_bound_ir()
+        .flow()
+        .id
+        .as_str()
+        .to_string();
+    let resources = ResourceBag::new()
+        .with_blob(Arc::clone(&blob))
+        .with_connector_runtime(Arc::new(SheetPortMaterializedBlobConnectorRuntime {
+            workbook_key: "models/quote.materialized.json".to_string(),
+            connection_name: "sheetport_quote_materialized".to_string(),
+        }));
+    let bundle = load_flow_bundle(
+        &out_dir,
+        ExecPolicy::Wasm,
+        Some(&flow_id),
+        Arc::new(resources.clone()),
+    )?;
+    let output = bundle
+        .executor()
+        .with_resource_bag(resources)
+        .run_once(
+            &bundle.validated_ir,
+            "trigger",
+            json!({ "base_price": 100.0, "quantity": 2, "discount": 0.1 }),
+            "capture",
+            None,
+        )
+        .await?;
+
+    let value = match output {
+        HostExecutionResult::Value(value) => value,
+        HostExecutionResult::Stream(_) => panic!("expected value output"),
+        HostExecutionResult::Halt { alias, .. } => panic!("unexpected halt at {alias}"),
+    };
+
+    assert_eq!(value["manifest_id"], json!("quote-model"));
+    assert_eq!(
+        value["connection_name"],
+        json!("sheetport_quote_materialized")
+    );
+    assert_eq!(value["mode"], json!("bound"));
+    assert_eq!(value["total"], json!(180.0));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn run_bundle_multiflow_wasmtime_roundtrip_selects_per_flow_exports()
+-> Result<(), Box<dyn std::error::Error>> {
+    let out_dir = temp_bundle_dir("s10-multiflow-wasmtime");
+
+    let build = {
+        let _build_guard = build_heavy_lock().lock().expect("build lock");
+        Command::cargo_bin("flows")?
+            .args([
+                "bundle",
+                "-p",
+                "example-s10-multiflow-bundle",
+                "--wasm",
+                "--dev",
+                "--out-dir",
+                out_dir.to_str().expect("out dir"),
+            ])
+            .env("CARGO_TARGET_DIR", shared_target_dir())
+            .env("CARGO_BUILD_JOBS", BUILD_JOBS_LIMIT)
+            .output()?
+    };
+    assert!(
+        build.status.success(),
+        "s10 multiflow wasm bundle failed: status={:?}, stderr={}",
+        build.status,
+        String::from_utf8_lossy(&build.stderr)
+    );
+
+    let upper_flow_id = s10_multiflow_bundle::validated_upper_ir()
+        .flow()
+        .id
+        .as_str()
+        .to_string();
+    let reverse_flow_id = s10_multiflow_bundle::validated_reverse_ir()
+        .flow()
+        .id
+        .as_str()
+        .to_string();
+
+    let upper_resources = ResourceBag::new();
+    let upper_bundle = load_flow_bundle(
+        &out_dir,
+        ExecPolicy::Wasm,
+        Some(&upper_flow_id),
+        Arc::new(upper_resources.clone()),
+    )?;
+    let upper_output = upper_bundle
+        .executor()
+        .with_resource_bag(upper_resources)
+        .run_once(
+            &upper_bundle.validated_ir,
+            "trigger",
+            json!({ "value": "hello" }),
+            "capture",
+            None,
+        )
+        .await?;
+    let upper_value = match upper_output {
+        HostExecutionResult::Value(value) => value,
+        HostExecutionResult::Stream(_) => panic!("expected value output"),
+        HostExecutionResult::Halt { alias, .. } => panic!("unexpected halt at {alias}"),
+    };
+    assert_eq!(upper_value["value"], json!("HELLO"));
+    assert_eq!(upper_value["flow"], json!("upper"));
+
+    let reverse_resources = ResourceBag::new();
+    let reverse_bundle = load_flow_bundle(
+        &out_dir,
+        ExecPolicy::Wasm,
+        Some(&reverse_flow_id),
+        Arc::new(reverse_resources.clone()),
+    )?;
+    let reverse_output = reverse_bundle
+        .executor()
+        .with_resource_bag(reverse_resources)
+        .run_once(
+            &reverse_bundle.validated_ir,
+            "trigger",
+            json!({ "value": "hello" }),
+            "capture",
+            None,
+        )
+        .await?;
+    let reverse_value = match reverse_output {
+        HostExecutionResult::Value(value) => value,
+        HostExecutionResult::Stream(_) => panic!("expected value output"),
+        HostExecutionResult::Halt { alias, .. } => panic!("unexpected halt at {alias}"),
+    };
+    assert_eq!(reverse_value["value"], json!("olleh"));
+    assert_eq!(reverse_value["flow"], json!("reverse"));
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn run_bundle_s11_lead_intake_wasmtime_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
     let out_dir = temp_bundle_dir("s11-lead-intake-wasmtime");
-    let target_dir = out_dir.join("target");
-    fs::create_dir_all(&target_dir)?;
 
-    let build = Command::cargo_bin("flows")?
-        .args([
-            "bundle",
-            "-p",
-            "example-s11-lead-intake",
-            "--wasm",
-            "--dev",
-            "--out-dir",
-            out_dir.to_str().expect("out dir"),
-        ])
-        .env("CARGO_TARGET_DIR", &target_dir)
-        .output()?;
+    let build = {
+        let _build_guard = build_heavy_lock().lock().expect("build lock");
+        Command::cargo_bin("flows")?
+            .args([
+                "bundle",
+                "-p",
+                "example-s11-lead-intake",
+                "--wasm",
+                "--dev",
+                "--out-dir",
+                out_dir.to_str().expect("out dir"),
+            ])
+            .env("CARGO_TARGET_DIR", shared_target_dir())
+            .env("CARGO_BUILD_JOBS", BUILD_JOBS_LIMIT)
+            .output()?
+    };
     assert!(
         build.status.success(),
         "s11 lead intake wasm bundle failed: status={:?}, stderr={}",
@@ -505,21 +855,23 @@ async fn run_bundle_s11_lead_intake_wasmtime_roundtrip() -> Result<(), Box<dyn s
 #[test]
 fn run_bundle_s6_spill_blob_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
     let out_dir = temp_bundle_dir("s6-spill-blob");
-    let target_dir = out_dir.join("target");
-    fs::create_dir_all(&target_dir)?;
 
-    let build = Command::cargo_bin("flows")?
-        .args([
-            "bundle",
-            "-p",
-            "example-s6-spill",
-            "--wasm",
-            "--dev",
-            "--out-dir",
-            out_dir.to_str().expect("out dir"),
-        ])
-        .env("CARGO_TARGET_DIR", &target_dir)
-        .output()?;
+    let build = {
+        let _build_guard = build_heavy_lock().lock().expect("build lock");
+        Command::cargo_bin("flows")?
+            .args([
+                "bundle",
+                "-p",
+                "example-s6-spill",
+                "--wasm",
+                "--dev",
+                "--out-dir",
+                out_dir.to_str().expect("out dir"),
+            ])
+            .env("CARGO_TARGET_DIR", shared_target_dir())
+            .env("CARGO_BUILD_JOBS", BUILD_JOBS_LIMIT)
+            .output()?
+    };
     assert!(
         build.status.success(),
         "s6_spill wasm bundle failed: status={:?}, stderr={}",

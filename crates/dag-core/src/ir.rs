@@ -160,6 +160,20 @@ pub struct ConnectorRoleRequirement {
     pub expected_handle_kind: &'static str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectorResolutionModeDecl {
+    BoundConnection,
+    LateBoundRefs,
+    InlinePayload,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConnectorResolutionContract {
+    pub supported_modes: &'static [ConnectorResolutionModeDecl],
+    pub default_mode: ConnectorResolutionModeDecl,
+}
+
 /// Static reusable connector operation metadata emitted by connector crates.
 #[derive(Debug, Clone)]
 pub struct ConnectorOpMetadata {
@@ -171,6 +185,7 @@ pub struct ConnectorOpMetadata {
     pub determinism_hints: &'static [&'static str],
     pub effect_hints: &'static [&'static str],
     pub roles: &'static [ConnectorRoleRequirement],
+    pub resolution: ConnectorResolutionContract,
 }
 
 /// Serializable connector role requirement emitted into Flow IR.
@@ -188,6 +203,10 @@ pub struct ConnectorOpRefIR {
     pub connector_id: String,
     #[serde(default)]
     pub roles: Vec<ConnectorRoleRequirementIR>,
+    pub default_resolution_mode: ConnectorResolutionModeDecl,
+    pub selected_resolution_mode: ConnectorResolutionModeDecl,
+    #[serde(default)]
+    pub supported_resolution_modes: Vec<ConnectorResolutionModeDecl>,
 }
 
 /// Compile-time node specification produced by macros.
@@ -215,6 +234,8 @@ pub struct NodeSpec {
     pub effect_hints: &'static [&'static str],
     /// Reusable connector operations this node may invoke internally.
     pub connector_ops: &'static [&'static ConnectorOpMetadata],
+    /// Optional node-level override for the connector resolution mode used by declared ops.
+    pub connector_resolution_mode: Option<ConnectorResolutionModeDecl>,
     /// Whether effects were explicitly declared by the author.
     pub effects_declared: bool,
     /// Whether determinism was explicitly declared by the author.
@@ -274,6 +295,7 @@ impl NodeSpec {
             determinism_hints,
             effect_hints,
             connector_ops: &[],
+            connector_resolution_mode: None,
             effects_declared: true,
             determinism_declared: true,
             durability: DurabilityProfile {
@@ -375,6 +397,11 @@ impl NodeSpec {
                         expected_handle_kind: role.expected_handle_kind.to_string(),
                     })
                     .collect(),
+                default_resolution_mode: op.resolution.default_mode,
+                selected_resolution_mode: self
+                    .connector_resolution_mode
+                    .unwrap_or(op.resolution.default_mode),
+                supported_resolution_modes: op.resolution.supported_modes.to_vec(),
             })
             .collect()
     }
@@ -406,6 +433,7 @@ impl NodeSpec {
             determinism_hints,
             effect_hints,
             connector_ops: self.connector_ops,
+            connector_resolution_mode: self.connector_resolution_mode,
             effects_declared: true,
             determinism_declared: true,
             durability: self.durability.clone(),

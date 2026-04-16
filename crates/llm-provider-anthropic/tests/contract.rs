@@ -1,9 +1,9 @@
-use futures::{stream, StreamExt};
+use futures::{StreamExt, stream};
 use llm_provider_anthropic::completion as anthropic;
 use llm_provider_anthropic::streaming::{ContentDelta, StreamingEvent};
+use llm_types::OneOrMany;
 use llm_types::completion as core;
 use llm_types::message::ToolChoice as CoreToolChoice;
-use llm_types::OneOrMany;
 use serde_json::json;
 
 #[test]
@@ -31,16 +31,15 @@ fn request_serialization_matches_anthropic_messages_api() {
         output_schema: None,
     };
 
-    let anthropic_request = anthropic::AnthropicCompletionRequest::try_from(
-        anthropic::AnthropicRequestParams {
+    let anthropic_request =
+        anthropic::AnthropicCompletionRequest::try_from(anthropic::AnthropicRequestParams {
             model: anthropic::CLAUDE_3_5_SONNET,
             request,
             prompt_caching: false,
             automatic_caching: false,
             automatic_caching_ttl: None,
-        },
-    )
-    .expect("request conversion should succeed");
+        })
+        .expect("request conversion should succeed");
 
     let value = serde_json::to_value(anthropic_request).expect("serialization should succeed");
 
@@ -53,8 +52,14 @@ fn request_serialization_matches_anthropic_messages_api() {
     assert_eq!(value["messages"][0]["content"][0]["type"], "text");
     assert_eq!(value["messages"][0]["content"][0]["text"], "Hello");
     assert_eq!(value["tools"][0]["name"], "lookup_weather");
-    assert_eq!(value["tools"][0]["description"], "Look up weather by location");
-    assert_eq!(value["tools"][0]["input_schema"]["properties"]["location"]["type"], "string");
+    assert_eq!(
+        value["tools"][0]["description"],
+        "Look up weather by location"
+    );
+    assert_eq!(
+        value["tools"][0]["input_schema"]["properties"]["location"]["type"],
+        "string"
+    );
     assert_eq!(value["tool_choice"]["type"], "any");
     assert_eq!(value["top_p"], 0.9);
 }
@@ -103,9 +108,13 @@ fn streaming_event_deserializes_through_sse_decoder() {
         "\n"
     );
 
-    let events = llm_provider_anthropic::decoders::sse::iter_sse_messages(stream::iter(vec![
-        Ok::<Vec<u8>, std::io::Error>(payload.as_bytes().to_vec()),
-    ]));
+    let events =
+        llm_provider_anthropic::decoders::sse::iter_sse_messages(stream::iter(vec![Ok::<
+            Vec<u8>,
+            std::io::Error,
+        >(
+            payload.as_bytes().to_vec(),
+        )]));
     futures::pin_mut!(events);
 
     let event = futures::executor::block_on(async { events.next().await.unwrap().unwrap() });
@@ -144,7 +153,10 @@ fn tool_definition_serializes_correctly() {
     assert_eq!(value["name"], "lookup_weather");
     assert_eq!(value["description"], "Look up weather by location");
     assert_eq!(value["input_schema"]["type"], "object");
-    assert_eq!(value["input_schema"]["properties"]["location"]["type"], "string");
+    assert_eq!(
+        value["input_schema"]["properties"]["location"]["type"],
+        "string"
+    );
 }
 
 #[test]
