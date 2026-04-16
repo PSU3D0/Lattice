@@ -71,7 +71,8 @@ members = [
   "examples/s10_multiflow_bundle",
   "examples/s11_lead_intake",
   "examples/s12_sheetport_quote",
-  "examples/s13_github_issue_investigator"
+  "examples/s13_github_issue_investigator",
+  "examples/s14_meeting_transcript_sync"
 ]
 
 [workspace.package]

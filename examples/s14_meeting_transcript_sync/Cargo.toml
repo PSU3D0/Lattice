@@ -1,0 +1,41 @@
+[package]
+name = "example-s14-meeting-transcript-sync"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "S14 meeting transcript sync example proving flow-local reconciliation semantics ahead of D1/R2 and scheduled-wrapper integration."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+capabilities = { path = "../../crates/capabilities" }
+connector_google_platform = { path = "../../crates/connectors/google/platform" }
+connector_zoom_platform = { path = "../../crates/connectors/zoom/platform" }
+dag-core = { path = "../../crates/dag-core" }
+dag-macros = { path = "../../crates/dag-macros" }
+kernel-plan = { path = "../../crates/kernel-plan" }
+schemars = "1"
+serde.workspace = true
+serde_json.workspace = true
+time = { version = "0.3", features = ["formatting", "parsing", "serde"] }
+host-inproc = { path = "../../crates/host-inproc", optional = true }
+kernel-exec = { path = "../../crates/kernel-exec", optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+
+[features]
+default = ["host-bundle"]
+host-bundle = ["kernel-exec", "host-inproc"]
+flow-registry = ["dag-core/flow-registry", "dag-macros/flow-registry"]
+
+[package.metadata.latticeflow]
+flows = ["s14_meeting_transcript_sync_flow"]
+default_flow = "s14_meeting_transcript_sync_flow"

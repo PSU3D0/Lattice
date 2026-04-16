@@ -2373,6 +2373,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-s14-meeting-transcript-sync"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "capabilities",
+ "connector_google_platform",
+ "connector_zoom_platform",
+ "dag-core",
+ "dag-macros",
+ "host-inproc",
+ "kernel-exec",
+ "kernel-plan",
+ "schemars 1.0.4",
+ "serde",
+ "serde_json",
+ "time",
+ "tokio",
+]
+
+[[package]]
 name = "example-s2-site"
 version = "0.1.0"
 dependencies = [

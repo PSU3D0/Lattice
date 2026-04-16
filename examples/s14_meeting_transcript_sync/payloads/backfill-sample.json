@@ -1,0 +1,7 @@
+{
+  "org_scope": "studio",
+  "window_start": "2026-04-15T00:00:00Z",
+  "window_end": "2026-04-16T10:00:00Z",
+  "source": "manual_backfill",
+  "backfill_reason": "reconcile a missed day after connector downtime"
+}
