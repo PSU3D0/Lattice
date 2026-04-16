@@ -636,3 +636,18 @@ Acceptance gates:
   - `CARGO_TARGET_DIR=.target cargo test -p connector_zoom_platform`
   - `CARGO_TARGET_DIR=.target cargo clippy -p connector_zoom_platform --all-targets --no-deps -- -D warnings`
 - Compatibility/contract notes: the provider crate still does not own retry cadence, readiness polling, meeting classification, or transcript job-ledger semantics; those remain for the later s14 workflow layer.
+
+## 2026-04-16 — Meeting transcript example local D1/R2 salvage (Epic 05.6)
+
+- Added example-local Cloudflare storage adapters under `examples/s14_meeting_transcript_sync/src/cloudflare/`: `D1TranscriptJobStore` persists the meeting ledger on a D1-shaped SQLite schema, and `R2TranscriptUploader` writes transcript artifacts using the planned `transcripts/<org>/<yyyy>/<mm>/<meeting_key>/...` object layout.
+- Kept the salvage strictly example-local: the new D1/R2 code lives only in `examples/s14_meeting_transcript_sync/**`, with no provider-crate changes and no host/core scheduler/control-plane expansion.
+- Tightened the flow seam so `TranscriptJobStore::due_jobs(...)` is `org_scope` aware, updated the in-memory fake store to match, and added a semantic regression proving the reconcile loop only processes jobs from the request scope.
+- Added focused native tests for D1 round-trip persistence, org-scoped due-job filtering, saved source-ref/upload state, and R2 object-layout/key derivation while preserving the existing semantic test suite.
+- Updated `examples/s14_meeting_transcript_sync/README.md` to truthfully describe the landed state: D1/R2 integration is present, but the safe scheduled wrapper / deploy seam is still deferred.
+- Acceptance gates:
+  - `CARGO_TARGET_DIR=.target cargo test -p example-s14-meeting-transcript-sync due_selection_respects_request_org_scope -- --test-threads=1`
+  - `CARGO_TARGET_DIR=.target cargo test -p example-s14-meeting-transcript-sync cloudflare:: -- --test-threads=1`
+  - `CARGO_TARGET_DIR=.target cargo test -p example-s14-meeting-transcript-sync -- --test-threads=1`
+  - `CARGO_TARGET_DIR=.target cargo check -p example-s14-meeting-transcript-sync`
+  - `CARGO_TARGET_DIR=.target cargo check -p example-s14-meeting-transcript-sync --target wasm32-unknown-unknown --no-default-features`
+- Compatibility/contract notes: no scheduled-wrapper/runtime seam was added in this tranche; effectful execution outside the existing test harness remains deferred to the later D2 work.

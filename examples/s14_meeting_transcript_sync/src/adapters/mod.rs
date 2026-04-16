@@ -12,7 +12,8 @@ pub use calendar::MeetingSource;
 pub use transcript::{FetchOutcome, SourceResolution, TranscriptFetcher, TranscriptSourceResolver};
 pub use upload::TranscriptUploader;
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait TranscriptJobStore: Send + Sync {
     async fn upsert_discovered(
         &self,
@@ -20,7 +21,12 @@ pub trait TranscriptJobStore: Send + Sync {
         meetings: &[CompletedMeeting],
     ) -> anyhow::Result<()>;
 
-    async fn due_jobs(&self, now_iso: &str, limit: u32) -> anyhow::Result<Vec<MeetingJob>>;
+    async fn due_jobs(
+        &self,
+        org_scope: &str,
+        now_iso: &str,
+        limit: u32,
+    ) -> anyhow::Result<Vec<MeetingJob>>;
 
     async fn save_job(&self, job: &MeetingJob) -> anyhow::Result<()>;
 }

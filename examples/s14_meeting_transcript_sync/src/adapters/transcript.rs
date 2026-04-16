@@ -23,7 +23,8 @@ pub enum FetchOutcome {
     PermanentFailure { code: String, message: String },
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait TranscriptSourceResolver: Send + Sync {
     async fn resolve(
         &self,
@@ -33,7 +34,8 @@ pub trait TranscriptSourceResolver: Send + Sync {
     ) -> anyhow::Result<SourceResolution>;
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait TranscriptFetcher: Send + Sync {
     async fn fetch(
         &self,

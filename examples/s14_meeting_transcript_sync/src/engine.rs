@@ -168,7 +168,11 @@ pub(crate) async fn select_due_jobs(
 ) -> anyhow::Result<DueJobsBatch> {
     let due_jobs = services
         .store
-        .due_jobs(&batch.request.window_end, config.sync_batch_limit)
+        .due_jobs(
+            &batch.request.org_scope,
+            &batch.request.window_end,
+            config.sync_batch_limit,
+        )
         .await?;
     Ok(DueJobsBatch {
         request: batch.request,

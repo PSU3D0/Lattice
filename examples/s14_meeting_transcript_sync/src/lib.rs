@@ -6,6 +6,7 @@ use dag_macros::def_node;
 use kernel_plan::{ValidatedIR, validate};
 
 mod adapters;
+pub mod cloudflare;
 pub mod config;
 pub mod domain;
 mod engine;

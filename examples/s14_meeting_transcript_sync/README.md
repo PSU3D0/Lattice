@@ -8,7 +8,8 @@ Serious first-party workflow example for a polling/reconciliation transcript syn
 - flow-local ownership of meeting-key, retry, waiting, ambiguity, and upload policy
 - typed config, domain, and state modules
 - flow-local fake adapters and fake-driven semantic tests
-- serious example crate shape with standard `flow()` / `validated_ir()` / `bundle()` entrypoints, while keeping the current runtime-installation limitation explicit
+- example-local Cloudflare storage helpers for a D1-shaped job ledger and an R2-shaped transcript uploader
+- serious example crate shape with standard `flow()` / `validated_ir()` / `bundle()` entrypoints, while keeping the scheduled-wrapper/deploy seam deferred
 
 ## Current flow shape
 
@@ -21,7 +22,7 @@ Serious first-party workflow example for a polling/reconciliation transcript syn
 
 Important honest note:
 - per-meeting classify / resolve / fetch / upload semantics are implemented explicitly in the example crate's reconciliation engine
-- they are not yet split into graph-visible per-item nodes because this tranche intentionally stops before a truthful scheduled-wrapper / fanout expansion
+- they are not yet split into graph-visible per-item nodes because this tranche still stops short of a truthful scheduled-wrapper / fanout seam
 
 ## Declared invocation contract
 
@@ -33,18 +34,34 @@ Current payload examples:
 - `payloads/backfill-sample.json`
 
 Current honest note:
-- this route is part of the example's bundle/entrypoint contract
-- crate tests exercise it only after installing a flow-local runtime seam in-process
-- there is not yet a public non-test runtime installation path for the example crate, so advertising a standalone local/manual serve path here would be misleading
-- outside that test harness, effectful execution currently fails with `meeting transcript sync runtime is not installed`
+- this route remains part of the example's bundle/entrypoint contract
+- crate semantic tests still exercise effectful execution via the existing test-only installed runtime seam
+- this tranche does **not** add a production/non-test global runtime installation path
+- a safe scheduled Worker wrapper remains deferred to the later D2 tranche
 
-The intended production posture remains:
-- Cloudflare Cron trigger
-- thin scheduled wrapper
-- D1 job ledger
-- R2 transcript destination
+## Cloudflare storage slice
 
-Those are intentionally deferred to the later tranche.
+Implemented here:
+- `cloudflare::D1TranscriptJobStore`
+  - example-local D1-shaped ledger implementation under `src/cloudflare/d1_store.rs`
+  - native tests run against a real SQLite schema shaped to the intended D1 tables/indexes
+  - wasm builds expose `from_env(...)` / `from_database(...)` for Cloudflare D1 bindings
+  - due-job selection is filtered by `org_scope`
+- `cloudflare::R2TranscriptUploader`
+  - example-local uploader under `src/cloudflare/r2_uploader.rs`
+  - native tests write the real transcript object layout to a local bucket-shaped directory
+  - wasm builds expose `from_env(...)` / `from_bucket(...)` for Cloudflare R2 bindings
+
+Current R2 object layout:
+
+```text
+transcripts/<org>/<yyyy>/<mm>/<meeting_key>/
+  source.json
+  transcript.txt
+  transcript.normalized.json
+```
+
+`UploadedTranscript.destination_uri` points at the canonical `transcript.txt` object.
 
 ## Current boundaries
 
@@ -54,14 +71,14 @@ Implemented here:
 - transcript source resolution / ambiguity handling semantics
 - retry vs permanent failure behavior
 - upload retry semantics
-- idempotent discovered-job upsert and due-job selection
+- idempotent discovered-job upsert and org-scoped due-job selection
+- D1/R2 integration adapters kept local to the example crate
 
 Deferred here:
 - real Google Calendar / Drive / Docs integration
 - real Zoom transcript retrieval
-- D1-backed job store
-- R2-backed uploader
-- scheduled Worker wrapper
+- safe scheduled Worker wrapper
+- any non-test execution seam beyond the current test harness
 - host-wasmtime or workerd proofing
 
 ## Provider groundwork usage
@@ -75,8 +92,9 @@ Business policy remains flow-local.
 ## Verification
 
 Current honest proof path:
-- crate semantic tests with flow-local fake adapters and test-installed runtime seam
-- shape/bundle checks only; no first-class standalone local/manual route proof yet
+- crate semantic tests with flow-local fake adapters
+- example-local D1/R2 tests under `src/cloudflare/`
+- native crate checks plus wasm guest check without default features
 
 Targeted checks:
 
@@ -85,7 +103,3 @@ cargo check -p example-s14-meeting-transcript-sync
 cargo test -p example-s14-meeting-transcript-sync -- --test-threads=1
 cargo check -p example-s14-meeting-transcript-sync --target wasm32-unknown-unknown --no-default-features
 ```
-
-Current honest bundleability note:
-- the crate has the standard bundleable shape and `bundle()` entrypoint
-- but the serious deploy/runtime path still depends on later D1/R2 + scheduled-wrapper work

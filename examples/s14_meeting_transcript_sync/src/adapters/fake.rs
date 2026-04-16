@@ -34,7 +34,8 @@ impl FakeMeetingSource {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl MeetingSource for FakeMeetingSource {
     async fn fetch_recent_completed_meetings(
         &self,
@@ -69,7 +70,8 @@ impl FakeTranscriptSourceResolver {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl TranscriptSourceResolver for FakeTranscriptSourceResolver {
     async fn resolve(
         &self,
@@ -115,7 +117,8 @@ impl FakeTranscriptFetcher {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl TranscriptFetcher for FakeTranscriptFetcher {
     async fn fetch(
         &self,
@@ -188,7 +191,8 @@ impl FakeTranscriptUploader {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl TranscriptUploader for FakeTranscriptUploader {
     async fn upload(
         &self,
@@ -254,7 +258,8 @@ impl InMemoryTranscriptJobStore {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl TranscriptJobStore for InMemoryTranscriptJobStore {
     async fn upsert_discovered(
         &self,
@@ -277,7 +282,12 @@ impl TranscriptJobStore for InMemoryTranscriptJobStore {
         Ok(())
     }
 
-    async fn due_jobs(&self, now_iso: &str, limit: u32) -> anyhow::Result<Vec<MeetingJob>> {
+    async fn due_jobs(
+        &self,
+        org_scope: &str,
+        now_iso: &str,
+        limit: u32,
+    ) -> anyhow::Result<Vec<MeetingJob>> {
         let now = parse_rfc3339("now_iso", None, now_iso)?;
         let jobs = self
             .jobs
@@ -289,6 +299,9 @@ impl TranscriptJobStore for InMemoryTranscriptJobStore {
 
         let mut due = Vec::new();
         for job in jobs {
+            if job.org_scope != org_scope {
+                continue;
+            }
             if is_due(&job, now)? {
                 let sort_key = due_sort_key(&job)?;
                 due.push((sort_key.due_at, sort_key.scheduled_end_at, job));

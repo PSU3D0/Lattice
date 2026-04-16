@@ -529,6 +529,69 @@ async fn offset_rfc3339_due_selection_uses_real_instants() {
 }
 
 #[tokio::test]
+async fn due_selection_respects_request_org_scope() {
+    let _lock = TEST_LOCK.lock().expect("test lock");
+    let studio_meeting = zoom_meeting("evt-studio", "2026-04-16T09:50:00Z");
+    let ops_meeting = zoom_meeting("evt-ops", "2026-04-16T09:51:00Z");
+
+    let studio_source = zoom_source_ref("org-studio");
+    let ops_source = zoom_source_ref("org-ops");
+
+    let harness = TestHarness {
+        meeting_source: FakeMeetingSource::new(Vec::new()),
+        resolver: FakeTranscriptSourceResolver::default()
+            .with_outcome(
+                studio_meeting.meeting_key.clone(),
+                SourceResolution::Resolved(studio_source.clone()),
+            )
+            .with_outcome(
+                ops_meeting.meeting_key.clone(),
+                SourceResolution::Resolved(ops_source.clone()),
+            ),
+        fetcher: FakeTranscriptFetcher::default()
+            .with_outcome(
+                studio_source.cache_key(),
+                FetchOutcome::Ready(artifact(studio_source.clone(), "studio transcript")),
+            )
+            .with_outcome(
+                ops_source.cache_key(),
+                FetchOutcome::Ready(artifact(ops_source.clone(), "ops transcript")),
+            ),
+        uploader: FakeTranscriptUploader::default()
+            .with_success(
+                studio_meeting.meeting_key.clone(),
+                explicit_upload(&studio_meeting.meeting_key),
+            )
+            .with_success(
+                ops_meeting.meeting_key.clone(),
+                explicit_upload(&ops_meeting.meeting_key),
+            ),
+        ..TestHarness::default()
+    };
+
+    harness.store.seed(MeetingJob::new_discovered(
+        "studio".to_string(),
+        studio_meeting.clone(),
+    ));
+    harness.store.seed(MeetingJob::new_discovered(
+        "ops".to_string(),
+        ops_meeting.clone(),
+    ));
+
+    let summary = harness.execute(sample_request()).await;
+    let ops_job = harness
+        .store
+        .get(&ops_meeting.meeting_key)
+        .expect("ops job exists");
+
+    assert_eq!(summary.selected_due_jobs, 1);
+    assert_eq!(summary.processed, 1);
+    assert_eq!(summary.uploaded, 1);
+    assert_eq!(ops_job.status, JobStatus::Discovered);
+    assert_eq!(harness.uploader.calls(), vec![studio_meeting.meeting_key]);
+}
+
+#[tokio::test]
 async fn batch_limit_caps_work_per_tick() {
     let _lock = TEST_LOCK.lock().expect("test lock");
     let meeting_a = zoom_meeting("evt-batch-a", "2026-04-16T09:50:00Z");
