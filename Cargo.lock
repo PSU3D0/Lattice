@@ -2383,14 +2383,19 @@ dependencies = [
  "connector_zoom_platform",
  "dag-core",
  "dag-macros",
+ "hex",
  "host-inproc",
  "kernel-exec",
  "kernel-plan",
+ "rusqlite",
  "schemars 1.0.4",
  "serde",
  "serde_json",
+ "sha2",
+ "tempfile",
  "time",
  "tokio",
+ "worker",
 ]
 
 [[package]]
