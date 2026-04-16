@@ -12,3 +12,4 @@ description = "Shared Google connector platform helpers for Lattice connector cr
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+percent-encoding = "2.3"

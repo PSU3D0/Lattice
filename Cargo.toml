@@ -30,6 +30,7 @@ members = [
   "crates/connectors/formualizer/sheetport",
   "crates/connectors/google/platform",
   "crates/connectors/google/sheets",
+  "crates/connectors/zoom/platform",
   "crates/connectors/google/sheets/examples/local-flow",
   "crates/dag-core",
   "crates/llm-types",

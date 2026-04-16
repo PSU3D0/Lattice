@@ -7,6 +7,13 @@ Last reviewed: 2025-12-12
 
 > Detailed record of repository setup and implementation progress. Use this to orient new contributors and agents; each entry references the relevant design documents for context.
 
+## 2026-04-16 — Meeting transcript provider groundwork (pre-s14)
+
+- Added narrow reusable Google provider groundwork in `crates/connectors/google/platform/` for Calendar event DTOs/query builders and Drive/Docs file lookup/export DTOs/path helpers.
+- Added narrow reusable Zoom provider groundwork in `crates/connectors/zoom/platform/` for server-to-server OAuth request construction, transcript request/download helpers, and provider-level transcript availability mapping.
+- Kept transcript workflow policy explicitly out of provider crates: retry cadence, reconciliation state machine, meeting-key/idempotency rules, transcript source selection policy, and D1/R2 storage layout remain flow-local concerns for the upcoming `s14` workflow.
+- Intentionally left Google auth ownership with the existing runtime/provider path rather than introducing a second competing Google service-account implementation in `connector_google_platform`.
+
 ## Latest State (Authoritative Snapshot) — 2025-12-12
 
 Implemented (high-level):
@@ -618,3 +625,14 @@ Acceptance gates:
 - Aligned epic 03 roadmap phase numbering with current tickets/work-log by defining 03.1 as the Workers KV provider (`impl-docs/roadmap/epic-03-cloudflare-caps-minimal.md`).
 - Updated KV list cursor semantics to treat cursors as opaque continuation tokens while allowing last-key cursors as a provider-specific subtype (`impl-docs/spec/capabilities-and-binding.md`).
 - Compatibility/contract notes: capability spec now explicitly permits opaque cursors; providers must not be forced to translate cursors into last-key values.
+
+## 2026-04-16 — Zoom transcript provider groundwork refinement (Meeting transcript sync Tranche B)
+
+- Added `connector_zoom_platform` under `crates/connectors/zoom/platform/` as a narrow Zoom helper crate for transcript-oriented workflows.
+- Kept the provider surface transcript-focused: server-to-server OAuth request construction, transcript request/download helpers, transcript DTOs, and availability mapping live in the crate while retry/state-machine policy stays flow-local.
+- De-hardcoded transport defaults via `ZoomRequestConfig`, so callers can override API base URL, OAuth token URL, and timeout without widening the provider into a transport runtime.
+- Added realistic Zoom transcript serde tests using the documented `GET /meetings/{meetingId}/transcript` payload shape, including `can_download` and `download_restriction_reason` mapping.
+- Acceptance gates:
+  - `CARGO_TARGET_DIR=.target cargo test -p connector_zoom_platform`
+  - `CARGO_TARGET_DIR=.target cargo clippy -p connector_zoom_platform --all-targets --no-deps -- -D warnings`
+- Compatibility/contract notes: the provider crate still does not own retry cadence, readiness polling, meeting classification, or transcript job-ledger semantics; those remain for the later s14 workflow layer.

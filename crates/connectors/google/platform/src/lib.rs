@@ -1,3 +1,5 @@
+pub mod calendar;
+pub mod drive;
 pub mod sheets;
 
 pub const GOOGLE_OAUTH_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
