@@ -10,6 +10,44 @@ use crate::{
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZoomMeetingRecordings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uuid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
+    #[serde(default)]
+    pub recording_files: Vec<ZoomRecordingFile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_access_token: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZoomRecordingFile {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_extension: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_url: Option<String>,
+}
+
+impl ZoomMeetingRecordings {
+    pub fn transcript_file(&self) -> Option<&ZoomRecordingFile> {
+        self.recording_files.iter().find(|file| {
+            file.file_type.as_deref() == Some("TRANSCRIPT")
+                || file.recording_type.as_deref() == Some("audio_transcript")
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ZoomMeetingTranscript {
     pub meeting_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -122,11 +160,56 @@ pub fn encode_meeting_identifier(meeting_id_or_uuid: &str) -> String {
     }
 }
 
-pub fn meeting_transcript_path(meeting_id_or_uuid: &str) -> String {
+pub fn meeting_recordings_path(meeting_id_or_uuid: &str) -> String {
     format!(
-        "/meetings/{}/transcript",
+        "/meetings/{}/recordings",
         encode_meeting_identifier(meeting_id_or_uuid)
     )
+}
+
+pub fn meeting_transcript_path(meeting_id_or_uuid: &str) -> String {
+    format!(
+        "/meetings/{}/recordings/transcript",
+        encode_meeting_identifier(meeting_id_or_uuid)
+    )
+}
+
+pub fn meeting_recordings_request(meeting_id_or_uuid: &str, access_token: &str) -> HttpRequest {
+    meeting_recordings_request_with_parts(
+        meeting_id_or_uuid,
+        access_token,
+        DEFAULT_ZOOM_API_BASE_URL,
+        Some(DEFAULT_ZOOM_HTTP_TIMEOUT_MS),
+    )
+}
+
+pub fn meeting_recordings_request_with_config(
+    meeting_id_or_uuid: &str,
+    access_token: &str,
+    config: &ZoomRequestConfig,
+) -> HttpRequest {
+    meeting_recordings_request_with_parts(
+        meeting_id_or_uuid,
+        access_token,
+        &config.api_base_url,
+        config.timeout_ms,
+    )
+}
+
+fn meeting_recordings_request_with_parts(
+    meeting_id_or_uuid: &str,
+    access_token: &str,
+    api_base_url: &str,
+    timeout_ms: Option<u64>,
+) -> HttpRequest {
+    let mut request = HttpRequest::new(
+        HttpMethod::Get,
+        join_base_url(api_base_url, &meeting_recordings_path(meeting_id_or_uuid)),
+    );
+    apply_timeout(&mut request, timeout_ms);
+    request.headers.insert("Accept", "application/json");
+    apply_bearer_authorization(&mut request, access_token);
+    request
 }
 
 pub fn meeting_transcript_request(meeting_id_or_uuid: &str, access_token: &str) -> HttpRequest {
@@ -211,6 +294,32 @@ mod tests {
     }
 
     #[test]
+    fn test_meeting_recordings_request_with_config_when_overridden_uses_custom_base_url_and_timeout()
+     {
+        let config = ZoomRequestConfig::default()
+            .with_api_base_url("https://zoom.example.test/internal/v2/")
+            .with_timeout(None);
+
+        let request =
+            meeting_recordings_request_with_config("/ajXp112QmuoKj4854875==", "token-123", &config);
+
+        assert_eq!(request.method, HttpMethod::Get);
+        assert_eq!(
+            request.url,
+            "https://zoom.example.test/internal/v2/meetings/%252FajXp112QmuoKj4854875%253D%253D/recordings"
+        );
+        assert_eq!(request.timeout_ms, None);
+        assert_eq!(
+            request.headers.get("Accept"),
+            Some(&"application/json".to_string())
+        );
+        assert_eq!(
+            request.headers.get("Authorization"),
+            Some(&"Bearer token-123".to_string())
+        );
+    }
+
+    #[test]
     fn test_meeting_transcript_request_with_config_when_overridden_uses_custom_base_url_and_timeout()
      {
         let config = ZoomRequestConfig::default()
@@ -223,7 +332,7 @@ mod tests {
         assert_eq!(request.method, HttpMethod::Get);
         assert_eq!(
             request.url,
-            "https://zoom.example.test/internal/v2/meetings/%252FajXp112QmuoKj4854875%253D%253D/transcript"
+            "https://zoom.example.test/internal/v2/meetings/%252FajXp112QmuoKj4854875%253D%253D/recordings/transcript"
         );
         assert_eq!(request.timeout_ms, None);
         assert_eq!(
@@ -233,6 +342,30 @@ mod tests {
         assert_eq!(
             request.headers.get("Authorization"),
             Some(&"Bearer token-123".to_string())
+        );
+    }
+
+    #[test]
+    fn test_zoom_meeting_recordings_selects_transcript_file() {
+        let recordings: ZoomMeetingRecordings = from_str(
+            r#"{
+                "uuid": "meeting-uuid",
+                "id": 123456789,
+                "topic": "Recorded meeting",
+                "download_access_token": "download-token",
+                "recording_files": [
+                    {"id":"mp4-1", "file_type":"MP4", "recording_type":"shared_screen_with_speaker_view", "download_url":"https://example.test/mp4"},
+                    {"id":"vtt-1", "file_type":"TRANSCRIPT", "recording_type":"audio_transcript", "download_url":"https://example.test/transcript.vtt", "file_extension":"VTT"}
+                ]
+            }"#,
+        )
+        .expect("recordings payload should deserialize");
+
+        let transcript = recordings.transcript_file().expect("transcript file");
+        assert_eq!(transcript.id, "vtt-1");
+        assert_eq!(
+            transcript.download_url.as_deref(),
+            Some("https://example.test/transcript.vtt")
         );
     }
 

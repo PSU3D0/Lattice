@@ -11,6 +11,8 @@ pub mod config;
 pub mod domain;
 mod engine;
 pub mod execution;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod live;
 pub mod scheduled;
 pub mod state;
 
@@ -47,7 +49,8 @@ async fn transcript_sync_trigger(
     name = "FetchRecentCompletedMeetings",
     summary = "Fetch recently completed meetings from the configured meeting source",
     effects = "Effectful",
-    determinism = "BestEffort"
+    determinism = "BestEffort",
+    resources(http_read(capabilities::http::HttpRead))
 )]
 async fn fetch_recent_completed_meetings(
     _request: TranscriptSyncRequest,
@@ -87,7 +90,11 @@ async fn select_due_jobs(
     name = "ReconcileDueJobs",
     summary = "Process due jobs with flow-local transcript source, retry, and upload policy",
     effects = "Effectful",
-    determinism = "BestEffort"
+    determinism = "BestEffort",
+    resources(
+        http_read(capabilities::http::HttpRead),
+        http_write(capabilities::http::HttpWrite)
+    )
 )]
 async fn reconcile_due_jobs(_batch: engine::DueJobsBatch) -> NodeResult<TranscriptSyncSummary> {
     Err(node_error(engine::bundle_execution_error(

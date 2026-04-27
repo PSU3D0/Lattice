@@ -2378,6 +2378,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "cap-http-reqwest",
  "capabilities",
  "connector_google_platform",
  "connector_zoom_platform",
@@ -2387,6 +2388,7 @@ dependencies = [
  "host-inproc",
  "kernel-exec",
  "kernel-plan",
+ "percent-encoding",
  "rusqlite",
  "schemars 1.0.4",
  "serde",

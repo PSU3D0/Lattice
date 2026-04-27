@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use capabilities::ResourceBag;
+use capabilities::{ResourceBag, http};
 
 use crate::adapters::fake::{
     FakeMeetingSource, FakeTranscriptFetcher, FakeTranscriptSourceResolver, FakeTranscriptUploader,
@@ -200,6 +200,47 @@ fn flow_contains_explicit_reconcile_nodes() {
     assert!(aliases.contains(&"upsert"));
     assert!(aliases.contains(&"select_due"));
     assert!(aliases.contains(&"reconcile"));
+}
+
+#[test]
+fn flow_declares_http_capability_hints_for_live_provider_nodes() {
+    let ir = flow();
+    let fetch = ir
+        .nodes
+        .iter()
+        .find(|node| node.alias == "fetch")
+        .expect("fetch node");
+    assert!(
+        fetch
+            .effect_hints
+            .contains(&http::HINT_HTTP_READ.to_string())
+    );
+    assert!(
+        fetch
+            .determinism_hints
+            .contains(&http::HINT_HTTP.to_string())
+    );
+
+    let reconcile = ir
+        .nodes
+        .iter()
+        .find(|node| node.alias == "reconcile")
+        .expect("reconcile node");
+    assert!(
+        reconcile
+            .effect_hints
+            .contains(&http::HINT_HTTP_READ.to_string())
+    );
+    assert!(
+        reconcile
+            .effect_hints
+            .contains(&http::HINT_HTTP_WRITE.to_string())
+    );
+    assert!(
+        reconcile
+            .determinism_hints
+            .contains(&http::HINT_HTTP.to_string())
+    );
 }
 
 #[tokio::test]

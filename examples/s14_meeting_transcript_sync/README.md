@@ -9,6 +9,8 @@ Serious first-party workflow example for a polling/reconciliation transcript syn
 - typed config, domain, state, and scheduled-trigger modules
 - a safe example-owned execution seam: `TranscriptSyncExecutor`
 - example-local Cloudflare storage helpers for a D1-shaped job ledger and an R2-shaped transcript uploader
+- native local-live Google Drive destination adapters for prototype sync runs
+- native local-live Google Calendar/Drive and Zoom adapters built on the existing Google/Zoom provider helper crates
 - a thin example-owned scheduled wrapper path:
   - generic `ScheduledTick` -> `TranscriptSyncExecutor::execute_scheduled_tick(...)`
   - Cloudflare adapter surface: `worker::ScheduledEvent` -> `cloudflare::execute_scheduled_event(...)` (compile-checked; not yet runtime-proved)
@@ -67,7 +69,7 @@ Those helpers convert `worker::ScheduledEvent` into the same `ScheduledTick` sha
 Important honest limits:
 - the generic scheduled composition seam is runtime-proved in crate tests
 - the Cloudflare-specific `worker::ScheduledEvent` adapter is currently compile-checked, not separately runtime-proved
-- the remaining deployment blocker is narrow: this example still does not ship real Google Calendar / Docs / Drive or Zoom meeting-source / resolver / fetcher implementations, so deploy code must still compose those services before calling the wrapper
+- the remaining Cloudflare deployment blocker is secret-management/assembly, not the local prototype path: native local-live Google Calendar / Drive and Zoom adapters exist for prototype sync runs, but the Worker still does not ship a safe deployed credential posture for Google OAuth/Drive writes
 
 ## Bundle and route contract
 
@@ -120,10 +122,10 @@ Implemented here:
 - D1/R2 integration adapters kept local to the example crate
 
 Deferred here:
-- real Google Calendar / Drive / Docs integration
-- real Zoom transcript retrieval
+- safe Cloudflare-deployed Google credential posture for Drive writes
 - a fully assembled deployable Worker entrypoint with live provider services wired from env/bindings
-- host-wasmtime or workerd proofing
+- host-wasmtime or workerd proofing for the live-provider path
+- richer Zoom transcript diagnostics that distinguish not-ready from app-scope/account visibility misses
 
 ## Provider groundwork usage
 
@@ -139,6 +141,7 @@ Current honest proof path:
 - crate semantic tests through `TranscriptSyncExecutor`
 - scheduled-tick tests proving the thin wrapper path
 - example-local D1/R2 tests under `src/cloudflare/`
+- native local-live sync through `src/bin/s14_local_sync.rs` using local Google OAuth material and Zoom credentials from env/fnox
 - native crate checks plus wasm guest check without default features
 
 Targeted checks:
@@ -148,3 +151,18 @@ cargo check -p example-s14-meeting-transcript-sync
 cargo test -p example-s14-meeting-transcript-sync -- --test-threads=1
 cargo check -p example-s14-meeting-transcript-sync --target wasm32-unknown-unknown --no-default-features
 ```
+
+Local live prototype from the wrapper root:
+
+```bash
+S14_LOOKBACK_DAYS=7 S14_SYNC_BATCH_LIMIT=10 ./ops/scripts/s14-local-sync.sh
+```
+
+The wrapper script:
+- exports local Google OAuth refresh material from `gog` into `scratch/s14-local-secrets/google.env`
+- injects Zoom credentials through `fnox exec`
+- runs `cargo run -p example-s14-meeting-transcript-sync --bin s14_local_sync`
+- writes the local D1-shaped ledger to `scratch/s14-meeting-transcript-sync-local/ledger.sqlite`
+- uploads/updates final transcript Google Docs under `Lattice Meeting Transcripts/`
+
+Do not use this local OAuth bridge as the Cloudflare deployment credential model. Cloudflare deployment should wait for a safer Google credential posture, such as service-account/domain delegation or a token broker.

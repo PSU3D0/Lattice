@@ -35,6 +35,8 @@ pub struct CompletedMeeting {
     pub organizer_email: Option<String>,
     #[serde(default)]
     pub attendees: Vec<String>,
+    #[serde(default)]
+    pub metadata: serde_json::Value,
 }
 
 impl CompletedMeeting {
@@ -58,6 +60,7 @@ impl CompletedMeeting {
             location: None,
             organizer_email: None,
             attendees: Vec::new(),
+            metadata: serde_json::Value::Null,
         }
     }
 }

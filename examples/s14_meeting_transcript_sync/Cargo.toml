@@ -22,6 +22,7 @@ dag-core = { path = "../../crates/dag-core" }
 dag-macros = { path = "../../crates/dag-macros" }
 hex.workspace = true
 kernel-plan = { path = "../../crates/kernel-plan" }
+percent-encoding = "2.3"
 schemars = "1"
 serde.workspace = true
 serde_json.workspace = true
@@ -31,7 +32,9 @@ host-inproc = { path = "../../crates/host-inproc", optional = true }
 kernel-exec = { path = "../../crates/kernel-exec", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+cap-http-reqwest = { path = "../../crates/cap-http-reqwest" }
 rusqlite.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 worker = { version = "=0.7.4", default-features = false, features = ["http", "d1"] }

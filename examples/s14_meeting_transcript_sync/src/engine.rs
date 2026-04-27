@@ -294,7 +294,7 @@ async fn process_job(
                         now_iso,
                         config,
                         "upload_retryable_error",
-                        &error.to_string(),
+                        &format!("{error:#}"),
                         ProcessDisposition::RetryableError,
                     )?;
                     Ok(ProcessedJob { job, disposition })
@@ -450,6 +450,7 @@ mod tests {
             location: None,
             organizer_email: None,
             attendees: Vec::new(),
+            metadata: serde_json::Value::Null,
         };
 
         let locator = classify_conference(&meeting);
