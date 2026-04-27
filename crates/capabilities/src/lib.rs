@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
@@ -11,6 +11,7 @@ use time::Instant;
 pub mod connector;
 pub mod durability;
 pub mod hints;
+pub mod sql;
 pub mod workspace;
 
 #[cfg(target_arch = "wasm32")]
@@ -63,6 +64,18 @@ pub trait ResourceAccess: Send + Sync + 'static {
     }
 
     fn kv(&self) -> Option<&dyn kv::KeyValue> {
+        None
+    }
+
+    fn sql_read(&self) -> Option<&dyn sql::SqlRead> {
+        None
+    }
+
+    fn sql_write(&self) -> Option<&dyn sql::SqlWrite> {
+        None
+    }
+
+    fn sql_admin(&self) -> Option<&dyn sql::SqlAdmin> {
         None
     }
 
@@ -119,6 +132,9 @@ pub struct ResourceBag {
     clock: Option<Arc<dyn clock::Clock>>,
     cache: Option<Arc<dyn cache::Cache>>,
     kv: Option<Arc<dyn kv::KeyValue>>,
+    sql_read: Option<Arc<dyn sql::SqlRead>>,
+    sql_write: Option<Arc<dyn sql::SqlWrite>>,
+    sql_admin: Option<Arc<dyn sql::SqlAdmin>>,
     blob: Option<Arc<dyn blob::BlobStore>>,
     queue: Option<Arc<dyn queue::Queue>>,
     dedupe: Option<Arc<dyn dedupe::DedupeStore>>,
@@ -140,6 +156,9 @@ impl Default for ResourceBag {
             clock: None,
             cache: None,
             kv: None,
+            sql_read: None,
+            sql_write: None,
+            sql_admin: None,
             blob: None,
             queue: None,
             dedupe: None,
@@ -202,6 +221,33 @@ impl ResourceBag {
     {
         let capability: Arc<dyn kv::KeyValue> = capability;
         self.kv = Some(capability);
+        self
+    }
+
+    pub fn with_sql_read<T>(mut self, capability: Arc<T>) -> Self
+    where
+        T: sql::SqlRead + 'static,
+    {
+        let capability: Arc<dyn sql::SqlRead> = capability;
+        self.sql_read = Some(capability);
+        self
+    }
+
+    pub fn with_sql_write<T>(mut self, capability: Arc<T>) -> Self
+    where
+        T: sql::SqlWrite + 'static,
+    {
+        let capability: Arc<dyn sql::SqlWrite> = capability;
+        self.sql_write = Some(capability);
+        self
+    }
+
+    pub fn with_sql_admin<T>(mut self, capability: Arc<T>) -> Self
+    where
+        T: sql::SqlAdmin + 'static,
+    {
+        let capability: Arc<dyn sql::SqlAdmin> = capability;
+        self.sql_admin = Some(capability);
         self
     }
 
@@ -467,6 +513,24 @@ impl ResourceAccess for ResourceBag {
         self.kv
             .as_ref()
             .map(|cap| cap.as_ref() as &dyn kv::KeyValue)
+    }
+
+    fn sql_read(&self) -> Option<&dyn sql::SqlRead> {
+        self.sql_read
+            .as_ref()
+            .map(|cap| cap.as_ref() as &dyn sql::SqlRead)
+    }
+
+    fn sql_write(&self) -> Option<&dyn sql::SqlWrite> {
+        self.sql_write
+            .as_ref()
+            .map(|cap| cap.as_ref() as &dyn sql::SqlWrite)
+    }
+
+    fn sql_admin(&self) -> Option<&dyn sql::SqlAdmin> {
+        self.sql_admin
+            .as_ref()
+            .map(|cap| cap.as_ref() as &dyn sql::SqlAdmin)
     }
 
     fn blob(&self) -> Option<&dyn blob::BlobStore> {
@@ -2406,6 +2470,8 @@ mod bag_tests {
 
     struct NullWorkspace;
 
+    struct NullSql;
+
     struct NullConnectorRuntime;
 
     impl Capability for NullWorkspace {
@@ -2448,6 +2514,65 @@ mod bag_tests {
             _normalized_path: &str,
         ) -> Result<workspace::WorkspaceDeleteResult, workspace::WorkspaceError> {
             Ok(workspace::WorkspaceDeleteResult { deleted: false })
+        }
+    }
+
+    impl Capability for NullSql {
+        fn name(&self) -> &'static str {
+            "sql.null"
+        }
+    }
+
+    #[async_trait]
+    impl sql::SqlRead for NullSql {
+        async fn query(
+            &self,
+            _statement: sql::SqlStatement,
+        ) -> Result<sql::SqlQueryResult, sql::SqlError> {
+            Ok(sql::SqlQueryResult {
+                columns: Vec::new(),
+                rows: Vec::new(),
+                rows_returned: 0,
+                cursor: None,
+            })
+        }
+
+        fn capability_info(&self) -> sql::SqlCapabilityInfo {
+            sql::SqlCapabilityInfo::default()
+        }
+    }
+
+    #[async_trait]
+    impl sql::SqlWrite for NullSql {
+        async fn execute(
+            &self,
+            _statement: sql::SqlStatement,
+        ) -> Result<sql::SqlExecuteResult, sql::SqlError> {
+            Ok(sql::SqlExecuteResult {
+                rows_affected: Some(0),
+                last_insert_id: None,
+            })
+        }
+
+        fn capability_info(&self) -> sql::SqlCapabilityInfo {
+            sql::SqlCapabilityInfo::default()
+        }
+    }
+
+    #[async_trait]
+    impl sql::SqlAdmin for NullSql {
+        async fn execute_ddl(
+            &self,
+            _statement: sql::SqlStatement,
+        ) -> Result<sql::SqlExecuteResult, sql::SqlError> {
+            Ok(sql::SqlExecuteResult {
+                rows_affected: None,
+                last_insert_id: None,
+            })
+        }
+
+        fn capability_info(&self) -> sql::SqlCapabilityInfo {
+            sql::SqlCapabilityInfo::default()
         }
     }
 
@@ -2501,6 +2626,9 @@ mod bag_tests {
             .with_clock(Arc::new(clock::SystemClock))
             .with_cache(Arc::new(cache::MemoryCache::default()))
             .with_kv(Arc::new(kv::MemoryKv::new()))
+            .with_sql_read(Arc::new(NullSql))
+            .with_sql_write(Arc::new(NullSql))
+            .with_sql_admin(Arc::new(NullSql))
             .with_blob(Arc::new(blob::MemoryBlobStore::new()))
             .with_queue(Arc::new(queue::MemoryQueue::new()))
             .with_workspace(Arc::new(NullWorkspace))
@@ -2517,6 +2645,9 @@ mod bag_tests {
         assert!(bag.clock().is_some());
         assert!(bag.cache().is_some());
         assert!(bag.kv().is_some());
+        assert!(bag.sql_read().is_some());
+        assert!(bag.sql_write().is_some());
+        assert!(bag.sql_admin().is_some());
         assert!(bag.blob().is_some());
         assert!(bag.queue().is_some());
         assert!(bag.workspace().is_some());

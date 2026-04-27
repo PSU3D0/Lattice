@@ -4,7 +4,7 @@
 //! declarations automatically inherit the correct effect/determinism hints
 //! without bespoke wiring in every crate.
 
-use crate::{blob, clock, db, dedupe, http, kv, queue, rng, workspace};
+use crate::{blob, clock, db, dedupe, http, kv, queue, rng, sql, workspace};
 
 /// Canonical set of hints exported for a capability.
 #[derive(Debug, Clone, Copy)]
@@ -41,6 +41,11 @@ const RNG_DETERMINISM: [&str; 1] = [rng::HINT_RNG];
 const DB_READ_EFFECT: [&str; 1] = [db::HINT_DB_READ];
 const DB_WRITE_EFFECT: [&str; 1] = [db::HINT_DB_WRITE];
 const DB_DETERMINISM: [&str; 1] = [db::HINT_DB];
+
+const SQL_READ_EFFECT: [&str; 1] = [sql::HINT_SQL_READ];
+const SQL_WRITE_EFFECT: [&str; 1] = [sql::HINT_SQL_WRITE];
+const SQL_ADMIN_EFFECT: [&str; 1] = [sql::HINT_SQL_ADMIN];
+const SQL_DETERMINISM: [&str; 1] = [sql::HINT_SQL];
 
 const KV_READ_EFFECT: [&str; 1] = [kv::HINT_KV_READ];
 const KV_WRITE_EFFECT: [&str; 1] = [kv::HINT_KV_WRITE];
@@ -110,15 +115,63 @@ pub fn infer(alias: &str, capability_ident: &str) -> ResourceHintSet {
         return ResourceHintSet::new(&[], &HTTP_DETERMINISM);
     }
 
-    if alias_lower.contains("db")
-        || alias_lower.contains("sql")
+    if alias_lower == "migration" || alias_lower == "schema" {
+        sql::ensure_registered();
+        return ResourceHintSet::new(&SQL_ADMIN_EFFECT, &SQL_DETERMINISM);
+    }
+
+    if alias_lower.contains("db") {
+        db::ensure_registered();
+        let read_tokens = ["read", "select", "fetch", "query"];
+        if read_tokens
+            .iter()
+            .any(|token| alias_lower.contains(token) || ident_lower.contains(token))
+        {
+            return ResourceHintSet::new(&DB_READ_EFFECT, &DB_DETERMINISM);
+        }
+        return ResourceHintSet::new(&DB_WRITE_EFFECT, &DB_DETERMINISM);
+    }
+
+    if alias_lower.contains("sql")
+        || alias_lower.contains("sqlite")
         || alias_lower.contains("postgres")
-        || alias_lower.contains("pg")
-        || ident_lower.contains("db")
+        || alias_lower.contains("d1")
         || ident_lower.contains("sql")
+        || ident_lower.contains("sqlite")
         || ident_lower.contains("postgres")
-        || ident_lower.contains("pg")
+        || ident_lower.contains("d1")
     {
+        sql::ensure_registered();
+        let read_tokens = ["read", "reader", "select", "fetch", "query"];
+        if read_tokens
+            .iter()
+            .any(|token| alias_lower.contains(token) || ident_lower.contains(token))
+        {
+            return ResourceHintSet::new(&SQL_READ_EFFECT, &SQL_DETERMINISM);
+        }
+
+        let admin_tokens = ["admin", "migration", "migrate", "schema", "ddl"];
+        if admin_tokens
+            .iter()
+            .any(|token| alias_lower.contains(token) || ident_lower.contains(token))
+        {
+            return ResourceHintSet::new(&SQL_ADMIN_EFFECT, &SQL_DETERMINISM);
+        }
+
+        let write_tokens = [
+            "write", "writer", "execute", "exec", "insert", "update", "upsert", "delete",
+        ];
+        if write_tokens
+            .iter()
+            .any(|token| alias_lower.contains(token) || ident_lower.contains(token))
+        {
+            return ResourceHintSet::new(&SQL_WRITE_EFFECT, &SQL_DETERMINISM);
+        }
+
+        return ResourceHintSet::new(&[], &SQL_DETERMINISM);
+    }
+
+    if ident_lower.contains("db") {
         db::ensure_registered();
         let read_tokens = ["read", "select", "fetch", "query"];
         if read_tokens
@@ -239,13 +292,39 @@ mod tests {
 
     #[test]
     fn db_read_and_write_infer_correctly() {
-        let read = infer("db_read_pool", "PostgresRead");
+        let read = infer("db_read_pool", "LegacyDbRead");
         assert_eq!(read.effect_hints, &DB_READ_EFFECT);
         assert_eq!(read.determinism_hints, &DB_DETERMINISM);
 
-        let write = infer("postgres_writer", "PgWrite");
+        let write = infer("db_writer", "DbWrite");
         assert_eq!(write.effect_hints, &DB_WRITE_EFFECT);
         assert_eq!(write.determinism_hints, &DB_DETERMINISM);
+    }
+
+    #[test]
+    fn sql_read_write_admin_infer_correctly() {
+        let read = infer("sql_reader", "SqlRead");
+        assert_eq!(read.effect_hints, &SQL_READ_EFFECT);
+        assert_eq!(read.determinism_hints, &SQL_DETERMINISM);
+
+        let write = infer("postgres_writer", "PostgresWrite");
+        assert_eq!(write.effect_hints, &SQL_WRITE_EFFECT);
+        assert_eq!(write.determinism_hints, &SQL_DETERMINISM);
+
+        let admin = infer("d1_migration", "D1Admin");
+        assert_eq!(admin.effect_hints, &SQL_ADMIN_EFFECT);
+        assert_eq!(admin.determinism_hints, &SQL_DETERMINISM);
+    }
+
+    #[test]
+    fn sqlite_and_d1_aliases_infer_sql() {
+        let sqlite = infer("sqlite_reader", "SqliteReader");
+        assert_eq!(sqlite.effect_hints, &SQL_READ_EFFECT);
+        assert_eq!(sqlite.determinism_hints, &SQL_DETERMINISM);
+
+        let d1 = infer("d1_write", "D1Database");
+        assert_eq!(d1.effect_hints, &SQL_WRITE_EFFECT);
+        assert_eq!(d1.determinism_hints, &SQL_DETERMINISM);
     }
 
     #[test]
