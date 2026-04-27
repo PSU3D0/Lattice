@@ -34,7 +34,7 @@ kernel-exec = { path = "../../crates/kernel-exec", optional = true }
 rusqlite.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-worker = { version = "=0.7.4", default-features = false, features = ["http", "d1"] }
+worker = { version = "=0.8.1", default-features = false, features = ["http", "d1"] }
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -16,7 +16,7 @@ default = ["entrypoint"]
 entrypoint = []
 
 [dependencies]
-worker = { version = "=0.7.4", default-features = false, features = ["http"] }
+worker = { version = "=0.8.1", default-features = false, features = ["http"] }
 host-inproc = { path = "../host-inproc" }
 kernel-exec = { path = "../kernel-exec", default-features = false, features = ["wasm"] }
 kernel-plan = { path = "../kernel-plan" }
