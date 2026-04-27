@@ -85,7 +85,8 @@ Wrappers are domain-scoped (not provider-scoped). Examples:
 - `isolation.prefix_keys` (KV/Dedupe/Blob)
 - `isolation.hmac_keys` (Dedupe)
 - `isolation.encrypt_values` (KV/Blob)
-- `isolation.sql_schema_prefix` (DB)
+- `isolation.sql_schema_prefix` (SQL/Postgres-style schema scoping)
+- `isolation.sql_table_prefix` (SQL providers without portable schemas, e.g. SQLite/D1)
 
 Wrappers MUST declare:
 - `kind` string

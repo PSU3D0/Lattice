@@ -25,7 +25,8 @@ In 0.1, capabilities are grouped into coarse domains. Canonical hint ids:
 - Queue: `resource::queue`, `resource::queue::publish`, `resource::queue::consume`
 - Dedupe: `resource::dedupe`, `resource::dedupe::write`
 - Workspace: `resource::workspace`, `resource::workspace::read`, `resource::workspace::write`
-- DB: `resource::db`, `resource::db::read`, `resource::db::write` (interface may evolve)
+- SQL: `resource::sql`, `resource::sql::read`, `resource::sql::write`, `resource::sql::admin` (planned first-class replacement for placeholder DB hints)
+- DB: `resource::db`, `resource::db::read`, `resource::db::write` (legacy/placeholder; prefer `resource::sql::*` for relational SQL stores)
 - Clock/RNG: `resource::clock`, `resource::rng`
 
 ## Declaring Requirements
@@ -169,7 +170,8 @@ Domains (hint ids) and current provider interfaces live in `crates/capabilities/
 - Queue (`resource::queue*`): `Queue`
 - Dedupe (`resource::dedupe*`): `DedupeStore`
 - Workspace (`resource::workspace*`): `Workspace`
-- DB (`resource::db*`): hints + constraints only (no provider trait yet)
+- SQL (`resource::sql*`): planned `SqlRead`, `SqlWrite`, `SqlAdmin`; see `impl-docs/spec/sql-capability.md`
+- DB (`resource::db*`): legacy/placeholder hints + constraints only (no provider trait; do not extend for new relational SQL work)
 - Clock/RNG (`resource::clock`, `resource::rng`): `Clock`, `Rng`
 - Cache: `Cache` (currently not expressed via `resource::*` hints)
 
@@ -245,7 +247,13 @@ MVP requirement structs (conceptual JSON shape):
 - `CacheRequirements`
   - `extensions` (object, optional)
 
-- `DbRequirements`
+- `SqlRequirements` (planned)
+  - `dialect`: `{any_of}` over supported SQL dialect identifiers (optional)
+  - `transaction_support`: `{at_least|any_of}` over SQL transaction-support levels (optional)
+  - `features`: `all_of` over provider-advertised SQL features (optional)
+  - `extensions` (object, optional)
+
+- `DbRequirements` (legacy/placeholder)
   - `extensions` (object, optional)
 
 ## Still Deferred
