@@ -323,6 +323,9 @@ fn is_hint_satisfied_by_resources(hint: &str, resources: &dyn ResourceAccess) ->
         capabilities::kv::HINT_KV_READ | capabilities::kv::HINT_KV_WRITE => {
             resources.kv().is_some()
         }
+        capabilities::sql::HINT_SQL_READ => resources.sql_read().is_some(),
+        capabilities::sql::HINT_SQL_WRITE => resources.sql_write().is_some(),
+        capabilities::sql::HINT_SQL_ADMIN => resources.sql_admin().is_some(),
         capabilities::blob::HINT_BLOB_READ | capabilities::blob::HINT_BLOB_WRITE => {
             resources.blob().is_some()
         }
@@ -361,6 +364,18 @@ impl ResourceAccess for InvocationResources {
 
     fn kv(&self) -> Option<&dyn capabilities::kv::KeyValue> {
         self.base.kv()
+    }
+
+    fn sql_read(&self) -> Option<&dyn capabilities::sql::SqlRead> {
+        self.base.sql_read()
+    }
+
+    fn sql_write(&self) -> Option<&dyn capabilities::sql::SqlWrite> {
+        self.base.sql_write()
+    }
+
+    fn sql_admin(&self) -> Option<&dyn capabilities::sql::SqlAdmin> {
+        self.base.sql_admin()
     }
 
     fn blob(&self) -> Option<&dyn capabilities::blob::BlobStore> {
@@ -1318,6 +1333,129 @@ mod tests {
 
     fn resource_bag_with_checkpoint() -> ResourceBag {
         ResourceBag::new().with_checkpoint_store(Arc::new(StubCheckpointStore))
+    }
+
+    struct StubSql;
+
+    impl capabilities::Capability for StubSql {
+        fn name(&self) -> &'static str {
+            "sql.stub"
+        }
+    }
+
+    #[async_trait]
+    impl capabilities::sql::SqlRead for StubSql {
+        async fn query(
+            &self,
+            _statement: capabilities::sql::SqlStatement,
+        ) -> Result<capabilities::sql::SqlQueryResult, capabilities::sql::SqlError> {
+            Ok(capabilities::sql::SqlQueryResult {
+                columns: Vec::new(),
+                rows: Vec::new(),
+                rows_returned: 0,
+                cursor: None,
+            })
+        }
+
+        fn capability_info(&self) -> capabilities::sql::SqlCapabilityInfo {
+            capabilities::sql::SqlCapabilityInfo::default()
+        }
+    }
+
+    #[async_trait]
+    impl capabilities::sql::SqlWrite for StubSql {
+        async fn execute(
+            &self,
+            _statement: capabilities::sql::SqlStatement,
+        ) -> Result<capabilities::sql::SqlExecuteResult, capabilities::sql::SqlError> {
+            Ok(capabilities::sql::SqlExecuteResult {
+                rows_affected: Some(0),
+                last_insert_id: None,
+            })
+        }
+
+        fn capability_info(&self) -> capabilities::sql::SqlCapabilityInfo {
+            capabilities::sql::SqlCapabilityInfo::default()
+        }
+    }
+
+    #[async_trait]
+    impl capabilities::sql::SqlAdmin for StubSql {
+        async fn execute_ddl(
+            &self,
+            _statement: capabilities::sql::SqlStatement,
+        ) -> Result<capabilities::sql::SqlExecuteResult, capabilities::sql::SqlError> {
+            Ok(capabilities::sql::SqlExecuteResult {
+                rows_affected: None,
+                last_insert_id: None,
+            })
+        }
+
+        fn capability_info(&self) -> capabilities::sql::SqlCapabilityInfo {
+            capabilities::sql::SqlCapabilityInfo::default()
+        }
+    }
+
+    fn preflight_runtime_for_hints(
+        flow_id: &str,
+        effects: Effects,
+        effect_hints: &'static [&'static str],
+        resources: ResourceBag,
+    ) -> HostRuntime {
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn(
+                "tests::trigger",
+                |value: JsonValue| async move { Ok(value) },
+            )
+            .unwrap();
+        registry
+            .register_fn("tests::node", |value: JsonValue| async move { Ok(value) })
+            .unwrap();
+
+        let mut builder = FlowBuilder::new(flow_id, Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let node = builder
+            .add_node(
+                "node",
+                &NodeSpec::inline_with_hints(
+                    "tests::node",
+                    "Node",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    effects,
+                    Determinism::BestEffort,
+                    None,
+                    &[],
+                    effect_hints,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &node);
+
+        let mut flow = builder.build();
+        flow.nodes
+            .iter_mut()
+            .find(|node| node.alias == "node")
+            .expect("preflight node")
+            .idempotency
+            .key = Some("idempotency".to_string());
+
+        let ir = Arc::new(validate(&flow).expect("flow validates"));
+        HostRuntime::new(FlowExecutor::new(Arc::new(registry)), ir).with_resource_bag(resources)
     }
 
     #[derive(Default)]
@@ -3410,6 +3548,142 @@ mod tests {
         let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), ir)
             .with_resource_bag(resources);
         let invocation = Invocation::new("trigger", "http", serde_json::json!({"ok": true}));
+
+        let result = runtime
+            .execute(invocation)
+            .await
+            .expect("execution succeeds");
+        if let ExecutionResult::Stream(_) = result {
+            panic!("expected value result");
+        }
+    }
+
+    #[tokio::test]
+    async fn preflight_fails_when_required_sql_read_missing() {
+        const SQL_READ_EFFECT_HINTS: [&str; 1] = [capabilities::sql::HINT_SQL_READ];
+
+        let runtime = preflight_runtime_for_hints(
+            "preflight_sql_read_missing",
+            Effects::ReadOnly,
+            &SQL_READ_EFFECT_HINTS,
+            resource_bag_with_checkpoint(),
+        );
+        let invocation = Invocation::new("trigger", "node", serde_json::json!({"ok": true}));
+
+        match runtime.execute(invocation).await {
+            Ok(_) => panic!("expected preflight failure"),
+            Err(ExecutionError::MissingCapabilities { hints }) => {
+                assert_eq!(hints, vec![capabilities::sql::HINT_SQL_READ.to_string()]);
+            }
+            Err(err) => panic!("unexpected error: {err}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn preflight_fails_when_required_sql_write_missing() {
+        const SQL_WRITE_EFFECT_HINTS: [&str; 1] = [capabilities::sql::HINT_SQL_WRITE];
+
+        let runtime = preflight_runtime_for_hints(
+            "preflight_sql_write_missing",
+            Effects::Effectful,
+            &SQL_WRITE_EFFECT_HINTS,
+            resource_bag_with_checkpoint(),
+        );
+        let invocation = Invocation::new("trigger", "node", serde_json::json!({"ok": true}));
+
+        match runtime.execute(invocation).await {
+            Ok(_) => panic!("expected preflight failure"),
+            Err(ExecutionError::MissingCapabilities { hints }) => {
+                assert_eq!(hints, vec![capabilities::sql::HINT_SQL_WRITE.to_string()]);
+            }
+            Err(err) => panic!("unexpected error: {err}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn preflight_fails_when_required_sql_admin_missing() {
+        const SQL_ADMIN_EFFECT_HINTS: [&str; 1] = [capabilities::sql::HINT_SQL_ADMIN];
+
+        let runtime = preflight_runtime_for_hints(
+            "preflight_sql_admin_missing",
+            Effects::Effectful,
+            &SQL_ADMIN_EFFECT_HINTS,
+            resource_bag_with_checkpoint(),
+        );
+        let invocation = Invocation::new("trigger", "node", serde_json::json!({"ok": true}));
+
+        match runtime.execute(invocation).await {
+            Ok(_) => panic!("expected preflight failure"),
+            Err(ExecutionError::MissingCapabilities { hints }) => {
+                assert_eq!(hints, vec![capabilities::sql::HINT_SQL_ADMIN.to_string()]);
+            }
+            Err(err) => panic!("unexpected error: {err}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn preflight_sql_read_binding_does_not_satisfy_write() {
+        const SQL_WRITE_EFFECT_HINTS: [&str; 1] = [capabilities::sql::HINT_SQL_WRITE];
+
+        let resources = resource_bag_with_checkpoint().with_sql_read(Arc::new(StubSql));
+        let runtime = preflight_runtime_for_hints(
+            "preflight_sql_read_not_write",
+            Effects::Effectful,
+            &SQL_WRITE_EFFECT_HINTS,
+            resources,
+        );
+        let invocation = Invocation::new("trigger", "node", serde_json::json!({"ok": true}));
+
+        match runtime.execute(invocation).await {
+            Ok(_) => panic!("expected preflight failure"),
+            Err(ExecutionError::MissingCapabilities { hints }) => {
+                assert_eq!(hints, vec![capabilities::sql::HINT_SQL_WRITE.to_string()]);
+            }
+            Err(err) => panic!("unexpected error: {err}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn preflight_sql_write_binding_does_not_satisfy_admin() {
+        const SQL_ADMIN_EFFECT_HINTS: [&str; 1] = [capabilities::sql::HINT_SQL_ADMIN];
+
+        let resources = resource_bag_with_checkpoint().with_sql_write(Arc::new(StubSql));
+        let runtime = preflight_runtime_for_hints(
+            "preflight_sql_write_not_admin",
+            Effects::Effectful,
+            &SQL_ADMIN_EFFECT_HINTS,
+            resources,
+        );
+        let invocation = Invocation::new("trigger", "node", serde_json::json!({"ok": true}));
+
+        match runtime.execute(invocation).await {
+            Ok(_) => panic!("expected preflight failure"),
+            Err(ExecutionError::MissingCapabilities { hints }) => {
+                assert_eq!(hints, vec![capabilities::sql::HINT_SQL_ADMIN.to_string()]);
+            }
+            Err(err) => panic!("unexpected error: {err}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn preflight_passes_when_required_sql_bindings_present() {
+        const SQL_EFFECT_HINTS: [&str; 3] = [
+            capabilities::sql::HINT_SQL_READ,
+            capabilities::sql::HINT_SQL_WRITE,
+            capabilities::sql::HINT_SQL_ADMIN,
+        ];
+
+        let resources = resource_bag_with_checkpoint()
+            .with_sql_read(Arc::new(StubSql))
+            .with_sql_write(Arc::new(StubSql))
+            .with_sql_admin(Arc::new(StubSql));
+        let runtime = preflight_runtime_for_hints(
+            "preflight_sql_present",
+            Effects::Effectful,
+            &SQL_EFFECT_HINTS,
+            resources,
+        );
+        let invocation = Invocation::new("trigger", "node", serde_json::json!({"ok": true}));
 
         let result = runtime
             .execute(invocation)

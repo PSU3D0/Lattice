@@ -635,6 +635,18 @@ impl ResourceAccess for NodeScopedResources {
         self.base.kv()
     }
 
+    fn sql_read(&self) -> Option<&dyn capabilities::sql::SqlRead> {
+        self.base.sql_read()
+    }
+
+    fn sql_write(&self) -> Option<&dyn capabilities::sql::SqlWrite> {
+        self.base.sql_write()
+    }
+
+    fn sql_admin(&self) -> Option<&dyn capabilities::sql::SqlAdmin> {
+        self.base.sql_admin()
+    }
+
     fn blob(&self) -> Option<&dyn capabilities::blob::BlobStore> {
         self.base.blob()
     }
