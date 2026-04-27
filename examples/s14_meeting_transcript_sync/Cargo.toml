@@ -33,6 +33,7 @@ kernel-exec = { path = "../../crates/kernel-exec", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 cap-http-reqwest = { path = "../../crates/cap-http-reqwest" }
+cap-sql-sqlx-sqlite = { path = "../../crates/cap-sql-sqlx-sqlite" }
 rusqlite.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 

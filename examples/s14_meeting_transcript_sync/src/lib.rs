@@ -1,4 +1,4 @@
-#[cfg(feature = "host-bundle")]
+#[cfg(all(feature = "host-bundle", not(target_arch = "wasm32")))]
 use std::sync::Arc;
 
 use dag_core::{FlowIR, NodeError, NodeResult};
@@ -14,6 +14,8 @@ pub mod execution;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod live;
 pub mod scheduled;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod sql_store;
 pub mod state;
 
 pub use adapters::fake;
