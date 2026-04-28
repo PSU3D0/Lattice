@@ -9,6 +9,7 @@ members = [
   "crates/cap-blob-opendal",
   "crates/cap-kv-opendal",
   "crates/cap-sql-sqlx-sqlite",
+  "crates/cap-sql-workers-d1",
   "crates/cap-opendal-core",
   "crates/cap-workspace-fs",
   "crates/cap-workspace-workers",
@@ -121,7 +122,7 @@ wasmtime = { version = "16", features = ["async"] }
 wit-bindgen = "0.24"
 rustls = { version = "0.23", features = ["ring"] }
 rustls-pemfile = "2"
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.32.1", features = ["bundled"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
 flate2 = "1"
 hex = "0.4"

@@ -1,0 +1,19 @@
+[package]
+name = "cap-sql-workers-d1"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Prototype Cloudflare Workers D1 SQL capability provider for Lattice."
+
+[dependencies]
+capabilities = { path = "../capabilities" }
+async-trait.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+sqlx-d1 = { version = "=0.4.1", default-features = false }
+worker = { version = "=0.8.1", default-features = false, features = ["d1"] }
