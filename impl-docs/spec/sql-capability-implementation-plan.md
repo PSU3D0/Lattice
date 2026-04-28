@@ -384,6 +384,33 @@ Acceptance:
 cd crates/host-workers/workerd-tests && npm run test -- --run -t "sql"
 ```
 
+Implementation result (2026-04-25): initial provider crate added as `crates/cap-sql-workers-d1` using `sqlx-d1 0.4.1` and `worker 0.8.1`.
+
+Current behavior:
+- implements `SqlRead`, `SqlWrite`, and `SqlAdmin` for wasm32 Workers;
+- exposes constructors from `worker::Env`, `worker::D1Database`, and `sqlx_d1::D1Connection`;
+- supports positional parameters;
+- rejects named parameters for now;
+- supports `query`, `query_write`, `execute`, best-effort sequential `batch`, and `execute_ddl`;
+- returns conservative `SqlCapabilityInfo` for `CloudflareD1`;
+- does not advertise `RowsAffected`, `LastInsertId`, or `AtomicBatch`;
+- maps D1/sqlx-d1 constraint errors through string parsing where no structured error is available.
+
+Validation completed:
+
+```bash
+cargo test -p cap-sql-workers-d1
+cargo check -p cap-sql-workers-d1 --target wasm32-unknown-unknown
+cargo test -p cap-sql-sqlx-sqlite --lib
+cargo test -p example-s14-meeting-transcript-sync -- --test-threads=1
+cargo check -p example-s14-meeting-transcript-sync --target wasm32-unknown-unknown
+```
+
+Still needed:
+- workerd fixture proving `cap-sql-workers-d1` against a real bound D1 database;
+- decide whether to upstream/patch `sqlx-d1` for better execute metadata and `DatabaseError` classification;
+- optionally migrate S14 Cloudflare D1 path to the generic SQL store once runtime proof exists.
+
 ## Phase 7 — Remote wasm guest transport
 
 Dynamic bundles need remote SQL capability transport, similar to blob/http remote capability support.

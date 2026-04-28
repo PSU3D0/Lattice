@@ -451,8 +451,8 @@ cap-sql-sqlx-sqlite
   SQLx SQLite-backed native/local provider
 
 cap-sql-workers-d1
-  preferably sqlx-d1-backed Workers/D1 provider after spike
-  raw worker::D1Database fallback if needed
+  initial sqlx-d1-backed Workers/D1 provider prototype
+  raw worker::D1Database remains fallback if runtime proof exposes semantic gaps
 
 future providers
   SQLx Postgres/MySQL where suitable
