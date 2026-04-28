@@ -406,10 +406,11 @@ cargo test -p example-s14-meeting-transcript-sync -- --test-threads=1
 cargo check -p example-s14-meeting-transcript-sync --target wasm32-unknown-unknown
 ```
 
+Runtime proof result (2026-04-25): workerd/Miniflare fixture added under `crates/cap-sql-workers-d1/workerd-tests` and passed. It binds D1 as `DB`, initializes schema through `SqlAdmin`, and exercises `SqlWrite::execute`, `SqlWrite::query_write` with `RETURNING`, `SqlRead::query`, capability metadata, and normalized unique-constraint errors.
+
 Still needed:
-- workerd fixture proving `cap-sql-workers-d1` against a real bound D1 database;
-- decide whether to upstream/patch `sqlx-d1` for better execute metadata and `DatabaseError` classification;
-- optionally migrate S14 Cloudflare D1 path to the generic SQL store once runtime proof exists.
+- decide whether to upstream/patch or vendor `sqlx-d1` for better execute metadata and `DatabaseError` classification;
+- optionally migrate S14 Cloudflare D1 path to the generic SQL store once we are comfortable with provider semantics.
 
 ## Phase 7 — Remote wasm guest transport
 
