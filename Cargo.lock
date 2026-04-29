@@ -2436,6 +2436,7 @@ dependencies = [
  "async-trait",
  "cap-http-reqwest",
  "cap-sql-sqlx-sqlite",
+ "cap-sql-workers-d1",
  "capabilities",
  "connector_google_platform",
  "connector_zoom_platform",

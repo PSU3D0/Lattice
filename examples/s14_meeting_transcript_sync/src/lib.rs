@@ -14,7 +14,6 @@ pub mod execution;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod live;
 pub mod scheduled;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod sql_store;
 pub mod state;
 

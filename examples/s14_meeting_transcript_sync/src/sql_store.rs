@@ -1,12 +1,10 @@
-#![cfg(not(target_arch = "wasm32"))]
-
 use std::sync::Arc;
 
 use anyhow::{Context, anyhow};
 use async_trait::async_trait;
 use capabilities::sql::{
-    SqlAdmin, SqlBatch, SqlBatchAtomicity, SqlRead, SqlRow, SqlStatement, SqlStatementKind,
-    SqlStatementOptions, SqlValue, SqlWrite,
+    SqlAdmin, SqlBatch, SqlBatchAtomicity, SqlFeature, SqlRead, SqlRow, SqlStatement,
+    SqlStatementKind, SqlStatementOptions, SqlValue, SqlWrite,
 };
 
 use crate::adapters::TranscriptJobStore;
@@ -162,16 +160,16 @@ SELECT
   last_error_code,
   last_error_message
 FROM meeting_jobs
-WHERE org_scope = ?1
+WHERE org_scope = ?
   AND (
-    status = ?2
-    OR (status = ?3 AND (next_retry_at IS NULL OR unixepoch(next_retry_at) <= unixepoch(?4)))
+    status = ?
+    OR (status = ? AND (next_retry_at IS NULL OR unixepoch(next_retry_at) <= unixepoch(?)))
   )
 ORDER BY
   COALESCE(unixepoch(next_retry_at), unixepoch(scheduled_end_at)) ASC,
   unixepoch(scheduled_end_at) ASC,
   meeting_key ASC
-LIMIT ?5
+LIMIT ?
 "#;
 
 #[cfg(test)]
@@ -190,17 +188,30 @@ SELECT
   last_error_code,
   last_error_message
 FROM meeting_jobs
-WHERE meeting_key = ?1
+WHERE meeting_key = ?
 "#;
 
 pub struct SqlTranscriptJobStore {
     read: Arc<dyn SqlRead>,
     write: Arc<dyn SqlWrite>,
+    batch_atomicity: SqlBatchAtomicity,
 }
 
 impl SqlTranscriptJobStore {
     pub fn new(read: Arc<dyn SqlRead>, write: Arc<dyn SqlWrite>) -> Self {
-        Self { read, write }
+        let batch_atomicity = if SqlWrite::capability_info(write.as_ref())
+            .features
+            .contains(&SqlFeature::AtomicBatch)
+        {
+            SqlBatchAtomicity::RequireAtomic
+        } else {
+            SqlBatchAtomicity::BestEffort
+        };
+        Self {
+            read,
+            write,
+            batch_atomicity,
+        }
     }
 
     pub async fn new_with_setup(
@@ -210,6 +221,26 @@ impl SqlTranscriptJobStore {
     ) -> anyhow::Result<Self> {
         Self::setup(admin).await?;
         Ok(Self::new(read, write))
+    }
+
+    /// Construct a SQL-backed transcript job store wired to a Cloudflare D1
+    /// database via [`cap_sql_workers_d1::WorkersD1Sql`]. Initializes the
+    /// schema before returning.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn from_database(database: worker::D1Database) -> anyhow::Result<Self> {
+        let provider = Arc::new(cap_sql_workers_d1::WorkersD1Sql::from_database(database));
+        Self::new_with_setup(provider.clone(), provider.clone(), provider.as_ref()).await
+    }
+
+    /// Construct a SQL-backed transcript job store from a Cloudflare Workers
+    /// `Env` D1 binding.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn from_env(env: &worker::Env, binding: &str) -> anyhow::Result<Self> {
+        let provider = Arc::new(
+            cap_sql_workers_d1::WorkersD1Sql::from_env(env, binding)
+                .map_err(|err| anyhow!("bind D1 database `{binding}`: {err}"))?,
+        );
+        Self::new_with_setup(provider.clone(), provider.clone(), provider.as_ref()).await
     }
 
     pub async fn setup(admin: &dyn SqlAdmin) -> anyhow::Result<()> {
@@ -247,7 +278,8 @@ impl SqlTranscriptJobStore {
     }
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl TranscriptJobStore for SqlTranscriptJobStore {
     async fn upsert_discovered(
         &self,
@@ -285,7 +317,7 @@ impl TranscriptJobStore for SqlTranscriptJobStore {
         self.write
             .batch(SqlBatch {
                 statements,
-                atomicity: SqlBatchAtomicity::RequireAtomic,
+                atomicity: self.batch_atomicity,
             })
             .await
             .context("execute SQL upsert_discovered batch")?;
@@ -684,5 +716,33 @@ mod tests {
             loaded.uploaded_destination_uri,
             job.uploaded_destination_uri
         );
+    }
+}
+
+/// Compile-time proof that the wasm32 `SqlTranscriptJobStore` exposes the
+/// expected D1-flavoured constructor surface (`from_database`, `from_env`).
+///
+/// This module is only compiled (and only referenced) on `wasm32`; it is
+/// reachable through `cargo check --target wasm32-unknown-unknown`. The
+/// functions are never executed; their existence with these signatures is the
+/// assertion.
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub mod __wasm_constructor_surface {
+    use super::SqlTranscriptJobStore;
+
+    #[allow(dead_code)]
+    pub fn _from_database_signature(
+        database: worker::D1Database,
+    ) -> impl core::future::Future<Output = anyhow::Result<SqlTranscriptJobStore>> {
+        SqlTranscriptJobStore::from_database(database)
+    }
+
+    #[allow(dead_code)]
+    pub fn _from_env_signature<'a>(
+        env: &'a worker::Env,
+        binding: &'a str,
+    ) -> impl core::future::Future<Output = anyhow::Result<SqlTranscriptJobStore>> + 'a {
+        SqlTranscriptJobStore::from_env(env, binding)
     }
 }

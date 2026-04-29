@@ -89,9 +89,9 @@ Important honest note:
 
 Implemented here:
 - `cloudflare::D1TranscriptJobStore`
-  - example-local D1-shaped ledger implementation under `src/cloudflare/d1_store.rs`
-  - native tests run against a real SQLite schema shaped to the intended D1 tables/indexes
-  - wasm builds expose `from_env(...)` / `from_database(...)` for Cloudflare D1 bindings
+  - on native targets this is a rusqlite-backed D1-shaped ledger under `src/cloudflare/d1_store.rs`; native tests run against a real SQLite schema shaped to the intended D1 tables/indexes
+  - on wasm32 (Cloudflare Workers) this is re-exported from `sql_store::SqlTranscriptJobStore`, which talks to D1 through the generic `cap-sql-workers-d1` SQL capability provider (`WorkersD1Sql`)
+  - wasm builds expose `from_env(env, binding)` / `from_database(d1)` constructors that bind the D1 database, run the schema setup, and return a ready-to-use store; batch atomicity is selected from the provider's advertised `SqlFeature::AtomicBatch` (D1 reports best-effort, sqlx-sqlite reports atomic)
   - due-job selection is filtered by `org_scope`
 - `cloudflare::R2TranscriptUploader`
   - example-local uploader under `src/cloudflare/r2_uploader.rs`
