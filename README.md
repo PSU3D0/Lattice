@@ -9,9 +9,15 @@ Lattice is a Rust-first workflow automation platform designed to give human and 
 - Native Rust execution units (`#[def_node]`, `flow!`)
 - A canonical Flow Intermediate Representation (Flow IR) captured as JSON
 - Validation diagnostics with stable error codes (e.g. `DAG201`, `IDEM020`)
-- Execution plans that target multiple hosts (Tokio/Web, Redis queue, Temporal, WASM, Python gRPC)
+- Execution plans that target multiple hosts (Tokio/Web, Cloudflare Workers, Redis queue, WASM; durable long-running and scripting hosts are planned)
 
 The workspace provides everything needed to go from macro-authored code to running workflows on local executors, queue workers, or edge WASM packs, with gating harnesses for policy, determinism, and idempotency.
+
+## Thesis
+
+Agents make writing code cheap, so keystroke savings are not the product. The product is **compile-verifiability of effects and capability access**: a flow's declared effects and the resources it may touch should be provable from the code, not trusted by convention. Declarative ceremony that encodes a verifiable claim (effects, determinism, idempotency, capability requirements) is intentional and worth its cost; duplicative plumbing (manual registration, copy-pasted client setup) is a bug, because it is where agents introduce silent drift.
+
+Execution economics are Cloudflare-Workers-first: multiple flows ship in one bundle behind a dispatch entrypoint, and on the Workers free tier roughly 1M simple flow executions per month is feasible. The direction this points to is **infra-from-code**: static per-flow requirement manifests, derivable from the bundle without running anything, that let tooling provision the minimum infrastructure a flow actually needs.
 
 ## High-Level Goals
 
@@ -19,7 +25,7 @@ The workspace provides everything needed to go from macro-authored code to runni
 - **Typed contracts:** All ports, params, capabilities, and policies flow through Flow IR and JSON Schemas, enabling automated tooling and Studio visualisation.
 - **Determinism & effects:** Every node declares its effects (`Pure`, `ReadOnly`, `Effectful`) and determinism (`Strict`, `Stable`, `BestEffort`, `Nondeterministic`) so the runtime can enforce caching, retries, and compensations.
 - **Policy & compliance:** Capabilities, secrets, and egress are gated at compile time, certification, and runtime. Error codes map directly to policy remediation steps.
-- **Extensibility:** Plugins (WASM, Python) and connector specs allow external teams or agents to extend the platform while preserving sandboxing and evidence trails.
+- **Extensibility:** A WASM plugin host seam (`host-wasmtime`) and connector specs let external teams or agents extend the platform while preserving sandboxing and evidence trails; embedded scripting plugins are a planned direction.
 
 ## Current Maturity Snapshot
 
@@ -38,13 +44,13 @@ The workspace provides everything needed to go from macro-authored code to runni
 - Larger connector farming surface beyond the first serious Google Sheets slice.
 - Broader real-world workflow example coverage across multiple domains.
 
-### Still scaffold / intentionally incomplete
-- `host-temporal`
-- `registry-cert`
-- `importer-n8n`
-- `plugin-python`
-- `plugin-wasi`
-- `studio-backend`
+### Planned / not yet started
+These are directions, not crates in the workspace today:
+- Durable long-running host backend (e.g. a Temporal-style execution target).
+- Registry certification (sigstore signing, SBOM snapshots, harness evidence) atop `registry-client`.
+- n8n **spec extraction** (mining n8n definitions into agent briefs), not transpilation.
+- A WASM plugin host beyond the in-tree `host-wasmtime` seam, and an embedded scripting plugin surface.
+- A Studio backend for visualisation/management.
 
 ## Workspace Topology
 
@@ -58,12 +64,10 @@ The workspace provides everything needed to go from macro-authored code to runni
   kernel-plan/                    # Flow IR validators + lowering and policy checks
   kernel-exec/                    # Runtime for execution plans, resume, and resource overlays
   capabilities/, cap-*            # Capability typestates + concrete providers
-  host-inproc/, host-web-axum/, host-workers/, bridge-queue-redis/, host-temporal/  # Runtime + execution bridges
-  plugin-wasi/, plugin-python/    # Sandbox runtimes for WASM and gRPC plugins (early scaffold)
+  host-inproc/, host-web-axum/, host-workers/, bridge-queue-redis/  # Runtime + execution bridges
   exporters/                      # Flow IR exporters (JSON, DOT, future OpenAPI/WIT)
-  registry-client/, registry-cert/# Certification + registry publication tooling
+  registry-client/                # Registry publication tooling
   connector-spec/, connectors-std/# Connector generation + curated packs
-  policy-engine/                  # CEL-based policy evaluation (scaffold)
   testing-harness-idem/           # Idempotency harness utilities
   cli/                            # `flows` CLI commands
 /examples/s1_echo/                # Canonical S1 webhook example using macros
@@ -86,9 +90,8 @@ The workspace provides everything needed to go from macro-authored code to runni
 | `exporters` | Flow IR exporters (`to_json_value`, `to_dot`) consumed by CLI and Studio. |
 | `flows-cli` | CLI entrypoint for graph validation, entrypoint checks, local execution, and local serving. |
 | `capabilities`, `cap-*` | Typestate traits and concrete implementations for HTTP, KV, blob, cache, dedupe, clock, workspace, etc. |
-| `host-*` | Host adapters for Axum/web, Cloudflare Workers, Redis queue workers, and future Temporal lowering. |
-| `plugin-*` | Sandboxed plugin runtimes (WASM/Wasmtime + WIT, Python gRPC). |
-| `registry-*` | Publishing, signing, and certification harness integration. |
+| `host-*` | Host adapters for Axum/web, Cloudflare Workers, and Redis queue workers. |
+| `registry-client` | Registry publishing and client integration. |
 | `connector-spec`, `connectors-std` | YAML schema/codegen for connectors, curated packs. |
 | `testing-harness-idem` | Duplicate injection + evidence capture for idempotency certs. |
 
@@ -137,8 +140,8 @@ Additional rules (delivery requirements, capability overlap, policy waivers) are
 - **host-web-axum:** Axum adapter that mounts HTTP triggers, handles request facets, streaming responses, deadlines, and cancellation propagation.
 - **host-workers:** Cloudflare Workers adapter with workerd/Miniflare coverage, DO-backed durability substrate, and Workers workspace wiring.
 - **bridge-queue-redis:** Queue bridge for Redis-backed execution lanes; still earlier than the web/native path.
-- **host-temporal:** Present in the workspace, but still scaffold-level rather than product-ready.
-- **plugin-wasi / plugin-python:** Present as extension seams, but still scaffold-level rather than stable public integration surfaces.
+- **host-wasmtime:** Native Wasmtime host seam for running WASM-packed flows off the edge; earlier than the inproc/web/workers paths.
+- A durable long-running host backend (Temporal-style) and an embedded scripting plugin surface are planned directions, not present crates.
 
 ## Capabilities & Connectors
 
@@ -149,7 +152,7 @@ Additional rules (delivery requirements, capability overlap, policy waivers) are
 - **Future SQL note:** if Lattice grows a real SQL/DB capability, it should remain separate from `resource::kv` even when a KV provider happens to use SQLite internally.
 - **ConnectorSpec:** Declarative YAML schema + Rust codegen for connectors, including manifest metadata (effects, determinism, egress, rate limits, tests).
 - **connectors-std:** Umbrella crate re-exporting provider-specific connectors once generated.
-- **Registry:** `registry-client` and `registry-cert` coordinate publishing, sigstore signing, SBOM snapshots, determinism/idempotency/test harness runs.
+- **Registry:** `registry-client` handles publishing/client integration. Certification (sigstore signing, SBOM snapshots, determinism/idempotency/test harness evidence) is a planned layer on top, not a present crate.
 
 ## CLI Usage
 
@@ -187,7 +190,7 @@ Still planned / incomplete:
 ### Prerequisites
 - **Rust 1.90** (workspace MSRV; `mise.toml` currently pins 1.93.0 for local tooling)
 - `mise` for the repo-managed task/toolchain entrypoints
-- Optional: Redis (queue profile), Wasmtime (plugin host), Temporal dev server (later phase)
+- Optional: Redis (queue profile), Wasmtime (WASM host), Cloudflare `wrangler`/`workerd` (Workers host + tests)
 
 ### Common Commands
 
@@ -243,7 +246,7 @@ Outlined in the RFC (`impl-docs/rust-workflow-tdd-rfc.md`, §16):
 - **Unit:** Macro expansion, capability typestates, Flow IR serialization, validator rules.
 - **Property:** Cycle detection, partition semantics, idempotency keys.
 - **Golden:** Example flows (S1 echo, S2 SSE site) compiled and exported.
-- **Integration:** HTTP runtime, queue dedupe & spill, Temporal workflows, plugin hosts.
+- **Integration:** HTTP runtime, queue dedupe & spill, Workers (workerd/Miniflare) durability; durable long-running and scripting hosts are planned.
 - **Certification harnesses:** Determinism replay, idempotency duplicates, policy evidence.
 
 Current repository includes unit/trybuild coverage for macros, Flow IR builder tests in `dag-core`, kernel-plan validation tests, exporter smoke tests, workerd/Miniflare coverage for `host-workers`, and runnable connector-owned example packages.
@@ -255,7 +258,7 @@ Current repository includes unit/trybuild coverage for macros, Flow IR builder t
 - Improve Workers parity for connector bindings, auth providers, and connector-bound flows.
 - Grow the connector ecosystem beyond GitHub Issues and Google Sheets, especially into richer trigger/webhook families.
 - Land clearer stability tiers for scaffold vs preview vs supported public surfaces.
-- Continue importer, registry certification, plugin, and studio work from their current scaffold baselines.
+- Open up the planned directions — n8n spec extraction, registry certification, scripting plugin host, and a Studio backend — from the current foundations.
 
 Refer to `impl-docs/impl-plan.md` and `impl-docs/surface-and-buildout.md` for detailed sequencing.
 

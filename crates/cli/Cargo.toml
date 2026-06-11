@@ -15,7 +15,6 @@ name = "flows"
 path = "src/main.rs"
 
 [dependencies]
-adapters = { path = "../adapters" }
 cargo_metadata = "0.18"
 dag-core = { path = "../dag-core" }
 kernel-plan = { path = "../kernel-plan" }
@@ -25,7 +24,6 @@ cap-http-reqwest = { path = "../cap-http-reqwest" }
 host-web-axum = { path = "../host-web-axum" }
 host-wasmtime = { path = "../host-wasmtime" }
 registry-client = { path = "../registry-client" }
-registry-cert = { path = "../registry-cert" }
 connector-spec = { path = "../connector-spec" }
 exporters = { path = "../exporters" }
 flow-bundle = { path = "../flow-bundle" }
