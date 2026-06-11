@@ -54,6 +54,26 @@ pub fn validate(flow: &FlowIR) -> Result<ValidatedIR, Vec<Diagnostic>> {
     }
 }
 
+/// Derive the static requirements manifest for a validated flow (packet C1).
+///
+/// This is a pure function of the validated IR: it executes no node, calls no
+/// connector runtime, and reads no environment. Bound-connection
+/// instance-binding satisfaction is deliberately NOT computed here — the
+/// manifest records the declared connector contract (supported resolution
+/// modes, role requirements) and bindings.lock generation owns instance
+/// resolution. See `impl-docs/spec/flow-requirements.md`.
+///
+/// Lives in kernel-plan (not dag-core) at the public-API level because the
+/// manifest must only ever be derived from a `ValidatedIR`: EFFECT202
+/// validation is what guarantees every effect hint parses as a canonical
+/// `dag_core::EffectHint`, which is what makes this function infallible.
+pub fn derive_requirements(ir: &ValidatedIR) -> dag_core::FlowRequirements {
+    dag_core::FlowRequirements::derive(ir.flow()).expect(
+        "ValidatedIR guarantees canonical effect hints (EFFECT202); \
+         derivation cannot fail on validated IR",
+    )
+}
+
 /// Strict validation mode that fails on any diagnostic severity.
 pub fn validate_strict(flow: &FlowIR) -> Result<ValidatedIR, Vec<Diagnostic>> {
     let diagnostics = collect_diagnostics(flow);

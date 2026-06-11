@@ -16,10 +16,21 @@ use serde::Deserialize;
 use tempfile::tempdir;
 
 #[derive(clap::Args, Debug)]
+#[command(
+    // Keep `flows bundle -p <pkg> ...` (build) working as before while adding
+    // `flows bundle requirements ...` as a subcommand: build args and the
+    // subcommand never mix. `--package` is validated by `run_bundle` on the
+    // build path rather than declared required, so the subcommand can be
+    // invoked without it.
+    args_conflicts_with_subcommands = true
+)]
 pub struct BundleArgs {
-    /// Cargo package to build.
+    /// Optional sub-action. When omitted, builds a FlowBundle (the default).
+    #[command(subcommand)]
+    pub command: Option<BundleCommand>,
+    /// Cargo package to build (required for the default build action).
     #[arg(long, short = 'p')]
-    pub package: String,
+    pub package: Option<String>,
     /// Manifest.json path (optional).
     #[arg(long)]
     pub manifest: Option<PathBuf>,
@@ -46,6 +57,13 @@ pub struct BundleArgs {
     pub target: Vec<String>,
 }
 
+#[derive(clap::Subcommand, Debug)]
+pub enum BundleCommand {
+    /// Emit the static FlowRequirements manifest (JSON) for an example or
+    /// built bundle — the seed artifact for the infra-from-code planner.
+    Requirements(crate::requirements::RequirementsArgs),
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BuildProfile {
     Release,
@@ -66,12 +84,24 @@ impl BuildProfile {
 }
 
 pub fn run_bundle(args: BundleArgs) -> Result<()> {
+    if let Some(command) = args.command {
+        return match command {
+            BundleCommand::Requirements(args) => crate::requirements::run_requirements(args),
+        };
+    }
+
+    let package = args.package.clone().ok_or_else(|| {
+        anyhow!(
+            "--package <pkg> is required to build a bundle (or use a `flows bundle <command>` subcommand)"
+        )
+    })?;
+
     if args.release && args.dev {
         return Err(anyhow!("--release cannot be combined with --dev"));
     }
 
     let targets = resolve_targets(&args, None)?;
-    let (manifest_path, _export_temp) = resolve_manifest(&args)?;
+    let (manifest_path, _export_temp) = resolve_manifest(&args, &package)?;
     let manifest_dir = manifest_path.parent().unwrap_or_else(|| Path::new("."));
     let data = fs::read(&manifest_path)
         .with_context(|| format!("failed to read {}", manifest_path.display()))?;
@@ -81,13 +111,8 @@ pub fn run_bundle(args: BundleArgs) -> Result<()> {
     let profile = resolve_build_profile(&args);
     let mut outputs = Vec::with_capacity(targets.len());
     for target in &targets {
-        run_cargo_build(
-            &args.package,
-            target,
-            profile.is_release(),
-            is_wasm_target(target),
-        )?;
-        let artifact_path = resolve_artifact_path(&args.package, target, profile.as_str())?;
+        run_cargo_build(&package, target, profile.is_release(), is_wasm_target(target))?;
+        let artifact_path = resolve_artifact_path(&package, target, profile.as_str())?;
         let mut bytes = fs::read(&artifact_path)
             .with_context(|| format!("failed to read {}", artifact_path.display()))?;
         if should_run_wasm_opt(profile, target) {
@@ -161,19 +186,22 @@ struct LatticeflowMetadata {
     default_flow: Option<String>,
 }
 
-fn resolve_manifest(args: &BundleArgs) -> Result<(PathBuf, Option<tempfile::TempDir>)> {
+fn resolve_manifest(
+    args: &BundleArgs,
+    package: &str,
+) -> Result<(PathBuf, Option<tempfile::TempDir>)> {
     if let Some(path) = args.manifest.as_ref() {
         return Ok((path.clone(), None));
     }
 
-    let (package_dir, config) = resolve_export_config(&args.package)?;
+    let (package_dir, config) = resolve_export_config(package)?;
     let export_temp = tempdir().context("failed to create exporter temp dir")?;
     let export_crate_dir = export_temp.path().join("exporter");
     let export_out_dir = export_temp.path().join("bundle");
     let export_manifest_path = exporters::harness::write_exporter_crate(
         &export_crate_dir,
         &package_dir,
-        &args.package,
+        package,
         &config,
     )?;
 
@@ -634,7 +662,8 @@ mod tests {
     #[test]
     fn resolve_build_profile_defaults_to_release() {
         let args = BundleArgs {
-            package: "example-s6-spill".to_string(),
+            command: None,
+            package: Some("example-s6-spill".to_string()),
             manifest: Some(PathBuf::from("manifest.json")),
             out_dir: PathBuf::from("flow.bundle"),
             release: false,
@@ -651,7 +680,8 @@ mod tests {
     #[test]
     fn resolve_build_profile_uses_debug_when_dev() {
         let args = BundleArgs {
-            package: "example-s6-spill".to_string(),
+            command: None,
+            package: Some("example-s6-spill".to_string()),
             manifest: Some(PathBuf::from("manifest.json")),
             out_dir: PathBuf::from("flow.bundle"),
             release: false,
@@ -755,7 +785,8 @@ cp "$in" "$out"
     #[test]
     fn resolves_default_to_wasm() {
         let args = BundleArgs {
-            package: "example-s6-spill".to_string(),
+            command: None,
+            package: Some("example-s6-spill".to_string()),
             manifest: Some(PathBuf::from("manifest.json")),
             out_dir: PathBuf::from("flow.bundle"),
             release: false,
@@ -773,7 +804,8 @@ cp "$in" "$out"
     #[test]
     fn resolves_wasm_and_native() {
         let args = BundleArgs {
-            package: "example-s6-spill".to_string(),
+            command: None,
+            package: Some("example-s6-spill".to_string()),
             manifest: Some(PathBuf::from("manifest.json")),
             out_dir: PathBuf::from("flow.bundle"),
             release: false,

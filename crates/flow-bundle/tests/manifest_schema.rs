@@ -49,6 +49,7 @@ fn sample_manifest_with_artifacts() -> Manifest {
             capabilities: Capabilities::default(),
             subflows: Vec::new(),
             wasm_guest_exports: None,
+            requirements: None,
         }],
         subflows: Vec::new(),
         default_flow: None,

@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use cap_http_reqwest::ReqwestHttpClient;
 use capabilities::{ResourceBag, context};
+use connector_github_issues::runtime::errors::ConnectorRuntimeError;
 use connector_github_issues::runtime::transport::EnvConnectorRuntime;
 use connector_github_issues::{
     GithubIssueCreateInput, GithubIssueGetInput, GithubIssueState, GithubIssuesListInput,
@@ -321,4 +322,161 @@ async fn create_action_uses_bearer_auth_env_override() {
     mock.assert();
     assert_eq!(output.number, 99);
     assert_eq!(output.title, "created from lattice");
+}
+
+#[tokio::test]
+async fn get_maps_api_error_status_and_body() {
+    let _env_lock = ENV_LOCK.lock().expect("env lock");
+    let server = MockServer::start();
+    let _endpoint = EnvGuard::set(ENDPOINT_ENV, &server.base_url());
+    let _auth = EnvGuard::remove(AUTH_ENV);
+
+    let mock = server.mock(|when, then| {
+        when.method(GET).path("/repos/octo/demo/issues/404");
+        then.status(404).json_body_obj(&serde_json::json!({
+            "message": "Not Found",
+            "documentation_url": "https://docs.github.com/rest/issues/issues#get-an-issue"
+        }));
+    });
+
+    let err = context::with_resources(http_resources(), async {
+        github_issues_get(GithubIssueGetInput {
+            owner: "octo".to_string(),
+            repo: "demo".to_string(),
+            issue_number: 404,
+        })
+        .await
+        .expect_err("missing issue must fail")
+    })
+    .await;
+
+    mock.assert();
+    // NodeError carries the runtime error display; the status and the API's own
+    // message must both survive into the failure an agent/operator sees.
+    let message = err.to_string();
+    assert!(message.contains("HTTP 404"), "got: {message}");
+    assert!(message.contains("Not Found"), "got: {message}");
+}
+
+#[tokio::test]
+async fn create_maps_validation_error_status_and_body() {
+    let _env_lock = ENV_LOCK.lock().expect("env lock");
+    let server = MockServer::start();
+    let _endpoint = EnvGuard::set(ENDPOINT_ENV, &server.base_url());
+    let _auth = EnvGuard::set(AUTH_ENV, "super-secret-token");
+
+    let mock = server.mock(|when, then| {
+        when.method(POST).path("/repos/octo/demo/issues");
+        then.status(422).json_body_obj(&serde_json::json!({
+            "message": "Validation Failed",
+            "errors": [{ "field": "title", "code": "missing_field" }]
+        }));
+    });
+
+    let err = context::with_resources(http_resources(), async {
+        connector_github_issues::ops::GithubIssuesCreate::invoke(&GithubIssueCreateInput {
+            owner: "octo".to_string(),
+            repo: "demo".to_string(),
+            title: String::new(),
+            body: None,
+        })
+        .await
+        .expect_err("validation failure must fail")
+    })
+    .await;
+
+    mock.assert();
+    match err {
+        ConnectorRuntimeError::HttpStatus { status, body } => {
+            assert_eq!(status, 422);
+            assert!(body.contains("Validation Failed"), "got: {body}");
+        }
+        other => panic!("expected HttpStatus error, got: {other}"),
+    }
+}
+
+#[tokio::test]
+async fn create_with_missing_auth_fails_actionably_without_calling_api() {
+    let _env_lock = ENV_LOCK.lock().expect("env lock");
+    let server = MockServer::start();
+    let _endpoint = EnvGuard::set(ENDPOINT_ENV, &server.base_url());
+    let _auth = EnvGuard::remove(AUTH_ENV);
+
+    let mock = server.mock(|when, then| {
+        when.method(POST).path("/repos/octo/demo/issues");
+        then.status(201).json_body_obj(&serde_json::json!({
+            "number": 1, "title": "x", "state": "open", "html_url": "https://example.test/1"
+        }));
+    });
+
+    let err = context::with_resources(http_resources(), async {
+        connector_github_issues::ops::GithubIssuesCreate::invoke(&GithubIssueCreateInput {
+            owner: "octo".to_string(),
+            repo: "demo".to_string(),
+            title: "never sent".to_string(),
+            body: None,
+        })
+        .await
+        .expect_err("missing auth must fail")
+    })
+    .await;
+
+    // The request must never leave the process without credentials.
+    assert_eq!(mock.hits(), 0);
+    // The failure names the role and the exact env var to set: actionable.
+    let message = err.to_string();
+    assert!(message.contains("github_pat"), "got: {message}");
+    assert!(message.contains(AUTH_ENV), "got: {message}");
+}
+
+#[tokio::test]
+async fn list_truncates_at_limit_without_fetching_further_pages() {
+    let _env_lock = ENV_LOCK.lock().expect("env lock");
+    let server = MockServer::start();
+    let _endpoint = EnvGuard::set(ENDPOINT_ENV, &server.base_url());
+    let _auth = EnvGuard::remove(AUTH_ENV);
+
+    let next_url = format!(
+        "{}/repos/octo/demo/issues/page/2?per_page=100&state=open",
+        server.base_url()
+    );
+
+    let page_one = server.mock(|when, then| {
+        when.method(GET)
+            .path("/repos/octo/demo/issues")
+            .query_param("per_page", "100")
+            .query_param("state", "open");
+        then.status(200)
+            .header("link", &format!("<{next_url}>; rel=\"next\""))
+            .header("content-type", "application/json")
+            .body(
+                r#"[{"number":1,"title":"first","state":"open","html_url":"https://example.test/issues/1"},
+                    {"number":2,"title":"second","state":"open","html_url":"https://example.test/issues/2"}]"#,
+            );
+    });
+
+    let page_two = server.mock(|when, then| {
+        when.method(GET).path("/repos/octo/demo/issues/page/2");
+        then.status(200)
+            .header("content-type", "application/json")
+            .body("[]");
+    });
+
+    let output = context::with_resources(http_resources(), async {
+        github_issues_list(GithubIssuesListInput {
+            owner: "octo".to_string(),
+            repo: "demo".to_string(),
+            state: Some(GithubIssueState::Open),
+            return_all: true,
+            limit: Some(1),
+        })
+        .await
+        .expect("list succeeds")
+    })
+    .await;
+
+    page_one.assert();
+    assert_eq!(page_two.hits(), 0, "limit must stop pagination early");
+    assert_eq!(output.items.len(), 1);
+    assert_eq!(output.items[0].number, 1);
 }

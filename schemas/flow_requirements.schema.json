@@ -1,0 +1,521 @@
+{
+  "$id": "https://lattice.dev/schemas/flow_requirements.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "definitions": {
+    "ConnectorOperationRequirement": {
+      "description": "Declared contract for a single connector operation used by the flow.",
+      "properties": {
+        "default_resolution_mode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ConnectorResolutionModeDecl"
+            }
+          ],
+          "description": "Resolution mode used when a node does not override it."
+        },
+        "nodes": {
+          "description": "Aliases of the nodes that declare this operation (sorted).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "operation_id": {
+          "description": "Operation identifier (e.g. `connector.formualizer.sheetport.evaluate`).",
+          "type": "string"
+        },
+        "requires_bound_connection": {
+          "description": "True when any node selects `bound_connection`: a connection instance must be bound for this operation in bindings.lock before the flow can run.",
+          "type": "boolean"
+        },
+        "roles": {
+          "description": "Auth/endpoint role requirements declared by the connector crate (`ConnectorOpMetadata.roles`). Lock-time binding must satisfy each role with a handle of the expected kind.",
+          "items": {
+            "$ref": "#/definitions/ConnectorRoleRequirementIR"
+          },
+          "type": "array"
+        },
+        "selected_resolution_modes": {
+          "description": "Resolution modes actually selected by nodes in this flow (sorted, deduplicated).",
+          "items": {
+            "$ref": "#/definitions/ConnectorResolutionModeDecl"
+          },
+          "type": "array"
+        },
+        "supported_resolution_modes": {
+          "description": "Resolution modes the operation supports, in declaration order.",
+          "items": {
+            "$ref": "#/definitions/ConnectorResolutionModeDecl"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "default_resolution_mode",
+        "nodes",
+        "operation_id",
+        "requires_bound_connection",
+        "selected_resolution_modes",
+        "supported_resolution_modes"
+      ],
+      "type": "object"
+    },
+    "ConnectorRequirement": {
+      "description": "Requirements contributed by one connector family.",
+      "properties": {
+        "connector_id": {
+          "description": "Connector family identifier (e.g. `connector.formualizer.sheetport`).",
+          "type": "string"
+        },
+        "operations": {
+          "description": "Operations of this connector the flow may invoke.",
+          "items": {
+            "$ref": "#/definitions/ConnectorOperationRequirement"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "connector_id",
+        "operations"
+      ],
+      "type": "object"
+    },
+    "ConnectorResolutionModeDecl": {
+      "enum": [
+        "bound_connection",
+        "late_bound_refs",
+        "inline_payload"
+      ],
+      "type": "string"
+    },
+    "ConnectorRoleKindDecl": {
+      "description": "Declarative connector role kinds used by node and connector-op metadata.",
+      "enum": [
+        "outbound_auth",
+        "provisioning_auth",
+        "inbound_verifier",
+        "endpoint_profile"
+      ],
+      "type": "string"
+    },
+    "ConnectorRoleRequirementIR": {
+      "description": "Serializable connector role requirement emitted into Flow IR.",
+      "properties": {
+        "expected_handle_kind": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/ConnectorRoleKindDecl"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "expected_handle_kind",
+        "kind",
+        "name"
+      ],
+      "type": "object"
+    },
+    "DurabilityMode": {
+      "description": "Durability modes for checkpointing.",
+      "oneOf": [
+        {
+          "description": "No checkpoints written; resume disabled.",
+          "enum": [
+            "off"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Checkpoints only at halt nodes.",
+          "enum": [
+            "partial"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Checkpoints at every node boundary.",
+          "enum": [
+            "strong"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "DurabilityRequirements": {
+      "description": "Durability mode and the host services it implies.\n\nDerivation mirrors host-inproc preflight (`collect_missing_durability_services`) so a planner can provision exactly what preflight will demand.",
+      "properties": {
+        "has_halting_nodes": {
+          "description": "True when any node is a halting boundary (suspend + resume).",
+          "type": "boolean"
+        },
+        "mode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/DurabilityMode"
+            }
+          ],
+          "description": "Requested durability mode from `FlowIR.policies.durability`."
+        },
+        "needs_checkpoint_blob_store": {
+          "description": "A checkpoint blob store must be bound (blob spill threshold configured while checkpointing is enabled).",
+          "type": "boolean"
+        },
+        "needs_checkpoint_store": {
+          "description": "A checkpoint store must be bound (mode is not `off`).",
+          "type": "boolean"
+        },
+        "needs_resume_scheduler": {
+          "description": "A resume scheduler must be bound (halting timer nodes present).",
+          "type": "boolean"
+        },
+        "needs_resume_signal_source": {
+          "description": "A resume signal source must be bound (halting callback/approval nodes present).",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "has_halting_nodes",
+        "mode",
+        "needs_checkpoint_blob_store",
+        "needs_checkpoint_store",
+        "needs_resume_scheduler",
+        "needs_resume_signal_source"
+      ],
+      "type": "object"
+    },
+    "EffectHint": {
+      "description": "Canonical typed resource hint (dag_core::EffectHint). Unknown strings fail closed at validation time (EFFECT202).",
+      "enum": [
+        "resource::http",
+        "resource::http::read",
+        "resource::http::write",
+        "resource::clock",
+        "resource::rng",
+        "resource::db",
+        "resource::db::read",
+        "resource::db::write",
+        "resource::sql",
+        "resource::sql::read",
+        "resource::sql::write",
+        "resource::sql::admin",
+        "resource::kv",
+        "resource::kv::read",
+        "resource::kv::write",
+        "resource::blob",
+        "resource::blob::read",
+        "resource::blob::write",
+        "resource::queue",
+        "resource::queue::publish",
+        "resource::queue::consume",
+        "resource::dedupe",
+        "resource::dedupe::write",
+        "resource::workspace",
+        "resource::workspace::read",
+        "resource::workspace::write"
+      ],
+      "type": "string"
+    },
+    "EffectRequirements": {
+      "description": "Typed capability requirements for a flow.",
+      "properties": {
+        "families": {
+          "default": [],
+          "description": "Capability families implied by `union` (e.g. `resource::http` for `resource::http::read`), sorted by canonical string.",
+          "items": {
+            "$ref": "#/definitions/EffectHint"
+          },
+          "type": "array"
+        },
+        "per_node": {
+          "additionalProperties": {
+            "items": {
+              "$ref": "#/definitions/EffectHint"
+            },
+            "type": "array"
+          },
+          "default": {},
+          "description": "Per-node attribution: node alias to its declared hints. Only nodes declaring at least one capability hint appear. This is what a debugger inspects.",
+          "type": "object"
+        },
+        "union": {
+          "default": [],
+          "description": "Flow-wide union of declared capability hints, sorted by canonical string. This is what a planner provisions.",
+          "items": {
+            "$ref": "#/definitions/EffectHint"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "EntrypointRequirement": {
+      "description": "External ingress wiring for one entrypoint.",
+      "properties": {
+        "capture_alias": {
+          "description": "Capture node alias for response/egress.",
+          "type": "string"
+        },
+        "deadline_ms": {
+          "description": "Response deadline in milliseconds. Not recorded in Flow IR metadata today; populated during bundle assembly from the flow registry's entrypoint specs when available.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "method": {
+          "description": "HTTP method for HTTP-capable hosts.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "route_aliases": {
+          "description": "Non-authoritative aliases for the canonical route.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "route_path": {
+          "description": "Canonical route path when declared.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "trigger_alias": {
+          "description": "Trigger node alias for ingress.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "capture_alias",
+        "trigger_alias"
+      ],
+      "type": "object"
+    },
+    "FlowIdentity": {
+      "description": "Identity of the flow a requirements manifest describes.",
+      "properties": {
+        "id": {
+          "description": "Stable flow identifier (UUIDv5 of name + version).",
+          "type": "string"
+        },
+        "name": {
+          "description": "Display name of the flow.",
+          "type": "string"
+        },
+        "version": {
+          "description": "Semantic version string of the flow.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "version"
+      ],
+      "type": "object"
+    },
+    "HostConstraints": {
+      "description": "Host constraints derivable from the IR today.",
+      "properties": {
+        "has_subflows": {
+          "description": "Flow embeds subflow nodes; the host must support subflow expansion.",
+          "type": "boolean"
+        },
+        "requires_connector_runtime": {
+          "description": "At least one connector operation is selected in `bound_connection` mode, so the host must provide a connector runtime (today) or a resolved bindings.lock (once lock-time resolution lands, packet C2).",
+          "type": "boolean"
+        },
+        "requires_wasm32_compatibility": {
+          "description": "Flow targets the WASM profile and must compile/execute on wasm32.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "has_subflows",
+        "requires_connector_runtime",
+        "requires_wasm32_compatibility"
+      ],
+      "type": "object"
+    },
+    "Profile": {
+      "description": "Workflow execution profile.",
+      "oneOf": [
+        {
+          "description": "HTTP/Axum host.",
+          "enum": [
+            "web"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Queue/Redis-backed workers.",
+          "enum": [
+            "queue"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Temporal orchestration.",
+          "enum": [
+            "temporal"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "WASM/Edge runtime.",
+          "enum": [
+            "wasm"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Local developer profile.",
+          "enum": [
+            "dev"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "TriggerKind": {
+      "description": "Kind of trigger surface, as derivable from the IR today.",
+      "oneOf": [
+        {
+          "description": "Trigger is wired to an HTTP entrypoint (route/method declared).",
+          "enum": [
+            "http"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Trigger has no entrypoint wiring recorded in the IR; invocation mechanism is host-defined.",
+          "enum": [
+            "unspecified"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "TriggerRequirement": {
+      "description": "A trigger node that originates executions of the flow.",
+      "properties": {
+        "alias": {
+          "description": "Node alias within the flow.",
+          "type": "string"
+        },
+        "identifier": {
+          "description": "Fully-qualified implementation identifier.",
+          "type": "string"
+        },
+        "kind": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TriggerKind"
+            }
+          ],
+          "description": "Trigger surface kind."
+        }
+      },
+      "required": [
+        "alias",
+        "identifier",
+        "kind"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "Static requirements manifest for a flow: capability hints, connector contracts, durability services, trigger/entrypoint surface, and host constraints, derived entirely from validated Flow IR without executing anything.",
+  "properties": {
+    "connectors": {
+      "description": "Connector operation requirements, grouped by connector family.",
+      "items": {
+        "$ref": "#/definitions/ConnectorRequirement"
+      },
+      "type": "array"
+    },
+    "durability": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/DurabilityRequirements"
+        }
+      ],
+      "description": "Durability mode and the host services it implies."
+    },
+    "effects": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/EffectRequirements"
+        }
+      ],
+      "description": "Typed capability requirements (union + per-node attribution)."
+    },
+    "entrypoints": {
+      "description": "External ingress surface (routes, methods, deadlines).",
+      "items": {
+        "$ref": "#/definitions/EntrypointRequirement"
+      },
+      "type": "array"
+    },
+    "flow": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/FlowIdentity"
+        }
+      ],
+      "description": "Identity of the flow this manifest describes."
+    },
+    "flow_ir_hash": {
+      "description": "Hash of the serialized Flow IR this manifest was derived from (`sha256:<hex>`), populated at bundle-assembly time. The enclosing bundle id is intentionally NOT embedded: the manifest is hashed into the bundle id, so embedding it would be circular.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "host": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/HostConstraints"
+        }
+      ],
+      "description": "Host constraints derivable from the IR today."
+    },
+    "profile": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/Profile"
+        }
+      ],
+      "description": "Target execution profile declared by the flow."
+    },
+    "schema_version": {
+      "description": "Manifest shape version ([`FLOW_REQUIREMENTS_SCHEMA_VERSION`]).",
+      "type": "string"
+    },
+    "triggers": {
+      "description": "Trigger nodes that originate executions of this flow.",
+      "items": {
+        "$ref": "#/definitions/TriggerRequirement"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "durability",
+    "effects",
+    "flow",
+    "host",
+    "profile",
+    "schema_version"
+  ],
+  "title": "Lattice Flow Requirements",
+  "type": "object"
+}

@@ -29,9 +29,12 @@
 //!    `typo_effect_hint_passes_preflight_today` into
 //!    `typo_effect_hint_fails_closed`.
 //!
-//! The remaining tests pin the positive paths of A2 enforcement: declared
-//! capabilities still flow through both access paths, and connector-resolved
-//! hints (bound connections) extend a node's grant set.
+//! The remaining tests pin the positive paths of A2 enforcement (declared
+//! capabilities still flow through both access paths; lock-recorded
+//! connector hints extend a node's grant set) and packet C2's contract:
+//! preflight is a pure data comparison that performs ZERO `ConnectorRuntime`
+//! resolution calls — bound-connection hints are resolved at bindings.lock
+//! generation time and consumed here as data.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -612,56 +615,90 @@ async fn node_context_direct_access_is_scoped() {
     );
 }
 
-/// A2 POSITIVE PATH: connector-resolved hints (bound connections) extend the
-/// node's grant set. The node declares NO http hint statically; the mock
-/// connector runtime resolves `resource::http::read` for its bound-connection
-/// op during preflight, and that grant lets the node use `http_read()`.
-#[tokio::test]
-async fn connector_resolved_hints_extend_node_grants() {
-    struct HintGrantingConnectorRuntime;
+// ---------------------------------------------------------------------------
+// Tests 7-9: C2 — preflight is a pure data comparison (no runtime resolution)
+// ---------------------------------------------------------------------------
 
-    #[async_trait]
-    impl ConnectorRuntime for HintGrantingConnectorRuntime {
-        async fn apply_outbound_auth(
-            &self,
-            _scope: &ConnectorBindingScope,
-            _profile: &OutboundAuthProfileDescriptor,
-            _request: &mut HttpRequest,
-        ) -> Result<(), ConnectorRuntimeError> {
-            Ok(())
-        }
+/// Connector runtime whose hint-resolution path PANICS. Packet C2's contract
+/// is that preflight never performs runtime resolution: bound-connection
+/// hints are resolved once, at bindings.lock generation time, and reach the
+/// host as data (`ResourceBag::with_connector_resolved_effect_hints`). Any
+/// preflight (or execution) path that still calls
+/// `resolve_required_effect_hints` trips this panic.
+struct PanicOnResolveConnectorRuntime;
 
-        async fn resolve_endpoint_profile(
-            &self,
-            _scope: &ConnectorBindingScope,
-            profile: &EndpointProfileDescriptor,
-        ) -> Result<ResolvedEndpointProfile, ConnectorRuntimeError> {
-            Ok(ResolvedEndpointProfile {
-                base_url: profile.base_url.to_string(),
-                default_headers: Vec::new(),
-            })
-        }
-
-        async fn resolve_required_effect_hints(
-            &self,
-            scope: &ConnectorBindingScope,
-            _selected_mode: ConnectorResolutionModeDecl,
-        ) -> Result<Vec<String>, ConnectorRuntimeError> {
-            // Grant http::read to the connector node only.
-            if scope.node_alias == "node" {
-                Ok(vec![capabilities::http::HINT_HTTP_READ.to_string()])
-            } else {
-                Ok(Vec::new())
-            }
-        }
+#[async_trait]
+impl ConnectorRuntime for PanicOnResolveConnectorRuntime {
+    async fn apply_outbound_auth(
+        &self,
+        _scope: &ConnectorBindingScope,
+        _profile: &OutboundAuthProfileDescriptor,
+        _request: &mut HttpRequest,
+    ) -> Result<(), ConnectorRuntimeError> {
+        Ok(())
     }
 
-    let registry = passthrough_registry_with("tests::bound_connector_node", |_value| {
+    async fn resolve_endpoint_profile(
+        &self,
+        _scope: &ConnectorBindingScope,
+        profile: &EndpointProfileDescriptor,
+    ) -> Result<ResolvedEndpointProfile, ConnectorRuntimeError> {
+        Ok(ResolvedEndpointProfile {
+            base_url: profile.base_url.to_string(),
+            default_headers: Vec::new(),
+        })
+    }
+
+    async fn resolve_required_effect_hints(
+        &self,
+        scope: &ConnectorBindingScope,
+        _selected_mode: ConnectorResolutionModeDecl,
+    ) -> Result<Vec<String>, ConnectorRuntimeError> {
+        panic!(
+            "C2 violation: preflight/execution called \
+             ConnectorRuntime::resolve_required_effect_hints for node `{}`; \
+             bound-connection hints must come from bindings.lock data",
+            scope.node_alias
+        );
+    }
+}
+
+/// Build the bound-connection flow used by the C2 tests: `trigger -> node`
+/// where `node` carries a bound-connection connector op and the given static
+/// hints.
+fn bound_connector_flow(flow_id: &str, static_hints: &'static [&'static str]) -> FlowIR {
+    let mut flow = two_node_flow(
+        flow_id,
+        "tests::bound_connector_node",
+        Effects::ReadOnly,
+        Determinism::BestEffort,
+        static_hints,
+    );
+    flow.nodes
+        .iter_mut()
+        .find(|node| node.alias == "node")
+        .expect("node exists")
+        .connector_ops
+        .push(ConnectorOpRefIR {
+            operation_id: "connector.test.read".to_string(),
+            connector_id: "connector.test".to_string(),
+            roles: Vec::new(),
+            default_resolution_mode: ConnectorResolutionModeDecl::BoundConnection,
+            selected_resolution_mode: ConnectorResolutionModeDecl::BoundConnection,
+            supported_resolution_modes: vec![ConnectorResolutionModeDecl::BoundConnection],
+        });
+    flow
+}
+
+/// Node registry whose `node` proves it can use `http_read()` from the
+/// ambient context (the A2 grant-extension positive path).
+fn http_probe_registry() -> NodeRegistry {
+    passthrough_registry_with("tests::bound_connector_node", |_value| {
         Box::pin(async move {
             let outcome = context::with_current_async(|resources| async move {
                 let Some(http) = resources.http_read() else {
                     return Err(NodeError::new(
-                        "http_read absent despite connector-resolved grant",
+                        "http_read absent despite lock-recorded connector grant",
                     ));
                 };
                 let request =
@@ -680,43 +717,46 @@ async fn connector_resolved_hints_extend_node_grants() {
                 None => Err(NodeError::new("no ambient resource context was scoped")),
             }
         })
-    });
+    })
+}
 
-    // The node's STATIC declarations carry no http hint; the http requirement
-    // is resolved from the bound connection at preflight time.
-    let mut flow = two_node_flow(
-        "a2_connector_grants",
-        "tests::bound_connector_node",
-        Effects::ReadOnly,
-        Determinism::BestEffort,
-        &[],
-    );
-    flow.nodes
-        .iter_mut()
-        .find(|node| node.alias == "node")
-        .expect("node exists")
-        .connector_ops
-        .push(ConnectorOpRefIR {
-            operation_id: "connector.test.read".to_string(),
-            connector_id: "connector.test".to_string(),
-            roles: Vec::new(),
-            default_resolution_mode: ConnectorResolutionModeDecl::BoundConnection,
-            selected_resolution_mode: ConnectorResolutionModeDecl::BoundConnection,
-            supported_resolution_modes: vec![ConnectorResolutionModeDecl::BoundConnection],
-        });
+/// C2 REGRESSION (the packet's headline test) + A2 POSITIVE PATH: preflight
+/// performs ZERO ConnectorRuntime calls — the bound connection's hints are
+/// read from the lock-recorded data attached to the resource view — and the
+/// recorded hints still extend the node's scoped grant set exactly as the
+/// live-resolved hints used to (the node declares NO http hint statically).
+///
+/// The mock runtime panics on `resolve_required_effect_hints`, so this test
+/// fails loudly if runtime resolution ever creeps back into preflight.
+#[tokio::test]
+async fn preflight_reads_lock_recorded_hints_and_never_resolves() {
+    let flow = bound_connector_flow("c2_lock_recorded_grants", &[]);
     let ir = Arc::new(validate(&flow).expect("flow validates"));
+
+    // The bindings.lock generator recorded `resource::http::read` for the
+    // bound node at lock time; the host receives it as plain data.
+    let mut recorded = capabilities::connector::ConnectorResolvedEffectHints::new();
+    recorded.insert(
+        "node".to_string(),
+        std::iter::once(
+            dag_core::EffectHint::parse(capabilities::http::HINT_HTTP_READ)
+                .expect("canonical hint"),
+        )
+        .collect(),
+    );
 
     let bag = ResourceBag::new()
         .with_http_read(Arc::new(CannedHttpRead))
-        .with_connector_runtime(Arc::new(HintGrantingConnectorRuntime));
-    let runtime =
-        HostRuntime::new(FlowExecutor::new(Arc::new(registry)), ir).with_resource_bag(bag);
+        .with_connector_runtime(Arc::new(PanicOnResolveConnectorRuntime))
+        .with_connector_resolved_effect_hints(recorded);
+    let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(http_probe_registry())), ir)
+        .with_resource_bag(bag);
 
-    // Preflight resolves the bound connection's hints and verifies the bag
-    // satisfies them; execution then grants them to the node's scoped view.
+    // Pure data comparison: (static hints ∪ lock-recorded hints) vs the bag.
+    // Any ConnectorRuntime resolution call panics the mock.
     runtime
         .preflight()
-        .expect("preflight resolves and satisfies the connector hints");
+        .expect("preflight compares lock-recorded hints without resolving");
 
     let value = execute_single(&runtime, json!({"ok": true})).await;
     assert_eq!(
@@ -725,6 +765,75 @@ async fn connector_resolved_hints_extend_node_grants() {
             "connector_http_body":
                 "canned-response-for:https://example.invalid/bound-connection"
         }),
-        "connector-resolved hints must be included in the node's grant set",
+        "lock-recorded hints must be included in the node's grant set",
+    );
+}
+
+/// C2: a directly constructed ResourceBag (tests, embedded hosts — no
+/// bindings.lock) carries no recorded hints. Preflight still performs no
+/// resolution: it compares only the statically declared hints, and the
+/// node's grant set is exactly its static declarations.
+#[tokio::test]
+async fn direct_bag_bound_connection_preflight_uses_static_hints_only() {
+    const STATIC_HINTS: [&str; 1] = [capabilities::http::HINT_HTTP_READ];
+    let flow = bound_connector_flow("c2_direct_bag_static_only", &STATIC_HINTS);
+    let ir = Arc::new(validate(&flow).expect("flow validates"));
+
+    let bag = ResourceBag::new()
+        .with_http_read(Arc::new(CannedHttpRead))
+        .with_connector_runtime(Arc::new(PanicOnResolveConnectorRuntime));
+    let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(http_probe_registry())), ir)
+        .with_resource_bag(bag);
+
+    runtime
+        .preflight()
+        .expect("direct-bag preflight passes on static hints without resolving");
+
+    let value = execute_single(&runtime, json!({"ok": true})).await;
+    assert_eq!(
+        value,
+        json!({
+            "connector_http_body":
+                "canned-response-for:https://example.invalid/bound-connection"
+        }),
+        "static declarations alone must drive the grant set when no lock data is attached",
+    );
+}
+
+/// C2 FAIL-CLOSED: a lock-backed resource view (recorded hints attached) that
+/// records NOTHING for a bound-connection node means the lock predates the
+/// flow's bound nodes (or predates the resolved-hints schema). Preflight must
+/// fail closed with an actionable "regenerate your lock" message instead of
+/// silently running with unknown connection requirements.
+#[tokio::test]
+async fn lock_backed_preflight_without_recorded_hints_fails_closed() {
+    let flow = bound_connector_flow("c2_stale_lock_fails_closed", &[]);
+    let ir = Arc::new(validate(&flow).expect("flow validates"));
+
+    let bag = ResourceBag::new()
+        .with_http_read(Arc::new(CannedHttpRead))
+        .with_connector_runtime(Arc::new(PanicOnResolveConnectorRuntime))
+        // Lock-backed marker WITHOUT an entry for the bound node alias.
+        .with_connector_resolved_effect_hints(
+            capabilities::connector::ConnectorResolvedEffectHints::new(),
+        );
+    let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(http_probe_registry())), ir)
+        .with_resource_bag(bag);
+
+    let err = runtime
+        .preflight()
+        .expect_err("stale lock data must fail preflight closed");
+    let message = err.to_string();
+    assert!(
+        message.contains("`node`"),
+        "failure must name the bound node alias, got: {message}"
+    );
+    assert!(
+        message.contains("regenerate"),
+        "failure must tell the operator to regenerate the lock, got: {message}"
+    );
+    assert!(
+        message.contains("flows bindings lock generate"),
+        "failure must name the regeneration command, got: {message}"
     );
 }

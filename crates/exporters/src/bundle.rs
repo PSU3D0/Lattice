@@ -58,6 +58,8 @@ pub fn build_manifest_from_registry(config: &BundleConfig) -> Result<ExportBundl
 
         ir_files.insert(artifact_path.clone(), flow_ir_bytes);
 
+        let requirements = derive_flow_requirements(reg, &flow, &flow_ir_hash)?;
+
         let flow_entry = FlowEntry {
             id: flow.id.as_str().to_string(),
             version: flow.version.to_string(),
@@ -72,6 +74,7 @@ pub fn build_manifest_from_registry(config: &BundleConfig) -> Result<ExportBundl
             capabilities: Capabilities::default(),
             subflows: Vec::new(),
             wasm_guest_exports: Some(wasm_guest_exports_for_flow_name(reg.name)),
+            requirements: Some(requirements),
         };
 
         flow_ids_by_name.insert(reg.name.to_string(), flow_entry.id.clone());
@@ -135,6 +138,34 @@ pub fn emit_bundle(out_dir: &Path, export: &ExportBundle) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Derive the static FlowRequirements manifest for a registered flow
+/// (packet C1).
+///
+/// Pure data derivation — nothing is executed. Two enrichments only the
+/// bundle assembler can perform are applied here:
+/// - `flow_ir_hash` pins the manifest to the exact serialized Flow IR;
+/// - entrypoint `deadline_ms` is copied from the flow registry's entrypoint
+///   specs (Flow IR metadata does not carry deadlines today).
+fn derive_flow_requirements(
+    reg: &FlowRegistration,
+    flow: &FlowIR,
+    flow_ir_hash: &str,
+) -> Result<dag_core::FlowRequirements> {
+    let mut requirements = dag_core::FlowRequirements::derive(flow)
+        .map_err(|err| anyhow!("failed to derive flow requirements for `{}`: {err}", reg.name))?
+        .with_flow_ir_hash(flow_ir_hash);
+
+    for entrypoint in &mut requirements.entrypoints {
+        if let Some(spec) = reg.entrypoints.iter().find(|spec| {
+            spec.trigger == entrypoint.trigger_alias && spec.capture == entrypoint.capture_alias
+        }) {
+            entrypoint.deadline_ms = spec.deadline_ms;
+        }
+    }
+
+    Ok(requirements)
 }
 
 fn profile_to_string(profile: Profile) -> String {

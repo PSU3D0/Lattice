@@ -2,7 +2,7 @@ use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::fmt;
 
-use dag_core::{FlowIR, NodeKind};
+use dag_core::{FlowIR, FlowRequirements, NodeKind};
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use sha2::{Digest, Sha256};
@@ -119,6 +119,18 @@ pub struct FlowEntry {
     pub subflows: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wasm_guest_exports: Option<WasmGuestExports>,
+    /// Static requirements manifest derived at bundle-assembly time
+    /// (packet C1). Optional for backward compatibility: manifests written
+    /// before bundle_version 0.1 grew this field still deserialize, and the
+    /// field is omitted from serialization (and therefore from `bundle_id`
+    /// hashing) when absent. See `impl-docs/spec/flow-requirements.md` and
+    /// `schemas/flow_requirements.schema.json`.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_requirements"
+    )]
+    pub requirements: Option<FlowRequirements>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -313,6 +325,13 @@ where
     D: Deserializer<'de>,
 {
     deserialize_non_null_option(deserializer, "signing")
+}
+
+fn deserialize_requirements<'de, D>(deserializer: D) -> Result<Option<FlowRequirements>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_non_null_option(deserializer, "flows[].requirements")
 }
 
 fn deserialize_entrypoint_method<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
@@ -983,6 +1002,7 @@ mod tests {
                 capabilities: Capabilities::default(),
                 subflows: Vec::new(),
                 wasm_guest_exports: None,
+                requirements: None,
             }],
             subflows: Vec::new(),
             default_flow: None,
@@ -1024,6 +1044,7 @@ mod tests {
                 capabilities: Capabilities::default(),
                 subflows: Vec::new(),
                 wasm_guest_exports: None,
+                requirements: None,
             }],
             subflows: Vec::new(),
             default_flow: None,
@@ -1070,6 +1091,7 @@ mod tests {
                 capabilities: Capabilities::default(),
                 subflows: Vec::new(),
                 wasm_guest_exports: None,
+                requirements: None,
             }],
             subflows: Vec::new(),
             default_flow: None,
@@ -1115,6 +1137,7 @@ mod tests {
                 capabilities: Capabilities::default(),
                 subflows: Vec::new(),
                 wasm_guest_exports: None,
+                requirements: None,
             }],
             subflows: Vec::new(),
             default_flow: None,
@@ -1176,6 +1199,7 @@ mod tests {
                     free: "same".to_string(),
                     invoke: "other".to_string(),
                 }),
+                requirements: None,
             }],
             subflows: Vec::new(),
             default_flow: None,

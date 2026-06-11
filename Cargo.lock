@@ -1405,6 +1405,7 @@ version = "0.1.0"
 dependencies = [
  "cap-http-reqwest",
  "capabilities",
+ "connector-spec",
  "connectors-std",
  "dag-core",
  "dag-macros",
@@ -1412,6 +1413,7 @@ dependencies = [
  "kernel-exec",
  "serde",
  "serde_json",
+ "testing-harness-idem",
  "tokio",
 ]
 
@@ -4119,6 +4121,8 @@ dependencies = [
  "capabilities",
  "dag-core",
  "dag-macros",
+ "example-s1-echo",
+ "example-s12-sheetport-quote",
  "kernel-exec",
  "proptest",
  "serde",

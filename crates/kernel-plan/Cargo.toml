@@ -23,3 +23,7 @@ proptest.workspace = true
 dag-macros = { path = "../dag-macros" }
 capabilities = { path = "../capabilities" }
 kernel-exec = { path = "../kernel-exec" }
+# Golden-fixture inputs for the FlowRequirements manifest (packet C1).
+# Dev-dependency cycles through host-inproc are permitted by cargo.
+example-s1-echo = { path = "../../examples/s1_echo" }
+example-s12-sheetport-quote = { path = "../../examples/s12_sheetport_quote" }

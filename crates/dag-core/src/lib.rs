@@ -10,6 +10,7 @@ pub mod effects_registry;
 #[cfg(feature = "flow-registry")]
 pub mod flow_registry;
 mod ir;
+pub mod requirements;
 pub mod schema;
 
 pub use builder::{EdgeHandle, FlowBuilder, FlowBuilderError, NodeHandle};
@@ -21,6 +22,7 @@ pub use edge_transform::{
 pub use effect_hint::{EffectHint, UnknownEffectHint};
 pub use effects::{Determinism, Effects, NodeError, NodeResult};
 pub use ir::*;
+pub use requirements::{FLOW_REQUIREMENTS_SCHEMA_VERSION, FlowRequirements, RequirementsError};
 pub use serde_json;
 use std::marker::PhantomData;
 

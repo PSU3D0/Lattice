@@ -297,6 +297,11 @@ impl ResourceAccess for ScopedResources {
         self.inner.connector_scope()
     }
 
+    // Binding metadata (lock-recorded hints), not a capability; pass through.
+    fn connector_resolved_effect_hints(&self) -> Option<&connector::ConnectorResolvedEffectHints> {
+        self.inner.connector_resolved_effect_hints()
+    }
+
     fn max_durability_mode(&self) -> dag_core::DurabilityMode {
         self.inner.max_durability_mode()
     }

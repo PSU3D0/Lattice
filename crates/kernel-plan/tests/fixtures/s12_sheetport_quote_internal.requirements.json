@@ -1,0 +1,64 @@
+{
+  "schema_version": "0.1",
+  "flow": {
+    "id": "96ac65f6-2fd8-5091-97a5-f9f4efa5100f",
+    "name": "s12_sheetport_quote_internal_flow",
+    "version": "1.0.0"
+  },
+  "profile": "web",
+  "effects": {
+    "union": ["resource::blob::read"],
+    "families": ["resource::blob"],
+    "per_node": {
+      "evaluate": ["resource::blob::read"]
+    }
+  },
+  "connectors": [
+    {
+      "connector_id": "connector.formualizer.sheetport",
+      "operations": [
+        {
+          "operation_id": "connector.formualizer.sheetport.evaluate",
+          "supported_resolution_modes": [
+            "bound_connection",
+            "late_bound_refs",
+            "inline_payload"
+          ],
+          "default_resolution_mode": "bound_connection",
+          "selected_resolution_modes": ["late_bound_refs"],
+          "requires_bound_connection": false,
+          "nodes": ["evaluate"]
+        }
+      ]
+    }
+  ],
+  "durability": {
+    "mode": "partial",
+    "has_halting_nodes": false,
+    "needs_checkpoint_store": true,
+    "needs_resume_scheduler": false,
+    "needs_resume_signal_source": false,
+    "needs_checkpoint_blob_store": false
+  },
+  "triggers": [
+    {
+      "alias": "trigger",
+      "identifier": "example_s12_sheetport_quote::quote_trigger",
+      "kind": "http"
+    }
+  ],
+  "entrypoints": [
+    {
+      "trigger_alias": "trigger",
+      "capture_alias": "capture",
+      "route_path": "/quote/internal",
+      "method": "POST",
+      "route_aliases": ["/quote/internal"]
+    }
+  ],
+  "host": {
+    "requires_wasm32_compatibility": false,
+    "requires_connector_runtime": false,
+    "has_subflows": false
+  }
+}

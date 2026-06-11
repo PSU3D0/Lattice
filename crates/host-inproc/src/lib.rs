@@ -4,8 +4,6 @@ use std::time::Duration;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[cfg(not(target_arch = "wasm32"))]
-use capabilities::connector::ConnectorBindingScope;
 use capabilities::durability::{CheckpointError, CheckpointFilter, CheckpointHandle, FlowFrontier};
 use capabilities::workspace::{
     Workspace, WorkspaceCompletionDisposition, WorkspaceFactory, WorkspaceRunScope,
@@ -250,94 +248,81 @@ fn collect_required_effect_hints(ir: &ValidatedIR) -> Vec<String> {
 /// Per-node connector-resolved effect hints (keyed by node alias).
 ///
 /// These hints are part of each node's declaration surface — the bound
-/// connection's requirements, resolved at binding time — so packet A2 feeds
-/// them into the node's scoped capability grant set in addition to checking
-/// them during preflight.
+/// connection's requirements, resolved at bindings.lock generation time — so
+/// packet A2 feeds them into the node's scoped capability grant set in
+/// addition to checking them during preflight.
 type ConnectorResolvedGrants = BTreeMap<String, BTreeSet<dag_core::EffectHint>>;
 
+/// Collect the bound-connection effect-hint grants for preflight as a pure
+/// data lookup (packet C2): no `ConnectorRuntime` calls, no nested Tokio
+/// runtime, no thread spawns. Connection-dependent hints are resolved ONCE,
+/// at bindings.lock generation time, and arrive here as
+/// [`capabilities::connector::ConnectorResolvedEffectHints`] attached to the
+/// resource view.
+///
+/// Behavior matrix for flows with bound-connection ops:
+/// - no `ConnectorRuntime` in the view: fail (execution would need it);
+/// - lock-backed view (`connector_resolved_effect_hints()` is `Some`): every
+///   bound node alias must be recorded — a missing alias means the lock
+///   predates the flow's bound nodes or the resolved-hints lock schema, and
+///   preflight fails closed with a "regenerate your lock" message;
+/// - directly constructed view (`None`, e.g. tests and embedded hosts):
+///   preflight compares only statically declared hints; the node's grant set
+///   is exactly its static declarations, so a connection that genuinely
+///   requires more is still denied at access time by A2's scoped views.
 #[cfg(not(target_arch = "wasm32"))]
-fn collect_resolution_aware_effect_hints(
+fn collect_lock_recorded_connector_grants(
     ir: &ValidatedIR,
     resources: &dyn ResourceAccess,
 ) -> Result<ConnectorResolvedGrants, ExecutionError> {
-    let Some(runtime) = resources.connector_runtime() else {
-        let needs_bound = ir.flow().nodes.iter().any(|node| {
-            node.connector_ops.iter().any(|op| {
-                op.selected_resolution_mode == ConnectorResolutionModeDecl::BoundConnection
-            })
-        });
-        if needs_bound {
-            return Err(ExecutionError::HostEnvironment(anyhow::anyhow!(
-                "missing connector runtime for bound-connection preflight"
-            )));
-        }
+    let bound_nodes: Vec<(&str, &str)> = ir
+        .flow()
+        .nodes
+        .iter()
+        .filter_map(|node| {
+            node.connector_ops
+                .iter()
+                .find(|op| {
+                    op.selected_resolution_mode == ConnectorResolutionModeDecl::BoundConnection
+                })
+                .map(|op| (node.alias.as_str(), op.connector_id.as_str()))
+        })
+        .collect();
+
+    if bound_nodes.is_empty() {
+        return Ok(ConnectorResolvedGrants::new());
+    }
+
+    if resources.connector_runtime().is_none() {
+        return Err(ExecutionError::HostEnvironment(anyhow::anyhow!(
+            "missing connector runtime for bound-connection preflight"
+        )));
+    }
+
+    let Some(recorded) = resources.connector_resolved_effect_hints() else {
+        // Direct resource construction (no bindings.lock): only statically
+        // declared hints participate in preflight. Resolution is never
+        // performed here.
         return Ok(ConnectorResolvedGrants::new());
     };
 
     let mut grants = ConnectorResolvedGrants::new();
-    for node in &ir.flow().nodes {
-        for op in &node.connector_ops {
-            if op.selected_resolution_mode != ConnectorResolutionModeDecl::BoundConnection {
-                continue;
-            }
-            let scope = ConnectorBindingScope::new(
-                ir.flow().id.as_str(),
-                node.alias.clone(),
-                node.identifier.clone(),
-                op.connector_id.clone(),
-            );
-            let derived =
-                host_block_on_preflight(runtime.clone(), scope, op.selected_resolution_mode)
-                    .map_err(|err| ExecutionError::HostEnvironment(anyhow::anyhow!(err)))?;
-            for hint in derived {
-                // Connector-resolved hints are not covered by kernel-plan
-                // validation, so unknown strings fail closed here instead of
-                // being dropped (prefix typos) or surfacing later as a
-                // misleading MissingCapabilities error (suffix typos).
-                match dag_core::EffectHint::parse(&hint) {
-                    Ok(parsed) => {
-                        grants
-                            .entry(node.alias.clone())
-                            .or_default()
-                            .insert(parsed);
-                    }
-                    Err(err) => {
-                        return Err(ExecutionError::HostEnvironment(anyhow::anyhow!(
-                            "connector `{}` (node `{}`) resolved an invalid effect hint: {err} \
-                             (EFFECT202; see impl-docs/error-codes.md)",
-                            op.connector_id,
-                            node.alias,
-                        )));
-                    }
-                }
-            }
-        }
+    for (alias, connector_id) in bound_nodes {
+        let Some(hints) = recorded.get(alias) else {
+            return Err(ExecutionError::HostEnvironment(anyhow::anyhow!(
+                "bindings.lock records no resolved connector effect hints for \
+                 bound-connection node `{alias}` (connector `{connector_id}`); \
+                 regenerate the lock with `flows bindings lock generate`"
+            )));
+        };
+        grants.insert(alias.to_string(), hints.clone());
     }
 
     Ok(grants)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn host_block_on_preflight(
-    runtime: Arc<dyn capabilities::connector::ConnectorRuntime>,
-    scope: ConnectorBindingScope,
-    selected_mode: ConnectorResolutionModeDecl,
-) -> Result<Vec<String>, capabilities::connector::ConnectorRuntimeError> {
-    std::thread::scope(|s| {
-        s.spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("host_block_on_preflight: runtime");
-            rt.block_on(runtime.resolve_required_effect_hints(&scope, selected_mode))
-        })
-        .join()
-        .expect("host_block_on_preflight: thread panicked")
-    })
-}
-
 #[cfg(target_arch = "wasm32")]
-fn collect_resolution_aware_effect_hints(
+fn collect_lock_recorded_connector_grants(
     _ir: &ValidatedIR,
     _resources: &dyn ResourceAccess,
 ) -> Result<ConnectorResolvedGrants, ExecutionError> {
@@ -349,8 +334,8 @@ fn is_hint_satisfied_by_resources(hint: &str, resources: &dyn ResourceAccess) ->
 
     // Fail closed on anything that is not a canonical hint. Unknown strings
     // cannot reach this point through a ValidatedIR (kernel-plan EFFECT202)
-    // or connector resolution (checked at collection), but never satisfy them
-    // if they do.
+    // or lock-recorded connector hints (typed at lock load), but never
+    // satisfy them if they do.
     let Ok(hint) = EffectHint::parse(hint) else {
         return false;
     };
@@ -467,6 +452,12 @@ impl ResourceAccess for InvocationResources {
 
     fn connector_scope(&self) -> Option<capabilities::connector::ConnectorBindingScope> {
         self.base.connector_scope()
+    }
+
+    fn connector_resolved_effect_hints(
+        &self,
+    ) -> Option<&capabilities::connector::ConnectorResolvedEffectHints> {
+        self.base.connector_resolved_effect_hints()
     }
 
     fn max_durability_mode(&self) -> dag_core::DurabilityMode {
@@ -613,7 +604,7 @@ impl HostRuntime {
         }
 
         let connector_grants =
-            collect_resolution_aware_effect_hints(self.ir.as_ref(), resources)?;
+            collect_lock_recorded_connector_grants(self.ir.as_ref(), resources)?;
         let mut required: BTreeSet<String> = self.required_effect_hints.iter().cloned().collect();
         for hints in connector_grants.values() {
             for hint in hints {

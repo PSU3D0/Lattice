@@ -1,9 +1,27 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use thiserror::Error;
 
 use crate::http::HttpRequest;
+
+/// Connector-resolved effect hints recorded at bindings.lock generation time,
+/// keyed by node alias.
+///
+/// These are the *connection-dependent* capability requirements of
+/// bound-connection connector ops (e.g. a SheetPort connection storing its
+/// workbook in blob storage requires `resource::blob::read`). They are
+/// resolved ONCE, when the lock is generated, and carried as data from then
+/// on: preflight reads them from the resource view (packet C2) and never
+/// calls [`ConnectorRuntime::resolve_required_effect_hints`] itself.
+///
+/// A node alias *present* in the map (even with an empty set) means "resolved
+/// and recorded at lock time"; an *absent* alias means "resolution was never
+/// recorded" and bound-connection preflight fails closed for that node when a
+/// lock-backed resource view is in use.
+pub type ConnectorResolvedEffectHints = BTreeMap<String, BTreeSet<dag_core::EffectHint>>;
 
 /// Runtime scope attached to the currently executing connector node.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -69,6 +69,77 @@ fn resolve_secret(
     }
 }
 
+/// In-memory [`capabilities::dedupe::DedupeStore`] for offline
+/// duplicate-injection tests (connector verification harness).
+///
+/// Only the Redis-backed dedupe store exists outside tests; connector
+/// verification needs a deterministic, dependency-free store so idempotency
+/// evidence (exactly-once under duplicate delivery, verified via
+/// `testing-harness-idem`) can run in default CI. TTL semantics match the
+/// `put_if_absent`/`forget` contract: a reservation blocks duplicates until
+/// the TTL elapses, after which the key may be reserved again.
+///
+/// Native-only: `std::time::Instant` is unavailable on `wasm32-unknown-unknown`,
+/// and harness tests only run natively.
+#[cfg(not(target_arch = "wasm32"))]
+pub use memory_dedupe::MemoryDedupeStore;
+
+#[cfg(not(target_arch = "wasm32"))]
+mod memory_dedupe {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    use async_trait::async_trait;
+    use capabilities::Capability;
+    use capabilities::dedupe::{DedupeError, DedupeStore};
+
+    /// See the re-export documentation on [`super::MemoryDedupeStore`].
+    #[derive(Debug, Default)]
+    pub struct MemoryDedupeStore {
+        entries: Mutex<HashMap<Vec<u8>, Instant>>,
+    }
+
+    impl MemoryDedupeStore {
+        pub fn new() -> Self {
+            Self::default()
+        }
+    }
+
+    impl Capability for MemoryDedupeStore {
+        fn name(&self) -> &'static str {
+            "dedupe.memory.dev"
+        }
+    }
+
+    #[async_trait]
+    impl DedupeStore for MemoryDedupeStore {
+        async fn put_if_absent(&self, key: &[u8], ttl: Duration) -> Result<bool, DedupeError> {
+            let mut entries = self
+                .entries
+                .lock()
+                .map_err(|_| DedupeError::Other("dedupe mutex poisoned".to_string()))?;
+            let now = Instant::now();
+            match entries.get(key) {
+                Some(deadline) if *deadline > now => Ok(false),
+                _ => {
+                    entries.insert(key.to_vec(), now + ttl);
+                    Ok(true)
+                }
+            }
+        }
+
+        async fn forget(&self, key: &[u8]) -> Result<(), DedupeError> {
+            let mut entries = self
+                .entries
+                .lock()
+                .map_err(|_| DedupeError::Other("dedupe mutex poisoned".to_string()))?;
+            entries.remove(key);
+            Ok(())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
@@ -145,5 +216,34 @@ mod tests {
         unsafe {
             std::env::remove_var(profile.env_base_url_var);
         }
+    }
+
+    #[tokio::test]
+    async fn memory_dedupe_store_blocks_duplicates_until_ttl_expiry() {
+        use capabilities::dedupe::DedupeStore;
+        use std::time::Duration;
+
+        let store = MemoryDedupeStore::new();
+        let ttl = Duration::from_millis(30);
+
+        assert!(store.put_if_absent(b"key", ttl).await.expect("reserve"));
+        assert!(!store.put_if_absent(b"key", ttl).await.expect("duplicate"));
+        assert!(!store.put_if_absent(b"key", ttl).await.expect("duplicate"));
+
+        tokio::time::sleep(ttl + Duration::from_millis(10)).await;
+        assert!(
+            store
+                .put_if_absent(b"key", ttl)
+                .await
+                .expect("post-ttl reserve")
+        );
+
+        store.forget(b"key").await.expect("forget");
+        assert!(
+            store
+                .put_if_absent(b"key", ttl)
+                .await
+                .expect("post-forget reserve")
+        );
     }
 }

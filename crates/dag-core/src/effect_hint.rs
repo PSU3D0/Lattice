@@ -363,6 +363,34 @@ impl<'de> Deserialize<'de> for EffectHint {
     }
 }
 
+impl schemars::JsonSchema for EffectHint {
+    fn schema_name() -> String {
+        "EffectHint".to_string()
+    }
+
+    fn json_schema(_: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+        schemars::schema::SchemaObject {
+            instance_type: Some(schemars::schema::InstanceType::String.into()),
+            enum_values: Some(
+                EffectHint::ALL
+                    .iter()
+                    .map(|hint| serde_json::Value::String(hint.as_str().to_string()))
+                    .collect(),
+            ),
+            metadata: Some(Box::new(schemars::schema::Metadata {
+                description: Some(
+                    "Canonical typed resource hint (dag_core::EffectHint). Unknown strings fail \
+                     closed at validation time (EFFECT202)."
+                        .to_string(),
+                ),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+        .into()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

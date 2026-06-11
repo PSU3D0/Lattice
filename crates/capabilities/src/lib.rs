@@ -120,6 +120,18 @@ pub trait ResourceAccess: Send + Sync + 'static {
         None
     }
 
+    /// Connector-resolved effect hints recorded at bindings.lock generation
+    /// time (per node alias).
+    ///
+    /// `Some(map)` marks a lock-backed resource view: bound-connection
+    /// preflight requires every bound node alias to be present in the map
+    /// (fail-closed otherwise). `None` marks a directly constructed view
+    /// (tests, embedded hosts): preflight uses only statically declared
+    /// hints and performs no connector resolution either way (packet C2).
+    fn connector_resolved_effect_hints(&self) -> Option<&connector::ConnectorResolvedEffectHints> {
+        None
+    }
+
     fn max_durability_mode(&self) -> dag_core::DurabilityMode {
         dag_core::DurabilityMode::Off
     }
@@ -146,6 +158,7 @@ pub struct ResourceBag {
     workspace: Option<Arc<dyn workspace::Workspace>>,
     connector_runtime: Option<Arc<dyn connector::ConnectorRuntime>>,
     connector_scope: Option<connector::ConnectorBindingScope>,
+    connector_resolved_effect_hints: Option<Arc<connector::ConnectorResolvedEffectHints>>,
     max_durability_mode: dag_core::DurabilityMode,
 }
 
@@ -170,6 +183,7 @@ impl Default for ResourceBag {
             workspace: None,
             connector_runtime: None,
             connector_scope: None,
+            connector_resolved_effect_hints: None,
             max_durability_mode: dag_core::DurabilityMode::Off,
         }
     }
@@ -335,6 +349,19 @@ impl ResourceBag {
 
     pub fn with_connector_scope(mut self, scope: connector::ConnectorBindingScope) -> Self {
         self.connector_scope = Some(scope);
+        self
+    }
+
+    /// Attach connector-resolved effect hints recorded at bindings.lock
+    /// generation time (per node alias). Attaching marks this bag as a
+    /// lock-backed view: bound-connection preflight then requires every
+    /// bound node alias to be present in the map (fail-closed otherwise)
+    /// and never resolves hints through the connector runtime (packet C2).
+    pub fn with_connector_resolved_effect_hints(
+        mut self,
+        hints: connector::ConnectorResolvedEffectHints,
+    ) -> Self {
+        self.connector_resolved_effect_hints = Some(Arc::new(hints));
         self
     }
 
@@ -588,6 +615,12 @@ impl ResourceAccess for ResourceBag {
 
     fn connector_scope(&self) -> Option<connector::ConnectorBindingScope> {
         self.connector_scope.clone()
+    }
+
+    fn connector_resolved_effect_hints(&self) -> Option<&connector::ConnectorResolvedEffectHints> {
+        self.connector_resolved_effect_hints
+            .as_ref()
+            .map(|hints| hints.as_ref())
     }
 
     fn max_durability_mode(&self) -> dag_core::DurabilityMode {

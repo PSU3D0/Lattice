@@ -61,7 +61,11 @@
           "items": { "type": "string" },
           "default": []
         },
-        "wasm_guest_exports": { "$ref": "#/definitions/WasmGuestExports" }
+        "wasm_guest_exports": { "$ref": "#/definitions/WasmGuestExports" },
+        "requirements": {
+          "type": "object",
+          "description": "Static FlowRequirements manifest derived at bundle-assembly time. Shape is defined by the sibling schema https://lattice.dev/schemas/flow_requirements.schema.json (schemas/flow_requirements.schema.json); kept as an opaque object here to avoid cross-file $ref resolution requirements. Optional for backward compatibility."
+        }
       },
       "required": ["id", "version", "profile"]
     },

@@ -76,6 +76,10 @@ fn s12_asset_path(relative: &str) -> Result<PathBuf, Box<dyn std::error::Error>>
     Ok(path)
 }
 
+/// Generate the s12 file-path lock through the REAL generator so the test
+/// exercises packet C2's lock-time resolution recording end to end:
+/// `--connectors-from` supplies the connector sections, and the generator
+/// derives + records `resolved_effect_hints` for the bound `evaluate` node.
 fn write_s12_file_path_lock() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let flow_id = s12_sheetport_quote::validated_bound_ir()
         .flow()
@@ -85,30 +89,7 @@ fn write_s12_file_path_lock() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let workbook_path = s12_asset_path("assets/quote_model.xlsx")?;
     let manifest_path = s12_asset_path("assets/quote_model.fio.yaml")?;
 
-    let mut lock = serde_json::json!({
-        "version": 1,
-        "generated_at": "2026-04-01T00:00:00Z",
-        "content_hash": "",
-        // The sheetport evaluate op declares resource::blob::read (it
-        // materializes workbooks from blob storage), so preflight requires a
-        // blob instance even for file-path runs.
-        "instances": {
-            "blob1": {
-                "provider_kind": "blob.memory",
-                "provides": ["resource::blob"],
-                "connect": {},
-                "config": {},
-                "isolation": []
-            }
-        },
-        "flows": {
-            flow_id.clone(): {
-                "use": {
-                    "resource::blob": "blob1"
-                }
-            }
-        },
-        "connector_handles": {},
+    let connectors = serde_json::json!({
         "connector_connections": {
             "sheetport_quote_local": {
                 "connector_id": "connector.formualizer.sheetport",
@@ -134,22 +115,42 @@ fn write_s12_file_path_lock() -> Result<PathBuf, Box<dyn std::error::Error>> {
             }
         }
     });
+    let connectors_path = temp_lock_path();
+    std::fs::write(&connectors_path, serde_json::to_vec_pretty(&connectors)?)?;
 
     let path = temp_lock_path();
-    let hash = {
-        let json_for_hash = lock.clone();
-        let mut hasher = sha2::Sha256::new();
-        let canonical = canonical_json_without_hash_for_test(&json_for_hash);
-        use sha2::Digest;
-        hasher.update(canonical.as_bytes());
-        let digest = hasher.finalize();
-        digest
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>()
-    };
-    lock["content_hash"] = serde_json::json!(hash);
-    std::fs::write(&path, serde_json::to_vec_pretty(&lock)?)?;
+    let output = Command::cargo_bin("flows")?
+        .args([
+            "bindings",
+            "lock",
+            "generate",
+            "--example",
+            "s12_sheetport_quote",
+            "--connectors-from",
+            connectors_path.to_str().expect("connectors path"),
+            "--out",
+            path.to_str().expect("path"),
+        ])
+        .output()?;
+    std::fs::remove_file(&connectors_path).ok();
+    assert!(
+        output.status.success(),
+        "s12 lock generate failed: status={:?}, stderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // The generator must have recorded the lock-time resolution result for
+    // the bound `evaluate` node: file-path sources add no requirements
+    // beyond the op's static declarations, so the recorded list is empty —
+    // but the entry must be PRESENT (absence would fail preflight closed).
+    let lock: Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+    assert_eq!(
+        lock["connector_bindings"][&flow_id]["resolved_effect_hints"]["evaluate"],
+        serde_json::json!([]),
+        "generator must record resolved hints for the bound evaluate node"
+    );
+
     Ok(path)
 }
 
@@ -659,7 +660,12 @@ fn run_local_connector_example_succeeds_with_connector_bindings_lock()
                 "defaults": {
                     "connector.github.issues": "github_local"
                 },
-                "nodes": {}
+                "nodes": {},
+                // C2: lock-recorded resolution result for the bound `list`
+                // node — the github connection adds no requirements beyond
+                // the op's static declarations, but the entry must be present
+                // or preflight fails closed asking for regeneration.
+                "resolved_effect_hints": { "list": [] }
             }
         }
     });
@@ -778,7 +784,9 @@ fn run_bundle_connector_example_succeeds_with_connector_bindings_lock()
                 "defaults": {
                     "connector.github.issues": "github_local"
                 },
-                "nodes": {}
+                "nodes": {},
+                // C2: lock-recorded resolution result for the bound `list` node.
+                "resolved_effect_hints": { "list": [] }
             }
         }
     });
@@ -1021,7 +1029,14 @@ async fn run_local_google_sheets_example_succeeds_with_service_account_bindings_
                 "defaults": {
                     "connector.google.sheets": "google_sheets_local"
                 },
-                "nodes": {}
+                "nodes": {},
+                // C2: lock-recorded resolution results for every
+                // bound-connection node in the flow.
+                "resolved_effect_hints": {
+                    "ensure_spreadsheet": [],
+                    "ensure_sheet_headers": [],
+                    "upsert": []
+                }
             }
         }
     });

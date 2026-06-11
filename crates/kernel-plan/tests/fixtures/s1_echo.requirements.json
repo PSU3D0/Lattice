@@ -1,0 +1,43 @@
+{
+  "schema_version": "0.1",
+  "flow": {
+    "id": "17d960d7-647c-5e8a-9317-3b821bfdafe1",
+    "name": "s1_echo_flow",
+    "version": "1.0.0"
+  },
+  "profile": "web",
+  "effects": {
+    "union": [],
+    "families": [],
+    "per_node": {}
+  },
+  "durability": {
+    "mode": "partial",
+    "has_halting_nodes": false,
+    "needs_checkpoint_store": true,
+    "needs_resume_scheduler": false,
+    "needs_resume_signal_source": false,
+    "needs_checkpoint_blob_store": false
+  },
+  "triggers": [
+    {
+      "alias": "trigger",
+      "identifier": "example_s1_echo::http_trigger",
+      "kind": "http"
+    }
+  ],
+  "entrypoints": [
+    {
+      "trigger_alias": "trigger",
+      "capture_alias": "responder",
+      "route_path": "/echo",
+      "method": "POST",
+      "route_aliases": ["/echo"]
+    }
+  ],
+  "host": {
+    "requires_wasm32_compatibility": false,
+    "requires_connector_runtime": false,
+    "has_subflows": false
+  }
+}

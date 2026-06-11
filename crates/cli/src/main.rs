@@ -70,6 +70,7 @@ use example_s13_github_issue_investigator as s13_github_issue_investigator;
 
 mod bundle;
 mod local_durability;
+mod requirements;
 mod resume;
 mod scaffold;
 
@@ -168,6 +169,16 @@ struct LockGenerateArgs {
     /// RFC3339 timestamp for `generated_at` (default is stable).
     #[arg(long, default_value = "1970-01-01T00:00:00Z")]
     generated_at: String,
+    /// Path to a JSON file providing connector sections (`connector_handles`,
+    /// `connector_connections`, `connector_bindings`) to embed in the lock.
+    ///
+    /// When provided, the generator resolves each bound-connection node's
+    /// connection-dependent effect hints against these sections and records
+    /// them in `connector_bindings.<flow>.resolved_effect_hints` — the
+    /// lock-time half of preflight (runtime preflight only reads the
+    /// recorded data).
+    #[arg(long)]
+    connectors_from: Option<PathBuf>,
     /// Output path for the generated bindings.lock.json.
     #[arg(long)]
     out: PathBuf,
@@ -1530,6 +1541,17 @@ struct ConnectorFlowBindings {
     defaults: BTreeMap<String, String>,
     #[serde(default)]
     nodes: BTreeMap<String, String>,
+    /// Connection-dependent effect hints resolved at lock GENERATION time,
+    /// keyed by node alias (packet C2). Runtime preflight reads these as
+    /// data and performs no `ConnectorRuntime` resolution. A node alias
+    /// present with an empty list means "resolved: this connection adds no
+    /// requirements beyond the op's static declarations"; an absent alias
+    /// means resolution was never recorded, and bound-connection preflight
+    /// fails closed asking for lock regeneration. Locks written before this
+    /// field existed simply omit it (back-compat: they still load, but
+    /// cannot run bound-connection flows until regenerated).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    resolved_effect_hints: BTreeMap<String, Vec<String>>,
 }
 
 fn default_json_object() -> JsonValue {
@@ -1872,6 +1894,115 @@ fn select_provider_kind_for_required_hint(
     Ok(provider_kind)
 }
 
+/// Connector sections accepted by `flows bindings lock generate
+/// --connectors-from`. Same shapes as the corresponding bindings.lock
+/// sections; `resolved_effect_hints` is NOT accepted as input — the
+/// generator owns that derivation.
+#[derive(Debug, Default, Deserialize)]
+struct ConnectorSectionsInput {
+    #[serde(default)]
+    connector_handles: BTreeMap<String, ConnectorHandleInstance>,
+    #[serde(default)]
+    connector_connections: BTreeMap<String, ConnectorConnectionInstance>,
+    #[serde(default)]
+    connector_bindings: BTreeMap<String, ConnectorFlowBindings>,
+}
+
+fn load_connector_sections(path: &Path) -> Result<ConnectorSectionsInput> {
+    let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let sections: ConnectorSectionsInput = serde_json::from_slice(&bytes)
+        .with_context(|| format!("{} is not a valid connector sections document", path.display()))?;
+    for (flow_id, bindings) in &sections.connector_bindings {
+        if !bindings.resolved_effect_hints.is_empty() {
+            return Err(anyhow!(
+                "--connectors-from must not pre-populate `resolved_effect_hints` (flow `{flow_id}`); the generator derives and records them"
+            ));
+        }
+    }
+    Ok(sections)
+}
+
+/// The lock-time half of packet C2: resolve every bound-connection node's
+/// connection-dependent effect hints against the lock's connector sections
+/// and record them per (flow, node alias).
+///
+/// Nodes whose binding cannot be resolved are an error when connector
+/// sections were supplied (the operator clearly intended connector support);
+/// without supplied sections they are skipped — the resulting lock simply
+/// cannot run those flows (host preflight fails closed asking for
+/// regeneration with bindings).
+fn record_resolved_connector_effect_hints(
+    lock: &mut BindingsLock,
+    flows: &BTreeMap<String, FlowIR>,
+    connectors_supplied: bool,
+) -> Result<()> {
+    let mut recorded_per_flow: BTreeMap<String, BTreeMap<String, Vec<String>>> = BTreeMap::new();
+
+    for (flow_id, flow) in flows {
+        let bound_nodes: Vec<(&str, &str, &str)> = flow
+            .nodes
+            .iter()
+            .filter_map(|node| {
+                node.connector_ops
+                    .iter()
+                    .find(|op| {
+                        op.selected_resolution_mode
+                            == dag_core::ConnectorResolutionModeDecl::BoundConnection
+                    })
+                    .map(|op| {
+                        (
+                            node.alias.as_str(),
+                            node.identifier.as_str(),
+                            op.connector_id.as_str(),
+                        )
+                    })
+            })
+            .collect();
+        if bound_nodes.is_empty() {
+            continue;
+        }
+
+        let runtime = BindingsLockConnectorRuntime::new(lock, flow_id)?;
+        let mut recorded: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (alias, identifier, connector_id) in bound_nodes {
+            let scope = ConnectorBindingScope::new(flow_id.clone(), alias, identifier, connector_id);
+            match runtime.resolve_bound_connection(&scope) {
+                Ok((connection_name, connection)) => {
+                    let hints = derive_connection_effect_hints(connection_name, connection)?;
+                    for hint in &hints {
+                        dag_core::EffectHint::parse(hint).map_err(|err| {
+                            anyhow!(
+                                "connector `{connector_id}` (node `{alias}`) resolved an invalid effect hint: {err} (EFFECT202; see impl-docs/error-codes.md)"
+                            )
+                        })?;
+                    }
+                    recorded.insert(alias.to_string(), hints);
+                }
+                Err(err) => {
+                    if connectors_supplied {
+                        return Err(err.context(format!(
+                            "cannot resolve connector binding for bound-connection node `{alias}` in flow `{flow_id}`"
+                        )));
+                    }
+                }
+            }
+        }
+
+        if !recorded.is_empty() {
+            recorded_per_flow.insert(flow_id.clone(), recorded);
+        }
+    }
+
+    for (flow_id, recorded) in recorded_per_flow {
+        lock.connector_bindings
+            .entry(flow_id)
+            .or_default()
+            .resolved_effect_hints = recorded;
+    }
+
+    Ok(())
+}
+
 fn run_bindings_lock_generate(args: LockGenerateArgs) -> Result<()> {
     if args.generated_at.trim().is_empty() {
         return Err(anyhow!("--generated-at cannot be empty"));
@@ -1879,12 +2010,19 @@ fn run_bindings_lock_generate(args: LockGenerateArgs) -> Result<()> {
 
     let flows_for_lock = resolve_lock_generate_flows(&args)?;
     let overrides = parse_bindings_for_lock(&args.bindings)?;
+    let connector_sections = args
+        .connectors_from
+        .as_deref()
+        .map(load_connector_sections)
+        .transpose()?;
+    let connectors_supplied = connector_sections.is_some();
+    let connector_sections = connector_sections.unwrap_or_default();
 
     let mut flows = BTreeMap::new();
     let mut instances: BTreeMap<String, LockInstance> = BTreeMap::new();
 
-    for (flow_id, flow) in flows_for_lock {
-        let mut required = required_resource_hints(&flow);
+    for (flow_id, flow) in &flows_for_lock {
+        let mut required = required_resource_hints(flow);
         for (key, _) in &overrides {
             required.insert(key.clone());
         }
@@ -1903,7 +2041,7 @@ fn run_bindings_lock_generate(args: LockGenerateArgs) -> Result<()> {
             }
         }
 
-        flows.insert(flow_id, LockFlow { use_map });
+        flows.insert(flow_id.clone(), LockFlow { use_map });
     }
 
     let mut lock = BindingsLock {
@@ -1912,10 +2050,12 @@ fn run_bindings_lock_generate(args: LockGenerateArgs) -> Result<()> {
         content_hash: String::new(),
         instances,
         flows,
-        connector_handles: BTreeMap::new(),
-        connector_connections: BTreeMap::new(),
-        connector_bindings: BTreeMap::new(),
+        connector_handles: connector_sections.connector_handles,
+        connector_connections: connector_sections.connector_connections,
+        connector_bindings: connector_sections.connector_bindings,
     };
+
+    record_resolved_connector_effect_hints(&mut lock, &flows_for_lock, connectors_supplied)?;
 
     let json = serde_json::to_value(&lock).context("failed to serialize bindings.lock")?;
     lock.content_hash = compute_lock_content_hash(&json)?;
@@ -2994,49 +3134,49 @@ impl ConnectorRuntime for BindingsLockConnectorRuntime {
         }))
     }
 
-    async fn resolve_required_effect_hints(
-        &self,
-        scope: &ConnectorBindingScope,
-        selected_mode: dag_core::ConnectorResolutionModeDecl,
-    ) -> Result<Vec<String>, ConnectorRuntimeError> {
-        if selected_mode != dag_core::ConnectorResolutionModeDecl::BoundConnection {
-            return Ok(Vec::new());
-        }
+}
 
-        let Some(resolved) = self.resolve_connection(scope).await? else {
-            return Ok(Vec::new());
-        };
+/// Derive the connection-dependent effect hints a bound connection imposes on
+/// the nodes it serves. This is the lock GENERATION half of packet C2: the
+/// derivation runs when `flows bindings lock generate` assembles the lock,
+/// and the result is recorded in
+/// `connector_bindings.<flow>.resolved_effect_hints`; runtime preflight only
+/// reads that recorded data.
+fn derive_connection_effect_hints(
+    connection_name: &str,
+    connection: &ConnectorConnectionInstance,
+) -> Result<Vec<String>> {
+    match connection.connector_id.as_str() {
+        "connector.formualizer.sheetport" => {
+            let config = connection.config.as_object().ok_or_else(|| {
+                anyhow!(
+                    "bindings.lock connector connection `{connection_name}` has invalid `config` (expected object)"
+                )
+            })?;
 
-        match resolved.connector_id.as_str() {
-            "connector.formualizer.sheetport" => {
-                let mut hints = Vec::new();
-                let config = resolved.config.as_object().ok_or_else(|| {
-                    ConnectorRuntimeError::Provider(anyhow!(
-                        "sheetport connection config must be an object"
-                    ))
-                })?;
-
-                if source_kind_is_blob(config.get("workbook_source"))? {
-                    hints.push(capabilities::blob::HINT_BLOB_READ.to_string());
-                }
-                if source_kind_is_blob(config.get("manifest_source"))? {
-                    hints.push(capabilities::blob::HINT_BLOB_READ.to_string());
-                }
-                hints.sort();
-                hints.dedup();
-                Ok(hints)
+            let mut hints = Vec::new();
+            if source_kind_is_blob(connection_name, config.get("workbook_source"))? {
+                hints.push(capabilities::blob::HINT_BLOB_READ.to_string());
             }
-            _ => Ok(Vec::new()),
+            if source_kind_is_blob(connection_name, config.get("manifest_source"))? {
+                hints.push(capabilities::blob::HINT_BLOB_READ.to_string());
+            }
+            hints.sort();
+            hints.dedup();
+            Ok(hints)
         }
+        _ => Ok(Vec::new()),
     }
 }
 
-fn source_kind_is_blob(value: Option<&JsonValue>) -> Result<bool, ConnectorRuntimeError> {
+fn source_kind_is_blob(connection_name: &str, value: Option<&JsonValue>) -> Result<bool> {
     let Some(value) = value else {
         return Ok(false);
     };
     let object = value.as_object().ok_or_else(|| {
-        ConnectorRuntimeError::Provider(anyhow!("connector source config must be an object"))
+        anyhow!(
+            "bindings.lock connector connection `{connection_name}` has a non-object source config"
+        )
     })?;
     Ok(matches!(
         object.get("kind").and_then(JsonValue::as_str),
@@ -3503,8 +3643,43 @@ fn resource_bag_from_bindings_lock(path: &Path, flow_id: &str) -> Result<Resourc
 
     let connector_runtime = BindingsLockConnectorRuntime::new(&lock, flow_id)?;
     bag = bag.with_connector_runtime(Arc::new(connector_runtime));
+    // Attach the lock-recorded connector hints unconditionally: a lock-backed
+    // bag is a lock-backed bag even when the flow binds no connectors, and
+    // host preflight fails closed (asking for regeneration) if a
+    // bound-connection node has no recorded entry (packet C2).
+    bag = bag
+        .with_connector_resolved_effect_hints(connector_resolved_grants_from_lock(&lock, flow_id)?);
 
     Ok(bag)
+}
+
+/// Convert the lock-recorded per-node connector effect hints for `flow_id`
+/// into the typed map host preflight consumes. Unknown hint strings fail
+/// closed (EFFECT202 semantics) so a corrupted or hand-edited lock cannot
+/// smuggle requirements past the typed-hint vocabulary.
+fn connector_resolved_grants_from_lock(
+    lock: &BindingsLock,
+    flow_id: &str,
+) -> Result<capabilities::connector::ConnectorResolvedEffectHints> {
+    let mut grants = capabilities::connector::ConnectorResolvedEffectHints::new();
+    let Some(bindings) = lock.connector_bindings.get(flow_id) else {
+        return Ok(grants);
+    };
+
+    for (node_alias, hints) in &bindings.resolved_effect_hints {
+        let mut parsed_hints = BTreeSet::new();
+        for hint in hints {
+            let parsed = dag_core::EffectHint::parse(hint).map_err(|err| {
+                anyhow!(
+                    "bindings.lock records invalid resolved effect hint `{hint}` for node `{node_alias}`: {err} (EFFECT202; see impl-docs/error-codes.md)"
+                )
+            })?;
+            parsed_hints.insert(parsed);
+        }
+        grants.insert(node_alias.clone(), parsed_hints);
+    }
+
+    Ok(grants)
 }
 
 fn attach_checkpoint_store(
@@ -4244,167 +4419,208 @@ RGKOKF9RKKgFGiXk5I97qQ==
         );
     }
 
+    fn sheetport_connection_instance(config: JsonValue) -> ConnectorConnectionInstance {
+        serde_json::from_value(json!({
+            "connector_id": "connector.formualizer.sheetport",
+            "roles": {},
+            "config": config
+        }))
+        .expect("connection instance")
+    }
+
     #[test]
-    fn bindings_lock_runtime_derives_sheetport_blob_hint_for_bound_mode() {
-        let flow_id = "test-flow";
-        let runtime = connector_runtime_from_json(
-            json!({
-                "version": 1,
-                "generated_at": "2025-12-15T00:00:00Z",
-                "content_hash": "",
-                "instances": {},
-                "flows": {
-                    flow_id: { "use": {} }
-                },
-                "connector_handles": {},
-                "connector_connections": {
-                    "sheetport_primary": {
-                        "connector_id": "connector.formualizer.sheetport",
-                        "roles": {},
-                        "config": {
-                            "workbook_source": {
-                                "kind": "blob",
-                                "key": "models/quote.xlsx"
-                            },
-                            "manifest_source": {
-                                "kind": "inline_yaml",
-                                "value": "spec: fio\n..."
-                            }
-                        }
-                    }
-                },
-                "connector_bindings": {
-                    flow_id: {
-                        "defaults": {
-                            "connector.formualizer.sheetport": "sheetport_primary"
-                        },
-                        "nodes": {}
-                    }
-                }
-            }),
-            flow_id,
-        );
+    fn lock_generation_derives_sheetport_blob_hint_for_blob_workbook_source() {
+        let connection = sheetport_connection_instance(json!({
+            "workbook_source": {
+                "kind": "blob",
+                "key": "models/quote.xlsx"
+            },
+            "manifest_source": {
+                "kind": "inline_yaml",
+                "value": "spec: fio\n..."
+            }
+        }));
 
-        let hints = RuntimeBuilder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("runtime")
-            .block_on(runtime.resolve_required_effect_hints(
-                &connector_scope(flow_id, "node", "connector.formualizer.sheetport"),
-                dag_core::ConnectorResolutionModeDecl::BoundConnection,
-            ))
-            .expect("derive hints");
-
+        let hints = derive_connection_effect_hints("sheetport_primary", &connection)
+            .expect("derive hints at lock generation time");
         assert_eq!(hints, vec![capabilities::blob::HINT_BLOB_READ.to_string()]);
     }
 
     #[test]
-    fn bindings_lock_runtime_derives_sheetport_blob_hint_for_materialized_blob_bound_mode() {
-        let flow_id = "test-flow";
-        let runtime = connector_runtime_from_json(
-            json!({
-                "version": 1,
-                "generated_at": "2025-12-15T00:00:00Z",
-                "content_hash": "",
-                "instances": {},
-                "flows": {
-                    flow_id: { "use": {} }
-                },
-                "connector_handles": {},
-                "connector_connections": {
-                    "sheetport_primary": {
-                        "connector_id": "connector.formualizer.sheetport",
-                        "roles": {},
-                        "config": {
-                            "workbook_source": {
-                                "kind": "materialized_blob",
-                                "key": "models/quote.materialized.json",
-                                "format": "workbook_json_v1"
-                            },
-                            "manifest_source": {
-                                "kind": "inline_yaml",
-                                "value": "spec: fio\n..."
-                            }
-                        }
-                    }
-                },
-                "connector_bindings": {
-                    flow_id: {
-                        "defaults": {
-                            "connector.formualizer.sheetport": "sheetport_primary"
-                        },
-                        "nodes": {}
-                    }
-                }
-            }),
-            flow_id,
-        );
+    fn lock_generation_derives_sheetport_blob_hint_for_materialized_blob_workbook_source() {
+        let connection = sheetport_connection_instance(json!({
+            "workbook_source": {
+                "kind": "materialized_blob",
+                "key": "models/quote.materialized.json",
+                "format": "workbook_json_v1"
+            },
+            "manifest_source": {
+                "kind": "inline_yaml",
+                "value": "spec: fio\n..."
+            }
+        }));
 
-        let hints = RuntimeBuilder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("runtime")
-            .block_on(runtime.resolve_required_effect_hints(
-                &connector_scope(flow_id, "node", "connector.formualizer.sheetport"),
-                dag_core::ConnectorResolutionModeDecl::BoundConnection,
-            ))
-            .expect("derive hints");
-
+        let hints = derive_connection_effect_hints("sheetport_primary", &connection)
+            .expect("derive hints at lock generation time");
         assert_eq!(hints, vec![capabilities::blob::HINT_BLOB_READ.to_string()]);
     }
 
     #[test]
-    fn bindings_lock_runtime_skips_sheetport_blob_hint_for_late_bound_mode() {
-        let flow_id = "test-flow";
-        let runtime = connector_runtime_from_json(
-            json!({
-                "version": 1,
-                "generated_at": "2025-12-15T00:00:00Z",
-                "content_hash": "",
-                "instances": {},
-                "flows": {
-                    flow_id: { "use": {} }
-                },
-                "connector_handles": {},
-                "connector_connections": {
-                    "sheetport_primary": {
-                        "connector_id": "connector.formualizer.sheetport",
-                        "roles": {},
-                        "config": {
-                            "workbook_source": {
-                                "kind": "blob",
-                                "key": "models/quote.xlsx"
-                            },
-                            "manifest_source": {
-                                "kind": "inline_yaml",
-                                "value": "spec: fio\n..."
-                            }
-                        }
-                    }
-                },
-                "connector_bindings": {
-                    flow_id: {
-                        "defaults": {
-                            "connector.formualizer.sheetport": "sheetport_primary"
-                        },
-                        "nodes": {}
-                    }
-                }
-            }),
-            flow_id,
-        );
+    fn lock_generation_derives_no_hints_for_file_path_sheetport_sources() {
+        let connection = sheetport_connection_instance(json!({
+            "workbook_source": {
+                "kind": "file_path",
+                "path": "/tmp/quote.xlsx"
+            },
+            "manifest_source": {
+                "kind": "file_path",
+                "path": "/tmp/quote.fio.yaml"
+            }
+        }));
 
-        let hints = RuntimeBuilder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("runtime")
-            .block_on(runtime.resolve_required_effect_hints(
-                &connector_scope(flow_id, "node", "connector.formualizer.sheetport"),
-                dag_core::ConnectorResolutionModeDecl::LateBoundRefs,
-            ))
-            .expect("derive hints");
-
+        let hints = derive_connection_effect_hints("sheetport_quote_local", &connection)
+            .expect("derive hints at lock generation time");
         assert!(hints.is_empty());
+    }
+
+    #[test]
+    fn lock_generation_records_resolved_hints_for_bound_nodes_only() {
+        use dag_core::prelude::*;
+
+        let flow_id = "flow://sheetport-recording-test";
+
+        // bound_node selects bound_connection; late_node selects late_bound_refs.
+        let mut builder = FlowBuilder::new(
+            "sheetport_recording_test",
+            Version::new(1, 0, 0),
+            Profile::Dev,
+        );
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .expect("trigger added");
+        let bound = builder
+            .add_node(
+                "bound_node",
+                &NodeSpec::inline(
+                    "tests::bound",
+                    "Bound",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Effectful,
+                    Determinism::BestEffort,
+                    None,
+                ),
+            )
+            .expect("bound added");
+        let late = builder
+            .add_node(
+                "late_node",
+                &NodeSpec::inline(
+                    "tests::late",
+                    "Late",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Effectful,
+                    Determinism::BestEffort,
+                    None,
+                ),
+            )
+            .expect("late added");
+        builder.connect(&trigger, &bound);
+        builder.connect(&bound, &late);
+        let mut flow = builder.build();
+        for (alias, mode) in [
+            (
+                "bound_node",
+                dag_core::ConnectorResolutionModeDecl::BoundConnection,
+            ),
+            (
+                "late_node",
+                dag_core::ConnectorResolutionModeDecl::LateBoundRefs,
+            ),
+        ] {
+            flow.nodes
+                .iter_mut()
+                .find(|node| node.alias == alias)
+                .expect("node exists")
+                .connector_ops
+                .push(dag_core::ConnectorOpRefIR {
+                    operation_id: "connector.formualizer.sheetport.evaluate".to_string(),
+                    connector_id: "connector.formualizer.sheetport".to_string(),
+                    roles: Vec::new(),
+                    default_resolution_mode:
+                        dag_core::ConnectorResolutionModeDecl::BoundConnection,
+                    selected_resolution_mode: mode,
+                    supported_resolution_modes: vec![
+                        dag_core::ConnectorResolutionModeDecl::BoundConnection,
+                        dag_core::ConnectorResolutionModeDecl::LateBoundRefs,
+                    ],
+                });
+        }
+
+        let mut lock = lock_from_json(json!({
+            "version": 1,
+            "generated_at": "2025-12-15T00:00:00Z",
+            "content_hash": "",
+            "instances": {},
+            "flows": { flow_id: { "use": {} } },
+            "connector_handles": {},
+            "connector_connections": {
+                "sheetport_primary": {
+                    "connector_id": "connector.formualizer.sheetport",
+                    "roles": {},
+                    "config": {
+                        "workbook_source": {
+                            "kind": "blob",
+                            "key": "models/quote.xlsx"
+                        },
+                        "manifest_source": {
+                            "kind": "inline_yaml",
+                            "value": "spec: fio\n..."
+                        }
+                    }
+                }
+            },
+            "connector_bindings": {
+                flow_id: {
+                    "defaults": {
+                        "connector.formualizer.sheetport": "sheetport_primary"
+                    },
+                    "nodes": {}
+                }
+            }
+        }));
+
+        flow.id = dag_core::FlowId(flow_id.to_string());
+        let mut flows = BTreeMap::new();
+        flows.insert(flow_id.to_string(), flow);
+
+        record_resolved_connector_effect_hints(&mut lock, &flows, true)
+            .expect("recording succeeds");
+
+        let bindings = lock
+            .connector_bindings
+            .get(flow_id)
+            .expect("flow connector bindings");
+        assert_eq!(
+            bindings.resolved_effect_hints,
+            BTreeMap::from([(
+                "bound_node".to_string(),
+                vec![capabilities::blob::HINT_BLOB_READ.to_string()],
+            )]),
+            "only bound-connection nodes get lock-recorded hints",
+        );
     }
 
     #[test]

@@ -178,7 +178,39 @@ cargo run -p flows-cli -- run serve \
 cargo run -p flows-cli -- run local \
   --example connector_google_sheets_local_flow \
   --bindings-lock /tmp/google-sheets-live.bindings.lock.json
+
+# Emit a flow's static requirements manifest (JSON) for an example
+cargo run -p flows-cli -- bundle requirements --example s1_echo
 ```
+
+### `flows bundle requirements`
+
+Emits the static `FlowRequirements` manifest (effects, connector contracts,
+durability services, trigger/entrypoint surface, host constraints) as JSON,
+derived entirely from the flow without executing anything. This is the seed
+input the future infra-from-code planner reads to choose placement
+(`{cf-workers-free | cf-paid | native}`) and to size against Cloudflare's free
+tier limits (1 MiB compressed per script, 100 scripts per account, multi-flow
+bundles fronted by Workers-for-Platforms dispatch) — see
+`impl-docs/spec/flow-requirements.md`.
+
+```bash
+# Bare-IR form for a built-in example (no flow_ir_hash / no entrypoint deadline_ms;
+# matches the C1 golden fixtures); add --out <path> to write a file instead of stdout
+cargo run -p flows-cli -- bundle requirements --example s12_sheetport_quote
+
+# Enriched form carried by an already-built bundle (adds flow_ir_hash + deadline_ms);
+# pass --flow <id> to select one flow from a multi-flow bundle
+cargo run -p flows-cli -- bundle requirements --bundle /tmp/flow.bundle --flow <flow-id>
+
+# The JSON schema for the manifest (byte-for-byte schemas/flow_requirements.schema.json)
+cargo run -p flows-cli -- bundle requirements --schema
+```
+
+`--example` emits the *bare-IR* manifest (`kernel_plan::derive_requirements`);
+`--bundle` prints the *enriched* manifest the bundle assembler committed
+(`flow_ir_hash` + entrypoint `deadline_ms`), the two values only the assembler
+knows.
 
 Still planned / incomplete:
 - queue-first operator flows and richer bridge commands

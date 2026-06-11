@@ -24,5 +24,7 @@ serde_json.workspace = true
 
 [dev-dependencies]
 cap-http-reqwest = { path = "../../../cap-http-reqwest" }
+connector-spec = { path = "../../../connector-spec" }
 httpmock = "0.7"
+testing-harness-idem = { path = "../../../testing-harness-idem" }
 tokio = { workspace = true, features = ["full"] }
