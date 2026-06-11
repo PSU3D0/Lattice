@@ -89,10 +89,23 @@ fn write_s12_file_path_lock() -> Result<PathBuf, Box<dyn std::error::Error>> {
         "version": 1,
         "generated_at": "2026-04-01T00:00:00Z",
         "content_hash": "",
-        "instances": {},
+        // The sheetport evaluate op declares resource::blob::read (it
+        // materializes workbooks from blob storage), so preflight requires a
+        // blob instance even for file-path runs.
+        "instances": {
+            "blob1": {
+                "provider_kind": "blob.memory",
+                "provides": ["resource::blob"],
+                "connect": {},
+                "config": {},
+                "isolation": []
+            }
+        },
         "flows": {
             flow_id.clone(): {
-                "use": {}
+                "use": {
+                    "resource::blob": "blob1"
+                }
             }
         },
         "connector_handles": {},

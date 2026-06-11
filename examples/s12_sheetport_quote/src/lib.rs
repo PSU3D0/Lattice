@@ -1,6 +1,3 @@
-#[cfg(all(feature = "host-bundle", not(target_arch = "wasm32")))]
-use std::sync::Arc;
-
 use connector_formualizer_sheetport::types::{
     ManifestSourceRef, SheetPortEvaluateInput, SheetPortEvaluateOutput, SheetPortInputPayload,
     SheetPortModelSelector, SheetPortValue, WorkbookSourceRef,
@@ -115,11 +112,6 @@ async fn capture(input: QuoteResponse) -> NodeResult<QuoteResponse> {
 }
 
 mod bound_bundle_def {
-    #[cfg(feature = "host-bundle")]
-    use super::{
-        adapt_quote_to_sheetport_input_register, canonical_sheetport_evaluate_register,
-        capture_register, extract_quote_response_register, quote_trigger_register,
-    };
     use dag_macros::node;
 
     dag_macros::flow! {
@@ -150,8 +142,6 @@ mod bound_bundle_def {
 }
 
 mod internal_bundle_def {
-    #[cfg(feature = "host-bundle")]
-    use super::{capture_register, evaluate_quote_internal_register, quote_trigger_register};
     use dag_macros::node;
 
     dag_macros::flow! {
@@ -193,73 +183,17 @@ pub fn validated_internal_ir() -> ValidatedIR {
     validate(&internal_flow()).expect("s12 internal quote flow should validate")
 }
 
+/// Node registration (including the bound connector wrapper and the
+/// late-bound internal connector node) is derived by `flow!` from its
+/// `node!(...)` bindings — no manual register list to drift.
 #[cfg(all(feature = "host-bundle", not(target_arch = "wasm32")))]
 pub fn bound_bundle() -> host_inproc::FlowBundle {
-    bundle_for(validated_bound_ir(), bound_flow(), "/quote", || {
-        let mut registry = kernel_exec::NodeRegistry::new();
-        quote_trigger_register(&mut registry).expect("register trigger");
-        adapt_quote_to_sheetport_input_register(&mut registry).expect("register adapt");
-        canonical_sheetport_evaluate_register(&mut registry)
-            .expect("register canonical sheetport connector wrapper");
-        extract_quote_response_register(&mut registry).expect("register extract");
-        capture_register(&mut registry).expect("register capture");
-        registry
-    })
+    bound_bundle_def::bundle()
 }
 
 #[cfg(all(feature = "host-bundle", not(target_arch = "wasm32")))]
 pub fn internal_bundle() -> host_inproc::FlowBundle {
-    bundle_for(
-        validated_internal_ir(),
-        internal_flow(),
-        "/quote/internal",
-        || {
-            let mut registry = kernel_exec::NodeRegistry::new();
-            quote_trigger_register(&mut registry).expect("register trigger");
-            evaluate_quote_internal_register(&mut registry).expect("register internal evaluator");
-            capture_register(&mut registry).expect("register capture");
-            registry
-        },
-    )
-}
-
-#[cfg(all(feature = "host-bundle", not(target_arch = "wasm32")))]
-fn bundle_for(
-    validated_ir: ValidatedIR,
-    flow: FlowIR,
-    route_path: &str,
-    registry_builder: impl FnOnce() -> kernel_exec::NodeRegistry,
-) -> host_inproc::FlowBundle {
-    use std::time::Duration;
-
-    use host_inproc::{FlowBundle, FlowEntrypoint, NodeContract, NodeSource};
-    use kernel_exec::RegistryResolver;
-
-    let registry = registry_builder();
-    let node_contracts = flow
-        .nodes
-        .iter()
-        .map(|node| NodeContract {
-            identifier: node.identifier.clone(),
-            contract_hash: None,
-            source: NodeSource::Local,
-        })
-        .collect();
-
-    FlowBundle {
-        validated_ir,
-        entrypoints: vec![FlowEntrypoint {
-            trigger_alias: "trigger".to_string(),
-            capture_alias: "capture".to_string(),
-            route_path: Some(route_path.to_string()),
-            method: Some("POST".to_string()),
-            deadline: Some(Duration::from_millis(2_000)),
-            route_aliases: vec![route_path.to_string()],
-        }],
-        resolver: Arc::new(RegistryResolver::new(Arc::new(registry))),
-        node_contracts,
-        environment_plugins: Vec::new(),
-    }
+    internal_bundle_def::bundle()
 }
 
 fn sheetport_request(

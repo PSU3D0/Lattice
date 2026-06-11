@@ -114,12 +114,6 @@ async fn capture_summary(summary: TranscriptSyncSummary) -> NodeResult<Transcrip
 }
 
 mod bundle_def {
-    #[cfg(feature = "host-bundle")]
-    use super::{
-        capture_summary_register, fetch_recent_completed_meetings_register,
-        reconcile_due_jobs_register, select_due_jobs_register, transcript_sync_trigger_register,
-        upsert_meeting_jobs_register,
-    };
     use dag_macros::node;
 
     dag_macros::flow! {

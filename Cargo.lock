@@ -1802,6 +1802,7 @@ dependencies = [
  "serde",
  "serde_json",
  "syn 2.0.106",
+ "tokio",
  "trybuild",
 ]
 
@@ -2300,6 +2301,7 @@ dependencies = [
  "cap-http-reqwest",
  "cap-workspace-fs",
  "capabilities",
+ "connectors-std",
  "dag-core",
  "dag-macros",
  "host-inproc",
@@ -2339,6 +2341,7 @@ dependencies = [
  "async-trait",
  "cap-http-reqwest",
  "capabilities",
+ "connectors-std",
  "dag-core",
  "dag-macros",
  "dispatch-backend",

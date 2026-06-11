@@ -358,6 +358,12 @@ pub static DIAGNOSTIC_CODES: Lazy<Vec<DiagnosticCode>> = Lazy::new(|| {
             summary: "Required capability binding missing from ResourceBag during preflight",
         },
         DiagnosticCode {
+            code: "CAP110",
+            subsystem: "runtime",
+            default_severity: Severity::Error,
+            summary: "Node accessed a capability not declared in its effect hints",
+        },
+        DiagnosticCode {
             code: "IDEM020",
             subsystem: "validation",
             default_severity: Severity::Error,

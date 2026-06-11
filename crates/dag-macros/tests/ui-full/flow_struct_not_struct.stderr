@@ -1,0 +1,5 @@
+error: #[flow_struct] can only be applied to struct or enum definitions
+ --> tests/ui-full/flow_struct_not_struct.rs:6:1
+  |
+6 | fn not_a_struct() {}
+  | ^^^^^^^^^^^^^^^^^^^^

@@ -41,10 +41,56 @@ Validator contract (implemented):
 - If a node declares `determinism` stricter than allowed by its hints, validation fails.
 - Effectful nodes must declare idempotency metadata.
 
+## Enforcement Semantics (Declared = Enforced)
+
+As of the A2 hardening packet, capability declarations are **enforced at
+runtime**, not merely checked for satisfiability:
+
+- The executor (kernel-exec) builds a per-node **grant set** from the node's
+  `effectHints[]` (every canonical `dag_core::EffectHint`; policy markers such
+  as `policy::json_boundary` are not grants) plus any **connector-resolved
+  hints** the host derives for the node's bound connections during preflight.
+- Every node executes against a scoped view
+  (`capabilities::scoped::ScopedResources`) of the deployment's `ResourceBag`.
+  Both access paths are scoped by the same view: the ambient task-local
+  context (`capabilities::context::with_current_async` et al.) and the direct
+  `NodeContext::resources()` handle.
+- Grant semantics mirror preflight satisfaction, inverted: a bare family hint
+  (e.g. `resource::http`) grants every accessor of the family; an operation
+  hint grants exactly its accessor (`resource::http::read` grants
+  `http_read()` only). `resource::db::*` and `resource::rng` currently grant
+  nothing (no `ResourceAccess` accessor exists for them).
+- **Undeclared access fails closed** with the `CAP110` diagnostic: the
+  accessor returns `None`, a structured denial (node alias + capability + the
+  granting hint to declare) is recorded and emitted as a tracing event, and
+  the node's resulting failure surfaces the CAP110 message in the run result.
+- `effects = Pure` means pure: an empty grant set — no clock, no rng, nothing.
+- Triggers and capture nodes are scoped exactly like any other node: they
+  execute through the same executor node path with their own declarations.
+  Host-side needs (workspace lifecycle, durability services, preflight) run
+  **outside** node execution scopes against the unscoped bag, so hosts are
+  unaffected.
+- Not gated (separate declaration/policy surfaces; see the
+  `capabilities::scoped` module docs): `cache()` (no hint vocabulary), the
+  durability service accessors (selected by durability policy, explicitly not
+  hint-bound — see below), and `connector_runtime()`/`connector_scope()`
+  (declared via `connector_ops` and constrained by the per-node binding
+  scope).
+- Host code and tests calling `with_current_async` outside any node execution
+  scope see the full bag, unchanged: scoping applies to node execution
+  contexts only.
+
+This phase is **runtime-denied** enforcement. The planned next step is
+type-level capability tokens (capabilities as typed node-fn parameters or
+generic bounds) so over-reach becomes a *compile* error; see the forthcoming
+type-level capability token design doc in `impl-docs/spec/` for the migration
+path from CAP110 runtime denial.
+
 Important architectural note:
-- capability access inside arbitrary Rust nodes remains allowed,
-- but node boundaries are still expected to truthfully declare the resulting
-  effect/determinism/resource requirements,
+- capability access inside arbitrary Rust nodes remains allowed **when
+  declared** — node boundaries must truthfully declare the resulting
+  effect/determinism/resource requirements, and since A2 an under-declared
+  node fails closed at runtime with `CAP110`,
 - the platform does **not** require every capability call to become its own
   graph node.
 

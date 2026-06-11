@@ -88,6 +88,7 @@ ensure the registry stays in sync with the implementation.
 | SECR201   | Validation     | Error   | Credential binding grants scopes outside requested set. |
 | SAGA201   | Validation     | Error   | Compensation node incompatible with effect node output. |
 | CAP101    | Runtime        | Error   | Required capability binding missing from ResourceBag during preflight. |
+| CAP110    | Runtime        | Error   | Node accessed a capability not declared in its effect hints. |
 | CAP-WS-001 | Capability    | Error   | Workspace path is invalid (empty, root-resolving, non-ASCII by default, or malformed). |
 | CAP-WS-002 | Capability    | Error   | Workspace path traversal rejected (`..` segments are not allowed). |
 | CAP-WS-003 | Capability    | Error   | Workspace entry not found. |
@@ -115,3 +116,25 @@ Remediation:
   `dag_core::EffectHint` (the single allowed home for `resource::*` literals, enforced
   by `scripts/check-hint-literals.sh` / `mise run hint-gate`) so validation, preflight,
   and macro emission all learn about it at once.
+
+## CAP110 remediation
+
+`CAP110` fires at runtime when a node's code accesses a capability accessor (e.g.
+`http_read()`, `clock()`, `kv()`) that its declarations do not grant. Since packet A2,
+every node executes against a scoped resource view built from its declared effect hints
+(plus connector-resolved hints for bound connections); undeclared accessors return
+`None`, the denial is recorded with the node alias and capability name, and the node's
+failure surfaces this code. Declarations are enforced, not advisory: a node declared
+`effects = "Pure"` has an empty capability view.
+
+Remediation (pick exactly one; the denial message names the node and the capability):
+- If the node legitimately needs the capability, declare it: add a `resources(...)`
+  binding for the capability on the node definition (which emits the corresponding
+  effect hint, e.g. `resources(http(...))` emits `resource::http::read`), or — for
+  hand-built IR — add the canonical hint to `NodeIR.effect_hints`. Remember to raise
+  `effects`/`determinism` if the new hint's floor requires it (EFFECT201/DET302).
+- If the access is accidental (over-reach, copy-paste, dead code), remove the access;
+  do NOT widen the declaration to silence the error.
+- For connector nodes using bound connections, the connection's resolved hints are
+  granted automatically at preflight; CAP110 on a connector node means the node code
+  reached beyond both its declared ops and the bound connection's requirements.

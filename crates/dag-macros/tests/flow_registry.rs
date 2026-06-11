@@ -2,6 +2,53 @@
 
 use dag_macros::{def_node, flow, node};
 
+// When `host-bundle` is also enabled (e.g. `clippy --all-features`), `flow!`
+// additionally emits a `bundle()` referencing `::host_inproc::*`. Satisfy
+// those references with the same self-alias mock used by tests/flow_macro.rs.
+#[cfg(feature = "host-bundle")]
+extern crate self as host_inproc;
+
+#[cfg(feature = "host-bundle")]
+mod host_bundle_mock_types {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    pub trait EnvironmentPlugin {}
+
+    #[derive(Clone, Debug)]
+    pub enum NodeSource {
+        Local,
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct NodeContract {
+        pub identifier: String,
+        pub contract_hash: Option<String>,
+        pub source: NodeSource,
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct FlowEntrypoint {
+        pub trigger_alias: String,
+        pub capture_alias: String,
+        pub route_path: Option<String>,
+        pub method: Option<String>,
+        pub deadline: Option<Duration>,
+        pub route_aliases: Vec<String>,
+    }
+
+    pub struct FlowBundle {
+        pub validated_ir: kernel_plan::ValidatedIR,
+        pub entrypoints: Vec<FlowEntrypoint>,
+        pub resolver: Arc<dyn kernel_exec::NodeResolver>,
+        pub node_contracts: Vec<NodeContract>,
+        pub environment_plugins: Vec<Arc<dyn EnvironmentPlugin>>,
+    }
+}
+
+#[cfg(feature = "host-bundle")]
+pub use host_bundle_mock_types::*;
+
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct RegistryInput;
 

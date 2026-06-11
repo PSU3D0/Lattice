@@ -89,6 +89,62 @@ pub fn flow_enum(attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 }
 
+/// Derive-bundle sugar for Flow I/O payload types.
+///
+/// `#[flow_struct]` expands to the annotated item plus the canonical derive
+/// stack carried by every Flow payload: `Clone + Debug + Serialize +
+/// Deserialize + JsonSchema`. It replaces the copy-pasted
+/// `#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]`
+/// line on struct/enum payloads.
+///
+/// Composition guarantees:
+/// * User-added derives are preserved and merged — a canonical trait already
+///   present (matched by its final path segment, so `serde::Serialize` and a
+///   bare `Serialize` import both count) is never duplicated.
+/// * Field- and container-level `#[serde(...)]` attributes are untouched, so
+///   `#[serde(default)]`, `#[serde(rename_all = "...")]`, etc. keep working.
+/// * Unlike `#[flow_enum]`, this macro injects **no** serde policy of its own
+///   (no implicit `#[serde(tag = ...)]`): it is purely a derive bundle.
+///
+/// Scope: both `struct` and `enum` items are accepted (the expansion is
+/// identical for either). Applying it to any other item (fn, impl, mod, …) is a
+/// compile error. The expansion references `::serde` / `::schemars` absolutely,
+/// so the calling crate must depend on `serde` and `schemars` directly — every
+/// current example already does.
+#[proc_macro_attribute]
+pub fn flow_struct(attr: TokenStream, item: TokenStream) -> TokenStream {
+    if !attr.is_empty() {
+        let err = syn::Error::new(
+            Span::call_site(),
+            "#[flow_struct] does not accept attribute arguments",
+        );
+        return TokenStream::from(err.to_compile_error());
+    }
+
+    let item_tokens: TokenStream2 = item.into();
+    let mut parsed = match syn::parse2::<syn::Item>(item_tokens.clone()) {
+        Ok(item) => item,
+        Err(err) => return TokenStream::from(err.to_compile_error()),
+    };
+
+    let attrs = match &mut parsed {
+        syn::Item::Struct(item) => &mut item.attrs,
+        syn::Item::Enum(item) => &mut item.attrs,
+        other => {
+            let err = syn::Error::new_spanned(
+                other,
+                "#[flow_struct] can only be applied to struct or enum definitions",
+            );
+            return TokenStream::from(err.to_compile_error());
+        }
+    };
+
+    match ensure_canonical_flow_derives(attrs) {
+        Ok(()) => TokenStream::from(quote!(#parsed)),
+        Err(err) => TokenStream::from(err.to_compile_error()),
+    }
+}
+
 struct NodeDefaults {
     kind: &'static str,
     effects: EffectLevel,
@@ -1321,20 +1377,32 @@ fn ensure_flow_enum_attrs(item: &mut ItemEnum) -> Result<()> {
 }
 
 fn ensure_flow_enum_derives(item: &mut ItemEnum) -> Result<()> {
+    ensure_canonical_flow_derives(&mut item.attrs)
+}
+
+/// The canonical derive bundle shared by `#[flow_enum]` and `#[flow_struct]`:
+/// `Clone + Debug + Serialize + Deserialize + JsonSchema`. Injected into the
+/// item's first `#[derive(...)]` attribute (merging, never duplicating an
+/// already-present trait by its final path segment), or prepended as a fresh
+/// `#[derive(...)]` when the item has none. User-supplied derives (e.g.
+/// `PartialEq`, `Eq`, `Copy`) and `#[serde(...)]` container/field attributes are
+/// preserved untouched.
+///
+/// The serde/schemars paths are emitted absolutely (`::serde`, `::schemars`) to
+/// match the idiom used elsewhere in this crate; callers therefore need `serde`
+/// and `schemars` resolvable at the crate root (direct dependencies — which is
+/// how every current example already declares them).
+fn ensure_canonical_flow_derives(attrs: &mut Vec<Attribute>) -> Result<()> {
     let required_traits: [(&str, Path); 5] = [
-        ("Debug", parse_quote!(Debug)),
         ("Clone", parse_quote!(Clone)),
+        ("Debug", parse_quote!(Debug)),
         ("Serialize", parse_quote!(::serde::Serialize)),
         ("Deserialize", parse_quote!(::serde::Deserialize)),
         ("JsonSchema", parse_quote!(::schemars::JsonSchema)),
     ];
 
-    if let Some(index) = item
-        .attrs
-        .iter()
-        .position(|attr| attr.path().is_ident("derive"))
-    {
-        let original = item.attrs.remove(index);
+    if let Some(index) = attrs.iter().position(|attr| attr.path().is_ident("derive")) {
+        let original = attrs.remove(index);
         let mut traits: Vec<Path> = original
             .parse_args_with(Punctuated::<Path, Token![,]>::parse_terminated)?
             .into_iter()
@@ -1356,12 +1424,12 @@ fn ensure_flow_enum_derives(item: &mut ItemEnum) -> Result<()> {
         let updated: Attribute = parse_quote! {
             #[derive(#(#traits),*)]
         };
-        item.attrs.insert(index, updated);
+        attrs.insert(index, updated);
     } else {
         let attr: Attribute = parse_quote! {
-            #[derive(Debug, Clone, ::serde::Serialize, ::serde::Deserialize, ::schemars::JsonSchema)]
+            #[derive(Clone, Debug, ::serde::Serialize, ::serde::Deserialize, ::schemars::JsonSchema)]
         };
-        item.attrs.insert(0, attr);
+        attrs.insert(0, attr);
     }
 
     Ok(())
@@ -1501,6 +1569,13 @@ fn register_info_for_node_macro(mac: &Macro) -> Result<(Path, String)> {
 
     let path: Path = syn::parse2(mac.tokens.clone())
         .map_err(|err| syn::Error::new(err.span(), "node! expects a path identifier"))?;
+    // Mirror the path qualification node! itself applies to the spec path
+    // (`node_spec_path_from_path`): a bare `node!(name)` resolves
+    // `crate::name_node_spec`, so the derived register fn must resolve from
+    // the crate root too. Without this, `__register_nodes` only compiles when
+    // the flow! call site manually re-imports every `<name>_register` —
+    // exactly the drift-prone ceremony auto-registration exists to remove.
+    let path = qualify_type_path(&path);
     register_info_from_base_path(&path)
 }
 
@@ -4546,8 +4621,18 @@ impl WorkflowBundleInput {
         });
 
         let mut register_entries = Vec::new();
+        let mut seen_register_paths = HashSet::new();
         for binding in &self.bindings {
             let (register_path, base_name) = register_info_for_binding(&binding.expr)?;
+            // The same node fn may be bound under several aliases in one flow.
+            // The registry is keyed by node identifier, so one registration
+            // covers every alias; registering again would fail with
+            // RegistryError::Duplicate. Distinct fns that collide on an
+            // explicit `identifier = "..."` override still surface as a
+            // duplicate-registration panic — that is a genuine conflict.
+            if !seen_register_paths.insert(register_path.to_token_stream().to_string()) {
+                continue;
+            }
             let label = LitStr::new(&format!("register {base_name}"), binding.alias.span());
             register_entries.push((register_path, label));
         }

@@ -65,8 +65,6 @@ async fn capture(input: TextResponse) -> NodeResult<TextResponse> {
 }
 
 mod upper_bundle_def {
-    #[cfg(feature = "host-bundle")]
-    use super::{capture_register, text_trigger_register, uppercase_text_register};
     use dag_macros::node;
 
     dag_macros::flow! {
@@ -93,8 +91,6 @@ mod upper_bundle_def {
 }
 
 mod reverse_bundle_def {
-    #[cfg(feature = "host-bundle")]
-    use super::{capture_register, reverse_text_register, text_trigger_register};
     use dag_macros::node;
 
     dag_macros::flow! {

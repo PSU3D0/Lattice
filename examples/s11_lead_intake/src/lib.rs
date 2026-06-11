@@ -1,23 +1,18 @@
-#[cfg(feature = "host-bundle")]
-use std::sync::Arc;
-
 use dag_core::{
     ConnectorOpMetadata, ConnectorRoleKindDecl, ConnectorRoleRequirement, Determinism, Effects,
     FlowIR, NodeError, NodeResult,
 };
-use dag_macros::def_node;
+use dag_macros::{def_node, flow_struct};
 use kernel_plan::{ValidatedIR, validate};
 use llm_agent::image_generation::ImageGenerationModel as _;
 use llm_agent::prelude::{CompletionClient, ImageGenerationClient, TypedPrompt};
 use llm_lattice::LatticeHttpClient;
 use llm_provider_openai::{Client as OpenAIClient, GPT_5_4_MINI, GPT_IMAGE_1_5};
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 
 use capabilities::connector::{
     EndpointProfileDescriptor, OutboundAuthKind, OutboundAuthProfileDescriptor,
 };
-use capabilities::http::{HttpMethod, HttpRequest};
+use connectors_std::openai::{OpenAiFallback, env_or_default, resolve_openai_settings};
 
 const DEFAULT_OPENAI_API_KEY: &str = "test-key";
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
@@ -40,6 +35,13 @@ const OPENAI_AUTH_PROFILE: OutboundAuthProfileDescriptor = OutboundAuthProfileDe
     kind: OutboundAuthKind::Bearer {
         handle_kind: "http.bearer",
     },
+};
+
+const OPENAI_FALLBACK: OpenAiFallback = OpenAiFallback {
+    env_api_key_var: "OPENAI_API_KEY",
+    default_api_key: DEFAULT_OPENAI_API_KEY,
+    env_base_url_var: "OPENAI_BASE_URL",
+    default_base_url: DEFAULT_OPENAI_BASE_URL,
 };
 
 struct OpenAiStructuredExtractOp;
@@ -129,14 +131,15 @@ impl OpenAiImageGenOp {
     };
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[flow_struct]
 pub struct LeadSubmission {
     pub name: String,
     pub email: String,
     pub message: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[flow_struct]
+#[derive(PartialEq, Eq)]
 pub struct LeadInfo {
     pub name: String,
     pub email: String,
@@ -149,7 +152,8 @@ pub struct LeadInfo {
     pub summary: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[flow_struct]
+#[derive(Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Priority {
     High,
@@ -157,34 +161,39 @@ pub enum Priority {
     Low,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[flow_struct]
+#[derive(PartialEq, Eq)]
 pub struct OutreachDraft {
     pub subject: String,
     pub body: String,
     pub tone: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[flow_struct]
+#[derive(PartialEq, Eq)]
 pub struct DraftedLead {
     pub lead: LeadInfo,
     pub draft: OutreachDraft,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[flow_struct]
+#[derive(PartialEq, Eq)]
 pub struct HighPriorityLeadImage {
     pub lead: LeadInfo,
     pub draft: OutreachDraft,
     pub image_bytes: Vec<u8>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[flow_struct]
+#[derive(PartialEq, Eq)]
 pub struct StoredLeadPackage {
     pub lead: LeadInfo,
     pub draft: OutreachDraft,
     pub image_artifact_path: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[flow_struct]
+#[derive(PartialEq, Eq)]
 pub struct EmailPackage {
     pub to: String,
     pub subject: String,
@@ -377,12 +386,6 @@ async fn capture(package: EmailPackage) -> NodeResult<EmailPackage> {
 }
 
 mod bundle_def {
-    #[cfg(feature = "host-bundle")]
-    use super::{
-        capture_register, compose_email_register, draft_outreach_register, extract_lead_register,
-        generate_image_register, lead_submission_trigger_register, store_image_register,
-        template_response_register,
-    };
     use dag_macros::node;
 
     dag_macros::flow! {
@@ -435,57 +438,21 @@ pub fn validated_ir() -> ValidatedIR {
     validate(&flow()).expect("s11 lead intake flow should validate")
 }
 
+/// Node registration is derived by `flow!` from its `node!(...)` bindings —
+/// there is no manual register list to drift from the flow definition.
 #[cfg(all(feature = "host-bundle", not(target_arch = "wasm32")))]
 pub fn bundle() -> host_inproc::FlowBundle {
-    use host_inproc::{FlowBundle, FlowEntrypoint, NodeContract, NodeSource};
-    use kernel_exec::{NodeRegistry, RegistryResolver};
-    use std::time::Duration;
-
-    let validated_ir = validated_ir();
-    let mut registry = NodeRegistry::new();
-    lead_submission_trigger_register(&mut registry).expect("register trigger");
-    extract_lead_register(&mut registry).expect("register extract_lead");
-    draft_outreach_register(&mut registry).expect("register draft_outreach");
-    generate_image_register(&mut registry).expect("register generate_image");
-    store_image_register(&mut registry).expect("register store_image");
-    compose_email_register(&mut registry).expect("register compose_email");
-    template_response_register(&mut registry).expect("register template_response");
-    capture_register(&mut registry).expect("register capture");
-
-    let node_contracts = flow()
-        .nodes
-        .iter()
-        .map(|node| NodeContract {
-            identifier: node.identifier.clone(),
-            contract_hash: None,
-            source: NodeSource::Local,
-        })
-        .collect();
-
-    FlowBundle {
-        validated_ir,
-        entrypoints: vec![FlowEntrypoint {
-            trigger_alias: "trigger".to_string(),
-            capture_alias: "capture".to_string(),
-            route_path: Some("/leads".to_string()),
-            method: Some("POST".to_string()),
-            deadline: Some(Duration::from_millis(5_000)),
-            route_aliases: vec!["/leads".to_string()],
-        }],
-        resolver: Arc::new(RegistryResolver::new(Arc::new(registry))),
-        node_contracts,
-        environment_plugins: Vec::new(),
-    }
-}
-
-#[derive(Clone, Debug)]
-struct OpenAiSettings {
-    api_key: String,
-    base_url: String,
+    bundle_def::bundle()
 }
 
 async fn openai_client() -> NodeResult<OpenAIClient<LatticeHttpClient>> {
-    let settings = openai_settings().await?;
+    let settings = resolve_openai_settings(
+        OpenAiDraftOp::META.operation_id,
+        &OPENAI_ENDPOINT_PROFILE,
+        &OPENAI_AUTH_PROFILE,
+        OPENAI_FALLBACK,
+    )
+    .await?;
     OpenAIClient::<LatticeHttpClient>::builder()
         .base_url(settings.base_url)
         .api_key(settings.api_key)
@@ -494,105 +461,12 @@ async fn openai_client() -> NodeResult<OpenAIClient<LatticeHttpClient>> {
         .map_err(node_error)
 }
 
-async fn openai_settings() -> NodeResult<OpenAiSettings> {
-    if let Some(result) = capabilities::context::with_current_async(|resources| async move {
-        let runtime = match resources.connector_runtime() {
-            Some(runtime) => runtime,
-            None => return Ok::<Option<OpenAiSettings>, NodeError>(None),
-        };
-        let scope = match resources.connector_scope() {
-            Some(scope) => scope,
-            None => return Ok::<Option<OpenAiSettings>, NodeError>(None),
-        };
-
-        let endpoint = runtime
-            .resolve_endpoint_profile(&scope, &OPENAI_ENDPOINT_PROFILE)
-            .await
-            .map_err(node_error)?;
-        let mut request = HttpRequest::new(HttpMethod::Get, endpoint.base_url.clone());
-        runtime
-            .apply_outbound_auth(&scope, &OPENAI_AUTH_PROFILE, &mut request)
-            .await
-            .map_err(node_error)?;
-        let api_key = bearer_api_key(&request)?;
-
-        Ok(Some(OpenAiSettings {
-            api_key,
-            base_url: endpoint.base_url,
-        }))
-    })
-    .await
-    {
-        if let Some(settings) = result? {
-            return Ok(settings);
-        }
-    }
-
-    Ok(OpenAiSettings {
-        api_key: openai_api_key_fallback(),
-        base_url: openai_base_url_fallback(),
-    })
-}
-
-fn bearer_api_key(request: &HttpRequest) -> NodeResult<String> {
-    let header = request
-        .headers
-        .get("authorization")
-        .or_else(|| request.headers.get("Authorization"))
-        .ok_or_else(|| NodeError::new("missing authorization header from connector runtime"))?;
-    let token = header
-        .strip_prefix("Bearer ")
-        .ok_or_else(|| NodeError::new(format!("unsupported authorization header `{header}`")))?;
-    Ok(token.to_string())
-}
-
-fn openai_api_key_fallback() -> String {
-    #[cfg(target_arch = "wasm32")]
-    {
-        DEFAULT_OPENAI_API_KEY.to_string()
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        std::env::var("OPENAI_API_KEY").unwrap_or_else(|_| DEFAULT_OPENAI_API_KEY.to_string())
-    }
-}
-
-fn openai_base_url_fallback() -> String {
-    #[cfg(target_arch = "wasm32")]
-    {
-        DEFAULT_OPENAI_BASE_URL.to_string()
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| DEFAULT_OPENAI_BASE_URL.to_string())
-    }
-}
-
 fn openai_text_model() -> String {
-    #[cfg(target_arch = "wasm32")]
-    {
-        DEFAULT_OPENAI_TEXT_MODEL.to_string()
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        std::env::var("OPENAI_TEXT_MODEL").unwrap_or_else(|_| DEFAULT_OPENAI_TEXT_MODEL.to_string())
-    }
+    env_or_default("OPENAI_TEXT_MODEL", DEFAULT_OPENAI_TEXT_MODEL)
 }
 
 fn openai_image_model() -> String {
-    #[cfg(target_arch = "wasm32")]
-    {
-        DEFAULT_OPENAI_IMAGE_MODEL.to_string()
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        std::env::var("OPENAI_IMAGE_MODEL")
-            .unwrap_or_else(|_| DEFAULT_OPENAI_IMAGE_MODEL.to_string())
-    }
+    env_or_default("OPENAI_IMAGE_MODEL", DEFAULT_OPENAI_IMAGE_MODEL)
 }
 
 fn workspace_image_path(lead: &LeadInfo) -> String {
@@ -646,7 +520,7 @@ mod tests {
     use httpmock::MockServer;
     use serde_json::json;
     use std::collections::BTreeMap;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 

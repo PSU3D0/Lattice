@@ -20,7 +20,7 @@
 
 /// Total number of UI `.rs` cases across both directories. Keep in sync when
 /// adding/removing cases — `case_count_is_conserved` fails loudly otherwise.
-const TOTAL_UI_CASES: usize = 45;
+const TOTAL_UI_CASES: usize = 46;
 
 fn count_rs_cases(dir: &str) -> usize {
     std::fs::read_dir(dir)
@@ -98,6 +98,7 @@ fn ui_full() {
     t.compile_fail("tests/ui-full/node_queue_effect_conflict.rs");
     t.compile_fail("tests/ui-full/node_blob_determinism_conflict.rs");
     t.compile_fail("tests/ui-full/flow_enum_not_enum.rs");
+    t.compile_fail("tests/ui-full/flow_struct_not_struct.rs");
     t.compile_fail("tests/ui-full/workflow_unknown_alias.rs");
     t.compile_fail("tests/ui-full/workflow_connect_requires_typed_binding.rs");
     t.compile_fail("tests/ui-full/workflow_timeout_missing_edge.rs");

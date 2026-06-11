@@ -3,7 +3,7 @@ use capabilities::connector::{
 };
 use capabilities::context;
 use capabilities::durability::TokenConfig;
-use capabilities::http::{HttpMethod, HttpRequest};
+use connectors_std::openai::{OpenAiFallback, env_or_default, resolve_openai_settings};
 use dag_core::{
     ConnectorOpMetadata, ConnectorRoleKindDecl, ConnectorRoleRequirement, Determinism, Effects,
     NodeError, NodeResult,
@@ -41,6 +41,13 @@ const OPENAI_AUTH_PROFILE: OutboundAuthProfileDescriptor = OutboundAuthProfileDe
     kind: OutboundAuthKind::Bearer {
         handle_kind: "http.bearer",
     },
+};
+
+const OPENAI_FALLBACK: OpenAiFallback = OpenAiFallback {
+    env_api_key_var: "OPENAI_API_KEY",
+    default_api_key: DEFAULT_OPENAI_API_KEY,
+    env_base_url_var: "OPENAI_BASE_URL",
+    default_base_url: DEFAULT_OPENAI_BASE_URL,
 };
 
 struct OpenAiIssueTriageOp;
@@ -253,14 +260,14 @@ pub struct IssueInvestigatorOutcome {
     pub investigation: Option<InvestigationResult>,
 }
 
-#[derive(Clone, Debug)]
-struct OpenAiSettings {
-    api_key: String,
-    base_url: String,
-}
-
 async fn openai_client() -> NodeResult<OpenAIClient<LatticeHttpClient>> {
-    let settings = openai_settings().await?;
+    let settings = resolve_openai_settings(
+        OpenAiIssueTriageOp::META.operation_id,
+        &OPENAI_ENDPOINT_PROFILE,
+        &OPENAI_AUTH_PROFILE,
+        OPENAI_FALLBACK,
+    )
+    .await?;
     OpenAIClient::<LatticeHttpClient>::builder()
         .base_url(settings.base_url)
         .api_key(settings.api_key)
@@ -269,92 +276,8 @@ async fn openai_client() -> NodeResult<OpenAIClient<LatticeHttpClient>> {
         .map_err(node_error)
 }
 
-async fn openai_settings() -> NodeResult<OpenAiSettings> {
-    if let Some(result) = capabilities::context::with_current_async(|resources| async move {
-        let runtime = match resources.connector_runtime() {
-            Some(runtime) => runtime,
-            None => return Ok::<Option<OpenAiSettings>, NodeError>(None),
-        };
-        let scope = match resources.connector_scope() {
-            Some(scope) => scope,
-            None => return Ok::<Option<OpenAiSettings>, NodeError>(None),
-        };
-
-        let endpoint = runtime
-            .resolve_endpoint_profile(&scope, &OPENAI_ENDPOINT_PROFILE)
-            .await
-            .map_err(node_error)?;
-        let mut request = HttpRequest::new(HttpMethod::Get, endpoint.base_url.clone());
-        runtime
-            .apply_outbound_auth(&scope, &OPENAI_AUTH_PROFILE, &mut request)
-            .await
-            .map_err(node_error)?;
-        let api_key = bearer_api_key(&request)?;
-
-        Ok(Some(OpenAiSettings {
-            api_key,
-            base_url: endpoint.base_url,
-        }))
-    })
-    .await
-    {
-        if let Some(settings) = result? {
-            return Ok(settings);
-        }
-    }
-
-    Ok(OpenAiSettings {
-        api_key: openai_api_key_fallback(),
-        base_url: openai_base_url_fallback(),
-    })
-}
-
-fn bearer_api_key(request: &HttpRequest) -> NodeResult<String> {
-    let header = request
-        .headers
-        .get("authorization")
-        .or_else(|| request.headers.get("Authorization"))
-        .ok_or_else(|| NodeError::new("missing authorization header from connector runtime"))?;
-    let token = header
-        .strip_prefix("Bearer ")
-        .ok_or_else(|| NodeError::new(format!("unsupported authorization header `{header}`")))?;
-    Ok(token.to_string())
-}
-
-fn openai_api_key_fallback() -> String {
-    #[cfg(target_arch = "wasm32")]
-    {
-        DEFAULT_OPENAI_API_KEY.to_string()
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        std::env::var("OPENAI_API_KEY").unwrap_or_else(|_| DEFAULT_OPENAI_API_KEY.to_string())
-    }
-}
-
-fn openai_base_url_fallback() -> String {
-    #[cfg(target_arch = "wasm32")]
-    {
-        DEFAULT_OPENAI_BASE_URL.to_string()
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| DEFAULT_OPENAI_BASE_URL.to_string())
-    }
-}
-
 fn openai_text_model() -> String {
-    #[cfg(target_arch = "wasm32")]
-    {
-        DEFAULT_OPENAI_TEXT_MODEL.to_string()
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        std::env::var("OPENAI_TEXT_MODEL").unwrap_or_else(|_| DEFAULT_OPENAI_TEXT_MODEL.to_string())
-    }
+    env_or_default("OPENAI_TEXT_MODEL", DEFAULT_OPENAI_TEXT_MODEL)
 }
 
 fn sandbox_dispatch_url() -> String {
@@ -684,6 +607,7 @@ mod tests {
         CheckpointError, CheckpointFilter, CheckpointHandle, CheckpointRecord, Lease,
         ResumeSignalSource, ResumeToken, TokenError,
     };
+    use capabilities::http::HttpRequest;
     use capabilities::{ResourceBag, context};
     use host_inproc::{HostExecutionResult, HostRuntime, Invocation};
     use httpmock::{Method::POST, Mock, MockServer};

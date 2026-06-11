@@ -14,6 +14,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 capabilities = { path = "../../crates/capabilities" }
+connectors-std = { path = "../../crates/connectors-std" }
 dag-core = { path = "../../crates/dag-core" }
 dag-macros = { path = "../../crates/dag-macros" }
 kernel-plan = { path = "../../crates/kernel-plan" }

@@ -247,11 +247,19 @@ fn collect_required_effect_hints(ir: &ValidatedIR) -> Vec<String> {
     set.into_iter().collect()
 }
 
+/// Per-node connector-resolved effect hints (keyed by node alias).
+///
+/// These hints are part of each node's declaration surface — the bound
+/// connection's requirements, resolved at binding time — so packet A2 feeds
+/// them into the node's scoped capability grant set in addition to checking
+/// them during preflight.
+type ConnectorResolvedGrants = BTreeMap<String, BTreeSet<dag_core::EffectHint>>;
+
 #[cfg(not(target_arch = "wasm32"))]
 fn collect_resolution_aware_effect_hints(
     ir: &ValidatedIR,
     resources: &dyn ResourceAccess,
-) -> Result<Vec<String>, ExecutionError> {
+) -> Result<ConnectorResolvedGrants, ExecutionError> {
     let Some(runtime) = resources.connector_runtime() else {
         let needs_bound = ir.flow().nodes.iter().any(|node| {
             node.connector_ops.iter().any(|op| {
@@ -263,10 +271,10 @@ fn collect_resolution_aware_effect_hints(
                 "missing connector runtime for bound-connection preflight"
             )));
         }
-        return Ok(Vec::new());
+        return Ok(ConnectorResolvedGrants::new());
     };
 
-    let mut hints = BTreeSet::new();
+    let mut grants = ConnectorResolvedGrants::new();
     for node in &ir.flow().nodes {
         for op in &node.connector_ops {
             if op.selected_resolution_mode != ConnectorResolutionModeDecl::BoundConnection {
@@ -286,20 +294,27 @@ fn collect_resolution_aware_effect_hints(
                 // validation, so unknown strings fail closed here instead of
                 // being dropped (prefix typos) or surfacing later as a
                 // misleading MissingCapabilities error (suffix typos).
-                if let Err(err) = dag_core::EffectHint::parse(&hint) {
-                    return Err(ExecutionError::HostEnvironment(anyhow::anyhow!(
-                        "connector `{}` (node `{}`) resolved an invalid effect hint: {err} \
-                         (EFFECT202; see impl-docs/error-codes.md)",
-                        op.connector_id,
-                        node.alias,
-                    )));
+                match dag_core::EffectHint::parse(&hint) {
+                    Ok(parsed) => {
+                        grants
+                            .entry(node.alias.clone())
+                            .or_default()
+                            .insert(parsed);
+                    }
+                    Err(err) => {
+                        return Err(ExecutionError::HostEnvironment(anyhow::anyhow!(
+                            "connector `{}` (node `{}`) resolved an invalid effect hint: {err} \
+                             (EFFECT202; see impl-docs/error-codes.md)",
+                            op.connector_id,
+                            node.alias,
+                        )));
+                    }
                 }
-                hints.insert(hint);
             }
         }
     }
 
-    Ok(hints.into_iter().collect())
+    Ok(grants)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -325,8 +340,8 @@ fn host_block_on_preflight(
 fn collect_resolution_aware_effect_hints(
     _ir: &ValidatedIR,
     _resources: &dyn ResourceAccess,
-) -> Result<Vec<String>, ExecutionError> {
-    Ok(Vec::new())
+) -> Result<ConnectorResolvedGrants, ExecutionError> {
+    Ok(ConnectorResolvedGrants::new())
 }
 
 fn is_hint_satisfied_by_resources(hint: &str, resources: &dyn ResourceAccess) -> bool {
@@ -577,12 +592,16 @@ impl HostRuntime {
     /// Derivation rule (0.1): required domains are inferred from `NodeIR.effect_hints`.
     pub fn preflight(&self) -> Result<(), ExecutionError> {
         self.preflight_with_resources(self.resources.as_ref())
+            .map(|_| ())
     }
 
+    /// Preflight against a concrete resource view. On success, returns the
+    /// per-node connector-resolved hints so execution paths can extend each
+    /// node's scoped capability grant set (packet A2).
     fn preflight_with_resources(
         &self,
         resources: &dyn ResourceAccess,
-    ) -> Result<(), ExecutionError> {
+    ) -> Result<ConnectorResolvedGrants, ExecutionError> {
         let mut missing_durability =
             collect_missing_durability_services(self.ir.as_ref(), resources);
         if !missing_durability.is_empty() {
@@ -593,9 +612,13 @@ impl HostRuntime {
             });
         }
 
+        let connector_grants =
+            collect_resolution_aware_effect_hints(self.ir.as_ref(), resources)?;
         let mut required: BTreeSet<String> = self.required_effect_hints.iter().cloned().collect();
-        for hint in collect_resolution_aware_effect_hints(self.ir.as_ref(), resources)? {
-            required.insert(hint);
+        for hints in connector_grants.values() {
+            for hint in hints {
+                required.insert(hint.as_str().to_string());
+            }
         }
 
         let mut missing: Vec<String> = required
@@ -604,7 +627,7 @@ impl HostRuntime {
             .cloned()
             .collect();
         if missing.is_empty() {
-            return Ok(());
+            return Ok(connector_grants);
         }
         missing.sort();
         missing.dedup();
@@ -661,12 +684,15 @@ impl HostRuntime {
         let resources = self
             .bind_workspace_resources(workspace_scope.clone())
             .await?;
-        if let Err(err) = self.preflight_with_resources(resources.as_ref()) {
-            let _ = self
-                .complete_workspace(workspace_scope, WorkspaceCompletionDisposition::Failed)
-                .await;
-            return Err(err);
-        }
+        let connector_grants = match self.preflight_with_resources(resources.as_ref()) {
+            Ok(grants) => grants,
+            Err(err) => {
+                let _ = self
+                    .complete_workspace(workspace_scope, WorkspaceCompletionDisposition::Failed)
+                    .await;
+                return Err(err);
+            }
+        };
 
         metadata.insert_label("lf.run_id", run_id.clone());
         if !metadata.labels().contains_key("lf.flow_id") {
@@ -687,6 +713,7 @@ impl HostRuntime {
             .executor
             .clone()
             .with_resource_access(resources)
+            .with_node_capability_grants(connector_grants.into_iter().collect())
             .run_once_with_run_id(
                 self.ir.as_ref(),
                 &trigger_alias,
@@ -852,10 +879,13 @@ impl HostRuntime {
                 return Err(err);
             }
         };
-        if let Err(err) = self.preflight_with_resources(resources.as_ref()) {
-            let _ = store.release_lease(lease).await;
-            return Err(err);
-        }
+        let connector_grants = match self.preflight_with_resources(resources.as_ref()) {
+            Ok(grants) => grants,
+            Err(err) => {
+                let _ = store.release_lease(lease).await;
+                return Err(err);
+            }
+        };
 
         let mut metadata = InvocationMetadata::default();
         metadata.insert_label("lf.run_id", handle.run_id.clone());
@@ -889,6 +919,7 @@ impl HostRuntime {
             .executor
             .clone()
             .with_resource_access(resources)
+            .with_node_capability_grants(connector_grants.into_iter().collect())
             .resume_once(
                 self.ir.as_ref(),
                 &frame.halt_alias,

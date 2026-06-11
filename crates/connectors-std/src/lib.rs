@@ -4,6 +4,7 @@ pub mod dev;
 pub mod endpoint;
 pub mod errors;
 pub mod http;
+pub mod openai;
 pub mod pagination;
 
 use std::sync::Arc;
@@ -553,7 +554,7 @@ mod tests {
     #[tokio::test]
     async fn connector_execution_context_collects_runtime_and_scope_once() {
         let context = context::with_resources(scoped_resources(), async {
-            connector_execution_context(&ACTION_NO_AUTH)
+            current_connector_context(ACTION_NO_AUTH.identifier)
                 .await
                 .expect("connector context resolves")
         })

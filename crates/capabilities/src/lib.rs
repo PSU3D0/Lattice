@@ -11,6 +11,7 @@ use time::Instant;
 pub mod connector;
 pub mod durability;
 pub mod hints;
+pub mod scoped;
 pub mod sql;
 pub mod workspace;
 

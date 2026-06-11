@@ -875,7 +875,11 @@ mod tests {
             )
             .unwrap();
         builder.connect(&trigger, &sink);
-        let flow = builder.build();
+        let mut flow = builder.build();
+        // Durability defaults to `Partial`, which requires a checkpoint store at
+        // preflight. These fixtures exercise success/capability/control behaviour,
+        // not durability, so disable it (mirrors host-inproc test fixtures).
+        flow.policies.durability.mode = DurabilityMode::Off;
         let validated = validate(&flow).expect("flow should validate");
         (executor, Arc::new(validated))
     }
@@ -930,7 +934,10 @@ mod tests {
             .unwrap();
         builder.connect(&trigger, &stream_capture);
 
-        let flow = builder.build();
+        let mut flow = builder.build();
+        // See `build_flow`: disable default `Partial` durability for fixtures that
+        // exercise streaming behaviour rather than durability preflight.
+        flow.policies.durability.mode = DurabilityMode::Off;
         let validated = validate(&flow).expect("flow should validate");
         (executor, Arc::new(validated))
     }
@@ -981,6 +988,9 @@ mod tests {
         builder.connect(&trigger, &sink);
 
         let mut flow = builder.build();
+        // Disable default `Partial` durability so preflight reaches the unsupported
+        // control-surface check rather than failing on a missing checkpoint store.
+        flow.policies.durability.mode = DurabilityMode::Off;
         flow.control_surfaces.push(dag_core::ControlSurfaceIR {
             id: "rate_limit:0".to_string(),
             kind: dag_core::ControlSurfaceKind::RateLimit,
@@ -1113,7 +1123,8 @@ mod tests {
                         )
                         .unwrap();
                     builder.connect(&trigger, &capture);
-                    let flow = builder.build();
+                    let mut flow = builder.build();
+                    flow.policies.durability.mode = DurabilityMode::Off;
                     let validated = validate(&flow).expect("flow should validate");
 
                     let config = RouteConfig::new("/prop_stream")
@@ -1492,7 +1503,10 @@ mod tests {
             )
             .unwrap();
         builder.connect(&trigger, &sink);
-        let flow = builder.build();
+        let mut flow = builder.build();
+        // Disable default durability so the 500 asserts the node-failure mapping
+        // rather than a missing checkpoint store (which would also yield 500).
+        flow.policies.durability.mode = DurabilityMode::Off;
         let validated = validate(&flow).expect("validated");
 
         let config = RouteConfig::new("/fail")
@@ -1564,7 +1578,11 @@ mod tests {
             )
             .unwrap();
         builder.connect(&trigger, &sink);
-        let validated = validate(&builder.build()).expect("validated");
+        let mut flow = builder.build();
+        // Disable default durability so durability preflight passes and the
+        // capability preflight (the assertion target) is actually exercised.
+        flow.policies.durability.mode = DurabilityMode::Off;
+        let validated = validate(&flow).expect("validated");
 
         let config = RouteConfig::new("/preflight")
             .with_method(Method::POST)
@@ -1747,6 +1765,9 @@ mod tests {
         builder.connect(&kv_node, &http_node);
 
         let mut flow = builder.build();
+        // Disable default durability so capability preflight (the assertion target)
+        // runs instead of failing first on a missing checkpoint store.
+        flow.policies.durability.mode = DurabilityMode::Off;
         flow.nodes
             .iter_mut()
             .find(|node| node.alias == "respond")
@@ -1835,7 +1856,10 @@ mod tests {
             )
             .unwrap();
         builder.connect(&trigger, &stream_capture);
-        let flow = builder.build();
+        let mut flow = builder.build();
+        // Disable default durability so the SSE error event reflects the capability
+        // preflight failure (the assertion target), not a missing checkpoint store.
+        flow.policies.durability.mode = DurabilityMode::Off;
         let validated = validate(&flow).expect("validated");
 
         let config = RouteConfig::new("/preflight_stream")

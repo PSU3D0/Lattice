@@ -258,6 +258,9 @@ impl ConnectorRuntime for SheetPortFileRuntime {
 
 fn s12_test_resources() -> ResourceBag {
     ResourceBag::default()
+        // The sheetport evaluate op declares resource::blob::read (workbook
+        // materialization), so preflight requires a blob provider.
+        .with_blob(Arc::new(capabilities::blob::MemoryBlobStore::new()))
         .with_connector_runtime(Arc::new(SheetPortFileRuntime {
             workbook_path: s12_asset_path("assets/quote_model.xlsx")
                 .to_string_lossy()

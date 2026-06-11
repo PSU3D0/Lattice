@@ -26,7 +26,9 @@ impl SheetPortEvaluate {
         min_effects: ::dag_core::Effects::Effectful,
         max_determinism: ::dag_core::Determinism::BestEffort,
         determinism_hints: &[],
-        effect_hints: &[],
+        // Evaluate materializes the workbook from blob storage before running
+        // the semantic function, so the op intrinsically reads blobs.
+        effect_hints: &[::dag_core::EffectHint::BlobRead.as_str()],
         roles: &[],
         resolution: ::dag_core::ConnectorResolutionContract {
             supported_modes: &[

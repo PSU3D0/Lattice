@@ -1277,7 +1277,6 @@ fn stream_events_stream_register(registry: &mut NodeRegistry) -> Result<(), Regi
 }
 
 mod bundle_def {
-    use super::*;
     use dag_macros::node;
 
     dag_macros::flow! {

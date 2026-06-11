@@ -36,7 +36,6 @@ async fn capture(payload: JsonValue) -> NodeResult<JsonValue> {
 }
 
 mod bundle_def {
-    use super::{capture_register, http_trigger_register, passthrough_register};
     use dag_macros::node;
 
     dag_macros::flow! {

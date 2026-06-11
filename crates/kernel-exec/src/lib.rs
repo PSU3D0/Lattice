@@ -7,7 +7,7 @@
 
 #[cfg(target_arch = "wasm32")]
 use instant::Instant;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::future::Future;
 use std::marker::PhantomData;
@@ -33,10 +33,11 @@ use capabilities::{
         CheckpointError, CheckpointHandle, CheckpointRecord, FlowFrontier, FrontierEntry,
         IdempotencyState,
     },
+    scoped::ScopedResources,
 };
 use dag_core::{
-    EdgeTransformKind, FlowId, IntoCoercion, NodeError, NodeResult, Profile, apply_into_coercion,
-    json_type_name, schemas_compatible, supported_into_coercion,
+    EdgeTransformKind, EffectHint, FlowId, IntoCoercion, NodeError, NodeResult, Profile,
+    apply_into_coercion, json_type_name, schemas_compatible, supported_into_coercion,
 };
 #[cfg(target_arch = "wasm32")]
 use futures::channel::oneshot;
@@ -1643,6 +1644,10 @@ pub struct FlowExecutor {
     capture_capacity: usize,
     resources: Arc<dyn ResourceAccess>,
     bundle_id: Option<String>,
+    /// Extra per-node capability grants (keyed by node alias) unioned with
+    /// each node's declared `effect_hints` when building its scoped resource
+    /// view. Hosts populate this with connector-resolved hints (packet A2).
+    node_capability_grants: Arc<HashMap<String, BTreeSet<EffectHint>>>,
 }
 
 impl FlowExecutor {
@@ -1661,7 +1666,21 @@ impl FlowExecutor {
             capture_capacity: DEFAULT_CAPTURE_CAPACITY,
             resources: default_resources,
             bundle_id: None,
+            node_capability_grants: Arc::new(HashMap::new()),
         }
+    }
+
+    /// Grant additional capabilities to specific nodes (keyed by alias), on
+    /// top of what each node's `effect_hints` already declare. Hosts use this
+    /// for connector-resolved hints discovered during preflight (the bound
+    /// connection's requirements are part of the node's declaration surface
+    /// even though they are resolved at binding time).
+    pub fn with_node_capability_grants(
+        mut self,
+        grants: HashMap<String, BTreeSet<EffectHint>>,
+    ) -> Self {
+        self.node_capability_grants = Arc::new(grants);
+        self
     }
 
     /// Override default edge channel capacity.
@@ -1842,15 +1861,33 @@ impl FlowExecutor {
             let capture_target = capture_alias.clone();
             let token = cancellation.clone();
             let alias = node.alias.clone();
-            let resource_handle: Arc<dyn ResourceAccess> = Arc::new(NodeScopedResources::new(
-                self.resources.clone(),
-                ConnectorBindingScope::new(
-                    flow_id.as_str(),
-                    alias.clone(),
-                    node.identifier.clone(),
-                    infer_connector_id(&node.identifier),
-                ),
+            // Per-node grant set (packet A2): the node's declared effect
+            // hints plus any host-supplied extra grants (connector-resolved
+            // hints). Policy markers (e.g. `policy::json_boundary`) are not
+            // capability grants and do not parse as `EffectHint`; in a
+            // ValidatedIR every other hint parses (EFFECT202).
+            let mut grants: BTreeSet<EffectHint> = node
+                .effect_hints
+                .iter()
+                .filter_map(|hint| EffectHint::parse(hint).ok())
+                .collect();
+            if let Some(extra) = self.node_capability_grants.get(&node.alias) {
+                grants.extend(extra.iter().copied());
+            }
+            let scoped_resources = Arc::new(ScopedResources::new(
+                alias.clone(),
+                Arc::new(NodeScopedResources::new(
+                    self.resources.clone(),
+                    ConnectorBindingScope::new(
+                        flow_id.as_str(),
+                        alias.clone(),
+                        node.identifier.clone(),
+                        infer_connector_id(&node.identifier),
+                    ),
+                )),
+                grants,
             ));
+            let resource_handle: Arc<dyn ResourceAccess> = scoped_resources.clone();
             let halts = node.durability.halts;
             let node_flow_id = flow_id.clone();
             let node_run_id = run_id.clone();
@@ -1864,6 +1901,7 @@ impl FlowExecutor {
                 metrics.clone(),
                 capture_tracker.clone(),
                 NodeContext::new(token, resource_handle),
+                scoped_resources,
                 routing.clone(),
                 node_flow_id,
                 node_run_id,
@@ -2389,6 +2427,31 @@ enum FlowMessage {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Fold any capability denials recorded by the node's scoped resource view
+/// into a failed handler result, so the error that reaches the capture/run
+/// result carries the structured CAP110 message (node alias, denied
+/// capability, exact declaration to add) instead of whatever generic
+/// "capability missing" message the handler produced when its accessor
+/// returned `None`.
+fn attribute_capability_denials(
+    result: NodeResult<NodeOutput>,
+    scoped_resources: &ScopedResources,
+) -> NodeResult<NodeOutput> {
+    let denials = scoped_resources.take_denials();
+    match result {
+        Err(err) if !denials.is_empty() => {
+            let mut message = String::new();
+            for denial in &denials {
+                message.push_str(&denial.message());
+                message.push('\n');
+            }
+            message.push_str(&format!("node failed after denial(s): {err}"));
+            Err(NodeError::new(message))
+        }
+        other => other,
+    }
+}
+
 #[instrument(
     level = "trace",
     skip_all,
@@ -2404,6 +2467,7 @@ async fn run_node(
     metrics: Arc<ExecutorMetrics>,
     capture_tracker: Arc<QueueDepthTracker>,
     ctx: NodeContext,
+    scoped_resources: Arc<ScopedResources>,
     routing: Arc<RoutingTable>,
     flow_id: FlowId,
     run_id: String,
@@ -2514,6 +2578,13 @@ async fn run_node(
         } else {
             invoke.await
         };
+        // Attribute failures to undeclared capability access (packet A2):
+        // if the scoped view denied any accessor during this invocation and
+        // the handler failed, surface the structured CAP110 denial instead of
+        // the handler's bare "capability missing" message. Denials are
+        // drained every iteration either way (successful handlers may have
+        // tolerated the denial; the denial-time tracing event remains).
+        let result = attribute_capability_denials(result, scoped_resources.as_ref());
 
         match result {
             Ok(NodeOutput::Halt(value)) => {
@@ -3589,7 +3660,9 @@ mod tests {
         let worker = builder
             .add_node(
                 "worker",
-                &NodeSpec::inline(
+                // Packet A2: the worker must DECLARE its kv access — node
+                // resource views are scoped to declared effect hints.
+                &NodeSpec::inline_with_hints(
                     "tests::worker",
                     "Worker",
                     SchemaSpec::Opaque,
@@ -3597,6 +3670,8 @@ mod tests {
                     Effects::Effectful,
                     Determinism::BestEffort,
                     None,
+                    &[],
+                    &[capabilities::kv::HINT_KV_WRITE],
                 ),
             )
             .unwrap();
