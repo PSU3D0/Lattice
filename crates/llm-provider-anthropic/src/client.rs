@@ -24,7 +24,7 @@ impl<H> Capabilities<H> for AnthropicExt {
     type Embeddings = Nothing;
     type Transcription = Nothing;
     type ModelListing = Nothing;
-
+    type ImageGeneration = Nothing;
 }
 
 #[derive(Debug, Clone)]

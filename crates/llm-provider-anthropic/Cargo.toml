@@ -14,7 +14,7 @@ name = "llm_provider_anthropic"
 
 [dependencies]
 llm-types = { path = "../llm-types" }
-llm-agent = { path = "../llm-agent" }
+llm-agent = { path = "../llm-agent", features = ["image"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tracing.workspace = true

@@ -13,11 +13,11 @@ error[E0277]: the trait bound `u8: From<std::string::String>` is not satisfied
 help: the following other types implement trait `From<T>`
   --> $RUST/core/src/convert/num.rs
    |
-   |           impl const From<$Small> for $Large {
-   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `u8` implements `From<bool>`
+   |           impl const From<bool> for $int {
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `u8` implements `From<bool>`
 ...
-   |   impl_from!(bool => u8);
-   |   ---------------------- in this macro invocation
+   |   impl_from_bool!(u8 u16 u32 u64 u128 usize);
+   |   ------------------------------------------ in this macro invocation
    |
   ::: tests/ui/workflow_connect_requires_into.rs:26:1
    |
