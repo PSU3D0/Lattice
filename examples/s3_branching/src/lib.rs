@@ -17,7 +17,8 @@ async fn http_trigger(payload: JsonValue) -> NodeResult<JsonValue> {
     name = "Route",
     summary = "Normalize input into a routing object",
     effects = "Pure",
-    determinism = "Strict"
+    determinism = "Strict",
+    json_boundary = true
 )]
 async fn route(payload: JsonValue) -> NodeResult<JsonValue> {
     let flag = payload
@@ -41,7 +42,8 @@ async fn route(payload: JsonValue) -> NodeResult<JsonValue> {
     name = "ThenBranch",
     summary = "Annotate then branch prior to switch",
     effects = "Pure",
-    determinism = "Strict"
+    determinism = "Strict",
+    json_boundary = true
 )]
 async fn then_branch(payload: JsonValue) -> NodeResult<JsonValue> {
     let mut obj = payload.as_object().cloned().unwrap_or_default();
@@ -53,7 +55,8 @@ async fn then_branch(payload: JsonValue) -> NodeResult<JsonValue> {
     name = "ElseBranch",
     summary = "Annotate else branch and return directly",
     effects = "Pure",
-    determinism = "Strict"
+    determinism = "Strict",
+    json_boundary = true
 )]
 async fn else_branch(payload: JsonValue) -> NodeResult<JsonValue> {
     let mut obj = payload.as_object().cloned().unwrap_or_default();
@@ -65,7 +68,8 @@ async fn else_branch(payload: JsonValue) -> NodeResult<JsonValue> {
     name = "ModeRouter",
     summary = "Prepare value for switch routing",
     effects = "Pure",
-    determinism = "Strict"
+    determinism = "Strict",
+    json_boundary = true
 )]
 async fn mode_router(payload: JsonValue) -> NodeResult<JsonValue> {
     Ok(payload)
@@ -75,7 +79,8 @@ async fn mode_router(payload: JsonValue) -> NodeResult<JsonValue> {
     name = "BranchA",
     summary = "Handle mode a",
     effects = "Pure",
-    determinism = "Strict"
+    determinism = "Strict",
+    json_boundary = true
 )]
 async fn branch_a(payload: JsonValue) -> NodeResult<JsonValue> {
     let mut obj = payload.as_object().cloned().unwrap_or_default();
@@ -87,7 +92,8 @@ async fn branch_a(payload: JsonValue) -> NodeResult<JsonValue> {
     name = "BranchB",
     summary = "Handle mode b",
     effects = "Pure",
-    determinism = "Strict"
+    determinism = "Strict",
+    json_boundary = true
 )]
 async fn branch_b(payload: JsonValue) -> NodeResult<JsonValue> {
     let mut obj = payload.as_object().cloned().unwrap_or_default();
@@ -99,7 +105,8 @@ async fn branch_b(payload: JsonValue) -> NodeResult<JsonValue> {
     name = "BranchDefault",
     summary = "Handle default mode",
     effects = "Pure",
-    determinism = "Strict"
+    determinism = "Strict",
+    json_boundary = true
 )]
 async fn branch_default(payload: JsonValue) -> NodeResult<JsonValue> {
     let mut obj = payload.as_object().cloned().unwrap_or_default();

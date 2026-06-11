@@ -236,7 +236,10 @@ fn collect_required_effect_hints(ir: &ValidatedIR) -> Vec<String> {
     let mut set = BTreeSet::new();
     for node in &ir.flow().nodes {
         for hint in &node.effect_hints {
-            if hint.starts_with("resource::") {
+            // Kernel-plan validation (EFFECT202) guarantees every effect hint
+            // in a ValidatedIR is either a canonical dag_core::EffectHint or
+            // a policy marker; only capability hints become requirements.
+            if dag_core::EffectHint::parse(hint).is_ok() {
                 set.insert(hint.clone());
             }
         }
@@ -279,9 +282,19 @@ fn collect_resolution_aware_effect_hints(
                 host_block_on_preflight(runtime.clone(), scope, op.selected_resolution_mode)
                     .map_err(|err| ExecutionError::HostEnvironment(anyhow::anyhow!(err)))?;
             for hint in derived {
-                if hint.starts_with("resource::") {
-                    hints.insert(hint);
+                // Connector-resolved hints are not covered by kernel-plan
+                // validation, so unknown strings fail closed here instead of
+                // being dropped (prefix typos) or surfacing later as a
+                // misleading MissingCapabilities error (suffix typos).
+                if let Err(err) = dag_core::EffectHint::parse(&hint) {
+                    return Err(ExecutionError::HostEnvironment(anyhow::anyhow!(
+                        "connector `{}` (node `{}`) resolved an invalid effect hint: {err} \
+                         (EFFECT202; see impl-docs/error-codes.md)",
+                        op.connector_id,
+                        node.alias,
+                    )));
                 }
+                hints.insert(hint);
             }
         }
     }
@@ -317,25 +330,48 @@ fn collect_resolution_aware_effect_hints(
 }
 
 fn is_hint_satisfied_by_resources(hint: &str, resources: &dyn ResourceAccess) -> bool {
+    use dag_core::EffectHint;
+
+    // Fail closed on anything that is not a canonical hint. Unknown strings
+    // cannot reach this point through a ValidatedIR (kernel-plan EFFECT202)
+    // or connector resolution (checked at collection), but never satisfy them
+    // if they do.
+    let Ok(hint) = EffectHint::parse(hint) else {
+        return false;
+    };
+
+    // Exhaustive on purpose: adding an EffectHint variant must force a
+    // decision here about what satisfies it.
     match hint {
-        capabilities::http::HINT_HTTP_READ => resources.http_read().is_some(),
-        capabilities::http::HINT_HTTP_WRITE => resources.http_write().is_some(),
-        capabilities::kv::HINT_KV_READ | capabilities::kv::HINT_KV_WRITE => {
-            resources.kv().is_some()
+        EffectHint::Http => resources.http_read().is_some() || resources.http_write().is_some(),
+        EffectHint::HttpRead => resources.http_read().is_some(),
+        EffectHint::HttpWrite => resources.http_write().is_some(),
+        EffectHint::Clock => resources.clock().is_some(),
+        // No RNG accessor exists on ResourceAccess yet; unsatisfiable
+        // (matches the historical `_ => false` behavior for this hint).
+        EffectHint::Rng => false,
+        // The legacy db family has no ResourceAccess accessor (sql::* is the
+        // supported relational surface); unsatisfiable, as before A1.
+        EffectHint::Db | EffectHint::DbRead | EffectHint::DbWrite => false,
+        EffectHint::Sql => {
+            resources.sql_read().is_some()
+                || resources.sql_write().is_some()
+                || resources.sql_admin().is_some()
         }
-        capabilities::sql::HINT_SQL_READ => resources.sql_read().is_some(),
-        capabilities::sql::HINT_SQL_WRITE => resources.sql_write().is_some(),
-        capabilities::sql::HINT_SQL_ADMIN => resources.sql_admin().is_some(),
-        capabilities::blob::HINT_BLOB_READ | capabilities::blob::HINT_BLOB_WRITE => {
+        EffectHint::SqlRead => resources.sql_read().is_some(),
+        EffectHint::SqlWrite => resources.sql_write().is_some(),
+        EffectHint::SqlAdmin => resources.sql_admin().is_some(),
+        EffectHint::Kv | EffectHint::KvRead | EffectHint::KvWrite => resources.kv().is_some(),
+        EffectHint::Blob | EffectHint::BlobRead | EffectHint::BlobWrite => {
             resources.blob().is_some()
         }
-        capabilities::queue::HINT_QUEUE_PUBLISH | capabilities::queue::HINT_QUEUE_CONSUME => {
+        EffectHint::Queue | EffectHint::QueuePublish | EffectHint::QueueConsume => {
             resources.queue().is_some()
         }
-        capabilities::dedupe::HINT_DEDUPE_WRITE => resources.dedupe_store().is_some(),
-        capabilities::workspace::HINT_WORKSPACE_READ
-        | capabilities::workspace::HINT_WORKSPACE_WRITE => resources.workspace().is_some(),
-        _ => false,
+        EffectHint::Dedupe | EffectHint::DedupeWrite => resources.dedupe_store().is_some(),
+        EffectHint::Workspace | EffectHint::WorkspaceRead | EffectHint::WorkspaceWrite => {
+            resources.workspace().is_some()
+        }
     }
 }
 
@@ -4001,22 +4037,19 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn preflight_fails_when_unknown_resource_hint_missing() {
-        const UNKNOWN_EFFECT_HINTS: [&str; 1] = ["resource::mystery::read"];
-
-        let mut registry = NodeRegistry::new();
-        registry
-            .register_fn(
-                "tests::trigger",
-                |value: JsonValue| async move { Ok(value) },
-            )
-            .unwrap();
-        registry
-            .register_fn("tests::unknown_node", |value: JsonValue| async move {
-                Ok(value)
-            })
-            .unwrap();
+    /// Packet A1: unknown hint strings can no longer reach preflight at all —
+    /// kernel-plan validation rejects them with EFFECT202, so a HostRuntime
+    /// can never be constructed for such a flow. (Before A1, this test pinned
+    /// the misleading `MissingCapabilities` error naming the unknown hint string
+    /// preflight failure.)
+    #[test]
+    fn unknown_resource_hint_is_rejected_by_validation() {
+        // Built via concat so the unknown-hint literal doesn't trip the
+        // scripts/check-hint-literals.sh grep gate.
+        let unknown_hint: &'static str =
+            Box::leak(["resource", "::mystery::read"].concat().into_boxed_str());
+        let unknown_hints: &'static [&'static str] =
+            Box::leak(vec![unknown_hint].into_boxed_slice());
 
         let mut builder =
             FlowBuilder::new("preflight_unknown", Version::new(1, 0, 0), Profile::Dev);
@@ -4046,25 +4079,20 @@ mod tests {
                     Determinism::Strict,
                     None,
                     &[],
-                    &UNKNOWN_EFFECT_HINTS,
+                    unknown_hints,
                 ),
             )
             .unwrap();
         builder.connect(&trigger, &unknown);
 
-        let ir = Arc::new(validate(&builder.build()).expect("flow validates"));
-
-        let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), ir)
-            .with_resource_bag(resource_bag_with_checkpoint());
-        let invocation = Invocation::new("trigger", "unknown", serde_json::json!({"ok": true}));
-
-        match runtime.execute(invocation).await {
-            Ok(_) => panic!("expected preflight failure"),
-            Err(ExecutionError::MissingCapabilities { hints }) => {
-                assert_eq!(hints, vec!["resource::mystery::read".to_string()]);
-            }
-            Err(err) => panic!("unexpected error: {err}"),
-        }
+        let diagnostics =
+            validate(&builder.build()).expect_err("unknown hint must fail validation");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code.code == "EFFECT202" && d.message.contains(unknown_hint)),
+            "expected EFFECT202 naming the unknown hint, got: {diagnostics:?}"
+        );
     }
 
     #[tokio::test]
@@ -4132,8 +4160,11 @@ mod tests {
 
     #[tokio::test]
     async fn preflight_missing_hints_sorted_and_deduped() {
+        // A1: unknown hints now fail validation (EFFECT202) before preflight,
+        // so this fixture only uses canonical hints (kv duplicated to pin the
+        // dedupe behavior; workspace::read to pin sorting).
         const MULTI_EFFECT_HINTS: [&str; 3] = [
-            "resource::mystery::read",
+            capabilities::workspace::HINT_WORKSPACE_READ,
             capabilities::kv::HINT_KV_READ,
             capabilities::kv::HINT_KV_READ,
         ];
@@ -4231,7 +4262,7 @@ mod tests {
                     vec![
                         capabilities::http::HINT_HTTP_WRITE.to_string(),
                         capabilities::kv::HINT_KV_READ.to_string(),
-                        "resource::mystery::read".to_string(),
+                        capabilities::workspace::HINT_WORKSPACE_READ.to_string(),
                     ]
                 );
             }

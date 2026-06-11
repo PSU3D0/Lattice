@@ -1,0 +1,14 @@
+# Cargo build configuration (packet B1-c: toolchain hardening).
+#
+# Linker: use `mold` on x86_64 Linux to cut link time on incremental rebuilds.
+# We pass `-fuse-ld=mold` to the default `cc` (gcc) driver rather than forcing a
+# specific linker binary, so this works with both gcc and clang as long as mold
+# is installed (Ubuntu: `apt-get install mold`; CI installs it explicitly).
+#
+# Verified locally (2026-06-11): gcc 13.3 and clang both accept `-fuse-ld=mold`
+# with mold 2.30, and `cargo build -p dag-core` links cleanly.
+#
+# If you do NOT have mold installed, builds will fail at link time with
+# `cannot find -fuse-ld=mold`. Install mold, or comment out the rustflags below.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]

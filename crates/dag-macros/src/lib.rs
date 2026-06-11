@@ -977,7 +977,13 @@ fn push_determinism_hint(
     span: Span,
 ) {
     if alias_lower.contains("clock") || cap_lower.contains("clock") {
-        push_hint(accumulator, seen, "resource::clock", alias, span);
+        push_hint(
+            accumulator,
+            seen,
+            dag_core::EffectHint::Clock.as_str(),
+            alias,
+            span,
+        );
     }
 
     if alias_lower.contains("rng")
@@ -985,19 +991,43 @@ fn push_determinism_hint(
         || cap_lower.contains("rng")
         || cap_lower.contains("random")
     {
-        push_hint(accumulator, seen, "resource::rng", alias, span);
+        push_hint(
+            accumulator,
+            seen,
+            dag_core::EffectHint::Rng.as_str(),
+            alias,
+            span,
+        );
     }
 
     if alias_lower.contains("http") || cap_lower.contains("http") {
-        push_hint(accumulator, seen, "resource::http", alias, span);
+        push_hint(
+            accumulator,
+            seen,
+            dag_core::EffectHint::Http.as_str(),
+            alias,
+            span,
+        );
     }
 
     if alias_lower.contains("kv") || cap_lower.contains("kv") {
-        push_hint(accumulator, seen, "resource::kv", alias, span);
+        push_hint(
+            accumulator,
+            seen,
+            dag_core::EffectHint::Kv.as_str(),
+            alias,
+            span,
+        );
     }
 
     if alias_lower.contains("db") || cap_lower.contains("db") {
-        push_hint(accumulator, seen, "resource::db", alias, span);
+        push_hint(
+            accumulator,
+            seen,
+            dag_core::EffectHint::Db.as_str(),
+            alias,
+            span,
+        );
     }
 }
 
@@ -1011,26 +1041,67 @@ fn push_effect_hints(
     span: Span,
 ) {
     if let Some(hint) = classify_read_hint(alias_lower, cap_lower, namespace) {
-        push_hint(accumulator, seen, hint.as_str(), alias, span);
+        push_hint(accumulator, seen, hint, alias, span);
     }
 
     if let Some(hint) = classify_write_hint(alias_lower, cap_lower, namespace) {
-        push_hint(accumulator, seen, hint.as_str(), alias, span);
+        push_hint(accumulator, seen, hint, alias, span);
     }
 }
 
-fn classify_read_hint(alias_lower: &str, cap_lower: &str, namespace: &str) -> Option<String> {
+/// Map a fallback namespace to its canonical read hint, FROM the enum.
+///
+/// Pre-A1 this path `format!`ed `resource::<namespace>::read` for ANY
+/// namespace (including alias-derived ones like `custom`), emitting hint
+/// strings that no preflight could ever satisfy and that would now fail
+/// EFFECT202 validation. Unknown namespaces emit nothing instead.
+fn read_hint_for_namespace(namespace: &str) -> Option<&'static str> {
+    let hint = match namespace {
+        "http" => dag_core::EffectHint::HttpRead,
+        "kv" => dag_core::EffectHint::KvRead,
+        "db" => dag_core::EffectHint::DbRead,
+        "blob" => dag_core::EffectHint::BlobRead,
+        // `queue` has no `::read` operation; queue inference is handled by
+        // `capabilities::hints::infer` (publish/consume) before this
+        // fallback. Anything else is not a canonical capability namespace.
+        _ => return None,
+    };
+    Some(hint.as_str())
+}
+
+/// Map a fallback namespace to its canonical write hint, FROM the enum.
+/// See [`read_hint_for_namespace`] for the unknown-namespace policy.
+fn write_hint_for_namespace(namespace: &str) -> Option<&'static str> {
+    let hint = match namespace {
+        "http" => dag_core::EffectHint::HttpWrite,
+        "kv" => dag_core::EffectHint::KvWrite,
+        "db" => dag_core::EffectHint::DbWrite,
+        "blob" => dag_core::EffectHint::BlobWrite,
+        _ => return None,
+    };
+    Some(hint.as_str())
+}
+
+fn classify_read_hint(
+    alias_lower: &str,
+    cap_lower: &str,
+    namespace: &str,
+) -> Option<&'static str> {
     const TOKENS: &[&str] = &["read", "fetch", "load", "get"];
     if TOKENS
         .iter()
         .any(|token| cap_lower.contains(token) || alias_lower.contains(token))
     {
-        return Some(format!("resource::{}::read", namespace));
+        return read_hint_for_namespace(namespace);
     }
     None
 }
 
-fn classify_write_hint(alias_lower: &str, cap_lower: &str, namespace: &str) -> Option<String> {
+fn classify_write_hint(
+    alias_lower: &str,
+    cap_lower: &str,
+    namespace: &str,
+) -> Option<&'static str> {
     const TOKENS: &[&str] = &[
         "write",
         "producer",
@@ -1051,7 +1122,7 @@ fn classify_write_hint(alias_lower: &str, cap_lower: &str, namespace: &str) -> O
         .iter()
         .any(|token| cap_lower.contains(token) || alias_lower.contains(token))
     {
-        return Some(format!("resource::{}::write", namespace));
+        return write_hint_for_namespace(namespace);
     }
     None
 }

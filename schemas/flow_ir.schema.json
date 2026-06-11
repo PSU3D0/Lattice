@@ -91,6 +91,9 @@
         "connector_id": {
           "type": "string"
         },
+        "default_resolution_mode": {
+          "$ref": "#/definitions/ConnectorResolutionModeDecl"
+        },
         "operation_id": {
           "type": "string"
         },
@@ -100,13 +103,33 @@
             "$ref": "#/definitions/ConnectorRoleRequirementIR"
           },
           "type": "array"
+        },
+        "selected_resolution_mode": {
+          "$ref": "#/definitions/ConnectorResolutionModeDecl"
+        },
+        "supported_resolution_modes": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ConnectorResolutionModeDecl"
+          },
+          "type": "array"
         }
       },
       "required": [
         "connector_id",
-        "operation_id"
+        "default_resolution_mode",
+        "operation_id",
+        "selected_resolution_mode"
       ],
       "type": "object"
+    },
+    "ConnectorResolutionModeDecl": {
+      "enum": [
+        "bound_connection",
+        "late_bound_refs",
+        "inline_payload"
+      ],
+      "type": "string"
     },
     "ConnectorRoleKindDecl": {
       "description": "Declarative connector role kinds used by node and connector-op metadata.",

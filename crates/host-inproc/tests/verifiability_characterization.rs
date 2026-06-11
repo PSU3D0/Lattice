@@ -19,14 +19,17 @@
 //!
 //! 2. DECLARATIONS ARE ONLY USED FOR PROVISIONING, NEVER FOR RESTRICTION.
 //!    host-inproc preflight collects `node.effect_hints` strings that start with
-//!    `"resource::"` and checks that each is satisfiable by the bag
+//!    `resource::` and checks that each is satisfiable by the bag
 //!    (`is_hint_satisfied_by_resources`). It checks "declared => present"; it
 //!    never checks "accessed => declared". A node may declare nothing (even
 //!    `Effects::Pure`) and still use anything in the bag.
 //!
-//! 3. HINTS ARE BARE STRINGS. Nothing in dag-core, kernel-plan, or host-inproc
-//!    validates that a hint string is a *known* capability hint. See the typo
-//!    test below for the exact (asymmetric) failure modes.
+//! 3. ~~HINTS ARE BARE STRINGS.~~ CLOSED by packet A1: hints are now typed
+//!    (`dag_core::EffectHint`); kernel-plan validation rejects unknown hint
+//!    strings fail-closed with EFFECT202. Test 3 below was flipped from
+//!    `typo_effect_hint_passes_preflight_today` into
+//!    `typo_effect_hint_fails_closed` and is now an enforcement regression
+//!    test.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -37,7 +40,7 @@ use capabilities::{ResourceBag, context};
 use dag_core::prelude::*;
 use dag_core::{DurabilityMode, FlowIR};
 use host_inproc::{HostRuntime, Invocation};
-use kernel_exec::{ExecutionError, ExecutionResult, FlowExecutor, NodeRegistry};
+use kernel_exec::{ExecutionResult, FlowExecutor, NodeRegistry};
 use kernel_plan::validate;
 use serde_json::{Value as JsonValue, json};
 
@@ -331,138 +334,60 @@ async fn undeclared_capability_access_is_unrestricted_today() {
 // Test 3
 // ---------------------------------------------------------------------------
 
-/// CHARACTERIZATION: flips in packet A1 (typed hints).
+/// CHARACTERIZATION (FLIPPED by packet A1 — typed `dag_core::EffectHint`).
 ///
-/// HOLE: effect hints are bare strings; no layer validates that a hint names a
-/// real capability. Discovered behavior is ASYMMETRIC — there are two distinct
-/// failure modes depending on where the typo lands:
+/// Originally (`typo_effect_hint_passes_preflight_today`) this test pinned the
+/// two ASYMMETRIC holes of stringly-typed hints:
 ///
-/// (a) Suffix typo, e.g. `"resource::http_raed"`:
-///     - kernel-plan `validate()` accepts it with ZERO hint-related
-///       diagnostics (the only warnings emitted are unrelated DAG350
-///       missing-summary lints). `check_effect_conflicts` looks the string up
-///       in the effects registry, finds nothing, and silently moves on.
-///     - host-inproc preflight FAILS CLOSED — but misleadingly. The hint
-///       starts with `"resource::"` so it is collected as "required", and
-///       `is_hint_satisfied_by_resources` hits its `_ => false` fallback for
-///       any unknown string. The flow is reported as
-///       `MissingCapabilities { hints: ["resource::http_raed"] }`, i.e. the
-///       operator is told to provide a capability that DOES NOT EXIST.
-///       Crucially this happens even when the bag DOES contain http_read, so
-///       a typo'd flow can never be deployed and the diagnostic actively
-///       points away from the real problem (the typo).
+/// (a) Suffix typo (`resource::http_raed` — typo in the operation): kernel-plan validation was
+///     silent; host-inproc preflight failed closed but MISLEADINGLY, with
+///     `MissingCapabilities` naming the typo string itself — an error no
+///     resource bag could ever satisfy, pointing away from the real problem.
 ///
-/// (b) Prefix typo, e.g. `"resorce::http::read"` (typo in "resource"):
-///     - kernel-plan `validate()` again accepts it silently.
-///     - host-inproc preflight PASSES SILENTLY with a bag that has NO http at
-///       all: `collect_required_effect_hints` only collects strings starting
-///       with `"resource::"`, so the misspelled-prefix hint is dropped
-///       entirely. The node's declared http requirement simply evaporates,
-///       and the missing capability is only discovered at node runtime (as a
-///       None access), or never.
+/// (b) Prefix typo (`"resorce::http::read"`): validation silent AND preflight
+///     passed silently — the hint did not start with `resource::`, so the
+///     node's intended http requirement simply evaporated.
 ///
-/// After A1 (typed `EffectHint` enum + unknown-hint validation diagnostic),
-/// BOTH spellings must be rejected at kernel-plan validation time with a
-/// dedicated error code; port this into a kernel-plan test that asserts that
-/// diagnostic, per the A1 packet description.
+/// After A1, hints are typed: kernel-plan validation parses every hint via
+/// `dag_core::EffectHint` and rejects BOTH spellings fail-closed with the
+/// dedicated EFFECT202 diagnostic naming the offending string. A HostRuntime
+/// can no longer even be constructed for such a flow (it requires a
+/// ValidatedIR).
 #[tokio::test]
-async fn typo_effect_hint_passes_preflight_today() {
-    const SUFFIX_TYPO_HINTS: [&str; 1] = ["resource::http_raed"];
-    const PREFIX_TYPO_HINTS: [&str; 1] = ["resorce::http::read"];
+async fn typo_effect_hint_fails_closed() {
+    // Typo literals built via concat so this file stays honest under the
+    // scripts/check-hint-literals.sh grep gate (the prefix typo doesn't
+    // contain `resource::` at all, so it can stay a plain literal).
+    let suffix_typo: &'static str =
+        Box::leak(["resource", "::http_raed"].concat().into_boxed_str());
+    let prefix_typo: &'static str = "resorce::http::read";
 
-    // -- (a) suffix typo: validation silent, preflight fails closed but misleadingly --
+    for (case, typo_hint) in [("suffix typo", suffix_typo), ("prefix typo", prefix_typo)] {
+        let hints: &'static [&'static str] = Box::leak(vec![typo_hint].into_boxed_slice());
+        let flow = two_node_flow(
+            "w02_typo",
+            "tests::typo_node",
+            Effects::ReadOnly,
+            Determinism::BestEffort,
+            hints,
+        );
 
-    let flow = two_node_flow(
-        "w02_typo_suffix",
-        "tests::typo_node",
-        Effects::ReadOnly,
-        Determinism::BestEffort,
-        &SUFFIX_TYPO_HINTS,
-    );
-
-    // kernel-plan validation: the typo'd hint produces no error AND no
-    // hint-related warning. (The only warnings emitted are unrelated DAG350
-    // "missing summary" lints — nothing references the bogus hint string.)
-    let ir = match validate(&flow) {
-        Ok(ir) => ir,
-        Err(diags) => panic!("expected validation to silently accept the typo, got: {diags:?}"),
-    };
-    assert!(
-        !ir.warnings()
+        let diagnostics = match validate(&flow) {
+            Err(diags) => diags,
+            Ok(_) => panic!("{case}: validation must reject the typo'd hint fail-closed"),
+        };
+        let effect202 = diagnostics
             .iter()
-            .any(|diag| diag.message.contains("http_raed") || diag.message.contains("hint")),
-        "TODAY kernel-plan emits zero diagnostics about unknown hint strings, got: {:?}",
-        ir.warnings(),
-    );
-    let ir = Arc::new(ir);
+            .find(|diag| diag.code.code == "EFFECT202")
+            .unwrap_or_else(|| panic!("{case}: expected EFFECT202, got: {diagnostics:?}"));
+        assert!(
+            effect202.message.contains(typo_hint),
+            "{case}: EFFECT202 must name the offending hint so the fix is obvious, got: {}",
+            effect202.message,
+        );
 
-    let registry = || {
-        passthrough_registry_with("tests::typo_node", |value| {
-            Box::pin(async move { Ok(value) })
-        })
-    };
-
-    // Preflight with NO http in the bag: fails, reporting the typo string
-    // itself as a "missing capability".
-    let runtime_without_http = HostRuntime::new(FlowExecutor::new(Arc::new(registry())), ir.clone())
-        .with_resource_bag(ResourceBag::new());
-    match runtime_without_http.preflight() {
-        Err(ExecutionError::MissingCapabilities { hints }) => {
-            assert_eq!(
-                hints,
-                vec!["resource::http_raed".to_string()],
-                "the typo string itself is surfaced as the 'missing' capability",
-            );
-        }
-        other => panic!(
-            "expected MissingCapabilities for the unknown suffix-typo hint, got: {other:?}"
-        ),
+        // And therefore no HostRuntime/preflight stage exists for this flow:
+        // the misleading MissingCapabilities path and the silent-evaporation
+        // path are both unreachable for unknown hints.
     }
-
-    // Preflight with http_read PRESENT: still fails with the same misleading
-    // error — an unknown hint can never be satisfied by ANY bag (`_ => false`).
-    let runtime_with_http = HostRuntime::new(FlowExecutor::new(Arc::new(registry())), ir)
-        .with_resource_bag(ResourceBag::new().with_http_read(Arc::new(CannedHttpRead)));
-    match runtime_with_http.preflight() {
-        Err(ExecutionError::MissingCapabilities { hints }) => {
-            assert_eq!(
-                hints,
-                vec!["resource::http_raed".to_string()],
-                "providing real http does not help: the typo'd hint is unsatisfiable forever",
-            );
-        }
-        other => panic!(
-            "expected MissingCapabilities even with http provided, got: {other:?}"
-        ),
-    }
-
-    // -- (b) prefix typo: validation silent AND preflight passes silently --
-
-    let flow = two_node_flow(
-        "w02_typo_prefix",
-        "tests::typo_node",
-        Effects::ReadOnly,
-        Determinism::BestEffort,
-        &PREFIX_TYPO_HINTS,
-    );
-    let ir = match validate(&flow) {
-        Ok(ir) => ir,
-        Err(diags) => panic!("expected validation to silently accept the typo, got: {diags:?}"),
-    };
-    assert!(
-        !ir.warnings()
-            .iter()
-            .any(|diag| diag.message.contains("resorce") || diag.message.contains("hint")),
-        "TODAY kernel-plan emits zero diagnostics about non-`resource::`-prefixed hints, got: {:?}",
-        ir.warnings(),
-    );
-
-    let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry())), Arc::new(ir))
-        .with_resource_bag(ResourceBag::new());
-    // The node *meant* to require http_read; the bag has nothing at all; the
-    // misspelled prefix makes the requirement vanish and preflight passes.
-    runtime.preflight().expect(
-        "TODAY preflight silently passes: hints not starting with `resource::` are dropped, \
-         so the node's intended http requirement evaporates",
-    );
 }

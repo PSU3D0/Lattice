@@ -1,0 +1,13 @@
+error: [EFFECT201] resource `resource::http::write` (from `http`) requires effects >= Effectful, but node declares Pure. HTTP writes are effectful; declare effects = Effectful and provide idempotency keys.
+ --> tests/ui-smoke/node_effect_hint_conflict.rs:4:57
+  |
+4 | #[def_node(name = "Writer", effects = "Pure", resources(http(HttpWrite)))]
+  |                                                         ^^^^
+
+warning: unused import: `dag_core::NodeResult`
+ --> tests/ui-smoke/node_effect_hint_conflict.rs:1:5
+  |
+1 | use dag_core::NodeResult;
+  |     ^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

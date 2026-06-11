@@ -4,4 +4,5 @@ compatibility_date = "2024-09-23"
 main = "build/worker/shim.mjs"
 
 [build]
-command = "cargo install worker-build 2>/dev/null || true && worker-build --release"
+# worker-build install handled once by the guard script (see README "Workers build tooling").
+command = "bash \"$(git rev-parse --show-toplevel)/scripts/ensure-worker-build.sh\" --release"

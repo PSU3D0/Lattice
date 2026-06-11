@@ -1,12 +1,15 @@
 use std::path::PathBuf;
+#[cfg(feature = "host-wasmtime")]
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use anyhow::{Context, Result, anyhow};
 use clap::{Args, Subcommand, ValueEnum};
+#[cfg(feature = "host-wasmtime")]
 use flow_bundle::ExecPolicy;
 use futures::StreamExt;
 use host_inproc::HostRuntime;
+#[cfg(feature = "host-wasmtime")]
 use host_wasmtime::load_flow_bundle;
 use kernel_exec::ExecutionResult;
 
@@ -187,15 +190,28 @@ enum ResumeSource {
 }
 
 fn detect_example_for_flow(flow_id: &FlowId) -> Result<Option<String>> {
+    // Each candidate is gated by the same per-example feature that enables its
+    // load_example() arm. With --no-default-features this list is empty and
+    // inference degrades gracefully to None (the explicit --example/--bundle error
+    // path in resolve_source still applies).
     const EXAMPLES: &[&str] = &[
+        #[cfg(feature = "example-s1")]
         "s1_echo",
+        #[cfg(feature = "example-s2")]
         "s2_site",
+        #[cfg(feature = "example-s3")]
         "s3_branching",
+        #[cfg(feature = "example-s4")]
         "s4_preflight",
+        #[cfg(feature = "example-s5")]
         "s5_unsupported_surface",
+        #[cfg(feature = "example-s6")]
         "s6_spill",
+        #[cfg(feature = "example-s11")]
         "s11_lead_intake",
+        #[cfg(feature = "example-s12")]
         "s12_sheetport_quote",
+        #[cfg(feature = "example-s13")]
         "s13_github_issue_investigator",
     ];
 
@@ -331,6 +347,14 @@ async fn resume_run(args: ResumeRunArgs) -> Result<()> {
                     _ => anyhow::Error::new(err),
                 })?
         }
+        #[cfg(not(feature = "host-wasmtime"))]
+        ResumeSource::Bundle { path, flow } => {
+            let _ = (path, flow, &resources);
+            return Err(anyhow!(
+                "resuming from a wasm bundle requires the wasmtime host; rebuild flows-cli with the `host-wasmtime` feature"
+            ));
+        }
+        #[cfg(feature = "host-wasmtime")]
         ResumeSource::Bundle { path, flow } => {
             let bundle = load_flow_bundle(
                 &path,

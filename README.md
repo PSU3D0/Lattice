@@ -146,7 +146,7 @@ Additional rules (delivery requirements, capability overlap, policy waivers) are
 ## Capabilities & Connectors
 
 - **Capabilities:** Traits in `capabilities` ensure compile-time enforcement of effect/determinism contracts (e.g., stable reads require pinned resources). Concrete providers live in `cap-*` crates.
-- **Current recommended local stack:** `cap-http-reqwest`, `cap-workspace-fs`, `cap-blob-opendal` (filesystem backend where appropriate), and `cap-kv-opendal` (SQLite backend where appropriate).
+- **Current recommended local stack:** `cap-http-reqwest`, `cap-workspace-fs`, and `cap-opendal` (its `blob` module for filesystem-backed objects and `kv` module for SQLite-backed key-value, where appropriate).
 - **Current recommended Workers stack:** `cap-http-workers`, `cap-workspace-workers`, `cap-kv-workers`, and `cap-do-workers`.
 - **Important distinction:** workspace is run-scoped scratch; blob is durable artifact/object storage. Keep those capabilities separate even if they share a filesystem-backed implementation locally.
 - **Future SQL note:** if Lattice grows a real SQL/DB capability, it should remain separate from `resource::kv` even when a KV provider happens to use SQLite internally.
@@ -218,6 +218,31 @@ cargo run -p flows-cli -- run local --example s1_echo --payload '{"value":" Hell
 > **Note:** When running tests inside sandboxed environments (e.g., the Codex CLI harness), set a workspace-local `CARGO_TARGET_DIR` to avoid cross-device link errors: `CARGO_TARGET_DIR=.target cargo test ...`.
 >
 > If you work with encrypted private docs locally, keep `fnox.toml` untracked and start from `fnox.example.toml` rather than committing a real secret-manager config.
+
+### Build tooling
+
+Two optional one-time setup steps make local builds faster and keep the Workers
+harness from reinstalling tooling on every invocation:
+
+- **mold linker (Linux, optional but recommended).** `.cargo/config.toml` passes
+  `-fuse-ld=mold` to the default linker driver for `x86_64-unknown-linux-gnu`,
+  which cuts link time on incremental rebuilds. Install it once:
+  ```bash
+  sudo apt-get install -y mold   # Debian/Ubuntu; mold 2.x
+  ```
+  If mold is not installed, native builds fail at link time with
+  `cannot find -fuse-ld=mold`; install mold or comment out the `rustflags`
+  line in `.cargo/config.toml`. CI installs mold automatically.
+
+- **`worker-build` for the Workers/workerd harness.** The `wrangler.toml`
+  `[build]` commands delegate to `scripts/ensure-worker-build.sh`, which uses an
+  already-installed `worker-build` instead of running `cargo install` on every
+  `wrangler dev`/`deploy`/test. Install it once:
+  ```bash
+  cargo install worker-build@^0.7
+  ```
+  If it is missing, the build fails fast with that exact instruction. In CI (or
+  by exporting `LATTICE_AUTO_INSTALL_WORKER_BUILD=1`) the script auto-installs it.
 
 ### Phased Buildout
 

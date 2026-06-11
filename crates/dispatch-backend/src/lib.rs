@@ -1,3 +1,10 @@
+//! Dispatch backend capability for Lattice multi-flow bundles.
+//!
+//! KEEP as its own crate (decision recorded packet E2,
+//! verifiability-substrate-hardening plan). Rationale: it has a real external
+//! consumer (`examples/s13_github_issue_investigator`), so it is not an
+//! unconsumed stub eligible for folding into the CLI.
+
 use async_trait::async_trait;
 use capabilities::{
     ResourceAccess,

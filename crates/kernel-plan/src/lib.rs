@@ -1,12 +1,15 @@
 use std::collections::{HashMap, HashSet};
 
 use dag_core::{
-    Delivery, Diagnostic, DurabilityMode, EdgeTransformKind, Effects, FlowIR, SchemaRef, Severity,
-    diagnostic_codes, schemas_compatible, supported_into_coercion,
+    Delivery, Diagnostic, DurabilityMode, EdgeTransformKind, EffectHint, Effects, FlowIR,
+    SchemaRef, Severity, diagnostic_codes, schemas_compatible, supported_into_coercion,
 };
 
 const MIN_EXACTLY_ONCE_TTL_MS: u64 = 300_000;
-const DEDUPE_HINT_PREFIX: &str = "resource::dedupe";
+
+/// The one non-`resource::*` marker allowed in `effect_hints`: a policy
+/// annotation consumed by the TYPE001 bare-JSON boundary lint.
+const POLICY_HINT_JSON_BOUNDARY: &str = "policy::json_boundary";
 
 /// Result of a successful validation run.
 #[derive(Debug, Clone)]
@@ -67,6 +70,7 @@ pub fn validate_strict(flow: &FlowIR) -> Result<ValidatedIR, Vec<Diagnostic>> {
 fn collect_diagnostics(flow: &FlowIR) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
+    check_hint_validity(flow, &mut diagnostics);
     check_duplicate_aliases(flow, &mut diagnostics);
     check_trigger_policy(flow, &mut diagnostics);
     check_edge_references(flow, &mut diagnostics);
@@ -123,7 +127,7 @@ fn check_bare_json_boundaries(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) 
                 let has_boundary_hint = node
                     .effect_hints
                     .iter()
-                    .any(|h| h == "policy::json_boundary");
+                    .any(|h| h == POLICY_HINT_JSON_BOUNDARY);
                 if !has_boundary_hint {
                     diagnostics.push(diagnostic(
                         "TYPE001",
@@ -188,7 +192,7 @@ fn check_exactly_once_requirements(flow: &FlowIR, diagnostics: &mut Vec<Diagnost
                         edge.from,
                         edge.to,
                         target.alias,
-                        DEDUPE_HINT_PREFIX
+                        EffectHint::Dedupe.as_str()
                     ),
                 ));
             }
@@ -232,9 +236,12 @@ fn check_exactly_once_requirements(flow: &FlowIR, diagnostics: &mut Vec<Diagnost
 }
 
 fn has_dedupe_binding(node: &dag_core::NodeIR) -> bool {
-    node.effect_hints
-        .iter()
-        .any(|hint| hint.starts_with(DEDUPE_HINT_PREFIX))
+    node.effect_hints.iter().any(|hint| {
+        matches!(
+            EffectHint::parse(hint),
+            Ok(EffectHint::Dedupe | EffectHint::DedupeWrite)
+        )
+    })
 }
 
 fn check_duplicate_aliases(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
@@ -392,6 +399,39 @@ fn check_idempotency_declarations(flow: &FlowIR, diagnostics: &mut Vec<Diagnosti
     }
 }
 
+/// EFFECT202: every hint string in the IR must name a canonical
+/// `dag_core::EffectHint` (or the json-boundary policy marker). This fails
+/// closed on BOTH historical typo classes: suffix typos
+/// (`resource::http_raed`) that previously surfaced as a misleading
+/// `MissingCapabilities` preflight error, and prefix typos
+/// (`resorce::http::read`) that were previously dropped silently.
+fn check_hint_validity(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    for node in &flow.nodes {
+        let hint_sets = [
+            ("effect", &node.effect_hints),
+            ("determinism", &node.determinism_hints),
+        ];
+        for (kind, hints) in hint_sets {
+            for hint in hints.iter() {
+                if hint == POLICY_HINT_JSON_BOUNDARY {
+                    continue;
+                }
+                if let Err(err) = EffectHint::parse(hint) {
+                    diagnostics.push(diagnostic(
+                        "EFFECT202",
+                        format!(
+                            "node `{}` declares an invalid {} hint: {}. Validation fails closed; \
+                             fix the spelling or emit hints via dag_core::EffectHint \
+                             (see impl-docs/error-codes.md, EFFECT202 remediation).",
+                            node.alias, kind, err
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+}
+
 fn check_effect_conflicts(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
     for node in &flow.nodes {
         for hint in &node.effect_hints {
@@ -477,9 +517,12 @@ fn check_edge_buffer_requirements(flow: &FlowIR, diagnostics: &mut Vec<Diagnosti
 
 fn check_spill_requirements(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
     let has_blob_hint = flow.nodes.iter().any(|node| {
-        node.effect_hints
-            .iter()
-            .any(|hint| hint.starts_with("resource::blob::"))
+        node.effect_hints.iter().any(|hint| {
+            matches!(
+                EffectHint::parse(hint),
+                Ok(EffectHint::BlobRead | EffectHint::BlobWrite)
+            )
+        })
     });
 
     let mut emitted_blob_diagnostic = false;
@@ -1552,7 +1595,7 @@ mod tests {
         }
     }
 
-    const DEDUPE_HINT_WRITE: &str = "resource::dedupe::write";
+    const DEDUPE_HINT_WRITE: &str = capabilities::dedupe::HINT_DEDUPE_WRITE;
 
     fn set_idempotency(flow: &mut FlowIR, alias: &str) {
         if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == alias) {
@@ -2461,6 +2504,12 @@ mod tests {
         ensure_dedupe_hint(&mut flow, "consumer");
         if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "consumer") {
             node.idempotency.ttl_ms = Some(MIN_EXACTLY_ONCE_TTL_MS);
+            // `resource::dedupe::write` requires Effectful. Before A1 this
+            // fixture escaped EFFECT201 only because the dedupe constraint
+            // was never `ensure_registered()`d in this process (the
+            // registration-order hazard); constraints are now derived
+            // exhaustively from dag_core::EffectHint.
+            node.effects = Effects::Effectful;
         }
 
         let result = validate(&flow);
@@ -2690,7 +2739,7 @@ mod tests {
                     Determinism::Strict,
                     None,
                     &[],
-                    &["resource::http::write"],
+                    &[capabilities::http::HINT_HTTP_WRITE],
                 ),
             )
             .expect("add writer node");
@@ -3027,7 +3076,7 @@ mod tests {
             Determinism::BestEffort,
             None,
             &[],
-            &["resource::blob::write"],
+            &[capabilities::blob::HINT_BLOB_WRITE],
         );
         let worker = builder.add_node("worker", &worker_spec).unwrap();
         builder.connect(&trigger, &worker);
@@ -3057,7 +3106,7 @@ mod tests {
                     Effects::ReadOnly,
                     Determinism::Strict,
                     None,
-                    &["resource::clock"],
+                    &[capabilities::clock::HINT_CLOCK],
                     &[],
                 ),
             )
@@ -3130,6 +3179,142 @@ mod tests {
 
         let diagnostics = validate(&flow).expect_err("expected determinism diagnostic");
         assert!(diagnostics.iter().any(|d| d.code.code == "DET302"));
+    }
+
+    /// Ported from the W0-2 characterization packet (packet A1): typo'd hint
+    /// strings now fail closed at validation time with EFFECT202 instead of
+    /// passing silently. Covers both historical typo classes.
+    #[test]
+    fn unknown_hint_strings_fail_closed_with_effect202() {
+        // Built via concat so the typo literals don't trip the
+        // scripts/check-hint-literals.sh grep gate.
+        let suffix_typo: &'static str =
+            Box::leak(["resource", "::http_raed"].concat().into_boxed_str());
+        let prefix_typo: &'static str = "resorce::http::read";
+        let unknown_family: &'static str =
+            Box::leak(["resource", "::mystery::read"].concat().into_boxed_str());
+
+        for (case, bad_hint, as_effect_hint) in [
+            ("suffix typo", suffix_typo, true),
+            ("prefix typo", prefix_typo, true),
+            ("unknown family", unknown_family, true),
+            ("suffix typo (determinism)", suffix_typo, false),
+            ("prefix typo (determinism)", prefix_typo, false),
+        ] {
+            let hints: &'static [&'static str] = Box::leak(vec![bad_hint].into_boxed_slice());
+            let (determinism_hints, effect_hints): (&[&str], &[&str]) = if as_effect_hint {
+                (&[], hints)
+            } else {
+                (hints, &[])
+            };
+
+            let mut builder = FlowBuilder::new("typo_hint", Version::new(1, 0, 0), Profile::Web);
+            let source = builder
+                .add_node(
+                    "source",
+                    &NodeSpec::inline_with_hints(
+                        "tests::source",
+                        "Source",
+                        SchemaSpec::Opaque,
+                        SchemaSpec::Opaque,
+                        Effects::ReadOnly,
+                        Determinism::BestEffort,
+                        None,
+                        determinism_hints,
+                        effect_hints,
+                    ),
+                )
+                .expect("add source node");
+            let sink = builder
+                .add_node(
+                    "sink",
+                    &NodeSpec::inline(
+                        "tests::sink",
+                        "Sink",
+                        SchemaSpec::Opaque,
+                        SchemaSpec::Opaque,
+                        Effects::ReadOnly,
+                        Determinism::BestEffort,
+                        None,
+                    ),
+                )
+                .expect("add sink node");
+            builder.connect(&source, &sink);
+            let flow = builder.build();
+
+            let diagnostics =
+                validate(&flow).expect_err(&format!("{case}: expected EFFECT202 failure"));
+            let effect202 = diagnostics
+                .iter()
+                .find(|d| d.code.code == "EFFECT202")
+                .unwrap_or_else(|| panic!("{case}: missing EFFECT202 in {diagnostics:?}"));
+            assert!(
+                effect202.message.contains(bad_hint),
+                "{case}: diagnostic should name the offending hint, got: {}",
+                effect202.message
+            );
+        }
+    }
+
+    /// Canonical hints (and the json-boundary policy marker) must NOT trip
+    /// EFFECT202.
+    #[test]
+    fn canonical_hints_do_not_trip_effect202() {
+        let mut builder = FlowBuilder::new("canonical_hints", Version::new(1, 0, 0), Profile::Web);
+        let source = builder
+            .add_node(
+                "source",
+                &NodeSpec::inline_with_hints(
+                    "tests::source",
+                    "Source",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Effectful,
+                    Determinism::BestEffort,
+                    None,
+                    &[capabilities::http::HINT_HTTP],
+                    &[
+                        capabilities::http::HINT_HTTP_READ,
+                        capabilities::http::HINT_HTTP_WRITE,
+                        POLICY_HINT_JSON_BOUNDARY,
+                    ],
+                ),
+            )
+            .expect("add source node");
+        let sink = builder
+            .add_node(
+                "sink",
+                &NodeSpec::inline(
+                    "tests::sink",
+                    "Sink",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::ReadOnly,
+                    Determinism::BestEffort,
+                    None,
+                ),
+            )
+            .expect("add sink node");
+        builder.connect(&source, &sink);
+        let mut flow = builder.build();
+        if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "source") {
+            node.idempotency.key = Some("case".to_string());
+        }
+
+        match validate(&flow) {
+            Ok(validated) => assert!(
+                validated
+                    .warnings()
+                    .iter()
+                    .all(|d| d.code.code != "EFFECT202"),
+                "unexpected EFFECT202 warning: {:?}",
+                validated.warnings()
+            ),
+            Err(diagnostics) => assert!(
+                diagnostics.iter().all(|d| d.code.code != "EFFECT202"),
+                "unexpected EFFECT202 error: {diagnostics:?}"
+            ),
+        }
     }
 
     mod auto_hint_validation {
@@ -3314,7 +3499,7 @@ mod tests {
                         Determinism::BestEffort,
                         None,
                         &[],
-                        &["resource::workspace::write"],
+                        &[capabilities::workspace::HINT_WORKSPACE_WRITE],
                     ),
                 )
                 .expect("add workspace writer node");
@@ -3347,7 +3532,7 @@ mod tests {
                         Effects::ReadOnly,
                         Determinism::Strict,
                         None,
-                        &["resource::workspace"],
+                        &[capabilities::workspace::HINT_WORKSPACE],
                         &[],
                     ),
                 )

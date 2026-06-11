@@ -49,6 +49,7 @@ ensure the registry stays in sync with the implementation.
 | DAG-CKPT-009 | Runtime     | Error   | Incompatible checkpoint version. |
 | DAG-CKPT-010 | Runtime     | Error   | Checkpoint pinned bundle unavailable or mismatched at resume. |
 | EFFECT201 | Validation     | Error   | Declared effects do not match bound capabilities. |
+| EFFECT202 | Validation     | Error   | Unknown resource hint string; not a canonical `resource::*` hint. |
 | DET301    | Validation     | Error   | Determinism claim conflicts with resource usage. |
 | DET302    | Validation     | Error   | Declared determinism conflicts with registered resource hints. |
 | CTRL001   | Lint           | Warn    | Control-flow surface hint recommended for branching/loop. |
@@ -97,3 +98,20 @@ ensure the registry stays in sync with the implementation.
 > **Note:** The default severity column indicates how diagnostics are surfaced in the
 > absence of policy overrides. Individual organisations may escalate or demote specific
 > codes via policy configuration, but the canonical registry values must remain stable.
+
+## EFFECT202 remediation
+
+`EFFECT202` fires when a node's `effectHints`/`determinismHints` contain a string that
+is not one of the canonical hints defined by `dag_core::EffectHint` (e.g. a typo like
+`resource::http_raed` or `resorce::http::read`). Validation fails closed: the flow will
+not plan or deploy until the hint is corrected.
+
+Remediation:
+- Fix the spelling to a canonical hint (e.g. `resource::http::read`); the diagnostic
+  message lists the offending string and node alias.
+- If the hint was emitted by a macro or connector crate, upgrade that crate so it emits
+  hints via `dag_core::EffectHint::as_str()` instead of hand-written literals.
+- If you are introducing a genuinely new capability family, add a variant to
+  `dag_core::EffectHint` (the single allowed home for `resource::*` literals, enforced
+  by `scripts/check-hint-literals.sh` / `mise run hint-gate`) so validation, preflight,
+  and macro emission all learn about it at once.

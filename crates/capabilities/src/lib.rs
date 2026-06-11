@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 use std::time::{Duration, SystemTime};
@@ -597,9 +597,9 @@ impl ResourceAccess for ResourceBag {
 pub mod http {
     use super::*;
 
-    pub const HINT_HTTP: &str = "resource::http";
-    pub const HINT_HTTP_READ: &str = "resource::http::read";
-    pub const HINT_HTTP_WRITE: &str = "resource::http::write";
+    pub const HINT_HTTP: &str = dag_core::EffectHint::Http.as_str();
+    pub const HINT_HTTP_READ: &str = dag_core::EffectHint::HttpRead.as_str();
+    pub const HINT_HTTP_WRITE: &str = dag_core::EffectHint::HttpWrite.as_str();
 
     /// Opcode family id reserved for HTTP capability operations.
     ///
@@ -613,34 +613,10 @@ pub mod http {
     #[cfg(target_arch = "wasm32")]
     const RESP_ERR: u8 = 2;
 
-    static REGISTRATION: OnceLock<()> = OnceLock::new();
-
-    /// Ensure HTTP capability hints are registered with the shared effect/determinism registries.
-    pub fn ensure_registered() {
-        REGISTRATION.get_or_init(|| {
-            dag_core::effects_registry::register_effect_constraint(
-                dag_core::effects_registry::EffectConstraint::new(
-                    HINT_HTTP_READ,
-                    dag_core::Effects::ReadOnly,
-                    "HTTP reads reach external systems; declare effects = ReadOnly or Effectful.",
-                ),
-            );
-            dag_core::effects_registry::register_effect_constraint(
-                dag_core::effects_registry::EffectConstraint::new(
-                    HINT_HTTP_WRITE,
-                    dag_core::Effects::Effectful,
-                    "HTTP writes are effectful; declare effects = Effectful and provide idempotency keys.",
-                ),
-            );
-            dag_core::determinism::register_determinism_constraint(
-                dag_core::determinism::DeterminismConstraint::new(
-                    HINT_HTTP,
-                    dag_core::Determinism::BestEffort,
-                    "HTTP calls vary across retries; downgrade determinism or pin responses via caching.",
-                ),
-            );
-        });
-    }
+    /// HTTP hint constraints are derived exhaustively from
+    /// `dag_core::EffectHint` (packet A1); no runtime registration required.
+    /// Retained as a no-op for API compatibility.
+    pub fn ensure_registered() {}
 
     /// HTTP method supported by canonical client implementations.
     #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -929,21 +905,11 @@ pub mod clock {
     use super::*;
     use std::time::SystemTime;
 
-    pub const HINT_CLOCK: &str = "resource::clock";
-    static REGISTRATION: OnceLock<()> = OnceLock::new();
-
-    /// Ensure the shared determinism hint for clocks is registered.
-    pub fn ensure_registered() {
-        REGISTRATION.get_or_init(|| {
-            dag_core::determinism::register_determinism_constraint(
-                dag_core::determinism::DeterminismConstraint::new(
-                    HINT_CLOCK,
-                    dag_core::Determinism::BestEffort,
-                    "Clock access is nondeterministic; declare determinism = BestEffort or lower.",
-                ),
-            );
-        });
-    }
+    pub const HINT_CLOCK: &str = dag_core::EffectHint::Clock.as_str();
+    /// Hint constraints are derived exhaustively from `dag_core::EffectHint`
+    /// (packet A1); no runtime registration required. Retained as a no-op for
+    /// API compatibility.
+    pub fn ensure_registered() {}
 
     /// Abstract clock capability used by runtimes.
     pub trait Clock: Capability {
@@ -993,30 +959,13 @@ pub mod dedupe {
     use super::*;
     use std::time::Duration;
 
-    pub const HINT_DEDUPE: &str = "resource::dedupe";
-    pub const HINT_DEDUPE_WRITE: &str = "resource::dedupe::write";
+    pub const HINT_DEDUPE: &str = dag_core::EffectHint::Dedupe.as_str();
+    pub const HINT_DEDUPE_WRITE: &str = dag_core::EffectHint::DedupeWrite.as_str();
 
-    static REGISTRATION: OnceLock<()> = OnceLock::new();
-
-    /// Register effect/determinism constraints for dedupe stores.
-    pub fn ensure_registered() {
-        REGISTRATION.get_or_init(|| {
-            dag_core::effects_registry::register_effect_constraint(
-                dag_core::effects_registry::EffectConstraint::new(
-                    HINT_DEDUPE_WRITE,
-                    dag_core::Effects::Effectful,
-                    "Dedupe stores persist state; declare effects = Effectful when binding.",
-                ),
-            );
-            dag_core::determinism::register_determinism_constraint(
-                dag_core::determinism::DeterminismConstraint::new(
-                    HINT_DEDUPE,
-                    dag_core::Determinism::BestEffort,
-                    "Dedupe lookups depend on external state; downgrade determinism or provide proofs.",
-                ),
-            );
-        });
-    }
+    /// Hint constraints are derived exhaustively from `dag_core::EffectHint`
+    /// (packet A1); no runtime registration required. Retained as a no-op for
+    /// API compatibility.
+    pub fn ensure_registered() {}
 
     /// Errors surfaced by dedupe store capabilities.
     #[derive(Debug, thiserror::Error)]
@@ -1163,40 +1112,15 @@ pub mod cache {
 }
 
 pub mod db {
-    use super::*;
 
-    pub const HINT_DB: &str = "resource::db";
-    pub const HINT_DB_READ: &str = "resource::db::read";
-    pub const HINT_DB_WRITE: &str = "resource::db::write";
+    pub const HINT_DB: &str = dag_core::EffectHint::Db.as_str();
+    pub const HINT_DB_READ: &str = dag_core::EffectHint::DbRead.as_str();
+    pub const HINT_DB_WRITE: &str = dag_core::EffectHint::DbWrite.as_str();
 
-    static REGISTRATION: OnceLock<()> = OnceLock::new();
-
-    /// Register effect/determinism constraints for relational database access.
-    pub fn ensure_registered() {
-        REGISTRATION.get_or_init(|| {
-            dag_core::effects_registry::register_effect_constraint(
-                dag_core::effects_registry::EffectConstraint::new(
-                    HINT_DB_READ,
-                    dag_core::Effects::ReadOnly,
-                    "Database reads reach external state; declare effects = ReadOnly or Effectful.",
-                ),
-            );
-            dag_core::effects_registry::register_effect_constraint(
-                dag_core::effects_registry::EffectConstraint::new(
-                    HINT_DB_WRITE,
-                    dag_core::Effects::Effectful,
-                    "Database writes mutate external systems; declare effects = Effectful and supply idempotency.",
-                ),
-            );
-            dag_core::determinism::register_determinism_constraint(
-                dag_core::determinism::DeterminismConstraint::new(
-                    HINT_DB,
-                    dag_core::Determinism::BestEffort,
-                    "Database results can vary across retries; downgrade determinism or pin revisions.",
-                ),
-            );
-        });
-    }
+    /// Hint constraints are derived exhaustively from `dag_core::EffectHint`
+    /// (packet A1); no runtime registration required. Retained as a no-op for
+    /// API compatibility.
+    pub fn ensure_registered() {}
 
     #[cfg(test)]
     mod tests {
@@ -1223,37 +1147,14 @@ pub mod kv {
     use serde_json::Value as JsonValue;
     use std::collections::HashMap;
 
-    pub const HINT_KV: &str = "resource::kv";
-    pub const HINT_KV_READ: &str = "resource::kv::read";
-    pub const HINT_KV_WRITE: &str = "resource::kv::write";
+    pub const HINT_KV: &str = dag_core::EffectHint::Kv.as_str();
+    pub const HINT_KV_READ: &str = dag_core::EffectHint::KvRead.as_str();
+    pub const HINT_KV_WRITE: &str = dag_core::EffectHint::KvWrite.as_str();
 
-    static REGISTRATION: OnceLock<()> = OnceLock::new();
-
-    pub fn ensure_registered() {
-        REGISTRATION.get_or_init(|| {
-            dag_core::effects_registry::register_effect_constraint(
-                dag_core::effects_registry::EffectConstraint::new(
-                    HINT_KV_READ,
-                    dag_core::Effects::ReadOnly,
-                    "KV reads access external state; declare effects = ReadOnly or stronger.",
-                ),
-            );
-            dag_core::effects_registry::register_effect_constraint(
-                dag_core::effects_registry::EffectConstraint::new(
-                    HINT_KV_WRITE,
-                    dag_core::Effects::Effectful,
-                    "KV writes are effectful; declare effects = Effectful and ensure dedupe/idempotency.",
-                ),
-            );
-            dag_core::determinism::register_determinism_constraint(
-                dag_core::determinism::DeterminismConstraint::new(
-                    HINT_KV,
-                    dag_core::Determinism::BestEffort,
-                    "KV values may change between executions; downgrade determinism or pin versions.",
-                ),
-            );
-        });
-    }
+    /// Hint constraints are derived exhaustively from `dag_core::EffectHint`
+    /// (packet A1); no runtime registration required. Retained as a no-op for
+    /// API compatibility.
+    pub fn ensure_registered() {}
 
     /// Errors surfaced by key-value capabilities.
     #[derive(Debug, thiserror::Error)]
@@ -2042,37 +1943,14 @@ pub mod blob {
     use super::*;
     use std::collections::HashMap;
 
-    pub const HINT_BLOB: &str = "resource::blob";
-    pub const HINT_BLOB_READ: &str = "resource::blob::read";
-    pub const HINT_BLOB_WRITE: &str = "resource::blob::write";
+    pub const HINT_BLOB: &str = dag_core::EffectHint::Blob.as_str();
+    pub const HINT_BLOB_READ: &str = dag_core::EffectHint::BlobRead.as_str();
+    pub const HINT_BLOB_WRITE: &str = dag_core::EffectHint::BlobWrite.as_str();
 
-    static REGISTRATION: OnceLock<()> = OnceLock::new();
-
-    pub fn ensure_registered() {
-        REGISTRATION.get_or_init(|| {
-            dag_core::effects_registry::register_effect_constraint(
-                dag_core::effects_registry::EffectConstraint::new(
-                    HINT_BLOB_READ,
-                    dag_core::Effects::ReadOnly,
-                    "Blob reads access external storage; declare effects = ReadOnly or stronger.",
-                ),
-            );
-            dag_core::effects_registry::register_effect_constraint(
-                dag_core::effects_registry::EffectConstraint::new(
-                    HINT_BLOB_WRITE,
-                    dag_core::Effects::Effectful,
-                    "Blob writes mutate external storage; declare effects = Effectful and supply idempotency.",
-                ),
-            );
-            dag_core::determinism::register_determinism_constraint(
-                dag_core::determinism::DeterminismConstraint::new(
-                    HINT_BLOB,
-                    dag_core::Determinism::BestEffort,
-                    "Blob storage responses can change over time; downgrade determinism or pin versions.",
-                ),
-            );
-        });
-    }
+    /// Hint constraints are derived exhaustively from `dag_core::EffectHint`
+    /// (packet A1); no runtime registration required. Retained as a no-op for
+    /// API compatibility.
+    pub fn ensure_registered() {}
 
     /// Errors exposed by blob storage capabilities.
     #[derive(Debug, thiserror::Error)]
@@ -2312,37 +2190,14 @@ pub mod queue {
     use super::*;
     use std::collections::VecDeque;
 
-    pub const HINT_QUEUE: &str = "resource::queue";
-    pub const HINT_QUEUE_PUBLISH: &str = "resource::queue::publish";
-    pub const HINT_QUEUE_CONSUME: &str = "resource::queue::consume";
+    pub const HINT_QUEUE: &str = dag_core::EffectHint::Queue.as_str();
+    pub const HINT_QUEUE_PUBLISH: &str = dag_core::EffectHint::QueuePublish.as_str();
+    pub const HINT_QUEUE_CONSUME: &str = dag_core::EffectHint::QueueConsume.as_str();
 
-    static REGISTRATION: OnceLock<()> = OnceLock::new();
-
-    pub fn ensure_registered() {
-        REGISTRATION.get_or_init(|| {
-            dag_core::effects_registry::register_effect_constraint(
-                dag_core::effects_registry::EffectConstraint::new(
-                    HINT_QUEUE_PUBLISH,
-                    dag_core::Effects::Effectful,
-                    "Queue publishes are effectful; ensure effects = Effectful with dedupe keys.",
-                ),
-            );
-            dag_core::effects_registry::register_effect_constraint(
-                dag_core::effects_registry::EffectConstraint::new(
-                    HINT_QUEUE_CONSUME,
-                    dag_core::Effects::ReadOnly,
-                    "Queue consumption acknowledges messages; treat as at least ReadOnly.",
-                ),
-            );
-            dag_core::determinism::register_determinism_constraint(
-                dag_core::determinism::DeterminismConstraint::new(
-                    HINT_QUEUE,
-                    dag_core::Determinism::BestEffort,
-                    "Queue ordering and visibility vary; downgrade determinism or add sequence checks.",
-                ),
-            );
-        });
-    }
+    /// Hint constraints are derived exhaustively from `dag_core::EffectHint`
+    /// (packet A1); no runtime registration required. Retained as a no-op for
+    /// API compatibility.
+    pub fn ensure_registered() {}
 
     /// Errors raised by queue capabilities.
     #[derive(Debug, thiserror::Error)]
@@ -2428,23 +2283,13 @@ pub mod queue {
 }
 
 pub mod rng {
-    use super::*;
 
-    pub const HINT_RNG: &str = "resource::rng";
+    pub const HINT_RNG: &str = dag_core::EffectHint::Rng.as_str();
 
-    static REGISTRATION: OnceLock<()> = OnceLock::new();
-
-    pub fn ensure_registered() {
-        REGISTRATION.get_or_init(|| {
-            dag_core::determinism::register_determinism_constraint(
-                dag_core::determinism::DeterminismConstraint::new(
-                    HINT_RNG,
-                    dag_core::Determinism::BestEffort,
-                    "Randomness is nondeterministic; downgrade determinism or inject fixed seeds.",
-                ),
-            );
-        });
-    }
+    /// Hint constraints are derived exhaustively from `dag_core::EffectHint`
+    /// (packet A1); no runtime registration required. Retained as a no-op for
+    /// API compatibility.
+    pub fn ensure_registered() {}
 
     #[cfg(test)]
     mod tests {

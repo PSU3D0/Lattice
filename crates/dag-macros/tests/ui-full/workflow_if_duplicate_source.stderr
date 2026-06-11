@@ -1,0 +1,5 @@
+error: [DAG207] duplicate if_! for source `route`
+  --> tests/ui-full/workflow_if_duplicate_source.rs:45:5
+   |
+45 |     if_!(
+   |     ^^^

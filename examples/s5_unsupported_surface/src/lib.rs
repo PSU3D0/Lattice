@@ -18,7 +18,8 @@ async fn http_trigger(payload: JsonValue) -> NodeResult<JsonValue> {
     name = "PassThrough",
     summary = "Pass through value to capture",
     effects = "Pure",
-    determinism = "Strict"
+    determinism = "Strict",
+    json_boundary = true
 )]
 async fn passthrough(payload: JsonValue) -> NodeResult<JsonValue> {
     Ok(payload)

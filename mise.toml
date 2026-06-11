@@ -77,6 +77,10 @@ description = "Aggregate validation task for CI"
 depends = ["fmt", "clippy", "test"]
 run = "echo finished validation checks"
 
+[tasks.hint-gate]
+description = "Forbid raw 'resource::' hint string literals outside dag_core::EffectHint (packet A1)"
+run = "bash scripts/check-hint-literals.sh"
+
 [tasks.secret-scan]
 description = "Scan the repo for committed secrets"
 run = "gitleaks dir . --config .gitleaks.toml"

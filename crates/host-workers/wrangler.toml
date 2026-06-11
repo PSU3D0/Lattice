@@ -3,4 +3,6 @@ main = "build/index.js"
 compatibility_date = "2026-01-27"
 
 [build]
-command = "cargo install -q worker-build@^0.7 && worker-build --release"
+# worker-build install is handled once by the guard script (not on every build).
+# See README "Workers build tooling". Fresh contributor one-time: `cargo install worker-build@^0.7`.
+command = "bash \"$(git rev-parse --show-toplevel)/scripts/ensure-worker-build.sh\" --release"

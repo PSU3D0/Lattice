@@ -3,6 +3,7 @@ use std::sync::RwLock;
 use once_cell::sync::Lazy;
 
 use crate::Determinism;
+use crate::effect_hint::EffectHint;
 
 /// Registry entry describing a determinism conflict for a given resource hint.
 #[derive(Debug, Clone)]
@@ -31,32 +32,24 @@ impl DeterminismConstraint {
     }
 }
 
-static CONSTRAINTS: Lazy<RwLock<Vec<DeterminismConstraint>>> = Lazy::new(|| {
-    RwLock::new(vec![
-        DeterminismConstraint::new(
-            "resource::clock",
-            Determinism::BestEffort,
-            "Clock access introduces wall-clock time; downgrade determinism to BestEffort or surface the timestamp as an input.",
-        ),
-        DeterminismConstraint::new(
-            "resource::http",
-            Determinism::BestEffort,
-            "HTTP calls depend on external systems; downgrade determinism or provide cached/pinned responses before claiming Stable.",
-        ),
-        DeterminismConstraint::new(
-            "resource::rng",
-            Determinism::BestEffort,
-            "Random number generation requires a deterministic seed; downgrade determinism or use a seeded RNG provided via input.",
-        ),
-        DeterminismConstraint::new(
-            "resource::workspace",
-            Determinism::BestEffort,
-            "Workspace contents can differ across retries unless persisted and restored by the host; downgrade determinism or treat workspace data as explicit input.",
-        ),
-    ])
-});
+/// Runtime registry for ADDITIONAL (non-canonical) constraints only.
+///
+/// Packet A1: constraints for every canonical `resource::*` hint are derived
+/// exhaustively from [`EffectHint`] (family-wide, matching the historical
+/// prefix semantics) and always take precedence, so lookups no longer depend
+/// on `ensure_registered()` call order.
+static CONSTRAINTS: Lazy<RwLock<Vec<DeterminismConstraint>>> = Lazy::new(|| RwLock::new(Vec::new()));
+
+fn derived_constraint(hint: EffectHint) -> Option<DeterminismConstraint> {
+    hint.determinism_constraint().map(|(minimum, guidance)| {
+        DeterminismConstraint::new(hint.family().as_str(), minimum, guidance)
+    })
+}
 
 /// Register an additional determinism constraint. Existing hints are replaced.
+///
+/// Constraints for canonical [`EffectHint`] strings are derived from the enum
+/// and CANNOT be overridden here; registering one is a no-op for lookups.
 pub fn register_determinism_constraint(constraint: DeterminismConstraint) {
     let mut guard = CONSTRAINTS
         .write()
@@ -68,18 +61,42 @@ pub fn register_determinism_constraint(constraint: DeterminismConstraint) {
     }
 }
 
-/// Find the first constraint matching the provided resource hint.
+/// Find the constraint matching the provided resource hint.
+///
+/// Canonical hints resolve via [`EffectHint`] derivation (registration-order
+/// independent); anything else falls back to the runtime registry.
 pub fn constraint_for_hint(hint: &str) -> Option<DeterminismConstraint> {
+    if let Ok(parsed) = EffectHint::parse(hint) {
+        return derived_constraint(parsed);
+    }
     let guard = CONSTRAINTS
         .read()
         .expect("determinism constraint registry poisoned");
     guard.iter().find(|c| c.matches(hint)).cloned()
 }
 
-/// Snapshot all registered determinism constraints.
+/// Snapshot all determinism constraints: the canonical enum-derived
+/// family-level set plus any runtime-registered extras for non-canonical
+/// hints.
 pub fn all_constraints() -> Vec<DeterminismConstraint> {
+    let mut constraints: Vec<DeterminismConstraint> = Vec::new();
+    for hint in EffectHint::ALL {
+        // One constraint per family (bare family variants only).
+        if hint.family() != hint {
+            continue;
+        }
+        if let Some(constraint) = derived_constraint(hint) {
+            constraints.push(constraint);
+        }
+    }
     let guard = CONSTRAINTS
         .read()
         .expect("determinism constraint registry poisoned");
-    guard.clone()
+    constraints.extend(
+        guard
+            .iter()
+            .filter(|c| EffectHint::parse(c.hint).is_err())
+            .cloned(),
+    );
+    constraints
 }

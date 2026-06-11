@@ -1,0 +1,24 @@
+[package]
+name = "example-{{NAME_KEBAB}}"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "{{NAME_SNAKE}} Web flow example scaffolded with `flows new` (tier a)."
+
+[dependencies]
+dag-core = { path = "{{REL_PREFIX}}/dag-core" }
+dag-macros = { path = "{{REL_PREFIX}}/dag-macros" }
+kernel-exec = { path = "{{REL_PREFIX}}/kernel-exec" }
+kernel-plan = { path = "{{REL_PREFIX}}/kernel-plan" }
+host-inproc = { path = "{{REL_PREFIX}}/host-inproc" }
+serde.workspace = true
+serde_json.workspace = true
+
+[features]
+default = ["host-bundle"]
+host-bundle = []
+flow-registry = ["dag-core/flow-registry", "dag-macros/flow-registry"]

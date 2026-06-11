@@ -256,6 +256,12 @@ pub static DIAGNOSTIC_CODES: Lazy<Vec<DiagnosticCode>> = Lazy::new(|| {
             summary: "Declared effects do not match bound capabilities",
         },
         DiagnosticCode {
+            code: "EFFECT202",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Unknown resource hint string; not a canonical resource::* hint",
+        },
+        DiagnosticCode {
             code: "DET301",
             subsystem: "validation",
             default_severity: Severity::Error,

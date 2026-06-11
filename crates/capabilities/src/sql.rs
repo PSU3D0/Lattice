@@ -1,45 +1,14 @@
 use super::*;
 
-pub const HINT_SQL: &str = "resource::sql";
-pub const HINT_SQL_READ: &str = "resource::sql::read";
-pub const HINT_SQL_WRITE: &str = "resource::sql::write";
-pub const HINT_SQL_ADMIN: &str = "resource::sql::admin";
+pub const HINT_SQL: &str = dag_core::EffectHint::Sql.as_str();
+pub const HINT_SQL_READ: &str = dag_core::EffectHint::SqlRead.as_str();
+pub const HINT_SQL_WRITE: &str = dag_core::EffectHint::SqlWrite.as_str();
+pub const HINT_SQL_ADMIN: &str = dag_core::EffectHint::SqlAdmin.as_str();
 
-static REGISTRATION: OnceLock<()> = OnceLock::new();
-
-/// Ensure SQL capability hints are registered with the shared effect/determinism registries.
-pub fn ensure_registered() {
-    REGISTRATION.get_or_init(|| {
-        dag_core::effects_registry::register_effect_constraint(
-            dag_core::effects_registry::EffectConstraint::new(
-                HINT_SQL_READ,
-                dag_core::Effects::ReadOnly,
-                "SQL reads access external relational state; declare effects = ReadOnly or Effectful.",
-            ),
-        );
-        dag_core::effects_registry::register_effect_constraint(
-            dag_core::effects_registry::EffectConstraint::new(
-                HINT_SQL_WRITE,
-                dag_core::Effects::Effectful,
-                "SQL writes mutate external relational state; declare effects = Effectful and ensure idempotency.",
-            ),
-        );
-        dag_core::effects_registry::register_effect_constraint(
-            dag_core::effects_registry::EffectConstraint::new(
-                HINT_SQL_ADMIN,
-                dag_core::Effects::Effectful,
-                "SQL admin access can alter schema or provider state; declare effects = Effectful and gate binding policy.",
-            ),
-        );
-        dag_core::determinism::register_determinism_constraint(
-            dag_core::determinism::DeterminismConstraint::new(
-                HINT_SQL,
-                dag_core::Determinism::BestEffort,
-                "SQL results can vary across retries; downgrade determinism or pin state through a higher-level protocol.",
-            ),
-        );
-    });
-}
+/// Hint constraints are derived exhaustively from `dag_core::EffectHint`
+/// (packet A1); no runtime registration required. Retained as a no-op for
+/// API compatibility.
+pub fn ensure_registered() {}
 
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]

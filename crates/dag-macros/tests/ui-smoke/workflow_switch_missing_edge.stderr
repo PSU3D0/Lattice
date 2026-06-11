@@ -1,0 +1,5 @@
+error: [DAG206] switch! references missing edge `route` -> `b`
+  --> tests/ui-smoke/workflow_switch_missing_edge.rs:37:5
+   |
+37 |     switch!(
+   |     ^^^^^^

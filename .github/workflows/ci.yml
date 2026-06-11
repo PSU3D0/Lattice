@@ -7,6 +7,13 @@ on:
 permissions:
   contents: read
 
+# Speed up builds across jobs (packet B1-c):
+# - mold linker is configured in .cargo/config.toml; we only need to install it.
+# - sccache caches rustc output; rust-cache caches the registry + target dir.
+env:
+  RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: "true"
+
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -19,6 +26,12 @@ jobs:
         with:
           node-version: 20
 
+      - name: Install mold linker
+        run: sudo apt-get update && sudo apt-get install -y mold
+
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@v0.0.6
+
       - name: Set up mise tools
         uses: jdx/mise-action@v2
         with:
@@ -27,7 +40,15 @@ jobs:
       - name: Install Rust components
         run: rustup component add rustfmt clippy
 
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
       - name: Run native validation
+        # Run the FULL trybuild UI suite in CI (packet B1-d): the dag-macros
+        # harness gates its extended cases behind this var; unset locally for a
+        # fast edit→test loop, always "1" here so every case is exercised.
+        env:
+          LATTICE_TRYBUILD_FULL: "1"
         run: mise run validate
 
   validate-wasm:
@@ -41,6 +62,12 @@ jobs:
         with:
           node-version: 20
 
+      - name: Install mold linker
+        run: sudo apt-get update && sudo apt-get install -y mold
+
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@v0.0.6
+
       - name: Set up mise tools
         uses: jdx/mise-action@v2
         with:
@@ -48,6 +75,14 @@ jobs:
 
       - name: Install wasm target
         run: rustup target add wasm32-unknown-unknown
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      # Pre-install worker-build once so the workerd/wrangler harness build does
+      # not pay `cargo install` on every invocation (see scripts/ensure-worker-build.sh).
+      - name: Pre-install worker-build
+        run: cargo install -q worker-build@^0.7
 
       - name: Run wasm validation
         run: mise run validate-wasm

@@ -1,0 +1,5 @@
+error: if_! requires `then = <node_alias>`
+  --> tests/ui-full/workflow_if_then_not_ident.rs:41:16
+   |
+41 |         then = "a",
+   |                ^^^

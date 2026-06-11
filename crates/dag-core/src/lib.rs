@@ -4,6 +4,7 @@ mod builder;
 pub mod determinism;
 mod diagnostics;
 mod edge_transform;
+pub mod effect_hint;
 mod effects;
 pub mod effects_registry;
 #[cfg(feature = "flow-registry")]
@@ -17,6 +18,7 @@ pub use edge_transform::{
     IntoCoercion, IntoCoercionError, apply_into_coercion, json_type_name, schemas_compatible,
     supported_into_coercion,
 };
+pub use effect_hint::{EffectHint, UnknownEffectHint};
 pub use effects::{Determinism, Effects, NodeError, NodeResult};
 pub use ir::*;
 pub use serde_json;
@@ -61,6 +63,7 @@ impl<In, Out> FlowEntrypoint<In, Out> {
 /// Convenient prelude re-exporting the most commonly used items.
 pub mod prelude {
     pub use crate::builder::{FlowBuilder, FlowBuilderError};
+    pub use crate::effect_hint::EffectHint;
     pub use crate::effects::{Determinism, Effects, NodeError, NodeResult};
     pub use crate::ir::{
         BufferPolicy, Delivery, DurabilityMode, DurabilityPolicy, DurabilityProfile, FlowIR,

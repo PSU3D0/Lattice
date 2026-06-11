@@ -1,0 +1,60 @@
+# demo_flow
+
+> Scaffolded by `flows new --profile web --tier a`. Modeled on `examples/s1_echo`.
+
+## Story
+
+TODO: describe what this flow proves — the user/operator story, the route it
+exposes, and any bindings it will need once the placeholder logic is replaced.
+
+This tier-a scaffold ships a minimal honest Web flow:
+
+- one HTTP trigger node (`trigger`)
+- one Pure transform node (`process`)
+- one responder/capture node (`responder`)
+- route alias `POST /demo-flow`
+
+Authoring conventions: `impl-docs/spec/example-authoring-conventions.md`.
+
+## Verify (tier a)
+
+Run from the workspace root. `<this-crate-dir>` is the directory this README
+lives in.
+
+```sh
+# 1. Compile the crate.
+cargo check -p example-demo-flow
+
+# 2. Validate the Flow IR graph (topology, effects, determinism).
+cargo run -q -p example-demo-flow --bin dump_ir | flows graph check
+
+# 3. Validate trigger/capture entrypoint wiring.
+cargo run -q -p example-demo-flow --bin dump_ir > /tmp/demo_flow.ir.json
+flows entrypoints check \
+  --flow /tmp/demo_flow.ir.json \
+  --trigger-alias trigger \
+  --capture-alias responder
+
+# 4. Run locally against the sample payload (after registering in the CLI;
+#    see "Serving via the CLI" below).
+flows run local --example demo_flow \
+  --payload-file <this-crate-dir>/payloads/sample.json
+```
+
+> `flows` is the `flows-cli` binary: `cargo run -p flows-cli --bin flows -- ...`,
+> or install it and call `flows` directly.
+
+## Serving via the CLI
+
+`flows run local --example demo_flow` and `flows run serve --example
+demo_flow` require a manual registration step (the built-in example registry
+is still hand-maintained):
+
+1. Add a path dependency on `example-demo-flow` to `crates/cli/Cargo.toml`.
+2. Add `use example_demo_flow as demo_flow;` near the other
+   `use example_*` imports in `crates/cli/src/main.rs`.
+3. Add a match arm to `load_example(...)` in `crates/cli/src/main.rs`:
+   `"demo_flow" => (demo_flow::bundle(), false),`
+
+Until then, steps 1–3 above (`cargo check`, `graph check`, `entrypoints check`)
+verify the flow without registration.

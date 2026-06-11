@@ -1,0 +1,5 @@
+error: duplicate switch case key `a`
+  --> tests/ui-full/workflow_switch_duplicate_case_key.rs:41:29
+   |
+41 |         cases = { "a" => a, "a" => b }
+   |                             ^^^

@@ -1,3 +1,12 @@
+//! Reqwest-backed HTTP capability for Lattice.
+//!
+//! KEEP as its own crate (decision recorded packet E2,
+//! verifiability-substrate-hardening plan). Rationale: this crate isolates the
+//! heavy `reqwest` (+ TLS) dependency from the lightweight `capabilities` trait
+//! crate, so flows/connectors that only need the HTTP traits do not transitively
+//! pull in reqwest. Folding it back into `capabilities` would re-couple that
+//! dependency tree. Do not re-litigate without revisiting that tradeoff.
+
 use anyhow::Context;
 use async_trait::async_trait;
 use capabilities::http::{

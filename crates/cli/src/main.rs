@@ -13,8 +13,11 @@ use cargo_metadata::MetadataCommand;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use dag_core::{Diagnostic, DurabilityMode, FlowIR, Severity};
 use exporters::{harness::HarnessConfig, to_dot, to_json_value};
-use flow_bundle::{ExecPolicy, Manifest};
+#[cfg(feature = "host-wasmtime")]
+use flow_bundle::ExecPolicy;
+use flow_bundle::Manifest;
 use futures::StreamExt;
+#[cfg(feature = "host-wasmtime")]
 use host_wasmtime::load_flow_bundle;
 use host_web_axum::{HostHandle, RouteConfig};
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
@@ -42,21 +45,33 @@ use host_inproc::{EnvironmentPlugin, HostRuntime, Invocation};
 
 use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
 
+#[cfg(feature = "example-github-issues")]
 use example_connector_github_issues_local_flow;
+#[cfg(feature = "example-google-sheets")]
 use example_connector_google_sheets_local_flow;
+#[cfg(feature = "example-s1")]
 use example_s1_echo as s1_echo;
+#[cfg(feature = "example-s2")]
 use example_s2_site as s2_site;
+#[cfg(feature = "example-s3")]
 use example_s3_branching as s3_branching;
+#[cfg(feature = "example-s4")]
 use example_s4_preflight as s4_preflight;
+#[cfg(feature = "example-s5")]
 use example_s5_unsupported_surface as s5_unsupported_surface;
+#[cfg(feature = "example-s6")]
 use example_s6_spill_host as s6_spill;
+#[cfg(feature = "example-s11")]
 use example_s11_lead_intake as s11_lead_intake;
+#[cfg(feature = "example-s12")]
 use example_s12_sheetport_quote as s12_sheetport_quote;
+#[cfg(feature = "example-s13")]
 use example_s13_github_issue_investigator as s13_github_issue_investigator;
 
 mod bundle;
 mod local_durability;
 mod resume;
+mod scaffold;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -89,6 +104,8 @@ enum Command {
     /// Resume checkpoints from local durability store.
     #[command(subcommand)]
     Resume(resume::ResumeCommand),
+    /// Scaffold a new example crate (modeled on examples/s1_echo).
+    New(scaffold::NewArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -340,6 +357,7 @@ fn main() -> Result<()> {
         }
         Command::Bundle(args) => bundle::run_bundle(args),
         Command::Resume(command) => resume::run_resume(command),
+        Command::New(args) => scaffold::run_new(args),
     }
 }
 
@@ -781,6 +799,14 @@ fn run_local(args: LocalArgs) -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(feature = "host-wasmtime"))]
+fn run_bundle(_args: BundleArgs) -> Result<()> {
+    Err(anyhow!(
+        "`flows run bundle` requires the wasmtime host; rebuild flows-cli with the `host-wasmtime` feature"
+    ))
+}
+
+#[cfg(feature = "host-wasmtime")]
 fn run_bundle(args: BundleArgs) -> Result<()> {
     if args.bindings_lock.is_some() && !args.bindings.is_empty() {
         return Err(anyhow!("--bindings-lock cannot be combined with --bind"));
@@ -1032,20 +1058,30 @@ fn run_serve(args: ServeArgs) -> Result<()> {
 
     let serve_label: String;
     let handle = if let Some(bundle_dir) = args.bundle.as_ref() {
-        let bundle = load_flow_bundle(
-            bundle_dir,
-            ExecPolicy::Wasm,
-            args.flow.as_deref(),
-            Arc::new(resources.clone()),
-        )?;
-        let handle = example_from_bundle_entrypoint(
-            bundle,
-            false,
-            args.trigger_alias.as_deref(),
-            args.capture_alias.as_deref(),
-        )?;
-        serve_label = format!("bundle `{}`", bundle_dir.display());
-        handle
+        #[cfg(not(feature = "host-wasmtime"))]
+        {
+            let _ = bundle_dir;
+            return Err(anyhow!(
+                "`flows run serve --bundle` requires the wasmtime host; rebuild flows-cli with the `host-wasmtime` feature"
+            ));
+        }
+        #[cfg(feature = "host-wasmtime")]
+        {
+            let bundle = load_flow_bundle(
+                bundle_dir,
+                ExecPolicy::Wasm,
+                args.flow.as_deref(),
+                Arc::new(resources.clone()),
+            )?;
+            let handle = example_from_bundle_entrypoint(
+                bundle,
+                false,
+                args.trigger_alias.as_deref(),
+                args.capture_alias.as_deref(),
+            )?;
+            serve_label = format!("bundle `{}`", bundle_dir.display());
+            handle
+        }
     } else {
         let example_name = args.example.as_deref().unwrap_or("s1_echo");
         serve_label = format!("example `{example_name}`");
@@ -3526,20 +3562,31 @@ fn parse_payload(args: &LocalArgs) -> Result<JsonValue> {
 
 fn load_example(name: &str) -> Result<ExampleHandle> {
     let (bundle, is_streaming) = match name {
+        #[cfg(feature = "example-s1")]
         "s1_echo" => (s1_echo::bundle(), false),
+        #[cfg(feature = "example-s2")]
         "s2_site" => (s2_site::bundle(), true),
+        #[cfg(feature = "example-s3")]
         "s3_branching" => (s3_branching::bundle(), false),
+        #[cfg(feature = "example-s4")]
         "s4_preflight" => (s4_preflight::bundle(), false),
+        #[cfg(feature = "example-s5")]
         "s5_unsupported_surface" => (s5_unsupported_surface::bundle(), false),
+        #[cfg(feature = "example-s6")]
         "s6_spill" => (s6_spill::bundle(), false),
+        #[cfg(feature = "example-s11")]
         "s11_lead_intake" => (s11_lead_intake::bundle(), false),
+        #[cfg(feature = "example-github-issues")]
         "connector_github_issues_local_flow" => {
             (example_connector_github_issues_local_flow::bundle(), false)
         }
+        #[cfg(feature = "example-google-sheets")]
         "connector_google_sheets_local_flow" => {
             (example_connector_google_sheets_local_flow::bundle(), false)
         }
+        #[cfg(feature = "example-s12")]
         "s12_sheetport_quote" => (s12_sheetport_quote::bound_bundle(), false),
+        #[cfg(feature = "example-s13")]
         "s13_github_issue_investigator" => (s13_github_issue_investigator::bundle(), false),
         other => return Err(anyhow!("unknown example `{other}`")),
     };

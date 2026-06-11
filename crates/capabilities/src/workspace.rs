@@ -1,6 +1,5 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::sync::OnceLock;
 
 use crate::Capability;
 
@@ -10,37 +9,14 @@ pub const ERR_WORKSPACE_NOT_FOUND: &str = "CAP-WS-003";
 pub const ERR_WORKSPACE_UNSUPPORTED: &str = "CAP-WS-004";
 pub const ERR_WORKSPACE_BACKEND: &str = "CAP-WS-005";
 
-pub const HINT_WORKSPACE: &str = "resource::workspace";
-pub const HINT_WORKSPACE_READ: &str = "resource::workspace::read";
-pub const HINT_WORKSPACE_WRITE: &str = "resource::workspace::write";
+pub const HINT_WORKSPACE: &str = dag_core::EffectHint::Workspace.as_str();
+pub const HINT_WORKSPACE_READ: &str = dag_core::EffectHint::WorkspaceRead.as_str();
+pub const HINT_WORKSPACE_WRITE: &str = dag_core::EffectHint::WorkspaceWrite.as_str();
 
-static REGISTRATION: OnceLock<()> = OnceLock::new();
-
-pub fn ensure_registered() {
-    REGISTRATION.get_or_init(|| {
-        dag_core::effects_registry::register_effect_constraint(
-            dag_core::effects_registry::EffectConstraint::new(
-                HINT_WORKSPACE_READ,
-                dag_core::Effects::ReadOnly,
-                "Workspace reads access run-scoped state; declare effects = ReadOnly or stronger.",
-            ),
-        );
-        dag_core::effects_registry::register_effect_constraint(
-            dag_core::effects_registry::EffectConstraint::new(
-                HINT_WORKSPACE_WRITE,
-                dag_core::Effects::Effectful,
-                "Workspace writes mutate run-scoped state; declare effects = Effectful.",
-            ),
-        );
-        dag_core::determinism::register_determinism_constraint(
-            dag_core::determinism::DeterminismConstraint::new(
-                HINT_WORKSPACE,
-                dag_core::Determinism::BestEffort,
-                "Workspace contents can differ across retries unless persisted; downgrade determinism or pin inputs.",
-            ),
-        );
-    });
-}
+/// Hint constraints are derived exhaustively from `dag_core::EffectHint`
+/// (packet A1); no runtime registration required. Retained as a no-op for
+/// API compatibility.
+pub fn ensure_registered() {}
 
 /// Write-time options for workspace entries.
 ///

@@ -1,0 +1,24 @@
+[package]
+name = "example-demo-flow"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "demo_flow Web flow example scaffolded with `flows new` (tier a)."
+
+[dependencies]
+dag-core = { path = "../../crates/dag-core" }
+dag-macros = { path = "../../crates/dag-macros" }
+kernel-exec = { path = "../../crates/kernel-exec" }
+kernel-plan = { path = "../../crates/kernel-plan" }
+host-inproc = { path = "../../crates/host-inproc" }
+serde.workspace = true
+serde_json.workspace = true
+
+[features]
+default = ["host-bundle"]
+host-bundle = []
+flow-registry = ["dag-core/flow-registry", "dag-macros/flow-registry"]

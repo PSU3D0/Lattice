@@ -22,22 +22,22 @@ kernel-exec = { path = "../kernel-exec" }
 capabilities = { path = "../capabilities" }
 cap-http-reqwest = { path = "../cap-http-reqwest" }
 host-web-axum = { path = "../host-web-axum" }
-host-wasmtime = { path = "../host-wasmtime" }
+host-wasmtime = { path = "../host-wasmtime", optional = true }
 registry-client = { path = "../registry-client" }
 connector-spec = { path = "../connector-spec" }
 exporters = { path = "../exporters" }
 flow-bundle = { path = "../flow-bundle" }
-example-s1-echo = { path = "../../examples/s1_echo" }
-example-s2-site = { path = "../../examples/s2_site" }
-example-s3-branching = { path = "../../examples/s3_branching" }
-example-s4-preflight = { path = "../../examples/s4_preflight" }
-example-s5-unsupported-surface = { path = "../../examples/s5_unsupported_surface" }
-example-s6-spill-host = { path = "../../examples/s6_spill/host" }
-example-s11-lead-intake = { path = "../../examples/s11_lead_intake" }
-example-s12-sheetport-quote = { path = "../../examples/s12_sheetport_quote" }
-example-s13-github-issue-investigator = { path = "../../examples/s13_github_issue_investigator" }
-example-connector-github-issues-local-flow = { path = "../connectors/github/issues/examples/local-flow" }
-example-connector-google-sheets-local-flow = { path = "../connectors/google/sheets/examples/local-flow" }
+example-s1-echo = { path = "../../examples/s1_echo", optional = true }
+example-s2-site = { path = "../../examples/s2_site", optional = true }
+example-s3-branching = { path = "../../examples/s3_branching", optional = true }
+example-s4-preflight = { path = "../../examples/s4_preflight", optional = true }
+example-s5-unsupported-surface = { path = "../../examples/s5_unsupported_surface", optional = true }
+example-s6-spill-host = { path = "../../examples/s6_spill/host", optional = true }
+example-s11-lead-intake = { path = "../../examples/s11_lead_intake", optional = true }
+example-s12-sheetport-quote = { path = "../../examples/s12_sheetport_quote", optional = true }
+example-s13-github-issue-investigator = { path = "../../examples/s13_github_issue_investigator", optional = true }
+example-connector-github-issues-local-flow = { path = "../connectors/github/issues/examples/local-flow", optional = true }
+example-connector-google-sheets-local-flow = { path = "../connectors/google/sheets/examples/local-flow", optional = true }
 host-inproc = { path = "../host-inproc" }
 anyhow.workspace = true
 async-trait.workspace = true
@@ -58,6 +58,44 @@ sha2 = "0.10"
 tempfile = "3.12"
 percent-encoding = "2.3"
 base64 = "0.22"
+
+[features]
+# Default keeps today's behavior exactly: every bundled example is compiled in and
+# the wasmtime host (for `flows run local/serve/bundle --bundle`) is available.
+default = ["all-examples", "host-wasmtime"]
+
+# Optional wasmtime host. Without it, `--bundle` execution paths degrade to a clear
+# runtime error instead of compiling the wasmtime stack into a minimal CLI.
+host-wasmtime = ["dep:host-wasmtime"]
+
+# Per-example features. Each pulls in exactly one bundled example crate and enables
+# its match arm in load_example()/load_examples()/detect_example_for_flow.
+example-s1 = ["dep:example-s1-echo"]
+example-s2 = ["dep:example-s2-site"]
+example-s3 = ["dep:example-s3-branching"]
+example-s4 = ["dep:example-s4-preflight"]
+example-s5 = ["dep:example-s5-unsupported-surface"]
+example-s6 = ["dep:example-s6-spill-host"]
+example-s11 = ["dep:example-s11-lead-intake"]
+example-s12 = ["dep:example-s12-sheetport-quote"]
+example-s13 = ["dep:example-s13-github-issue-investigator"]
+example-github-issues = ["dep:example-connector-github-issues-local-flow"]
+example-google-sheets = ["dep:example-connector-google-sheets-local-flow"]
+
+# Umbrella: all bundled examples. In `default` for now.
+all-examples = [
+    "example-s1",
+    "example-s2",
+    "example-s3",
+    "example-s4",
+    "example-s5",
+    "example-s6",
+    "example-s11",
+    "example-s12",
+    "example-s13",
+    "example-github-issues",
+    "example-google-sheets",
+]
 
 [dev-dependencies]
 assert_cmd = "2.0"

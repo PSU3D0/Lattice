@@ -151,7 +151,9 @@ fn resume_show_requires_flow_or_run_when_checkpoint_id_duplicates() {
 }
 
 #[test]
-fn resume_run_fails_when_unsupported() {
+fn resume_run_fails_when_flow_source_unknown() {
+    // The checkpoint references a flow id that matches no known example, so
+    // source inference must fail closed and ask for --example/--bundle.
     let dir = tempfile::tempdir().unwrap();
     let record = sample_checkpoint_record("flow_a", "run_1", "ckpt_unsupported");
     write_checkpoint(dir.path(), &record);
@@ -165,6 +167,6 @@ fn resume_run_fails_when_unsupported() {
         dir.path().to_str().unwrap(),
     ]);
     cmd.assert().failure().stderr(predicates::str::contains(
-        "resume execution not yet supported",
+        "unable to infer flow source for checkpoint flow `flow_a`",
     ));
 }

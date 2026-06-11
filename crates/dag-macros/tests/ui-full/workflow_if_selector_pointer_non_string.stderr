@@ -1,0 +1,5 @@
+error: if_! requires `selector_pointer = "/json/pointer"`
+  --> tests/ui-full/workflow_if_selector_pointer_non_string.rs:40:28
+   |
+40 |         selector_pointer = 123,
+   |                            ^^^

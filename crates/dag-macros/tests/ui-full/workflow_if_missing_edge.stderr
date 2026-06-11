@@ -1,0 +1,5 @@
+error: [DAG206] if_! references missing edge `route` -> `else_branch`
+  --> tests/ui-full/workflow_if_missing_edge.rs:37:5
+   |
+37 |     if_!(
+   |     ^^^

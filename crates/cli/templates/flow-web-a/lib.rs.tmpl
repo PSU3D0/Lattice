@@ -1,0 +1,101 @@
+//! {{NAME_SNAKE}} — a minimal Web flow scaffolded by `flows new` (tier a).
+//!
+//! Shape mirrors `examples/s1_echo`, the canonical minimal Web flow.
+//! Authoring conventions (effects, determinism, topology, route metadata,
+//! verification tiers) live in:
+//!   impl-docs/spec/example-authoring-conventions.md
+//!   impl-docs/spec/node-vs-capability-surface.md
+//!
+//! Replace the placeholder logic below with the real workflow. Keep the major
+//! workflow stages graph-visible and keep the node boundaries truthful about
+//! `effects` / `determinism`.
+
+use dag_core::NodeResult;
+use dag_macros::{def_node, node};
+use serde::{Deserialize, Serialize};
+
+/// Trigger input. This is the shape `payloads/sample.json` must match.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct {{NAME_PASCAL}}Request {
+    pub value: String,
+}
+
+/// Responder output returned to the HTTP caller.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct {{NAME_PASCAL}}Response {
+    pub value: String,
+}
+
+// HTTP ingress trigger. A trigger node is the entrypoint of a Web flow; it is
+// `Pure` here because it only forwards the parsed request. See
+// impl-docs/spec/example-authoring-conventions.md ("Keep major semantics visible").
+#[def_node(
+    trigger,
+    name = "HttpTrigger",
+    summary = "Ingress HTTP trigger for the {{NAME_SNAKE}} route",
+    effects = "Pure",
+    determinism = "Strict"
+)]
+async fn http_trigger(request: {{NAME_PASCAL}}Request) -> NodeResult<{{NAME_PASCAL}}Request> {
+    Ok(request)
+}
+
+// One Pure transformation node. Put real, deterministic business logic here.
+// If this node needs a capability (kv/blob/http/...), declare it via
+// `resources(...)` so the requirement stays verifiable — see
+// impl-docs/spec/node-vs-capability-surface.md.
+#[def_node(
+    name = "Process",
+    summary = "Transform the {{NAME_SNAKE}} payload",
+    effects = "Pure",
+    determinism = "Strict"
+)]
+async fn process(input: {{NAME_PASCAL}}Request) -> NodeResult<{{NAME_PASCAL}}Response> {
+    Ok({{NAME_PASCAL}}Response {
+        value: input.value.trim().to_string(),
+    })
+}
+
+// Responder node: finalize the HTTP response. Kept as a distinct, graph-visible
+// capture boundary (see "Preserve route metadata" in the conventions doc).
+#[def_node(
+    name = "Responder",
+    summary = "Finalize the {{NAME_SNAKE}} HTTP response",
+    effects = "Pure",
+    determinism = "Strict"
+)]
+async fn responder(payload: {{NAME_PASCAL}}Response) -> NodeResult<{{NAME_PASCAL}}Response> {
+    Ok(payload)
+}
+
+dag_macros::flow! {
+    name: {{NAME_SNAKE}}_flow,
+    version: "1.0.0",
+    profile: Web,
+    summary: "Scaffolded {{NAME_SNAKE}} Web flow";
+    let trigger = node!(http_trigger);
+    let process = node!(process);
+    let responder = node!(responder);
+    connect!(trigger -> process);
+    connect!(process -> responder);
+    entrypoint!({
+        trigger: "trigger",
+        capture: "responder",
+        route_aliases: ["/{{ROUTE}}"],
+        method: "POST",
+        deadline_ms: 250,
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flow_contains_expected_nodes() {
+        let ir = flow();
+        let aliases: Vec<_> = ir.nodes.iter().map(|node| node.alias.as_str()).collect();
+        assert_eq!(aliases, vec!["trigger", "process", "responder"]);
+        assert_eq!(ir.edges.len(), 2);
+    }
+}

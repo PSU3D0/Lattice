@@ -3,6 +3,7 @@ use std::sync::RwLock;
 use once_cell::sync::Lazy;
 
 use crate::Effects;
+use crate::effect_hint::EffectHint;
 
 /// Registry entry describing the minimum effects level required for a resource hint.
 #[derive(Debug, Clone)]
@@ -31,37 +32,25 @@ impl EffectConstraint {
     }
 }
 
-static CONSTRAINTS: Lazy<RwLock<Vec<EffectConstraint>>> = Lazy::new(|| {
-    RwLock::new(vec![
-        EffectConstraint::new(
-            "resource::http::read",
-            Effects::ReadOnly,
-            "HTTP reads interact with external services; declare effects = ReadOnly or wrap in effectful activity.",
-        ),
-        EffectConstraint::new(
-            "resource::http::write",
-            Effects::Effectful,
-            "HTTP writes are effectful; declare effects = Effectful or refactor to read-only operations.",
-        ),
-        EffectConstraint::new(
-            "resource::db::write",
-            Effects::Effectful,
-            "Database writes require Effectful; downgrade only for read-only transactions.",
-        ),
-        EffectConstraint::new(
-            "resource::workspace::read",
-            Effects::ReadOnly,
-            "Workspace reads access run-scoped state; declare effects = ReadOnly or stronger.",
-        ),
-        EffectConstraint::new(
-            "resource::workspace::write",
-            Effects::Effectful,
-            "Workspace writes mutate run-scoped state; declare effects = Effectful.",
-        ),
-    ])
-});
+/// Runtime registry for ADDITIONAL (non-canonical) constraints only.
+///
+/// Packet A1: constraints for every canonical `resource::*` hint are derived
+/// exhaustively from [`EffectHint`] and always take precedence, so lookups no
+/// longer depend on `ensure_registered()` call order. This registry remains
+/// for plugin-defined hint vocabularies that have not been promoted into the
+/// enum yet (note that kernel-plan validation rejects unknown hints in Flow
+/// IR, so such constraints only apply to out-of-IR consumers).
+static CONSTRAINTS: Lazy<RwLock<Vec<EffectConstraint>>> = Lazy::new(|| RwLock::new(Vec::new()));
+
+fn derived_constraint(hint: EffectHint) -> Option<EffectConstraint> {
+    hint.effect_constraint()
+        .map(|(minimum, guidance)| EffectConstraint::new(hint.as_str(), minimum, guidance))
+}
 
 /// Register an additional effect constraint. Existing hints are replaced.
+///
+/// Constraints for canonical [`EffectHint`] strings are derived from the enum
+/// and CANNOT be overridden here; registering one is a no-op for lookups.
 pub fn register_effect_constraint(constraint: EffectConstraint) {
     let mut guard = CONSTRAINTS
         .write()
@@ -74,17 +63,34 @@ pub fn register_effect_constraint(constraint: EffectConstraint) {
 }
 
 /// Look up the constraint that matches the provided hint, if any.
+///
+/// Canonical hints resolve via [`EffectHint`] derivation (registration-order
+/// independent); anything else falls back to the runtime registry.
 pub fn constraint_for_hint(hint: &str) -> Option<EffectConstraint> {
+    if let Ok(parsed) = EffectHint::parse(hint) {
+        return derived_constraint(parsed);
+    }
     let guard = CONSTRAINTS
         .read()
         .expect("effect constraint registry poisoned");
     guard.iter().find(|c| c.matches(hint)).cloned()
 }
 
-/// Snapshot all registered effect constraints.
+/// Snapshot all effect constraints: the canonical enum-derived set plus any
+/// runtime-registered extras for non-canonical hints.
 pub fn all_constraints() -> Vec<EffectConstraint> {
+    let mut constraints: Vec<EffectConstraint> = EffectHint::ALL
+        .into_iter()
+        .filter_map(derived_constraint)
+        .collect();
     let guard = CONSTRAINTS
         .read()
         .expect("effect constraint registry poisoned");
-    guard.clone()
+    constraints.extend(
+        guard
+            .iter()
+            .filter(|c| EffectHint::parse(c.hint).is_err())
+            .cloned(),
+    );
+    constraints
 }
