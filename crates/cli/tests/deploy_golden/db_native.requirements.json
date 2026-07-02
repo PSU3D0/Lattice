@@ -1,0 +1,52 @@
+{
+  "schema_version": "0.1",
+  "flow": {
+    "id": "00000000-0000-5000-8000-000000000002",
+    "name": "db_native_demo_flow",
+    "version": "1.0.0"
+  },
+  "profile": "web",
+  "effects": {
+    "union": [
+      "resource::db::read",
+      "resource::rng"
+    ],
+    "families": [
+      "resource::db",
+      "resource::rng"
+    ],
+    "per_node": {
+      "fetch_legacy": ["resource::db::read"],
+      "shuffle": ["resource::rng"]
+    }
+  },
+  "durability": {
+    "mode": "partial",
+    "has_halting_nodes": false,
+    "needs_checkpoint_store": true,
+    "needs_resume_scheduler": false,
+    "needs_resume_signal_source": false,
+    "needs_checkpoint_blob_store": false
+  },
+  "triggers": [
+    {
+      "alias": "trigger",
+      "identifier": "db_native_demo::http_trigger",
+      "kind": "http"
+    }
+  ],
+  "entrypoints": [
+    {
+      "trigger_alias": "trigger",
+      "capture_alias": "capture",
+      "route_path": "/legacy",
+      "method": "POST",
+      "route_aliases": ["/legacy"]
+    }
+  ],
+  "host": {
+    "requires_wasm32_compatibility": false,
+    "requires_connector_runtime": false,
+    "has_subflows": false
+  }
+}

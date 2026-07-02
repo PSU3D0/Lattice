@@ -1,0 +1,51 @@
+{
+  "schema_version": "0.1",
+  "flow": {
+    "id": "00000000-0000-5000-8000-000000000003",
+    "name": "host_workers_repro_flow",
+    "version": "1.0.0"
+  },
+  "profile": "web",
+  "effects": {
+    "union": [
+      "resource::workspace::read",
+      "resource::workspace::write"
+    ],
+    "families": [
+      "resource::workspace"
+    ],
+    "per_node": {
+      "scan": ["resource::workspace::read"],
+      "upload": ["resource::workspace::write"]
+    }
+  },
+  "durability": {
+    "mode": "partial",
+    "has_halting_nodes": true,
+    "needs_checkpoint_store": true,
+    "needs_resume_scheduler": true,
+    "needs_resume_signal_source": false,
+    "needs_checkpoint_blob_store": false
+  },
+  "triggers": [
+    {
+      "alias": "trigger",
+      "identifier": "host_workers_repro::http_trigger",
+      "kind": "http"
+    }
+  ],
+  "entrypoints": [
+    {
+      "trigger_alias": "trigger",
+      "capture_alias": "capture",
+      "route_path": "/run",
+      "method": "POST",
+      "route_aliases": ["/run"]
+    }
+  ],
+  "host": {
+    "requires_wasm32_compatibility": false,
+    "requires_connector_runtime": false,
+    "has_subflows": false
+  }
+}

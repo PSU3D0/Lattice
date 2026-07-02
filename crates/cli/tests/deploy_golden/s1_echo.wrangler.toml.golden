@@ -1,0 +1,37 @@
+# wrangler.toml — rendered by `flows deploy render` (infra-from-code v0).
+#
+# flow: s1_echo_flow v1.0.0 (id 17d960d7-647c-5e8a-9317-3b821bfdafe1)
+# requirements schema: 0.1
+#
+# Review every REPLACE_WITH_* placeholder before `wrangler deploy`; each carries
+# a comment with the exact `wrangler` command that creates the resource.
+
+name = "s1-echo-flow"
+main = "build/worker/shim.mjs"
+workers_dev = true
+compatibility_date = "2024-09-23"
+
+[build]
+# worker-build install handled once by the guard script (see README "Workers build tooling").
+command = "bash \"$(git rev-parse --show-toplevel)/scripts/ensure-worker-build.sh\" --release"
+
+# durability: checkpoint store (durability.mode = "partial") — host-workers Durable Object idiom
+[[durable_objects.bindings]]
+name = "FLOW_DO"
+class_name = "FlowDurableObject"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["FlowDurableObject"]
+
+# HTTP entrypoints (served by the worker fetch handler, not wrangler config;
+# workers_dev = true exposes the <name>.workers.dev route):
+#   POST /echo  (trigger `trigger` -> capture `responder`)
+
+# Size budget (Cloudflare Workers free tier): warn > 900 KiB compressed, error > 1 MiB.
+# No wasm artifact was available at render time, so the compressed module size was NOT checked.
+# After building, re-render with: --wasm-artifact target/wasm32-unknown-unknown/release/<package>.wasm
+
+# NOTES:
+# - no wasm artifact available at render time; module size budget NOT checked (see the size budget comment in wrangler.toml)
+# - worker entry crate is not scaffolded by this command yet; follow the crates/host-workers worker-build entry pattern (see its wrangler.toml and scripts/ensure-worker-build.sh)

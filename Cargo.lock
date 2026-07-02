@@ -2717,6 +2717,7 @@ dependencies = [
  "example-s5-unsupported-surface",
  "example-s6-spill-host",
  "exporters",
+ "flate2",
  "flow-bundle",
  "futures",
  "host-inproc",
@@ -2739,6 +2740,7 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "toml 0.9.8",
  "tower 0.4.13",
  "tracing",
 ]

@@ -118,7 +118,8 @@ fn resolve_requirements(args: &RequirementsArgs) -> Result<FlowRequirements> {
 /// Derive the bare-IR requirements manifest for a built-in example. The form
 /// matches the C1 golden fixtures: `kernel_plan::derive_requirements` is the
 /// pure derivation from validated IR, carrying no bundle-assembly enrichments.
-fn requirements_from_example(example: &str) -> Result<FlowRequirements> {
+/// `pub(crate)`: `flows deploy render` (W1) reuses the same source resolution.
+pub(crate) fn requirements_from_example(example: &str) -> Result<FlowRequirements> {
     let handle = load_example(example)?;
     Ok(kernel_plan::derive_requirements(&handle.ir))
 }
@@ -126,7 +127,11 @@ fn requirements_from_example(example: &str) -> Result<FlowRequirements> {
 /// Read the enriched requirements an already-built bundle carried for the
 /// selected flow. Nothing is re-derived: this prints the manifest the bundle
 /// assembler committed to (so a stale manifest is observable, not hidden).
-fn requirements_from_bundle(bundle_dir: &Path, selected_flow: Option<&str>) -> Result<FlowRequirements> {
+/// `pub(crate)`: `flows deploy render` (W1) reuses the same source resolution.
+pub(crate) fn requirements_from_bundle(
+    bundle_dir: &Path,
+    selected_flow: Option<&str>,
+) -> Result<FlowRequirements> {
     let manifest = load_manifest_from_dir(bundle_dir)?;
 
     let mut matches = manifest.flows.iter().filter(|entry| {

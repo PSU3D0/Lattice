@@ -1,0 +1,59 @@
+{
+  "schema_version": "0.1",
+  "flow": {
+    "id": "00000000-0000-5000-8000-000000000001",
+    "name": "kv_blob_demo_flow",
+    "version": "1.0.0"
+  },
+  "profile": "web",
+  "effects": {
+    "union": [
+      "resource::blob::write",
+      "resource::kv::read",
+      "resource::kv::write"
+    ],
+    "families": [
+      "resource::blob",
+      "resource::kv"
+    ],
+    "per_node": {
+      "cache_read": ["resource::kv::read"],
+      "cache_write": ["resource::kv::write"],
+      "store": ["resource::blob::write"]
+    }
+  },
+  "durability": {
+    "mode": "partial",
+    "has_halting_nodes": false,
+    "needs_checkpoint_store": true,
+    "needs_resume_scheduler": false,
+    "needs_resume_signal_source": false,
+    "needs_checkpoint_blob_store": false
+  },
+  "triggers": [
+    {
+      "alias": "trigger",
+      "identifier": "kv_blob_demo::http_trigger",
+      "kind": "http"
+    },
+    {
+      "alias": "poller",
+      "identifier": "kv_blob_demo::poll_trigger",
+      "kind": "unspecified"
+    }
+  ],
+  "entrypoints": [
+    {
+      "trigger_alias": "trigger",
+      "capture_alias": "capture",
+      "route_path": "/demo",
+      "method": "POST",
+      "route_aliases": ["/demo"]
+    }
+  ],
+  "host": {
+    "requires_wasm32_compatibility": false,
+    "requires_connector_runtime": false,
+    "has_subflows": false
+  }
+}

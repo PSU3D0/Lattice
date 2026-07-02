@@ -69,6 +69,7 @@ use example_s12_sheetport_quote as s12_sheetport_quote;
 use example_s13_github_issue_investigator as s13_github_issue_investigator;
 
 mod bundle;
+mod deploy;
 mod local_durability;
 mod requirements;
 mod resume;
@@ -102,6 +103,9 @@ enum Command {
     Bindings(BindingsCommand),
     /// Build a FlowBundle for wasm targets.
     Bundle(bundle::BundleArgs),
+    /// Render deployment configuration from a flow's static requirements.
+    #[command(subcommand)]
+    Deploy(deploy::DeployCommand),
     /// Resume checkpoints from local durability store.
     #[command(subcommand)]
     Resume(resume::ResumeCommand),
@@ -367,6 +371,7 @@ fn main() -> Result<()> {
             run_bindings_lock_generate(args)
         }
         Command::Bundle(args) => bundle::run_bundle(args),
+        Command::Deploy(command) => deploy::run_deploy(command),
         Command::Resume(command) => resume::run_resume(command),
         Command::New(args) => scaffold::run_new(args),
     }

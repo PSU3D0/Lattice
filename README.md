@@ -212,6 +212,34 @@ cargo run -p flows-cli -- bundle requirements --schema
 (`flow_ir_hash` + entrypoint `deadline_ms`), the two values only the assembler
 knows.
 
+### `flows deploy render`
+
+Renders a `wrangler.toml` from a flow's static requirements (infra-from-code
+v0): capability families map to Workers bindings via a data table
+(kv → `[[kv_namespaces]]`, sql → `[[d1_databases]]`, blob → `[[r2_buckets]]`,
+workspace → the cap-workspace-workers R2 + Durable Object shape, durability →
+the host-workers checkpoint/resume bindings; outbound http is ambient).
+Requirements with no Workers mapping (e.g. `resource::db`, `resource::rng`)
+fail closed with per-node attribution and remediation. Schedule/cron trigger
+rendering is a marked stub until packets T1/T3 land
+(`impl-docs/spec/schedule-trigger.md`).
+
+```bash
+# Render for a built-in example (same source selection as bundle requirements;
+# --bundle <dir> and --requirements <manifest.json> also work)
+cargo run -p flows-cli -- deploy render --example s1_echo --out /tmp/s1-deploy
+
+# Optional: --name <worker>, --bindings-lock <lock.json> (real instance ids),
+# --wasm-artifact <module.wasm> (compressed size budget: warn >900KiB / error
+# >1MiB free tier; --paid raises it to 3MiB/10MiB)
+```
+
+Output is deterministic; missing instance ids render as `REPLACE_WITH_*`
+placeholders with the exact `wrangler ... create` command alongside, and
+deploy caveats are emitted as `NOTE:` lines plus a `# NOTES:` block in the
+file. The worker entry crate is not scaffolded yet — follow the
+`crates/host-workers` worker-build pattern.
+
 Still planned / incomplete:
 - queue-first operator flows and richer bridge commands
 - registry certification / publish flows
