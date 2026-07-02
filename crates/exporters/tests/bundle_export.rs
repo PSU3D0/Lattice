@@ -30,6 +30,7 @@ mod flow_registry_tests {
         route_aliases: &["/echo"],
         method: Some("GET"),
         deadline_ms: Some(1000),
+        schedule: None,
     }];
 
     dag_core::flow_registry::submit!(FlowRegistration {

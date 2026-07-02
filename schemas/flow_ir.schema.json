@@ -602,6 +602,13 @@
             "null"
           ]
         },
+        "schedule": {
+          "description": "Optional cron expression for schedule-shaped entrypoints (5-field Cloudflare dialect, UTC). Mutually exclusive with `method` and `route_aliases` (TRIG002). See `impl-docs/spec/schedule-trigger.md`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "trigger_alias": {
           "description": "Trigger node alias for ingress.",
           "type": "string"

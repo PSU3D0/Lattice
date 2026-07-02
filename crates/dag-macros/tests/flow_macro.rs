@@ -28,6 +28,7 @@ pub struct FlowEntrypoint {
     pub method: Option<String>,
     pub deadline: Option<Duration>,
     pub route_aliases: Vec<String>,
+    pub schedule: Option<String>,
 }
 
 pub struct FlowBundle {
@@ -196,6 +197,48 @@ mod multi_entrypoint_flow_module {
             capture: "secondary_capture",
             route_aliases: ["/secondary"],
             method: "POST",
+        });
+    }
+}
+
+mod schedule_entry_flow_module {
+    use super::*;
+
+    #[def_node(
+        trigger,
+        name = "Tick",
+        summary = "Cron tick trigger",
+        effects = "ReadOnly",
+        determinism = "Strict"
+    )]
+    async fn tick(
+        event: dag_core::ScheduledEvent,
+    ) -> dag_core::NodeResult<dag_core::ScheduledEvent> {
+        Ok(event)
+    }
+
+    #[def_node(
+        name = "TickCapture",
+        summary = "Capture the tick",
+        effects = "Pure",
+        determinism = "Strict"
+    )]
+    async fn tick_capture(_event: dag_core::ScheduledEvent) -> dag_core::NodeResult<EntryOutput> {
+        Ok(EntryOutput)
+    }
+
+    flow! {
+        name: schedule_entry_flow,
+        version: "1.0.0",
+        profile: Web;
+        let tick = node!(crate::schedule_entry_flow_module::tick);
+        let capture = node!(crate::schedule_entry_flow_module::tick_capture);
+        connect!(tick -> capture);
+        entrypoint!({
+            trigger: "tick",
+            capture: "capture",
+            schedule: "*/5 * * * *",
+            deadline_ms: 30000,
         });
     }
 }
@@ -611,6 +654,39 @@ fn flow_persists_multi_entrypoint_metadata() {
     assert_eq!(secondary.route_path.as_deref(), Some("/secondary"));
     assert_eq!(secondary.method.as_deref(), Some("POST"));
     assert_eq!(secondary.route_aliases, vec!["/secondary".to_string()]);
+    // HTTP entrypoints never carry a schedule.
+    assert!(secondary.schedule.is_none());
+}
+
+#[test]
+fn flow_persists_schedule_entrypoint_metadata() {
+    let ir = schedule_entry_flow_module::flow();
+    assert_eq!(ir.metadata.entrypoints.len(), 1);
+
+    let entry = &ir.metadata.entrypoints[0];
+    assert_eq!(entry.trigger_alias, "tick");
+    assert_eq!(entry.capture_alias, "capture");
+    assert_eq!(entry.schedule.as_deref(), Some("*/5 * * * *"));
+    assert!(entry.method.is_none());
+    assert!(entry.route_path.is_none());
+    assert!(entry.route_aliases.is_empty());
+
+    // The typed entrypoint const is generated with the exact
+    // `dag_core::ScheduledEvent` input the macro asserts at compile time.
+    let typed: dag_core::FlowEntrypoint<dag_core::ScheduledEvent, EntryOutput> =
+        schedule_entry_flow_module::schedule_entry_flow::tick;
+    assert_eq!(typed.trigger_alias, "tick");
+    assert_eq!(typed.deadline_ms, Some(30000));
+
+    // Schedule metadata survives kernel-plan validation and a JSON
+    // round-trip byte-verbatim.
+    let validated = kernel_plan::validate(&ir).expect("schedule flow validates");
+    let json = serde_json::to_value(validated.flow()).expect("serialize schedule flow");
+    let back: dag_core::FlowIR = serde_json::from_value(json).expect("deserialize schedule flow");
+    assert_eq!(
+        back.metadata.entrypoints[0].schedule.as_deref(),
+        Some("*/5 * * * *")
+    );
 }
 
 #[derive(Clone, Debug)]

@@ -93,6 +93,7 @@ fn collect_diagnostics(flow: &FlowIR) -> Vec<Diagnostic> {
     check_hint_validity(flow, &mut diagnostics);
     check_duplicate_aliases(flow, &mut diagnostics);
     check_trigger_policy(flow, &mut diagnostics);
+    check_schedule_entrypoints(flow, &mut diagnostics);
     check_edge_references(flow, &mut diagnostics);
     check_cycles(flow, &mut diagnostics);
     check_port_compatibility(flow, &mut diagnostics);
@@ -188,6 +189,101 @@ fn check_trigger_policy(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
                 "flow declares {trigger_count} trigger nodes; set policies.lint.allow_multiple_triggers=true to opt in"
             ),
         ));
+    }
+}
+
+/// Schedule (cron) entrypoint validation (impl-docs/spec/schedule-trigger.md §4).
+///
+/// Runs on the IR so hand-built flows are covered, not only `entrypoint!`
+/// output (dag-macros performs the same checks at expansion time for spans):
+/// - TRIG001: schedule expression must parse as a Cloudflare-dialect cron and
+///   fire at least once. Validated with saffron — the parser Cloudflare
+///   itself runs for Cron Triggers — so acceptance matches CF exactly.
+///   Skipped on wasm32, where saffron is deliberately absent from the
+///   dependency graph: IR always passes host-side validation at
+///   plan/bundle/deploy time before it can reach a wasm host, and
+///   host-workers routes cron fires by byte equality without parsing.
+/// - TRIG002: `schedule` is mutually exclusive with `method`/`route_aliases`
+///   on one entrypoint (an entrypoint is schedule-shaped or HTTP-shaped,
+///   never both).
+/// - TRIG003: one trigger alias may not be wired to both schedule and HTTP
+///   entrypoints.
+/// - TRIG004: duplicate schedule entrypoint (same cron + trigger alias).
+fn check_schedule_entrypoints(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    let mut schedule_crons_by_alias: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut http_aliases: HashSet<&str> = HashSet::new();
+    let mut mixed_aliases_reported: HashSet<&str> = HashSet::new();
+
+    for entry in &flow.metadata.entrypoints {
+        let Some(cron) = &entry.schedule else {
+            http_aliases.insert(entry.trigger_alias.as_str());
+            continue;
+        };
+
+        if entry.method.is_some() || !entry.route_aliases.is_empty() {
+            diagnostics.push(diagnostic(
+                "TRIG002",
+                format!(
+                    "entrypoint `{}` declares schedule `{cron}` together with method/route_aliases; \
+                     an entrypoint is either schedule-shaped or HTTP-shaped, never both",
+                    entry.trigger_alias
+                ),
+            ));
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        match cron.parse::<saffron::Cron>() {
+            Ok(parsed) if parsed.any() => {}
+            Ok(_) => diagnostics.push(diagnostic(
+                "TRIG001",
+                format!(
+                    "entrypoint `{}` schedule `{cron}` never fires; Cloudflare rejects cron \
+                     expressions with no matching times",
+                    entry.trigger_alias
+                ),
+            )),
+            Err(_) => diagnostics.push(diagnostic(
+                "TRIG001",
+                format!(
+                    "entrypoint `{}` schedule `{cron}` is not a valid Cloudflare-dialect cron \
+                     expression (5 fields: minute hour day-of-month month day-of-week, UTC)",
+                    entry.trigger_alias
+                ),
+            )),
+        }
+
+        let crons = schedule_crons_by_alias
+            .entry(entry.trigger_alias.as_str())
+            .or_default();
+        if crons.contains(&cron.as_str()) {
+            diagnostics.push(diagnostic(
+                "TRIG004",
+                format!(
+                    "duplicate schedule entrypoint: trigger `{}` declares cron `{cron}` more \
+                     than once",
+                    entry.trigger_alias
+                ),
+            ));
+        } else {
+            crons.push(cron.as_str());
+        }
+    }
+
+    // Second pass in declaration order for deterministic diagnostics.
+    for entry in &flow.metadata.entrypoints {
+        let alias = entry.trigger_alias.as_str();
+        if entry.schedule.is_some()
+            && http_aliases.contains(alias)
+            && mixed_aliases_reported.insert(alias)
+        {
+            diagnostics.push(diagnostic(
+                "TRIG003",
+                format!(
+                    "trigger alias `{alias}` is wired to both schedule and HTTP entrypoints; \
+                     use a distinct trigger node per ingress kind"
+                ),
+            ));
+        }
     }
 }
 
@@ -2869,6 +2965,145 @@ mod tests {
         }
 
         assert_ok_or_metadata_warnings(validate(&flow));
+    }
+
+    /// Hand-built schedule flow: one trigger node (`tick`) + one capture
+    /// (`capture`) with caller-supplied entrypoint metadata. This is the IR a
+    /// non-macro producer could hand us, so the TRIG checks must fire here
+    /// without any dag-macros involvement.
+    fn schedule_test_flow(entrypoints: Vec<dag_core::EntrypointMetadata>) -> FlowIR {
+        let mut builder = FlowBuilder::new("schedule_flow", Version::new(1, 0, 0), Profile::Web);
+        let node_spec = NodeSpec::inline(
+            "tests::noop",
+            "Noop",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            Some("schedule test node"),
+        );
+
+        let tick = builder.add_node("tick", &node_spec).unwrap();
+        let capture = builder.add_node("capture", &node_spec).unwrap();
+        builder.connect(&tick, &capture);
+
+        let mut flow = builder.build();
+        if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "tick") {
+            node.kind = dag_core::NodeKind::Trigger;
+        }
+        flow.metadata.entrypoints = entrypoints;
+        flow
+    }
+
+    fn schedule_entry(trigger: &str, cron: &str) -> dag_core::EntrypointMetadata {
+        dag_core::EntrypointMetadata {
+            trigger_alias: trigger.to_string(),
+            capture_alias: "capture".to_string(),
+            route_path: None,
+            method: None,
+            route_aliases: Vec::new(),
+            schedule: Some(cron.to_string()),
+        }
+    }
+
+    fn http_entry(trigger: &str) -> dag_core::EntrypointMetadata {
+        dag_core::EntrypointMetadata {
+            trigger_alias: trigger.to_string(),
+            capture_alias: "capture".to_string(),
+            route_path: Some("/tick".to_string()),
+            method: Some("POST".to_string()),
+            route_aliases: vec!["/tick".to_string()],
+            schedule: None,
+        }
+    }
+
+    #[test]
+    fn schedule_entrypoint_with_valid_cron_validates() {
+        let flow = schedule_test_flow(vec![schedule_entry("tick", "*/5 * * * *")]);
+        let validated = validate(&flow).expect("schedule flow should validate");
+        let requirements = derive_requirements(&validated);
+
+        assert_eq!(requirements.triggers.len(), 1);
+        let trigger = &requirements.triggers[0];
+        assert_eq!(trigger.alias, "tick");
+        assert_eq!(trigger.kind, dag_core::requirements::TriggerKind::Schedule);
+        assert_eq!(trigger.crons, vec!["*/5 * * * *".to_string()]);
+
+        assert_eq!(requirements.entrypoints.len(), 1);
+        assert_eq!(
+            requirements.entrypoints[0].schedule.as_deref(),
+            Some("*/5 * * * *")
+        );
+    }
+
+    #[test]
+    fn invalid_cron_fails_closed_with_trig001() {
+        for bad in ["61 * * * *", "not a cron", "* * * *", "*/5 * * * * *"] {
+            let flow = schedule_test_flow(vec![schedule_entry("tick", bad)]);
+            let diagnostics =
+                validate(&flow).expect_err("invalid cron must fail validation (TRIG001)");
+            assert!(
+                diagnostics.iter().any(|d| d.code.code == "TRIG001"),
+                "expected TRIG001 for cron `{bad}`, got {diagnostics:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn never_firing_cron_fails_closed_with_trig001() {
+        // February 31st never exists: parses, but has no matching times.
+        let flow = schedule_test_flow(vec![schedule_entry("tick", "0 0 31 2 *")]);
+        let diagnostics =
+            validate(&flow).expect_err("never-firing cron must fail validation (TRIG001)");
+        assert!(diagnostics.iter().any(|d| d.code.code == "TRIG001"));
+    }
+
+    #[test]
+    fn schedule_with_method_rejected_with_trig002() {
+        let mut entry = schedule_entry("tick", "*/5 * * * *");
+        entry.method = Some("POST".to_string());
+        let flow = schedule_test_flow(vec![entry]);
+        let diagnostics =
+            validate(&flow).expect_err("schedule+method must fail validation (TRIG002)");
+        assert!(diagnostics.iter().any(|d| d.code.code == "TRIG002"));
+    }
+
+    #[test]
+    fn alias_wired_to_both_schedule_and_http_rejected_with_trig003() {
+        let flow = schedule_test_flow(vec![
+            schedule_entry("tick", "*/5 * * * *"),
+            http_entry("tick"),
+        ]);
+        let diagnostics =
+            validate(&flow).expect_err("mixed schedule+HTTP alias must fail validation (TRIG003)");
+        assert!(diagnostics.iter().any(|d| d.code.code == "TRIG003"));
+    }
+
+    #[test]
+    fn duplicate_schedule_entrypoint_rejected_with_trig004() {
+        let flow = schedule_test_flow(vec![
+            schedule_entry("tick", "*/5 * * * *"),
+            schedule_entry("tick", "*/5 * * * *"),
+        ]);
+        let diagnostics = validate(&flow)
+            .expect_err("duplicate schedule entrypoint must fail validation (TRIG004)");
+        assert!(diagnostics.iter().any(|d| d.code.code == "TRIG004"));
+    }
+
+    #[test]
+    fn distinct_crons_on_one_alias_are_allowed() {
+        // Two cadences driving the same trigger alias is legal in hand-built
+        // IR (the macro's per-alias uniqueness is an authoring-surface rule).
+        let flow = schedule_test_flow(vec![
+            schedule_entry("tick", "*/5 * * * *"),
+            schedule_entry("tick", "0 0 * * *"),
+        ]);
+        let validated = validate(&flow).expect("multi-cadence schedule flow should validate");
+        let requirements = derive_requirements(&validated);
+        assert_eq!(
+            requirements.triggers[0].crons,
+            vec!["*/5 * * * *".to_string(), "0 0 * * *".to_string()]
+        );
     }
 
     #[test]

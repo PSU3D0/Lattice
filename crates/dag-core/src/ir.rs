@@ -812,6 +812,12 @@ pub struct EntrypointMetadata {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(default, schema_with = "schema_vec_strings_with_default")]
     pub route_aliases: Vec<String>,
+    /// Optional cron expression for schedule-shaped entrypoints
+    /// (5-field Cloudflare dialect, UTC). Mutually exclusive with `method`
+    /// and `route_aliases` (TRIG002). See
+    /// `impl-docs/spec/schedule-trigger.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<String>,
 }
 
 fn schema_vec_entrypoints(

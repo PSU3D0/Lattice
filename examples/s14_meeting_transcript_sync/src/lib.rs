@@ -188,6 +188,7 @@ pub fn bundle() -> host_inproc::FlowBundle {
             method: Some("POST".to_string()),
             deadline: Some(Duration::from_millis(30_000)),
             route_aliases: vec!["/meeting-transcript-sync/run".to_string()],
+            schedule: None,
         }],
         resolver: Arc::new(RegistryResolver::new(Arc::new(registry))),
         node_contracts,

@@ -62,6 +62,10 @@ pub struct FlowEntrypoint {
     pub method: Option<String>,
     pub deadline: Option<Duration>,
     pub route_aliases: Vec<String>,
+    /// Cron expression for schedule-shaped entrypoints (5-field Cloudflare
+    /// dialect, UTC). Mutually exclusive with `method`/`route_aliases`.
+    /// See `impl-docs/spec/schedule-trigger.md`.
+    pub schedule: Option<String>,
 }
 
 pub struct NodeContract {

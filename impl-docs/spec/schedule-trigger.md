@@ -121,10 +121,17 @@ New diagnostic family `TRIG0xx` (no `TRIG` codes exist today; register in
 
 | Code | Subsystem | Default | Summary |
 | --- | --- | --- | --- |
-| TRIG001 | Validation | Error | Schedule expression is not a valid Cloudflare-dialect cron. |
-| TRIG002 | Macros | Error | `schedule` conflicts with `method`/`route_aliases` on one entrypoint. |
+| TRIG001 | Validation | Error | Schedule expression is not a valid Cloudflare-dialect cron. Includes expressions that parse but can never fire (e.g. `0 0 31 2 *`) — CF's validate endpoint rejects those too (saffron `Cron::any()`). |
+| TRIG002 | Macros | Error | `schedule` conflicts with `method`/`route_aliases` on one entrypoint. Enforced at macro expansion (span-carrying) AND by kernel-plan on the IR, so hand-built IR cannot smuggle a both-shaped entrypoint past the TRIG003 disjointness argument. |
 | TRIG003 | Validation | Error | Trigger alias wired to both schedule and HTTP entrypoints. |
 | TRIG004 | Validation | Error | Duplicate schedule entrypoint (same cron + trigger alias). |
+
+T1 implementation note: kernel-plan's TRIG001 saffron parse is compiled only
+for `cfg(not(target_arch = "wasm32"))` (saffron sits in kernel-plan's
+target-gated dependencies). On wasm32 the cron-syntax check is a no-op — IR
+always passes host-side validation at plan/bundle/deploy time before it can
+reach a wasm host, and host-workers routes fires by byte equality (§7a).
+TRIG002/003/004 run on every target.
 
 **Parser dependency: `saffron` (recommended).** Verified 2026-07-02:
 
@@ -291,6 +298,26 @@ W1 verifies the current limit and encodes it next to the size budget check).
 
 1. `schema_version` hold-at-0.1 with tolerated `"schedule"` kind (§6) — veto
    to `0.2` acceptable, decide before T1.
+   RESOLVED (coordinator, T1 2026-07-02): hold at `0.1`; `"schedule"` is a
+   tolerated additive kind, documented in flow-requirements.md.
 2. saffron via crates.io 0.1.0 vs git pin (§4) — default: crates.io.
+   RESOLVED by T1 (2026-07-02): crates.io 0.1.0. Verified its API covers
+   everything T1/T2 need (`Cron: FromStr` for parse-validation, `Cron::any()`
+   for never-fires detection, `Cron::next_after()` for the dev scheduler);
+   the pin rationale comment lives next to `saffron` in the workspace
+   `Cargo.toml` `[workspace.dependencies]`.
 3. Reserved v2 surface (`schedule: [...]` array, `overlap:`, `timezone:`)
    — names reserved here so T1 rejects them with forward-pointing errors.
+   Implemented: the entrypoint! parser rejects all three with reserved-name
+   errors.
+
+## 10. T1 scope note (bundle-manifest carriage, for T3)
+
+T1 landed `schedule` in Flow IR metadata, `flow_registry::EntrypointSpec`,
+`host_inproc::FlowEntrypoint`, and `FlowRequirements`. NOT yet threaded:
+`flow_bundle` manifest `Entrypoint` / `exporters::entrypoint_from_spec` /
+the bundle-loading paths in host-wasmtime and host-workers construct
+`FlowEntrypoint { schedule: None }` from bundle manifests, because the bundle
+manifest `Entrypoint` shape does not carry a schedule field yet. T3 must add
+it (additive, skip-when-absent — same bundle-id-stability argument as §6)
+before `scheduled()` can route on `entry.schedule` from a loaded bundle.

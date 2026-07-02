@@ -1,0 +1,23 @@
+[package]
+name = "s1-echo-render-proof"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+publish = false
+
+# Standalone workspace - not part of parent workspace
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+worker = { version = "=0.8.1", default-features = false, features = ["http"] }
+
+cap-do-workers = { path = "../../cap-do-workers" }
+capabilities = { path = "../../capabilities" }
+dag-core = { path = "../../dag-core" }
+host-inproc = { path = "../../host-inproc" }
+host-workers = { path = "..", default-features = false }
+
+example-s1-echo = { path = "../../../examples/s1_echo" }

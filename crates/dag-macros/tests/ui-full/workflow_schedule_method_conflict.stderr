@@ -1,0 +1,5 @@
+error: [TRIG002] `schedule` is mutually exclusive with `method`/`route_aliases`; an entrypoint is either schedule-shaped or HTTP-shaped, never both
+  --> tests/ui-full/workflow_schedule_method_conflict.rs:39:19
+   |
+39 |         schedule: "*/5 * * * *",
+   |                   ^^^^^^^^^^^^^

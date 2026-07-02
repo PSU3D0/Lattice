@@ -1,0 +1,42 @@
+{
+  "schema_version": "0.1",
+  "flow": {
+    "id": "62567e51-4e4b-542c-aa21-88c38b374d50",
+    "name": "tick_report_schedule",
+    "version": "1.0.0"
+  },
+  "profile": "web",
+  "effects": {
+    "union": [],
+    "families": [],
+    "per_node": {}
+  },
+  "durability": {
+    "mode": "partial",
+    "has_halting_nodes": false,
+    "needs_checkpoint_store": true,
+    "needs_resume_scheduler": false,
+    "needs_resume_signal_source": false,
+    "needs_checkpoint_blob_store": false
+  },
+  "triggers": [
+    {
+      "alias": "tick",
+      "identifier": "tests::schedule::tick",
+      "kind": "schedule",
+      "crons": ["*/5 * * * *"]
+    }
+  ],
+  "entrypoints": [
+    {
+      "trigger_alias": "tick",
+      "capture_alias": "report",
+      "schedule": "*/5 * * * *"
+    }
+  ],
+  "host": {
+    "requires_wasm32_compatibility": false,
+    "requires_connector_runtime": false,
+    "has_subflows": false
+  }
+}

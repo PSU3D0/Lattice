@@ -1134,7 +1134,11 @@ async fn workspace_roundtrip_trigger(payload: JsonValue) -> NodeResult<Workspace
     name = "WorkspaceRoundtripStage",
     summary = "Write, read, list, and delete workspace artifacts",
     effects = "Effectful",
-    determinism = "BestEffort"
+    determinism = "BestEffort",
+    resources(
+        workspace_read(capabilities::workspace::Workspace),
+        workspace_write(capabilities::workspace::Workspace)
+    )
 )]
 async fn workspace_roundtrip_stage(input: WorkspaceRoundtripInput) -> NodeResult<JsonValue> {
     let prefix = input.prefix.unwrap_or_else(|| "artifacts".to_string());
@@ -1243,7 +1247,8 @@ async fn workspace_resume_trigger(payload: JsonValue) -> NodeResult<WorkspaceRes
     name = "WorkspaceWriteBeforeWait",
     summary = "Write a workspace artifact before a halt/resume boundary",
     effects = "Effectful",
-    determinism = "BestEffort"
+    determinism = "BestEffort",
+    resources(workspace_write(capabilities::workspace::Workspace))
 )]
 async fn workspace_write_before_wait(input: WorkspaceResumeInput) -> NodeResult<LocalTimerWaitInput> {
     let path = "resume/input.txt".to_string();
@@ -1284,7 +1289,8 @@ async fn workspace_write_before_wait(input: WorkspaceResumeInput) -> NodeResult<
     name = "WorkspaceReadAfterWait",
     summary = "Read persisted workspace artifacts after resume",
     effects = "ReadOnly",
-    determinism = "BestEffort"
+    determinism = "BestEffort",
+    resources(workspace_read(capabilities::workspace::Workspace))
 )]
 async fn workspace_read_after_wait(payload: LocalTimerWaitOutput) -> NodeResult<JsonValue> {
     let path = payload
@@ -1359,7 +1365,8 @@ async fn workspace_quota_trigger(payload: JsonValue) -> NodeResult<WorkspaceQuot
     name = "WorkspaceQuotaStage",
     summary = "Exercise workspace host policy quota failures",
     effects = "Effectful",
-    determinism = "BestEffort"
+    determinism = "BestEffort",
+    resources(workspace_write(capabilities::workspace::Workspace))
 )]
 async fn workspace_quota_stage(input: WorkspaceQuotaInput) -> NodeResult<JsonValue> {
     let result = capabilities::context::with_current_async(|resources| async move {
@@ -1446,7 +1453,11 @@ async fn workspace_invalid_path_trigger(payload: JsonValue) -> NodeResult<Worksp
     name = "WorkspaceInvalidPathStage",
     summary = "Exercise workspace path normalization failures",
     effects = "Effectful",
-    determinism = "BestEffort"
+    determinism = "BestEffort",
+    resources(
+        workspace_read(capabilities::workspace::Workspace),
+        workspace_write(capabilities::workspace::Workspace)
+    )
 )]
 async fn workspace_invalid_path_stage(input: WorkspaceInvalidPathInput) -> NodeResult<JsonValue> {
     let result = capabilities::context::with_current_async(|resources| async move {
@@ -1516,7 +1527,11 @@ async fn workspace_retained_trigger(payload: JsonValue) -> NodeResult<WorkspaceR
     name = "WorkspaceRetainedStage",
     summary = "Write retained workspace artifacts without deleting them",
     effects = "Effectful",
-    determinism = "BestEffort"
+    determinism = "BestEffort",
+    resources(
+        workspace_read(capabilities::workspace::Workspace),
+        workspace_write(capabilities::workspace::Workspace)
+    )
 )]
 async fn workspace_retained_stage(input: WorkspaceRetainedInput) -> NodeResult<JsonValue> {
     let prefix = input.prefix.unwrap_or_else(|| "retained".to_string());
@@ -1582,7 +1597,11 @@ async fn workspace_mutation_trigger(payload: JsonValue) -> NodeResult<WorkspaceM
     name = "WorkspaceMutationStage",
     summary = "Exercise overwrite and delete/rewrite accounting behavior",
     effects = "Effectful",
-    determinism = "BestEffort"
+    determinism = "BestEffort",
+    resources(
+        workspace_read(capabilities::workspace::Workspace),
+        workspace_write(capabilities::workspace::Workspace)
+    )
 )]
 async fn workspace_mutation_stage(input: WorkspaceMutationInput) -> NodeResult<JsonValue> {
     let result = capabilities::context::with_current_async(|resources| async move {
@@ -1687,7 +1706,11 @@ async fn workspace_blocked_prefix_trigger(payload: JsonValue) -> NodeResult<Work
     name = "WorkspaceBlockedPrefixStage",
     summary = "Exercise blocked prefixes and path-depth/length host policy validation",
     effects = "Effectful",
-    determinism = "BestEffort"
+    determinism = "BestEffort",
+    resources(
+        workspace_read(capabilities::workspace::Workspace),
+        workspace_write(capabilities::workspace::Workspace)
+    )
 )]
 async fn workspace_blocked_prefix_stage(input: WorkspaceBlockedPrefixInput) -> NodeResult<JsonValue> {
     let result = capabilities::context::with_current_async(|resources| async move {
@@ -2143,6 +2166,7 @@ fn bundle_with_policies() -> FlowBundle {
             method: Some("GET".to_string()),
             deadline: Some(Duration::from_millis(500)),
             route_aliases: vec!["/health".to_string()],
+            schedule: None,
         },
         FlowEntrypoint {
             trigger_alias: "echo".to_string(),
@@ -2151,6 +2175,7 @@ fn bundle_with_policies() -> FlowBundle {
             method: Some("POST".to_string()),
             deadline: Some(Duration::from_millis(1000)),
             route_aliases: vec!["/echo".to_string()],
+            schedule: None,
         },
         FlowEntrypoint {
             trigger_alias: "stream".to_string(),
@@ -2159,6 +2184,7 @@ fn bundle_with_policies() -> FlowBundle {
             method: Some("POST".to_string()),
             deadline: Some(Duration::from_millis(5000)),
             route_aliases: vec!["/stream".to_string()],
+            schedule: None,
         },
         FlowEntrypoint {
             trigger_alias: "cancel".to_string(),
@@ -2167,6 +2193,7 @@ fn bundle_with_policies() -> FlowBundle {
             method: Some("POST".to_string()),
             deadline: Some(Duration::from_millis(10000)),
             route_aliases: vec!["/cancel".to_string()],
+            schedule: None,
         },
         FlowEntrypoint {
             trigger_alias: "timer".to_string(),
@@ -2175,6 +2202,7 @@ fn bundle_with_policies() -> FlowBundle {
             method: Some("POST".to_string()),
             deadline: Some(Duration::from_millis(10000)),
             route_aliases: vec!["/timer".to_string()],
+            schedule: None,
         },
         FlowEntrypoint {
             trigger_alias: "workspace_roundtrip".to_string(),
@@ -2183,6 +2211,7 @@ fn bundle_with_policies() -> FlowBundle {
             method: Some("POST".to_string()),
             deadline: Some(Duration::from_millis(5000)),
             route_aliases: vec!["/workspace".to_string()],
+            schedule: None,
         },
         FlowEntrypoint {
             trigger_alias: "workspace_resume".to_string(),
@@ -2191,6 +2220,7 @@ fn bundle_with_policies() -> FlowBundle {
             method: Some("POST".to_string()),
             deadline: Some(Duration::from_millis(10000)),
             route_aliases: vec!["/workspace-resume".to_string()],
+            schedule: None,
         },
         FlowEntrypoint {
             trigger_alias: "workspace_retained".to_string(),
@@ -2199,6 +2229,7 @@ fn bundle_with_policies() -> FlowBundle {
             method: Some("POST".to_string()),
             deadline: Some(Duration::from_millis(5000)),
             route_aliases: vec!["/workspace-retained".to_string()],
+            schedule: None,
         },
         FlowEntrypoint {
             trigger_alias: "workspace_quota".to_string(),
@@ -2207,6 +2238,7 @@ fn bundle_with_policies() -> FlowBundle {
             method: Some("POST".to_string()),
             deadline: Some(Duration::from_millis(5000)),
             route_aliases: vec!["/workspace-quota".to_string()],
+            schedule: None,
         },
         FlowEntrypoint {
             trigger_alias: "workspace_invalid_path".to_string(),
@@ -2215,6 +2247,7 @@ fn bundle_with_policies() -> FlowBundle {
             method: Some("POST".to_string()),
             deadline: Some(Duration::from_millis(5000)),
             route_aliases: vec!["/workspace-invalid-path".to_string()],
+            schedule: None,
         },
         FlowEntrypoint {
             trigger_alias: "workspace_mutation".to_string(),
@@ -2223,6 +2256,7 @@ fn bundle_with_policies() -> FlowBundle {
             method: Some("POST".to_string()),
             deadline: Some(Duration::from_millis(5000)),
             route_aliases: vec!["/workspace-mutation".to_string()],
+            schedule: None,
         },
         FlowEntrypoint {
             trigger_alias: "workspace_blocked_prefix".to_string(),
@@ -2231,6 +2265,7 @@ fn bundle_with_policies() -> FlowBundle {
             method: Some("POST".to_string()),
             deadline: Some(Duration::from_millis(5000)),
             route_aliases: vec!["/workspace-blocked-prefix".to_string()],
+            schedule: None,
         },
         FlowEntrypoint {
             trigger_alias: "workspace_stdlib_write".to_string(),
@@ -2239,6 +2274,7 @@ fn bundle_with_policies() -> FlowBundle {
             method: Some("POST".to_string()),
             deadline: Some(Duration::from_millis(5000)),
             route_aliases: vec!["/workspace-stdlib-write".to_string()],
+            schedule: None,
         },
         FlowEntrypoint {
             trigger_alias: "workspace_stdlib_read".to_string(),
@@ -2247,6 +2283,7 @@ fn bundle_with_policies() -> FlowBundle {
             method: Some("POST".to_string()),
             deadline: Some(Duration::from_millis(5000)),
             route_aliases: vec!["/workspace-stdlib-read".to_string()],
+            schedule: None,
         },
         FlowEntrypoint {
             trigger_alias: "workspace_stdlib_list".to_string(),
@@ -2255,6 +2292,7 @@ fn bundle_with_policies() -> FlowBundle {
             method: Some("POST".to_string()),
             deadline: Some(Duration::from_millis(5000)),
             route_aliases: vec!["/workspace-stdlib-list".to_string()],
+            schedule: None,
         },
         FlowEntrypoint {
             trigger_alias: "workspace_stdlib_delete".to_string(),
@@ -2263,6 +2301,7 @@ fn bundle_with_policies() -> FlowBundle {
             method: Some("POST".to_string()),
             deadline: Some(Duration::from_millis(5000)),
             route_aliases: vec!["/workspace-stdlib-delete".to_string()],
+            schedule: None,
         },
     ];
     let node_contracts = vec![

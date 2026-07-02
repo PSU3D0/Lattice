@@ -21,6 +21,7 @@ pub fn bundle() -> host_inproc::FlowBundle {
         method: Some("POST".to_string()),
         deadline: Some(Duration::from_millis(2000)),
         route_aliases: vec!["/spill".to_string()],
+        schedule: None,
     }];
     let node_contracts = validated_ir
         .flow()

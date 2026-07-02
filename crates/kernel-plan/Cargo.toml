@@ -18,6 +18,12 @@ thiserror.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 
+# Cron validation for schedule entrypoints (TRIG001). Host-only by design:
+# saffron must never enter the shipped wasm32 graph (host-workers routes cron
+# fires by byte equality; IR is always validated host-side before deploy).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+saffron.workspace = true
+
 [dev-dependencies]
 proptest.workspace = true
 dag-macros = { path = "../dag-macros" }

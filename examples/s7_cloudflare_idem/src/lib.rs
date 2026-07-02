@@ -1412,6 +1412,7 @@ pub fn bundle() -> FlowBundle {
             method: Some("POST".to_string()),
             deadline: Some(Duration::from_millis(2000)),
             route_aliases: vec!["/ingest".to_string()],
+            schedule: None,
         },
         FlowEntrypoint {
             trigger_alias: "trigger_http_events".to_string(),
@@ -1420,6 +1421,7 @@ pub fn bundle() -> FlowBundle {
             method: Some("GET".to_string()),
             deadline: Some(Duration::from_millis(2000)),
             route_aliases: vec!["/events".to_string()],
+            schedule: None,
         },
         FlowEntrypoint {
             trigger_alias: "trigger_http_snapshot".to_string(),
@@ -1428,6 +1430,7 @@ pub fn bundle() -> FlowBundle {
             method: Some("GET".to_string()),
             deadline: Some(Duration::from_millis(2000)),
             route_aliases: vec!["/snapshot".to_string()],
+            schedule: None,
         },
         FlowEntrypoint {
             trigger_alias: "trigger_http_stream".to_string(),
@@ -1436,6 +1439,7 @@ pub fn bundle() -> FlowBundle {
             method: Some("GET".to_string()),
             deadline: Some(Duration::from_millis(10000)),
             route_aliases: vec!["/stream".to_string()],
+            schedule: None,
         },
     ];
 

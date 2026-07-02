@@ -2,7 +2,7 @@
 use capabilities::hints;
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
-use quote::{ToTokens, format_ident, quote};
+use quote::{ToTokens, format_ident, quote, quote_spanned};
 use semver::Version;
 use std::collections::{HashMap, HashSet};
 use syn::ext::IdentExt;
@@ -2201,6 +2201,11 @@ struct EntrypointEntry {
     route_aliases: Vec<LitStr>,
     method: Option<LitStr>,
     deadline_ms: Option<u64>,
+    /// Cron expression for schedule-shaped entrypoints
+    /// (impl-docs/spec/schedule-trigger.md). Mutually exclusive with
+    /// `method`/`route_aliases` (TRIG002); validated with saffron at
+    /// expansion time (TRIG001).
+    schedule: Option<LitStr>,
 }
 
 struct IfEntry {
@@ -2729,6 +2734,7 @@ impl Parse for EntrypointEntry {
         let mut route_aliases = Vec::new();
         let mut method = None;
         let mut deadline_ms = None;
+        let mut schedule = None;
 
         while !content.is_empty() {
             let key: Ident = content.parse()?;
@@ -2790,6 +2796,37 @@ impl Parse for EntrypointEntry {
                     })?;
                     deadline_ms = Some(ms);
                 }
+                "schedule" => {
+                    if schedule.is_some() {
+                        return Err(syn::Error::new(key.span(), "duplicate entrypoint schedule"));
+                    }
+                    if content.peek(syn::token::Bracket) {
+                        return Err(syn::Error::new(
+                            key.span(),
+                            "`schedule: [...]` arrays are reserved for a future extension; \
+                             declare one entrypoint! statement per cron in v1",
+                        ));
+                    }
+                    let cron_lit: LitStr = content.parse()?;
+                    validate_cron_literal(&cron_lit)?;
+                    schedule = Some(cron_lit);
+                }
+                // Reserved v2 surface (impl-docs/spec/schedule-trigger.md §9):
+                // reject with forward-pointing errors rather than the generic
+                // unknown-field message.
+                "overlap" => {
+                    return Err(syn::Error::new(
+                        key.span(),
+                        "`overlap:` is reserved for a future schedule-trigger extension; \
+                         v1 allows overlapping fires (key idempotency on scheduled_time_ms)",
+                    ));
+                }
+                "timezone" => {
+                    return Err(syn::Error::new(
+                        key.span(),
+                        "`timezone:` is reserved; schedule cron expressions are UTC-only in v1",
+                    ));
+                }
                 other => {
                     return Err(syn::Error::new(
                         key.span(),
@@ -2813,13 +2850,49 @@ impl Parse for EntrypointEntry {
         let capture = capture
             .ok_or_else(|| syn::Error::new(span, "entrypoint! requires `capture: \"...\"`"))?;
 
+        if let Some(cron_lit) = &schedule {
+            if method.is_some() || !route_aliases.is_empty() {
+                return Err(syn::Error::new(
+                    cron_lit.span(),
+                    "[TRIG002] `schedule` is mutually exclusive with `method`/`route_aliases`; \
+                     an entrypoint is either schedule-shaped or HTTP-shaped, never both",
+                ));
+            }
+        }
+
         Ok(Self {
             trigger,
             capture,
             route_aliases,
             method,
             deadline_ms,
+            schedule,
         })
+    }
+}
+
+/// Validate a cron literal at macro expansion time ([TRIG001]) using saffron,
+/// the parser Cloudflare itself runs for Cron Triggers, so acceptance here is
+/// byte-for-byte what CF accepts and fires (5-field dialect, UTC).
+/// kernel-plan re-validates the same way so hand-built IR is covered.
+fn validate_cron_literal(cron_lit: &LitStr) -> Result<()> {
+    let expr = cron_lit.value();
+    match expr.parse::<saffron::Cron>() {
+        Ok(cron) if cron.any() => Ok(()),
+        Ok(_) => Err(syn::Error::new(
+            cron_lit.span(),
+            format!(
+                "[TRIG001] schedule `{expr}` never fires; Cloudflare rejects cron expressions \
+                 with no matching times"
+            ),
+        )),
+        Err(_) => Err(syn::Error::new(
+            cron_lit.span(),
+            format!(
+                "[TRIG001] schedule `{expr}` is not a valid Cloudflare-dialect cron expression \
+                 (5 fields: minute hour day-of-month month day-of-week, UTC)"
+            ),
+        )),
     }
 }
 
@@ -4756,6 +4829,24 @@ impl WorkflowBundleInput {
                     );
             });
 
+            if let Some(cron_lit) = &entry.schedule {
+                // Schedule entrypoints require the trigger input type to be
+                // EXACTLY `dag_core::ScheduledEvent` (no `Into`-flexibility in
+                // v1); surfaced as a rustc type error at the schedule literal.
+                let assert_ident = format_ident!(
+                    "__lattice_schedule_trigger_input_must_be_scheduled_event_{}",
+                    trigger_alias
+                );
+                entrypoint_const_defs.push(quote_spanned! {cron_lit.span()=>
+                    const _: () = {
+                        #[allow(dead_code)]
+                        fn #assert_ident(value: #input_ty) -> ::dag_core::ScheduledEvent {
+                            value
+                        }
+                    };
+                });
+            }
+
             entrypoint_flow_modules.push(quote! {
                 pub mod #entry_ident {
                     pub fn flow() -> ::dag_core::FlowIR {
@@ -4876,6 +4967,11 @@ impl WorkflowBundleInput {
                     .deadline_ms
                     .map(|ms| quote!(Some(#ms)))
                     .unwrap_or_else(|| quote!(None));
+                let schedule = entry
+                    .schedule
+                    .as_ref()
+                    .map(|cron| quote!(Some(#cron)))
+                    .unwrap_or_else(|| quote!(None));
 
                 quote! {
                     ::dag_core::flow_registry::EntrypointSpec {
@@ -4884,6 +4980,7 @@ impl WorkflowBundleInput {
                         route_aliases: #route_aliases,
                         method: #method,
                         deadline_ms: #deadline,
+                        schedule: #schedule,
                     }
                 }
             });
@@ -4910,6 +5007,11 @@ impl WorkflowBundleInput {
                 .as_ref()
                 .map(|method| quote!(Some(#method.to_string())))
                 .unwrap_or_else(|| quote!(None));
+            let schedule = entry
+                .schedule
+                .as_ref()
+                .map(|cron| quote!(Some(#cron.to_string())))
+                .unwrap_or_else(|| quote!(None));
 
             quote! {
                 ::dag_core::EntrypointMetadata {
@@ -4918,6 +5020,7 @@ impl WorkflowBundleInput {
                     route_path: #route_path,
                     method: #method,
                     route_aliases: #route_aliases,
+                    schedule: #schedule,
                 }
             }
         });
@@ -4945,6 +5048,11 @@ impl WorkflowBundleInput {
                 .deadline_ms
                 .map(|ms| quote!(Some(::std::time::Duration::from_millis(#ms))))
                 .unwrap_or_else(|| quote!(None));
+            let schedule = entry
+                .schedule
+                .as_ref()
+                .map(|cron| quote!(Some(#cron.to_string())))
+                .unwrap_or_else(|| quote!(None));
 
             quote! {
                 ::host_inproc::FlowEntrypoint {
@@ -4954,6 +5062,7 @@ impl WorkflowBundleInput {
                     method: #method,
                     deadline: #deadline,
                     route_aliases: #route_aliases,
+                    schedule: #schedule,
                 }
             }
         });

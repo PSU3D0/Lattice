@@ -95,6 +95,10 @@ ensure the registry stays in sync with the implementation.
 | CAP-WS-004 | Capability    | Error   | Workspace operation unsupported by the active backend. |
 | CAP-WS-005 | Capability    | Error   | Workspace backend operation failed. |
 | TYPE001    | Validation     | Error   | Internal node uses unconstrained JSON in both input and output without boundary annotation. |
+| TRIG001   | Validation     | Error   | Schedule expression is not a valid Cloudflare-dialect cron (validated with saffron at macro expansion and kernel-plan time; see `impl-docs/spec/schedule-trigger.md`). |
+| TRIG002   | Macros         | Error   | `schedule` conflicts with `method`/`route_aliases` on one entrypoint (also enforced by kernel-plan on hand-built IR). |
+| TRIG003   | Validation     | Error   | Trigger alias wired to both schedule and HTTP entrypoints. |
+| TRIG004   | Validation     | Error   | Duplicate schedule entrypoint (same cron + trigger alias). |
 
 > **Note:** The default severity column indicates how diagnostics are surfaced in the
 > absence of policy overrides. Individual organisations may escalate or demote specific

@@ -434,6 +434,9 @@ pub fn load_flow_bundle(
             method: entry.method.clone(),
             deadline: entry.deadline_ms.map(Duration::from_millis),
             route_aliases: entry.route_aliases.clone(),
+            // Bundle manifests do not carry schedules yet; T3 threads them
+            // through for the workers scheduled() handler.
+            schedule: None,
         })
         .collect::<Vec<_>>();
 

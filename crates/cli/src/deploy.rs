@@ -766,11 +766,22 @@ pub(crate) fn render_wrangler(
     for trigger in &requirements.triggers {
         match trigger.kind {
             TriggerKind::Http => {}
-            // STUB(T3): `TriggerKind::Schedule { crons }` does not exist yet.
-            // Packet T1 adds the IR/manifest surface, packet T3 lands the
-            // `[triggers].crons` rendering arm here, per the contract being
-            // designed in impl-docs/spec/schedule-trigger.md (packet T0).
-            // Until then every non-http trigger renders a pending marker.
+            // STUB(T3): packet T1 landed the `TriggerKind::Schedule` manifest
+            // surface (crons on TriggerRequirement); packet T3 lands the
+            // `[triggers].crons` rendering arm here, per the contract in
+            // impl-docs/spec/schedule-trigger.md (packet T0). Until then a
+            // schedule trigger renders the same pending marker as an
+            // unspecified one — the worker will NOT fire it, and the marker
+            // says so.
+            TriggerKind::Schedule => {
+                pending_schedule_stub = true;
+                notes.push(format!(
+                    "trigger `{}` is schedule/cron-fired, but `[triggers].crons` rendering is \
+                     pending packet T3 (contract: impl-docs/spec/schedule-trigger.md) — the \
+                     worker will NOT fire it until that lands",
+                    trigger.alias
+                ));
+            }
             TriggerKind::Unspecified => {
                 pending_schedule_stub = true;
                 notes.push(format!(

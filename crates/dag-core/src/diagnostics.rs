@@ -393,5 +393,29 @@ pub static DIAGNOSTIC_CODES: Lazy<Vec<DiagnosticCode>> = Lazy::new(|| {
             default_severity: Severity::Error,
             summary: "Internal node uses unconstrained JSON in both input and output without boundary annotation",
         },
+        DiagnosticCode {
+            code: "TRIG001",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Schedule expression is not a valid Cloudflare-dialect cron",
+        },
+        DiagnosticCode {
+            code: "TRIG002",
+            subsystem: "macros",
+            default_severity: Severity::Error,
+            summary: "schedule conflicts with method/route_aliases on one entrypoint",
+        },
+        DiagnosticCode {
+            code: "TRIG003",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Trigger alias wired to both schedule and HTTP entrypoints",
+        },
+        DiagnosticCode {
+            code: "TRIG004",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Duplicate schedule entrypoint (same cron + trigger alias)",
+        },
     ]
 });

@@ -12,6 +12,7 @@ pub mod flow_registry;
 mod ir;
 pub mod requirements;
 pub mod schema;
+pub mod trigger;
 
 pub use builder::{EdgeHandle, FlowBuilder, FlowBuilderError, NodeHandle};
 pub use diagnostics::{DIAGNOSTIC_CODES, Diagnostic, DiagnosticCode, Severity, diagnostic_codes};
@@ -25,6 +26,7 @@ pub use ir::*;
 pub use requirements::{FLOW_REQUIREMENTS_SCHEMA_VERSION, FlowRequirements, RequirementsError};
 pub use serde_json;
 use std::marker::PhantomData;
+pub use trigger::ScheduledEvent;
 
 /// Typed entrypoint metadata emitted by `flow!`.
 #[derive(Clone, Copy, Debug)]

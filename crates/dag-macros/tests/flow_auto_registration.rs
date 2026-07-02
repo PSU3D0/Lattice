@@ -40,6 +40,7 @@ pub struct FlowEntrypoint {
     pub method: Option<String>,
     pub deadline: Option<Duration>,
     pub route_aliases: Vec<String>,
+    pub schedule: Option<String>,
 }
 
 pub struct FlowBundle {

@@ -33,6 +33,7 @@ flow_registry::submit! {
             route_aliases: &["/registry-test"],
             method: Some("POST"),
             deadline_ms: Some(1_000),
+            schedule: None,
         }],
         flow_ir: sample_flow_ir,
     }
@@ -62,6 +63,7 @@ fn registry_entrypoint_carries_method() {
             route_aliases: &["/method-check"],
             method: Some("PUT"),
             deadline_ms: None,
+            schedule: None,
         }],
         flow_ir: sample_flow_ir,
     };
@@ -85,6 +87,7 @@ fn registry_validation_rejects_metadata_drift() {
             route_aliases: &["/mismatch"],
             method: None,
             deadline_ms: None,
+            schedule: None,
         }],
         flow_ir: sample_flow_ir,
     };

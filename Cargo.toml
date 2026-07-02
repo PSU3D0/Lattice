@@ -116,6 +116,14 @@ hex = "0.4"
 walkdir = "2"
 tempfile = "3"
 once_cell = "1.19"
+# Cron parser for schedule triggers (impl-docs/spec/schedule-trigger.md §4).
+# saffron IS the parser Cloudflare runs for Cron Triggers, so local validation
+# and dev-scheduler fire times match CF by construction. crates.io 0.1.0 is the
+# same code CF production pins; git-pin only if an unreleased upstream fix is
+# ever needed. Host-side only: dag-macros (proc-macro), kernel-plan behind
+# cfg(not(target_arch = "wasm32")), and the dev scheduler. It must never enter
+# the shipped wasm32 graph — host-workers routes cron fires by byte equality.
+saffron = "0.1.0"
 semver = { version = "1.0", features = ["serde"] }
 trybuild = "1.0"
 tower = "0.4"

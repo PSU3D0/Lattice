@@ -1,0 +1,8 @@
+error[E0308]: mismatched types
+  --> tests/ui-full/workflow_schedule_wrong_trigger_type.rs:46:19
+   |
+46 |         schedule: "*/5 * * * *",
+   |                   ^^^^^^^^^^^^^
+   |                   |
+   |                   expected `ScheduledEvent`, found `NotAScheduledEvent`
+   |                   expected `ScheduledEvent` because of return type

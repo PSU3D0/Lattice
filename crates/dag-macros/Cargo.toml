@@ -24,6 +24,9 @@ proc-macro2.workspace = true
 quote.workspace = true
 syn.workspace = true
 semver.workspace = true
+# Macro-time cron validation for `entrypoint! { schedule: ... }` (TRIG001).
+# proc-macro crates always compile for the host, so this never enters wasm32.
+saffron.workspace = true
 
 [dev-dependencies]
 trybuild.workspace = true

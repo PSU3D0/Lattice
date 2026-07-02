@@ -289,6 +289,13 @@
             "null"
           ]
         },
+        "schedule": {
+          "description": "Cron expression for schedule-shaped entrypoints (5-field Cloudflare dialect, UTC), byte-verbatim from the IR. The wrangler renderer's `[triggers].crons` union is built from this field.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "trigger_alias": {
           "description": "Trigger node alias for ingress.",
           "type": "string"
@@ -397,6 +404,13 @@
           "type": "string"
         },
         {
+          "description": "Trigger is wired to a schedule (cron) entrypoint.\n\nTolerated additive value under `schema_version` 0.1: consumers encountering an unknown trigger `kind` must treat that flow as \"cannot place\" (fail closed per-flow) rather than reject the manifest. See `impl-docs/spec/flow-requirements.md`.",
+          "enum": [
+            "schedule"
+          ],
+          "type": "string"
+        },
+        {
           "description": "Trigger has no entrypoint wiring recorded in the IR; invocation mechanism is host-defined.",
           "enum": [
             "unspecified"
@@ -411,6 +425,13 @@
         "alias": {
           "description": "Node alias within the flow.",
           "type": "string"
+        },
+        "crons": {
+          "description": "Cron expressions of the schedule entrypoints wired to this trigger alias (exactly one in v1). Empty for non-schedule triggers; skip-when-absent keeps existing manifests byte-identical.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "identifier": {
           "description": "Fully-qualified implementation identifier.",

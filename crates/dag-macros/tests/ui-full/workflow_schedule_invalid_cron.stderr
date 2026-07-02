@@ -1,0 +1,5 @@
+error: [TRIG001] schedule `61 * * * *` is not a valid Cloudflare-dialect cron expression (5 fields: minute hour day-of-month month day-of-week, UTC)
+  --> tests/ui-full/workflow_schedule_invalid_cron.rs:39:19
+   |
+39 |         schedule: "61 * * * *",
+   |                   ^^^^^^^^^^^^

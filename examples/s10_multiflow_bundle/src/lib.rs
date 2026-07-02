@@ -191,6 +191,7 @@ fn bundle_for(
             method: Some("POST".to_string()),
             deadline: Some(Duration::from_millis(1_000)),
             route_aliases: vec![route_path.to_string()],
+            schedule: None,
         }],
         resolver: Arc::new(RegistryResolver::new(Arc::new(registry))),
         node_contracts,

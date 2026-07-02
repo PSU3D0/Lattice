@@ -15,6 +15,9 @@ pub struct EntrypointSpec {
     pub route_aliases: &'static [&'static str],
     pub method: Option<&'static str>,
     pub deadline_ms: Option<u64>,
+    /// Cron expression for schedule-shaped entrypoints (5-field Cloudflare
+    /// dialect, UTC). Mutually exclusive with `method`/`route_aliases`.
+    pub schedule: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy)]

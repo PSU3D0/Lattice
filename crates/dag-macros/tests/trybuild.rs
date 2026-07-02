@@ -20,7 +20,7 @@
 
 /// Total number of UI `.rs` cases across both directories. Keep in sync when
 /// adding/removing cases — `case_count_is_conserved` fails loudly otherwise.
-const TOTAL_UI_CASES: usize = 46;
+const TOTAL_UI_CASES: usize = 49;
 
 fn count_rs_cases(dir: &str) -> usize {
     std::fs::read_dir(dir)
@@ -134,4 +134,10 @@ fn ui_full() {
     t.compile_fail("tests/ui-full/workflow_if_else_not_ident.rs");
     t.compile_fail("tests/ui-full/workflow_if_selector_pointer_invalid.rs");
     t.pass("tests/ui-full/workflow_if_trailing_comma.rs");
+
+    // Schedule trigger family (TRIG001/TRIG002 + exact-input-type assertion,
+    // impl-docs/spec/schedule-trigger.md).
+    t.compile_fail("tests/ui-full/workflow_schedule_invalid_cron.rs");
+    t.compile_fail("tests/ui-full/workflow_schedule_method_conflict.rs");
+    t.compile_fail("tests/ui-full/workflow_schedule_wrong_trigger_type.rs");
 }

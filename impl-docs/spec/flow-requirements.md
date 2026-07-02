@@ -142,8 +142,8 @@ is identical minus the two bundle-assembly enrichments, `deadline_ms` and
 | `effects.per_node` | `NodeIR.effect_hints` | Node alias → sorted hints; only nodes declaring at least one capability hint appear. |
 | `connectors` | `NodeIR.connector_ops` | Grouped by `connector_id`, then `operation_id`. Per operation: declared `roles` (`ConnectorOpMetadata.roles` as serialized in `ConnectorOpRefIR`), `supported_resolution_modes` and `default_resolution_mode` verbatim, `selected_resolution_modes` = sorted set of the modes nodes actually selected, `requires_bound_connection` = any selection is `bound_connection`, `nodes` = sorted aliases declaring the op. |
 | `durability` | `FlowIR.policies.durability` + `NodeIR.durability` + node identifiers | Mirrors host-inproc `collect_missing_durability_services` exactly: `needs_checkpoint_store` ⇔ mode ≠ `off`; `needs_resume_scheduler` ⇔ halting nodes present AND a `std.timer.wait` node exists; `needs_resume_signal_source` ⇔ halting nodes present AND a `std.callback.wait`/`std.hitl.approval` node exists; `needs_checkpoint_blob_store` ⇔ mode ≠ `off` AND `blob_threshold_bytes` configured. |
-| `triggers` | `NodeIR.kind == Trigger` + `FlowMetadata.entrypoints` | One entry per trigger node. `kind` is `http` when the trigger alias is wired to an entrypoint, else `unspecified` (the IR records no richer trigger taxonomy today; extend the enum when polling/webhook trigger runtimes land). |
-| `entrypoints` | `FlowMetadata.entrypoints` (+ registry specs at bundle time) | Route path/method/aliases copied from IR metadata. `deadline_ms` is NOT in Flow IR metadata today; it is enriched during bundle assembly from the flow registry's `EntrypointSpec` (`exporters::bundle`). When derived directly from IR (e.g. future `flows bundle requirements` on a bare IR), `deadline_ms` is `null`. |
+| `triggers` | `NodeIR.kind == Trigger` + `FlowMetadata.entrypoints` | One entry per trigger node. `kind` is `schedule` when the alias is wired to an entrypoint carrying `schedule`, `http` when wired to one without, else `unspecified` (extend the enum when polling/webhook trigger runtimes land). TRIG003 validation guarantees the schedule/http cases are disjoint. `crons` lists the schedule expressions of the entrypoints wired to that alias (skip-when-empty; the wrangler renderer's `[triggers].crons` union reads this). |
+| `entrypoints` | `FlowMetadata.entrypoints` (+ registry specs at bundle time) | Route path/method/aliases and `schedule` (skip-when-absent, byte-verbatim cron) copied from IR metadata. `deadline_ms` is NOT in Flow IR metadata today; it is enriched during bundle assembly from the flow registry's `EntrypointSpec` (`exporters::bundle`). When derived directly from IR (e.g. future `flows bundle requirements` on a bare IR), `deadline_ms` is `null`. |
 | `host.requires_wasm32_compatibility` | `FlowIR.profile` | `profile == wasm`. (All bundles ship wasm32 code today; this flags flows that can ONLY be placed on a wasm-capable host.) |
 | `host.requires_connector_runtime` | `NodeIR.connector_ops` | Any op selected in `bound_connection` mode. A `ConnectorRuntime` must be bound for execution, and preflight requires the lock-recorded resolution results (`connector_bindings.<flow>.resolved_effect_hints` in bindings.lock, one entry per bound node alias); preflight itself performs no runtime resolution (C2). |
 | `host.has_subflows` | `NodeIR.kind == Subflow` | Host must support subflow expansion/linking. |
@@ -199,6 +199,12 @@ time.
 - `schema_version` versions the manifest *shape*. `0.1` is the initial shape.
   Additive optional fields do not bump it; renames, removals, or semantic
   changes to existing fields do. Consumers MUST reject unknown major shapes.
+- New trigger `kind` values are *tolerated additive values* under `0.1`
+  (decision in `impl-docs/spec/schedule-trigger.md` §6, first exercised by
+  `"schedule"`): a consumer encountering an unknown trigger `kind` MUST treat
+  that flow as "cannot place" (fail closed per-flow) rather than reject the
+  manifest. This keeps bundle ids stable for every flow that does not use the
+  new kind.
 - `flow.{id,name,version}` pins the manifest to a flow revision. `flow.id`
   is derived from name+version, so a version bump changes the id.
 - `flow_ir_hash` pins the manifest to the exact serialized IR artifact in the

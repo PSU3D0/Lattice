@@ -189,6 +189,13 @@ pub struct DurabilityRequirements {
 pub enum TriggerKind {
     /// Trigger is wired to an HTTP entrypoint (route/method declared).
     Http,
+    /// Trigger is wired to a schedule (cron) entrypoint.
+    ///
+    /// Tolerated additive value under `schema_version` 0.1: consumers
+    /// encountering an unknown trigger `kind` must treat that flow as
+    /// "cannot place" (fail closed per-flow) rather than reject the
+    /// manifest. See `impl-docs/spec/flow-requirements.md`.
+    Schedule,
     /// Trigger has no entrypoint wiring recorded in the IR; invocation
     /// mechanism is host-defined.
     Unspecified,
@@ -203,6 +210,11 @@ pub struct TriggerRequirement {
     pub identifier: String,
     /// Trigger surface kind.
     pub kind: TriggerKind,
+    /// Cron expressions of the schedule entrypoints wired to this trigger
+    /// alias (exactly one in v1). Empty for non-schedule triggers;
+    /// skip-when-absent keeps existing manifests byte-identical.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub crons: Vec<String>,
 }
 
 /// External ingress wiring for one entrypoint.
@@ -218,6 +230,11 @@ pub struct EntrypointRequirement {
     /// HTTP method for HTTP-capable hosts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub method: Option<String>,
+    /// Cron expression for schedule-shaped entrypoints (5-field Cloudflare
+    /// dialect, UTC), byte-verbatim from the IR. The wrangler renderer's
+    /// `[triggers].crons` union is built from this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<String>,
     /// Non-authoritative aliases for the canonical route.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub route_aliases: Vec<String>,
@@ -411,19 +428,32 @@ fn derive_triggers(flow: &FlowIR) -> Vec<TriggerRequirement> {
         .iter()
         .filter(|node| node.kind == NodeKind::Trigger)
         .map(|node| {
-            let wired_to_entrypoint = flow
-                .metadata
-                .entrypoints
-                .iter()
-                .any(|entry| entry.trigger_alias == node.alias);
+            let mut wired_to_entrypoint = false;
+            let mut crons: Vec<String> = Vec::new();
+            for entry in &flow.metadata.entrypoints {
+                if entry.trigger_alias != node.alias {
+                    continue;
+                }
+                wired_to_entrypoint = true;
+                if let Some(schedule) = &entry.schedule {
+                    crons.push(schedule.clone());
+                }
+            }
+            // TRIG003 validation guarantees an alias is never wired to both
+            // schedule and HTTP entrypoints, so the cases below are disjoint
+            // on validated IR.
+            let kind = if !crons.is_empty() {
+                TriggerKind::Schedule
+            } else if wired_to_entrypoint {
+                TriggerKind::Http
+            } else {
+                TriggerKind::Unspecified
+            };
             TriggerRequirement {
                 alias: node.alias.clone(),
                 identifier: node.identifier.clone(),
-                kind: if wired_to_entrypoint {
-                    TriggerKind::Http
-                } else {
-                    TriggerKind::Unspecified
-                },
+                kind,
+                crons,
             }
         })
         .collect()
@@ -438,6 +468,7 @@ fn derive_entrypoints(flow: &FlowIR) -> Vec<EntrypointRequirement> {
             capture_alias: entry.capture_alias.clone(),
             route_path: entry.route_path.clone(),
             method: entry.method.clone(),
+            schedule: entry.schedule.clone(),
             route_aliases: entry.route_aliases.clone(),
             deadline_ms: None,
         })
