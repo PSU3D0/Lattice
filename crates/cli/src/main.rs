@@ -67,6 +67,8 @@ use example_s11_lead_intake as s11_lead_intake;
 use example_s12_sheetport_quote as s12_sheetport_quote;
 #[cfg(feature = "example-s13")]
 use example_s13_github_issue_investigator as s13_github_issue_investigator;
+#[cfg(feature = "example-s15")]
+use example_s15_scheduled_poll as s15_scheduled_poll;
 
 mod bundle;
 mod deploy;
@@ -3786,6 +3788,8 @@ pub(crate) fn example_bundle(name: &str) -> Result<(host_inproc::FlowBundle, boo
         "s12_sheetport_quote" => (s12_sheetport_quote::bound_bundle(), false),
         #[cfg(feature = "example-s13")]
         "s13_github_issue_investigator" => (s13_github_issue_investigator::bundle(), false),
+        #[cfg(feature = "example-s15")]
+        "s15_scheduled_poll" => (s15_scheduled_poll::bundle(), false),
         other => return Err(anyhow!("unknown example `{other}`")),
     };
 

@@ -28,6 +28,11 @@ ALLOWLIST=(
   'crates/cli/tests/bundle.rs'
   'crates/cli/tests/bindings_lock.rs'
   'crates/cli/tests/run_local.rs'
+  # T4: run_schedule.rs authors a bindings.lock fixture for the s15 cron-canary
+  # golden; the `resource::http`/`resource::kv` strings are lock manifest
+  # `provides`/`use` keys (same surface as bindings_lock.rs above), not NodeIR
+  # effect-hint literals. Owned by the CLI packet (LOCK-BUILD/cli).
+  'crates/cli/tests/run_schedule.rs'
   # dag-macros golden tests pin canonical emission strings; convert to
   # capabilities::*::HINT_* consts in a macro-test cleanup packet.
   'crates/dag-macros/tests/flow_macro.rs'

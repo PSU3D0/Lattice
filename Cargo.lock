@@ -2392,6 +2392,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-s15-scheduled-poll"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "cap-http-reqwest",
+ "capabilities",
+ "connector_github_issues",
+ "dag-core",
+ "dag-macros",
+ "host-inproc",
+ "httpmock",
+ "kernel-exec",
+ "kernel-plan",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "example-s2-site"
 version = "0.1.0"
 dependencies = [
@@ -2713,6 +2732,7 @@ dependencies = [
  "example-s11-lead-intake",
  "example-s12-sheetport-quote",
  "example-s13-github-issue-investigator",
+ "example-s15-scheduled-poll",
  "example-s2-site",
  "example-s3-branching",
  "example-s4-preflight",
