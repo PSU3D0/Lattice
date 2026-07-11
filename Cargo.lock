@@ -1380,6 +1380,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "connector_airtable"
+version = "0.1.0"
+dependencies = [
+ "cap-http-reqwest",
+ "capabilities",
+ "connector-spec",
+ "connectors-std",
+ "dag-core",
+ "dag-macros",
+ "httpmock",
+ "kernel-exec",
+ "serde",
+ "serde_json",
+ "testing-harness-idem",
+ "tokio",
+]
+
+[[package]]
 name = "connector_formualizer_sheetport"
 version = "0.1.0"
 dependencies = [
@@ -1480,6 +1498,85 @@ dependencies = [
  "percent-encoding",
  "serde",
  "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "connector_llm"
+version = "0.1.0"
+dependencies = [
+ "cap-http-reqwest",
+ "capabilities",
+ "connector-spec",
+ "connectors-std",
+ "dag-core",
+ "dag-macros",
+ "httpmock",
+ "kernel-exec",
+ "llm-agent",
+ "llm-lattice",
+ "llm-provider-anthropic",
+ "llm-provider-openai",
+ "llm-types",
+ "schemars 1.0.4",
+ "serde",
+ "serde_json",
+ "testing-harness-idem",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
+name = "connector_notion"
+version = "0.1.0"
+dependencies = [
+ "cap-http-reqwest",
+ "capabilities",
+ "connector-spec",
+ "connectors-std",
+ "dag-core",
+ "dag-macros",
+ "httpmock",
+ "kernel-exec",
+ "serde",
+ "serde_json",
+ "testing-harness-idem",
+ "tokio",
+]
+
+[[package]]
+name = "connector_slack_core"
+version = "0.1.0"
+dependencies = [
+ "cap-http-reqwest",
+ "capabilities",
+ "connector-spec",
+ "connectors-std",
+ "dag-core",
+ "dag-macros",
+ "httpmock",
+ "kernel-exec",
+ "serde",
+ "serde_json",
+ "testing-harness-idem",
+ "tokio",
+]
+
+[[package]]
+name = "connector_telegram"
+version = "0.1.0"
+dependencies = [
+ "cap-http-reqwest",
+ "capabilities",
+ "connector-spec",
+ "connectors-std",
+ "dag-core",
+ "dag-macros",
+ "httpmock",
+ "kernel-exec",
+ "serde",
+ "serde_json",
+ "testing-harness-idem",
  "tokio",
 ]
 
@@ -2266,6 +2363,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-connector-airtable-local-flow"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cap-http-reqwest",
+ "capabilities",
+ "connector_airtable",
+ "dag-core",
+ "dag-macros",
+ "host-inproc",
+ "httpmock",
+ "kernel-exec",
+ "kernel-plan",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "example-connector-github-issues-local-flow"
 version = "0.1.0"
 dependencies = [
@@ -2339,6 +2455,82 @@ dependencies = [
  "kernel-exec",
  "kernel-plan",
  "percent-encoding",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "example-connector-llm-local-flow"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cap-http-reqwest",
+ "capabilities",
+ "connector_llm",
+ "dag-core",
+ "dag-macros",
+ "host-inproc",
+ "httpmock",
+ "kernel-exec",
+ "kernel-plan",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "example-connector-notion-local-flow"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cap-http-reqwest",
+ "capabilities",
+ "connector_notion",
+ "dag-core",
+ "dag-macros",
+ "host-inproc",
+ "httpmock",
+ "kernel-exec",
+ "kernel-plan",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "example-connector-slack-core-local-flow"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cap-http-reqwest",
+ "capabilities",
+ "connector_slack_core",
+ "dag-core",
+ "dag-macros",
+ "host-inproc",
+ "httpmock",
+ "kernel-exec",
+ "kernel-plan",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "example-connector-telegram-local-flow"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cap-http-reqwest",
+ "capabilities",
+ "connector_telegram",
+ "dag-core",
+ "dag-macros",
+ "host-inproc",
+ "httpmock",
+ "kernel-exec",
+ "kernel-plan",
  "serde",
  "serde_json",
  "tokio",
@@ -2508,6 +2700,67 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-s17-telegram-broadcast"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "cap-http-reqwest",
+ "capabilities",
+ "connector_google_sheets",
+ "connector_telegram",
+ "dag-core",
+ "dag-macros",
+ "host-inproc",
+ "httpmock",
+ "kernel-exec",
+ "kernel-plan",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "example-s18-retell-transcript-sink"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "cap-http-reqwest",
+ "capabilities",
+ "connector_airtable",
+ "connector_google_sheets",
+ "connector_notion",
+ "dag-core",
+ "dag-macros",
+ "host-inproc",
+ "httpmock",
+ "kernel-exec",
+ "kernel-plan",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "example-s19-scheduled-email-dispatch"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "cap-http-reqwest",
+ "capabilities",
+ "connector_google_gmail",
+ "connector_google_sheets",
+ "dag-core",
+ "dag-macros",
+ "host-inproc",
+ "httpmock",
+ "kernel-exec",
+ "kernel-plan",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "example-s2-site"
 version = "0.1.0"
 dependencies = [
@@ -2516,6 +2769,25 @@ dependencies = [
  "dag-macros",
  "futures",
  "host-inproc",
+ "kernel-exec",
+ "kernel-plan",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "example-s20-form-signup-notify"
+version = "0.1.0"
+dependencies = [
+ "cap-http-reqwest",
+ "capabilities",
+ "connector_google_sheets",
+ "connector_slack_core",
+ "dag-core",
+ "dag-macros",
+ "host-inproc",
+ "httpmock",
  "kernel-exec",
  "kernel-plan",
  "serde",
@@ -2831,7 +3103,11 @@ dependencies = [
  "example-s13-github-issue-investigator",
  "example-s15-scheduled-poll",
  "example-s16-drive-permissions-audit",
+ "example-s17-telegram-broadcast",
+ "example-s18-retell-transcript-sink",
+ "example-s19-scheduled-email-dispatch",
  "example-s2-site",
+ "example-s20-form-signup-notify",
  "example-s3-branching",
  "example-s4-preflight",
  "example-s5-unsupported-surface",

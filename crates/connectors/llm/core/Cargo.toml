@@ -1,0 +1,37 @@
+[package]
+name = "connector_llm"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Provider-agnostic LLM completion connector wrapping the llm-* crates"
+
+[features]
+default = ["host-bundle"]
+host-bundle = ["dag-macros/host-bundle", "kernel-exec"]
+
+[dependencies]
+capabilities = { path = "../../../capabilities" }
+dag-core = { path = "../../../dag-core" }
+dag-macros = { path = "../../../dag-macros" }
+kernel-exec = { path = "../../../kernel-exec", optional = true }
+connectors-std = { path = "../../../connectors-std" }
+llm-types = { path = "../../../llm-types" }
+llm-agent = { path = "../../../llm-agent", features = ["image"] }
+llm-lattice = { path = "../../../llm-lattice" }
+llm-provider-openai = { path = "../../../llm-provider-openai" }
+llm-provider-anthropic = { path = "../../../llm-provider-anthropic" }
+schemars = "1"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+cap-http-reqwest = { path = "../../../cap-http-reqwest" }
+connector-spec = { path = "../../../connector-spec" }
+httpmock = "0.7"
+testing-harness-idem = { path = "../../../testing-harness-idem" }
+tokio = { workspace = true, features = ["full"] }

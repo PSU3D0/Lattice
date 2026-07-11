@@ -38,6 +38,29 @@ ALLOWLIST=(
   # same lock manifest `provides`/`use` keys as run_schedule.rs above, not
   # NodeIR effect-hint literals. Owned by the CLI packet (LOCK-BUILD/cli).
   'crates/cli/tests/run_schedule_s16.rs'
+  # N4-T9 (clone): run_schedule_s19.rs authors the s19 sheets+gmail
+  # bindings.lock fixture; the `resource::http`/`resource::kv` strings are the
+  # same lock manifest `provides`/`use` keys as run_schedule_s16.rs above, not
+  # NodeIR effect-hint literals. Owned by the CLI packet (LOCK-BUILD/cli).
+  'crates/cli/tests/run_schedule_s19.rs'
+  # N4-T6 (clone): run_local_s17.rs authors the s17 sheets+telegram
+  # bindings.lock fixture for the manual-trigger golden; the
+  # `resource::http`/`resource::kv` strings are the same lock manifest
+  # `provides`/`use` keys as run_schedule_s16.rs above, not NodeIR effect-hint
+  # literals. Owned by the CLI packet (LOCK-BUILD/cli).
+  'crates/cli/tests/run_local_s17.rs'
+  # N4-T10 (clone): run_local_s20_form_signup_notify.rs authors the s20
+  # sheets+slack bindings.lock fixture for the webhook-trigger golden; the
+  # `resource::http` strings are the same lock manifest `provides`/`use` keys
+  # as run_schedule_s16.rs above, not NodeIR effect-hint literals. Owned by the
+  # CLI packet (LOCK-BUILD/cli).
+  'crates/cli/tests/run_local_s20_form_signup_notify.rs'
+  # N4-T7 (clone): run_local_s18.rs authors the s18 airtable+sheets+notion
+  # bindings.lock fixture for the webhook-trigger golden; the
+  # `resource::http`/`resource::kv` strings are the same lock manifest
+  # `provides`/`use` keys as run_schedule_s16.rs above, not NodeIR effect-hint
+  # literals. Owned by the CLI packet (LOCK-BUILD/cli).
+  'crates/cli/tests/run_local_s18.rs'
   # dag-macros golden tests pin canonical emission strings; convert to
   # capabilities::*::HINT_* consts in a macro-test cleanup packet.
   'crates/dag-macros/tests/flow_macro.rs'

@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "generated_at": "2026-07-11T00:00:00Z",
+  "content_hash": "3a920a53175b39ebaf2c1a3e3d854751beba93905923df48d9635871a4f3301c",
+  "instances": {
+    "http1": {
+      "provider_kind": "http.reqwest",
+      "provides": [
+        "resource::http"
+      ],
+      "connect": {},
+      "config": {},
+      "isolation": []
+    }
+  },
+  "flows": {
+    "5b59cd90-cc0c-523c-a4ba-bc41ec37c8ac": {
+      "use": {
+        "resource::http": "http1"
+      }
+    }
+  },
+  "connector_handles": {
+    "auth.google_workspace": {
+      "provider_kind": "auth.static_bearer",
+      "handle_kind": "http.bearer",
+      "connect": {
+        "secret_ref": "S20_GOOGLE_BEARER"
+      },
+      "config": {},
+      "grants": {}
+    },
+    "auth.slack": {
+      "provider_kind": "auth.static_bearer",
+      "handle_kind": "http.bearer",
+      "connect": {
+        "secret_ref": "S20_SLACK_BEARER"
+      },
+      "config": {},
+      "grants": {}
+    },
+    "endpoint.google_sheets_local": {
+      "provider_kind": "endpoint.profile.static",
+      "handle_kind": "endpoint.profile",
+      "connect": {},
+      "config": {
+        "base_url": "http://127.0.0.1:8787",
+        "default_headers": {
+          "Accept": "application/json"
+        }
+      },
+      "grants": {}
+    },
+    "endpoint.slack_local": {
+      "provider_kind": "endpoint.profile.static",
+      "handle_kind": "endpoint.profile",
+      "connect": {},
+      "config": {
+        "base_url": "http://127.0.0.1:8787",
+        "default_headers": {
+          "Accept": "application/json"
+        }
+      },
+      "grants": {}
+    }
+  },
+  "connector_connections": {
+    "google_sheets_local": {
+      "connector_id": "connector.google.sheets",
+      "roles": {
+        "endpoint_profile.google_sheets_default": "endpoint.google_sheets_local",
+        "outbound_auth.google_workspace_auth": "auth.google_workspace"
+      }
+    },
+    "slack_local": {
+      "connector_id": "connector.slack.core",
+      "roles": {
+        "endpoint_profile.slack_default": "endpoint.slack_local",
+        "outbound_auth.slack_auth": "auth.slack"
+      }
+    }
+  },
+  "connector_bindings": {
+    "5b59cd90-cc0c-523c-a4ba-bc41ec37c8ac": {
+      "defaults": {
+        "connector.google.sheets": "google_sheets_local",
+        "connector.slack.core": "slack_local"
+      },
+      "nodes": {},
+      "resolved_effect_hints": {
+        "record_signup": [],
+        "notify_signup": [],
+        "enrich_signup": []
+      }
+    }
+  }
+}

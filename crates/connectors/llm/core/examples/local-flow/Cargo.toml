@@ -1,0 +1,39 @@
+[package]
+name = "example-connector-llm-local-flow"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Portable local flow example for connector_llm."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["host-bundle"]
+host-bundle = ["kernel-exec", "host-inproc", "connector_llm/host-bundle"]
+flow-registry = ["dag-core/flow-registry", "dag-macros/flow-registry"]
+
+[dependencies]
+capabilities = { path = "../../../../../capabilities" }
+connector_llm = { path = "../..", default-features = false }
+dag-core = { path = "../../../../../dag-core" }
+dag-macros = { path = "../../../../../dag-macros" }
+host-inproc = { path = "../../../../../host-inproc", optional = true }
+kernel-exec = { path = "../../../../../kernel-exec", optional = true }
+kernel-plan = { path = "../../../../../kernel-plan" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
+cap-http-reqwest = { path = "../../../../../cap-http-reqwest" }
+httpmock = "0.7"
+tokio = { workspace = true, features = ["full"] }
+
+[package.metadata.latticeflow]
+flows = ["connector_llm_local_flow"]
+default_flow = "connector_llm_local_flow"

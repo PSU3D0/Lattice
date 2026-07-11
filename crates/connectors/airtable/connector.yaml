@@ -1,0 +1,59 @@
+connector:
+  id: connector.airtable
+  vendor: airtable
+  family: airtable
+  version: 0.1.0
+  crate: connector_airtable
+  summary: Semantic Airtable connector
+
+profiles:
+  outbound_auth:
+    airtable_token_auth:
+      kind: bearer
+      handle_kind: http.bearer
+  endpoint_profiles:
+    airtable_default:
+      base_url: https://api.airtable.com
+      default_headers:
+        Accept: application/json
+  provisioning_auth: {}
+  inbound_verifiers: {}
+
+types:
+  AirtableCreateRecordInput:
+    kind: object
+    fields:
+      base_id:
+        type: string
+      table:
+        type: string
+      fields:
+        type: json
+        escape_hatch_reason: Record cell values are caller-shaped Airtable field maps; the first slice keeps them a semantic pass-through.
+      typecast:
+        type: bool
+        optional: true
+
+  AirtableCreateRecordOutput:
+    kind: object
+    fields:
+      id:
+        type: string
+      created_time:
+        type: string
+        optional: true
+
+surfaces:
+  - kind: action
+    identifier: connector.airtable.create_record
+    name: AirtableCreateRecord
+    summary: Create one record in an Airtable table
+    input: AirtableCreateRecordInput
+    output: AirtableCreateRecordOutput
+    auth: airtable_token_auth
+    endpoint: airtable_default
+    effects: Effectful
+    determinism: BestEffort
+    resources:
+      - http_write(capabilities::http::HttpWrite)
+    implementation: handwritten_semantic

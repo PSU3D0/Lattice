@@ -1,0 +1,61 @@
+connector:
+  id: connector.notion
+  vendor: notion
+  family: notion
+  version: 0.1.0
+  crate: connector_notion
+  summary: Semantic Notion connector
+
+profiles:
+  outbound_auth:
+    notion_api_auth:
+      kind: bearer
+      handle_kind: http.bearer
+  endpoint_profiles:
+    notion_default:
+      base_url: https://api.notion.com
+      default_headers:
+        Accept: application/json
+  provisioning_auth: {}
+  inbound_verifiers: {}
+
+types:
+  NotionCreatePageInput:
+    kind: object
+    fields:
+      database_id:
+        type: string
+      properties:
+        type: json
+        escape_hatch_reason: Notion page property values are caller-shaped property objects; the first slice keeps them a semantic pass-through.
+      icon:
+        type: json
+        optional: true
+        escape_hatch_reason: The optional page icon is a raw Notion icon object passed straight through.
+
+  NotionCreatePageOutput:
+    kind: object
+    fields:
+      id:
+        type: string
+      url:
+        type: string
+        optional: true
+      object:
+        type: string
+        optional: true
+
+surfaces:
+  - kind: action
+    identifier: connector.notion.create_page
+    name: NotionCreatePage
+    summary: Create one page in a Notion database
+    input: NotionCreatePageInput
+    output: NotionCreatePageOutput
+    auth: notion_api_auth
+    endpoint: notion_default
+    effects: Effectful
+    determinism: BestEffort
+    resources:
+      - http_write(capabilities::http::HttpWrite)
+    implementation: handwritten_semantic

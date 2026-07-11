@@ -1,0 +1,136 @@
+{
+  "version": 1,
+  "generated_at": "2026-07-11T00:00:00Z",
+  "content_hash": "9b79d75965c6aef916077d316026f0b78ec975624bcc0e0a2fdba4d5bbee1f6c",
+  "instances": {
+    "http1": {
+      "provider_kind": "http.reqwest",
+      "provides": [
+        "resource::http"
+      ],
+      "connect": {},
+      "config": {},
+      "isolation": []
+    },
+    "kv1": {
+      "provider_kind": "kv.memory",
+      "provides": [
+        "resource::kv"
+      ],
+      "connect": {},
+      "config": {},
+      "isolation": []
+    }
+  },
+  "flows": {
+    "9b0845c2-b37e-5a4c-9bdf-09001f2b31cd": {
+      "use": {
+        "resource::http": "http1",
+        "resource::kv": "kv1"
+      }
+    }
+  },
+  "connector_handles": {
+    "auth.airtable": {
+      "provider_kind": "auth.static_bearer",
+      "handle_kind": "http.bearer",
+      "connect": {
+        "secret_ref": "S18_AIRTABLE_BEARER"
+      },
+      "config": {},
+      "grants": {}
+    },
+    "auth.google_workspace": {
+      "provider_kind": "auth.static_bearer",
+      "handle_kind": "http.bearer",
+      "connect": {
+        "secret_ref": "S18_GOOGLE_BEARER"
+      },
+      "config": {},
+      "grants": {}
+    },
+    "auth.notion": {
+      "provider_kind": "auth.static_bearer",
+      "handle_kind": "http.bearer",
+      "connect": {
+        "secret_ref": "S18_NOTION_BEARER"
+      },
+      "config": {},
+      "grants": {}
+    },
+    "endpoint.airtable_local": {
+      "provider_kind": "endpoint.profile.static",
+      "handle_kind": "endpoint.profile",
+      "connect": {},
+      "config": {
+        "base_url": "http://127.0.0.1:8787",
+        "default_headers": {
+          "Accept": "application/json"
+        }
+      },
+      "grants": {}
+    },
+    "endpoint.sheets_local": {
+      "provider_kind": "endpoint.profile.static",
+      "handle_kind": "endpoint.profile",
+      "connect": {},
+      "config": {
+        "base_url": "http://127.0.0.1:8787",
+        "default_headers": {
+          "Accept": "application/json"
+        }
+      },
+      "grants": {}
+    },
+    "endpoint.notion_local": {
+      "provider_kind": "endpoint.profile.static",
+      "handle_kind": "endpoint.profile",
+      "connect": {},
+      "config": {
+        "base_url": "http://127.0.0.1:8787",
+        "default_headers": {
+          "Accept": "application/json"
+        }
+      },
+      "grants": {}
+    }
+  },
+  "connector_connections": {
+    "airtable_local": {
+      "connector_id": "connector.airtable",
+      "roles": {
+        "endpoint_profile.airtable_default": "endpoint.airtable_local",
+        "outbound_auth.airtable_token_auth": "auth.airtable"
+      }
+    },
+    "sheets_local": {
+      "connector_id": "connector.google.sheets",
+      "roles": {
+        "endpoint_profile.google_sheets_default": "endpoint.sheets_local",
+        "outbound_auth.google_workspace_auth": "auth.google_workspace"
+      }
+    },
+    "notion_local": {
+      "connector_id": "connector.notion",
+      "roles": {
+        "endpoint_profile.notion_default": "endpoint.notion_local",
+        "outbound_auth.notion_api_auth": "auth.notion"
+      }
+    }
+  },
+  "connector_bindings": {
+    "9b0845c2-b37e-5a4c-9bdf-09001f2b31cd": {
+      "defaults": {
+        "connector.airtable": "airtable_local",
+        "connector.google.sheets": "sheets_local",
+        "connector.notion": "notion_local"
+      },
+      "nodes": {},
+      "resolved_effect_hints": {
+        "store_in_airtable": [],
+        "store_in_sheets": [],
+        "store_in_notion": []
+      }
+    }
+  }
+}

@@ -1,0 +1,56 @@
+connector:
+  id: connector.slack.core
+  vendor: slack
+  family: core
+  version: 0.1.0
+  crate: connector_slack_core
+  summary: Semantic Slack connector
+
+profiles:
+  outbound_auth:
+    slack_auth:
+      kind: bearer
+      handle_kind: http.bearer
+  endpoint_profiles:
+    slack_default:
+      base_url: https://slack.com/api
+      default_headers:
+        Accept: application/json
+  provisioning_auth: {}
+  inbound_verifiers: {}
+
+types:
+  SlackPostMessageInput:
+    kind: object
+    fields:
+      channel:
+        type: string
+      text:
+        type: string
+      blocks:
+        type: json
+        optional: true
+        escape_hatch_reason: Block Kit payloads stay caller-authored JSON while the first slice ships a text-first post.
+
+  SlackPostMessageOutput:
+    kind: object
+    fields:
+      channel:
+        type: string
+      ts:
+        type: string
+
+surfaces:
+  - kind: action
+    identifier: connector.slack.core.post_message
+    name: SlackPostMessage
+    summary: Post a message to a Slack channel
+    input: SlackPostMessageInput
+    output: SlackPostMessageOutput
+    auth: slack_auth
+    endpoint: slack_default
+    effects: Effectful
+    determinism: BestEffort
+    resources:
+      - http_write(capabilities::http::HttpWrite)
+    implementation: handwritten_semantic

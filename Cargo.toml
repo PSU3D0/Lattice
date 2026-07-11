@@ -24,6 +24,10 @@ members = [
   "crates/connector-spec",
   "crates/connectors-std",
   "crates/dispatch-backend",
+  "crates/connectors/airtable",
+  "crates/connectors/airtable/examples/local-flow",
+  "crates/connectors/notion",
+  "crates/connectors/notion/examples/local-flow",
   "crates/connectors/github/issues",
   "crates/connectors/github/issues/examples/local-flow",
   "crates/connectors/formualizer/sheetport",
@@ -34,7 +38,13 @@ members = [
   "crates/connectors/google/gmail/examples/local-flow",
   "crates/connectors/google/sheets",
   "crates/connectors/zoom/platform",
+  "crates/connectors/telegram",
+  "crates/connectors/telegram/examples/local-flow",
   "crates/connectors/google/sheets/examples/local-flow",
+  "crates/connectors/slack/core",
+  "crates/connectors/slack/core/examples/local-flow",
+  "crates/connectors/llm/core",
+  "crates/connectors/llm/core/examples/local-flow",
   "crates/dag-core",
   "crates/llm-types",
   "crates/llm-agent",
@@ -69,7 +79,11 @@ members = [
   "examples/s13_github_issue_investigator",
   "examples/s14_meeting_transcript_sync",
   "examples/s15_scheduled_poll",
-  "examples/s16_drive_permissions_audit"
+  "examples/s16_drive_permissions_audit",
+  "examples/s18_retell_transcript_sink",
+  "examples/s17_telegram_broadcast",
+  "examples/s19_scheduled_email_dispatch",
+  "examples/s20_form_signup_notify"
 ]
 
 [workspace.package]

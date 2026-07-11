@@ -40,6 +40,10 @@ example-connector-github-issues-local-flow = { path = "../connectors/github/issu
 example-connector-google-sheets-local-flow = { path = "../connectors/google/sheets/examples/local-flow", optional = true }
 example-s15-scheduled-poll = { path = "../../examples/s15_scheduled_poll", optional = true }
 example-s16-drive-permissions-audit = { path = "../../examples/s16_drive_permissions_audit", optional = true }
+example-s17-telegram-broadcast = { path = "../../examples/s17_telegram_broadcast", optional = true }
+example-s18-retell-transcript-sink = { path = "../../examples/s18_retell_transcript_sink", optional = true }
+example-s19-scheduled-email-dispatch = { path = "../../examples/s19_scheduled_email_dispatch", optional = true }
+example-s20-form-signup-notify = { path = "../../examples/s20_form_signup_notify", optional = true }
 host-inproc = { path = "../host-inproc" }
 anyhow.workspace = true
 async-trait.workspace = true
@@ -86,6 +90,10 @@ example-s12 = ["dep:example-s12-sheetport-quote"]
 example-s13 = ["dep:example-s13-github-issue-investigator"]
 example-s15 = ["dep:example-s15-scheduled-poll"]
 example-s16 = ["dep:example-s16-drive-permissions-audit"]
+example-s17 = ["dep:example-s17-telegram-broadcast"]
+example-s18 = ["dep:example-s18-retell-transcript-sink"]
+example-s19 = ["dep:example-s19-scheduled-email-dispatch"]
+example-s20 = ["dep:example-s20-form-signup-notify"]
 example-github-issues = ["dep:example-connector-github-issues-local-flow"]
 example-google-sheets = ["dep:example-connector-google-sheets-local-flow"]
 
@@ -102,6 +110,10 @@ all-examples = [
     "example-s13",
     "example-s15",
     "example-s16",
+    "example-s17",
+    "example-s18",
+    "example-s19",
+    "example-s20",
     "example-github-issues",
     "example-google-sheets",
 ]

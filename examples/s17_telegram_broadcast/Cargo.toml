@@ -1,0 +1,45 @@
+[package]
+name = "example-s17-telegram-broadcast"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "S17 clone: a manually triggered Telegram broadcast — read a roster of chat IDs from a Google Sheet and send each one a message; the run is keyed on an operator-supplied broadcast_id for idempotent redelivery."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+capabilities = { path = "../../crates/capabilities" }
+connector_telegram = { path = "../../crates/connectors/telegram", default-features = false }
+connector_google_sheets = { path = "../../crates/connectors/google/sheets", default-features = false }
+dag-core = { path = "../../crates/dag-core" }
+dag-macros = { path = "../../crates/dag-macros" }
+kernel-plan = { path = "../../crates/kernel-plan" }
+serde.workspace = true
+serde_json.workspace = true
+host-inproc = { path = "../../crates/host-inproc", optional = true }
+kernel-exec = { path = "../../crates/kernel-exec", optional = true }
+
+[dev-dependencies]
+async-trait.workspace = true
+cap-http-reqwest = { path = "../../crates/cap-http-reqwest" }
+httpmock = "0.7"
+tokio = { workspace = true, features = ["full"] }
+
+[features]
+default = ["host-bundle"]
+host-bundle = [
+    "kernel-exec",
+    "host-inproc",
+    "connector_telegram/host-bundle",
+    "connector_google_sheets/host-bundle",
+]
+flow-registry = ["dag-core/flow-registry", "dag-macros/flow-registry"]
+
+[package.metadata.latticeflow]
+flows = ["s17_telegram_broadcast_flow"]
+default_flow = "s17_telegram_broadcast_flow"

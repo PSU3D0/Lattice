@@ -1,0 +1,93 @@
+connector:
+  id: connector.llm
+  vendor: llm
+  family: core
+  version: 0.1.0
+  crate: connector_llm
+  summary: Provider-agnostic LLM completion connector
+
+profiles:
+  outbound_auth:
+    llm_api_key:
+      kind: bearer
+      handle_kind: http.bearer
+  endpoint_profiles:
+    llm_default:
+      base_url: https://api.openai.com/v1
+      default_headers: {}
+  provisioning_auth: {}
+  inbound_verifiers: {}
+
+types:
+  LlmProvider:
+    kind: enum
+    variants: [openai_compat, anthropic]
+
+  LlmCompleteInput:
+    kind: object
+    fields:
+      provider:
+        type: enum_ref
+        target: LlmProvider
+        optional: true
+      model:
+        type: string
+      prompt:
+        type: string
+      system:
+        type: string
+        optional: true
+      temperature:
+        type: f64
+        optional: true
+      max_tokens:
+        type: u64
+        optional: true
+      output_schema:
+        type: json
+        optional: true
+        escape_hatch_reason: >-
+          Caller-supplied JSON Schema for native structured output; the schema
+          shape is provider-defined and cannot be closed over in this manifest.
+
+  LlmUsage:
+    kind: object
+    fields:
+      input_tokens:
+        type: u64
+      output_tokens:
+        type: u64
+      total_tokens:
+        type: u64
+
+  LlmCompleteOutput:
+    kind: object
+    fields:
+      text:
+        type: string
+      structured:
+        type: json
+        optional: true
+        escape_hatch_reason: >-
+          Parsed completion JSON whose shape is defined by the caller's
+          output_schema at runtime, not by this manifest.
+      model:
+        type: string
+      usage:
+        type: object_ref
+        target: LlmUsage
+
+surfaces:
+  - kind: action
+    identifier: connector.llm.complete
+    name: LlmComplete
+    summary: Generate one typed completion from a lock-selected LLM provider
+    input: LlmCompleteInput
+    output: LlmCompleteOutput
+    auth: llm_api_key
+    endpoint: llm_default
+    effects: Effectful
+    determinism: Nondeterministic
+    resources:
+      - http_write(capabilities::http::HttpWrite)
+    implementation: handwritten_semantic

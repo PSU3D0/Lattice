@@ -1,0 +1,55 @@
+connector:
+  id: connector.telegram
+  vendor: telegram
+  family: bot
+  version: 0.1.0
+  crate: connector_telegram
+  summary: Semantic Telegram Bot connector
+
+profiles:
+  outbound_auth:
+    telegram_bot_auth:
+      kind: bearer
+      handle_kind: http.bearer
+  endpoint_profiles:
+    telegram_bot_default:
+      base_url: https://api.telegram.org
+      default_headers:
+        Accept: application/json
+  provisioning_auth: {}
+  inbound_verifiers: {}
+
+types:
+  TelegramSendMessageInput:
+    kind: object
+    fields:
+      chat_id:
+        type: string
+      text:
+        type: string
+
+  TelegramSendMessageOutput:
+    kind: object
+    fields:
+      message_id:
+        type: i64
+      date:
+        type: i64
+      text:
+        type: string
+        optional: true
+
+surfaces:
+  - kind: action
+    identifier: connector.telegram.send_message
+    name: TelegramSendMessage
+    summary: Send one text message to a chat as the authenticated bot
+    input: TelegramSendMessageInput
+    output: TelegramSendMessageOutput
+    auth: telegram_bot_auth
+    endpoint: telegram_bot_default
+    effects: Effectful
+    determinism: BestEffort
+    resources:
+      - http_write(capabilities::http::HttpWrite)
+    implementation: handwritten_semantic

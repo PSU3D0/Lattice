@@ -1,0 +1,106 @@
+{
+  "version": 1,
+  "generated_at": "2026-07-11T00:00:00Z",
+  "content_hash": "7d39ca6b307b74593d20562851c4f90a7168119b7bc4d17d5c70d223ae15a592",
+  "instances": {
+    "http1": {
+      "provider_kind": "http.reqwest",
+      "provides": [
+        "resource::http"
+      ],
+      "connect": {},
+      "config": {},
+      "isolation": []
+    },
+    "kv1": {
+      "provider_kind": "kv.memory",
+      "provides": [
+        "resource::kv"
+      ],
+      "connect": {},
+      "config": {},
+      "isolation": []
+    }
+  },
+  "flows": {
+    "ed7960fc-09c4-5856-a2b5-8d2e0344b5b9": {
+      "use": {
+        "resource::http": "http1",
+        "resource::kv": "kv1"
+      }
+    }
+  },
+  "connector_handles": {
+    "auth.google_workspace": {
+      "provider_kind": "auth.static_bearer",
+      "handle_kind": "http.bearer",
+      "connect": {
+        "secret_ref": "S17_GOOGLE_BEARER"
+      },
+      "config": {},
+      "grants": {}
+    },
+    "auth.telegram_bot": {
+      "provider_kind": "auth.static_bearer",
+      "handle_kind": "http.bearer",
+      "connect": {
+        "secret_ref": "S17_TELEGRAM_TOKEN"
+      },
+      "config": {},
+      "grants": {}
+    },
+    "endpoint.google_sheets_local": {
+      "provider_kind": "endpoint.profile.static",
+      "handle_kind": "endpoint.profile",
+      "connect": {},
+      "config": {
+        "base_url": "http://127.0.0.1:8787",
+        "default_headers": {
+          "Accept": "application/json"
+        }
+      },
+      "grants": {}
+    },
+    "endpoint.telegram_local": {
+      "provider_kind": "endpoint.profile.static",
+      "handle_kind": "endpoint.profile",
+      "connect": {},
+      "config": {
+        "base_url": "http://127.0.0.1:8787",
+        "default_headers": {
+          "Accept": "application/json"
+        }
+      },
+      "grants": {}
+    }
+  },
+  "connector_connections": {
+    "google_sheets_local": {
+      "connector_id": "connector.google.sheets",
+      "roles": {
+        "endpoint_profile.google_sheets_default": "endpoint.google_sheets_local",
+        "outbound_auth.google_workspace_auth": "auth.google_workspace"
+      }
+    },
+    "telegram_local": {
+      "connector_id": "connector.telegram",
+      "roles": {
+        "endpoint_profile.telegram_bot_default": "endpoint.telegram_local",
+        "outbound_auth.telegram_bot_auth": "auth.telegram_bot"
+      }
+    }
+  },
+  "connector_bindings": {
+    "ed7960fc-09c4-5856-a2b5-8d2e0344b5b9": {
+      "defaults": {
+        "connector.google.sheets": "google_sheets_local",
+        "connector.telegram": "telegram_local"
+      },
+      "nodes": {},
+      "resolved_effect_hints": {
+        "load_roster": [],
+        "broadcast_messages": []
+      }
+    }
+  }
+}

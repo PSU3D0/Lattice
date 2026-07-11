@@ -71,6 +71,14 @@ use example_s13_github_issue_investigator as s13_github_issue_investigator;
 use example_s15_scheduled_poll as s15_scheduled_poll;
 #[cfg(feature = "example-s16")]
 use example_s16_drive_permissions_audit as s16_drive_permissions_audit;
+#[cfg(feature = "example-s17")]
+use example_s17_telegram_broadcast as s17_telegram_broadcast;
+#[cfg(feature = "example-s18")]
+use example_s18_retell_transcript_sink as s18_retell_transcript_sink;
+#[cfg(feature = "example-s19")]
+use example_s19_scheduled_email_dispatch as s19_scheduled_email_dispatch;
+#[cfg(feature = "example-s20")]
+use example_s20_form_signup_notify as s20_form_signup_notify;
 
 mod bundle;
 mod deploy;
@@ -3794,6 +3802,14 @@ pub(crate) fn example_bundle(name: &str) -> Result<(host_inproc::FlowBundle, boo
         "s15_scheduled_poll" => (s15_scheduled_poll::bundle(), false),
         #[cfg(feature = "example-s16")]
         "s16_drive_permissions_audit" => (s16_drive_permissions_audit::bundle(), false),
+        #[cfg(feature = "example-s17")]
+        "s17_telegram_broadcast" => (s17_telegram_broadcast::bundle(), false),
+        #[cfg(feature = "example-s18")]
+        "s18_retell_transcript_sink" => (s18_retell_transcript_sink::bundle(), false),
+        #[cfg(feature = "example-s19")]
+        "s19_scheduled_email_dispatch" => (s19_scheduled_email_dispatch::bundle(), false),
+        #[cfg(feature = "example-s20")]
+        "s20_form_signup_notify" => (s20_form_signup_notify::bundle(), false),
         other => return Err(anyhow!("unknown example `{other}`")),
     };
 
