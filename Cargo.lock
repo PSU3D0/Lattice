@@ -1418,6 +1418,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "connector_google_drive"
+version = "0.1.0"
+dependencies = [
+ "cap-http-reqwest",
+ "capabilities",
+ "connector-spec",
+ "connector_google_platform",
+ "connectors-std",
+ "dag-core",
+ "dag-macros",
+ "httpmock",
+ "kernel-exec",
+ "serde",
+ "serde_json",
+ "testing-harness-idem",
+ "tokio",
+]
+
+[[package]]
+name = "connector_google_gmail"
+version = "0.1.0"
+dependencies = [
+ "cap-http-reqwest",
+ "capabilities",
+ "connector-spec",
+ "connector_google_platform",
+ "connectors-std",
+ "dag-core",
+ "dag-macros",
+ "httpmock",
+ "kernel-exec",
+ "serde",
+ "serde_json",
+ "testing-harness-idem",
+ "tokio",
+]
+
+[[package]]
 name = "connector_google_platform"
 version = "0.1.0"
 dependencies = [
@@ -2247,6 +2285,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-connector-google-drive-local-flow"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cap-http-reqwest",
+ "capabilities",
+ "connector_google_drive",
+ "dag-core",
+ "dag-macros",
+ "host-inproc",
+ "httpmock",
+ "kernel-exec",
+ "kernel-plan",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "example-connector-google-gmail-local-flow"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cap-http-reqwest",
+ "capabilities",
+ "connector_google_gmail",
+ "dag-core",
+ "dag-macros",
+ "host-inproc",
+ "httpmock",
+ "kernel-exec",
+ "kernel-plan",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "example-connector-google-sheets-local-flow"
 version = "0.1.0"
 dependencies = [
@@ -2399,6 +2475,27 @@ dependencies = [
  "cap-http-reqwest",
  "capabilities",
  "connector_github_issues",
+ "dag-core",
+ "dag-macros",
+ "host-inproc",
+ "httpmock",
+ "kernel-exec",
+ "kernel-plan",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "example-s16-drive-permissions-audit"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "cap-http-reqwest",
+ "capabilities",
+ "connector_google_drive",
+ "connector_google_gmail",
+ "connector_google_sheets",
  "dag-core",
  "dag-macros",
  "host-inproc",
@@ -2733,6 +2830,7 @@ dependencies = [
  "example-s12-sheetport-quote",
  "example-s13-github-issue-investigator",
  "example-s15-scheduled-poll",
+ "example-s16-drive-permissions-audit",
  "example-s2-site",
  "example-s3-branching",
  "example-s4-preflight",

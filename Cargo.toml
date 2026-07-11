@@ -28,6 +28,10 @@ members = [
   "crates/connectors/github/issues/examples/local-flow",
   "crates/connectors/formualizer/sheetport",
   "crates/connectors/google/platform",
+  "crates/connectors/google/drive",
+  "crates/connectors/google/drive/examples/local-flow",
+  "crates/connectors/google/gmail",
+  "crates/connectors/google/gmail/examples/local-flow",
   "crates/connectors/google/sheets",
   "crates/connectors/zoom/platform",
   "crates/connectors/google/sheets/examples/local-flow",
@@ -64,7 +68,8 @@ members = [
   "examples/s12_sheetport_quote",
   "examples/s13_github_issue_investigator",
   "examples/s14_meeting_transcript_sync",
-  "examples/s15_scheduled_poll"
+  "examples/s15_scheduled_poll",
+  "examples/s16_drive_permissions_audit"
 ]
 
 [workspace.package]

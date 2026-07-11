@@ -1,0 +1,96 @@
+connector:
+  id: connector.google.drive
+  vendor: google
+  family: drive
+  version: 0.1.0
+  crate: connector_google_drive
+  summary: Semantic Google Drive connector
+
+profiles:
+  outbound_auth:
+    google_workspace_auth:
+      kind: bearer
+      handle_kind: http.bearer
+  endpoint_profiles:
+    google_drive_default:
+      base_url: https://www.googleapis.com
+      default_headers:
+        Accept: application/json
+  provisioning_auth: {}
+  inbound_verifiers: {}
+
+types:
+  GoogleDrivePermissionSummary:
+    kind: object
+    fields:
+      permission_id:
+        type: string
+        optional: true
+      grantee_type:
+        type: string
+        optional: true
+      role:
+        type: string
+        optional: true
+      email_address:
+        type: string
+        optional: true
+
+  GoogleDriveFileHit:
+    kind: object
+    fields:
+      id:
+        type: string
+      name:
+        type: string
+        optional: true
+      mime_type:
+        type: string
+        optional: true
+      shared:
+        type: bool
+        optional: true
+      web_view_link:
+        type: string
+        optional: true
+      permissions:
+        type: list
+        item:
+          type: object_ref
+          target: GoogleDrivePermissionSummary
+
+  GoogleDriveSearchFilesInput:
+    kind: object
+    fields:
+      query:
+        type: string
+      page_size:
+        type: u32
+        optional: true
+
+  GoogleDriveSearchFilesOutput:
+    kind: object
+    fields:
+      items:
+        type: list
+        item:
+          type: object_ref
+          target: GoogleDriveFileHit
+      next_page_token:
+        type: string
+        optional: true
+
+surfaces:
+  - kind: action
+    identifier: connector.google.drive.search_files
+    name: GoogleDriveSearchFiles
+    summary: Search files by Drive query string, returning sharing metadata per file
+    input: GoogleDriveSearchFilesInput
+    output: GoogleDriveSearchFilesOutput
+    auth: google_workspace_auth
+    endpoint: google_drive_default
+    effects: ReadOnly
+    determinism: BestEffort
+    resources:
+      - http_read(capabilities::http::HttpRead)
+    implementation: handwritten_semantic

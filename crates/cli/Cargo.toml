@@ -39,6 +39,7 @@ example-s13-github-issue-investigator = { path = "../../examples/s13_github_issu
 example-connector-github-issues-local-flow = { path = "../connectors/github/issues/examples/local-flow", optional = true }
 example-connector-google-sheets-local-flow = { path = "../connectors/google/sheets/examples/local-flow", optional = true }
 example-s15-scheduled-poll = { path = "../../examples/s15_scheduled_poll", optional = true }
+example-s16-drive-permissions-audit = { path = "../../examples/s16_drive_permissions_audit", optional = true }
 host-inproc = { path = "../host-inproc" }
 anyhow.workspace = true
 async-trait.workspace = true
@@ -84,6 +85,7 @@ example-s11 = ["dep:example-s11-lead-intake"]
 example-s12 = ["dep:example-s12-sheetport-quote"]
 example-s13 = ["dep:example-s13-github-issue-investigator"]
 example-s15 = ["dep:example-s15-scheduled-poll"]
+example-s16 = ["dep:example-s16-drive-permissions-audit"]
 example-github-issues = ["dep:example-connector-github-issues-local-flow"]
 example-google-sheets = ["dep:example-connector-google-sheets-local-flow"]
 
@@ -99,6 +101,7 @@ all-examples = [
     "example-s12",
     "example-s13",
     "example-s15",
+    "example-s16",
     "example-github-issues",
     "example-google-sheets",
 ]

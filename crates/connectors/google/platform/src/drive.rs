@@ -212,9 +212,11 @@ mod tests {
 
     #[test]
     fn drive_files_list_query_has_no_default_posture() {
-        assert!(GoogleDriveFilesListQuery::default()
-            .to_query_pairs()
-            .is_empty());
+        assert!(
+            GoogleDriveFilesListQuery::default()
+                .to_query_pairs()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -263,20 +265,14 @@ mod tests {
                     "trashed = false and mimeType = 'application/vnd.google-apps.document'"
                         .to_string(),
                 ),
-                (
-                    "fields".to_string(),
-                    "files(id,name,mimeType)".to_string(),
-                ),
+                ("fields".to_string(), "files(id,name,mimeType)".to_string(),),
                 ("pageSize".to_string(), "10".to_string()),
                 ("pageToken".to_string(), "page-3".to_string()),
                 ("orderBy".to_string(), "modifiedTime desc".to_string()),
                 ("spaces".to_string(), "drive".to_string()),
                 ("corpora".to_string(), "allDrives".to_string()),
                 ("driveId".to_string(), "drive-123".to_string()),
-                (
-                    "includeItemsFromAllDrives".to_string(),
-                    "true".to_string(),
-                ),
+                ("includeItemsFromAllDrives".to_string(), "true".to_string(),),
                 ("supportsAllDrives".to_string(), "true".to_string()),
             ]
         );
@@ -339,8 +335,13 @@ mod tests {
         assert_eq!(document.id, "drive-doc-1");
         assert_eq!(document.parents, vec!["folder-abc".to_string()]);
         assert_eq!(
-            document.export_links.get(GOOGLE_DRIVE_EXPORT_TEXT_PLAIN_MIME_TYPE),
-            Some(&"https://www.googleapis.com/drive/v3/files/drive-doc-1/export?mimeType=text/plain".to_string())
+            document
+                .export_links
+                .get(GOOGLE_DRIVE_EXPORT_TEXT_PLAIN_MIME_TYPE),
+            Some(
+                &"https://www.googleapis.com/drive/v3/files/drive-doc-1/export?mimeType=text/plain"
+                    .to_string()
+            )
         );
 
         let shortcut = &response.files[1];

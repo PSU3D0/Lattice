@@ -1,0 +1,65 @@
+connector:
+  id: connector.google.gmail
+  vendor: google
+  family: gmail
+  version: 0.1.0
+  crate: connector_google_gmail
+  summary: Semantic Gmail connector
+
+profiles:
+  outbound_auth:
+    google_workspace_auth:
+      kind: bearer
+      handle_kind: http.bearer
+  endpoint_profiles:
+    google_gmail_default:
+      base_url: https://www.googleapis.com
+      default_headers:
+        Accept: application/json
+  provisioning_auth: {}
+  inbound_verifiers: {}
+
+types:
+  GoogleGmailSendMessageInput:
+    kind: object
+    fields:
+      to:
+        type: string
+      cc:
+        type: string
+        optional: true
+      bcc:
+        type: string
+        optional: true
+      subject:
+        type: string
+      text_body:
+        type: string
+
+  GoogleGmailSendMessageOutput:
+    kind: object
+    fields:
+      id:
+        type: string
+      thread_id:
+        type: string
+        optional: true
+      label_ids:
+        type: list
+        item:
+          type: string
+
+surfaces:
+  - kind: action
+    identifier: connector.google.gmail.send_message
+    name: GoogleGmailSendMessage
+    summary: Send one plain-text email from the authenticated mailbox
+    input: GoogleGmailSendMessageInput
+    output: GoogleGmailSendMessageOutput
+    auth: google_workspace_auth
+    endpoint: google_gmail_default
+    effects: Effectful
+    determinism: BestEffort
+    resources:
+      - http_write(capabilities::http::HttpWrite)
+    implementation: handwritten_semantic

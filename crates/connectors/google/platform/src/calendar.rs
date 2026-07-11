@@ -210,9 +210,11 @@ mod tests {
 
     #[test]
     fn calendar_events_list_query_has_no_default_posture() {
-        assert!(GoogleCalendarEventsListQuery::default()
-            .to_query_pairs()
-            .is_empty());
+        assert!(
+            GoogleCalendarEventsListQuery::default()
+                .to_query_pairs()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -235,10 +237,7 @@ mod tests {
             vec![
                 ("timeMin".to_string(), "2026-04-16T00:00:00Z".to_string()),
                 ("timeMax".to_string(), "2026-04-17T00:00:00Z".to_string()),
-                (
-                    "updatedMin".to_string(),
-                    "2026-04-16T12:00:00Z".to_string(),
-                ),
+                ("updatedMin".to_string(), "2026-04-16T12:00:00Z".to_string(),),
                 ("maxResults".to_string(), "25".to_string()),
                 ("pageToken".to_string(), "page-token-2".to_string()),
                 ("syncToken".to_string(), "sync-token-9".to_string()),
@@ -341,7 +340,10 @@ mod tests {
         assert_eq!(event.summary.as_deref(), Some("Weekly staff sync"));
         assert_eq!(event.attendees.len(), 2);
         assert_eq!(
-            event.conference_data.as_ref().and_then(|data| data.conference_id.as_deref()),
+            event
+                .conference_data
+                .as_ref()
+                .and_then(|data| data.conference_id.as_deref()),
             Some("abc-defg-hij")
         );
         assert_eq!(event.attachments.len(), 1);

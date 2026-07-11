@@ -1,0 +1,119 @@
+{
+  "version": 1,
+  "generated_at": "2026-07-11T00:00:00Z",
+  "content_hash": "1e3e2f6d47bd2d941b2c7ee667b8b31e4837ffbbc3f84fe83ec5128e9e5620d7",
+  "instances": {
+    "http1": {
+      "provider_kind": "http.reqwest",
+      "provides": [
+        "resource::http"
+      ],
+      "connect": {},
+      "config": {},
+      "isolation": []
+    },
+    "kv1": {
+      "provider_kind": "kv.memory",
+      "provides": [
+        "resource::kv"
+      ],
+      "connect": {},
+      "config": {},
+      "isolation": []
+    }
+  },
+  "flows": {
+    "ccd7f5e4-3ab9-5ed9-935b-c90a3315a0fb": {
+      "use": {
+        "resource::http": "http1",
+        "resource::kv": "kv1"
+      }
+    }
+  },
+  "connector_handles": {
+    "auth.google_workspace": {
+      "provider_kind": "auth.static_bearer",
+      "handle_kind": "http.bearer",
+      "connect": {
+        "secret_ref": "S16_GOOGLE_BEARER"
+      },
+      "config": {},
+      "grants": {}
+    },
+    "endpoint.google_sheets_local": {
+      "provider_kind": "endpoint.profile.static",
+      "handle_kind": "endpoint.profile",
+      "connect": {},
+      "config": {
+        "base_url": "http://127.0.0.1:8787",
+        "default_headers": {
+          "Accept": "application/json"
+        }
+      },
+      "grants": {}
+    },
+    "endpoint.google_drive_local": {
+      "provider_kind": "endpoint.profile.static",
+      "handle_kind": "endpoint.profile",
+      "connect": {},
+      "config": {
+        "base_url": "http://127.0.0.1:8787",
+        "default_headers": {
+          "Accept": "application/json"
+        }
+      },
+      "grants": {}
+    },
+    "endpoint.google_gmail_local": {
+      "provider_kind": "endpoint.profile.static",
+      "handle_kind": "endpoint.profile",
+      "connect": {},
+      "config": {
+        "base_url": "http://127.0.0.1:8787",
+        "default_headers": {
+          "Accept": "application/json"
+        }
+      },
+      "grants": {}
+    }
+  },
+  "connector_connections": {
+    "google_sheets_local": {
+      "connector_id": "connector.google.sheets",
+      "roles": {
+        "endpoint_profile.google_sheets_default": "endpoint.google_sheets_local",
+        "outbound_auth.google_workspace_auth": "auth.google_workspace"
+      }
+    },
+    "google_drive_local": {
+      "connector_id": "connector.google.drive",
+      "roles": {
+        "endpoint_profile.google_drive_default": "endpoint.google_drive_local",
+        "outbound_auth.google_workspace_auth": "auth.google_workspace"
+      }
+    },
+    "google_gmail_local": {
+      "connector_id": "connector.google.gmail",
+      "roles": {
+        "endpoint_profile.google_gmail_default": "endpoint.google_gmail_local",
+        "outbound_auth.google_workspace_auth": "auth.google_workspace"
+      }
+    }
+  },
+  "connector_bindings": {
+    "ccd7f5e4-3ab9-5ed9-935b-c90a3315a0fb": {
+      "defaults": {
+        "connector.google.sheets": "google_sheets_local",
+        "connector.google.drive": "google_drive_local",
+        "connector.google.gmail": "google_gmail_local"
+      },
+      "nodes": {},
+      "resolved_effect_hints": {
+        "create_audit_sheet": [],
+        "fetch_recent_files": [],
+        "append_audit_rows": [],
+        "send_audit_report": []
+      }
+    }
+  }
+}

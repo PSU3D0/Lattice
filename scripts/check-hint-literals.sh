@@ -33,6 +33,11 @@ ALLOWLIST=(
   # `provides`/`use` keys (same surface as bindings_lock.rs above), not NodeIR
   # effect-hint literals. Owned by the CLI packet (LOCK-BUILD/cli).
   'crates/cli/tests/run_schedule.rs'
+  # N3 (pilot clone): run_schedule_s16.rs authors the s16 multi-connector
+  # bindings.lock fixture; the `resource::http`/`resource::kv` strings are the
+  # same lock manifest `provides`/`use` keys as run_schedule.rs above, not
+  # NodeIR effect-hint literals. Owned by the CLI packet (LOCK-BUILD/cli).
+  'crates/cli/tests/run_schedule_s16.rs'
   # dag-macros golden tests pin canonical emission strings; convert to
   # capabilities::*::HINT_* consts in a macro-test cleanup packet.
   'crates/dag-macros/tests/flow_macro.rs'
