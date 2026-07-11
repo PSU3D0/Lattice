@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "generated_at": "1970-01-01T00:00:00Z",
+  "content_hash": "0000",
+  "instances": {
+    "kv_cron_proof": {
+      "provider_kind": "workers-kv",
+      "provides": ["resource::kv::read", "resource::kv::write"],
+      "connect": { "namespace_id": "00000000000000000000000000000000" }
+    }
+  }
+}

@@ -144,16 +144,18 @@ pub(crate) fn requirements_from_bundle(
         Some(entry) => entry,
         None => {
             return match selected_flow {
-                Some(selected) => Err(anyhow!(
-                    "bundle does not define flow `{selected}`"
-                )),
+                Some(selected) => Err(anyhow!("bundle does not define flow `{selected}`")),
                 None => Err(anyhow!("bundle defines no flows")),
             };
         }
     };
 
     if selected_flow.is_none() && matches.next().is_some() {
-        let ids: Vec<&str> = manifest.flows.iter().map(|entry| entry.id.as_str()).collect();
+        let ids: Vec<&str> = manifest
+            .flows
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect();
         return Err(anyhow!(
             "bundle carries multiple flows ({}); pass --flow <id> to select one",
             ids.join(", ")

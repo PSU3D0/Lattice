@@ -32,10 +32,14 @@
 //!   error >1MiB; `--paid`: warn >3MiB, error >10MiB). With no artifact the
 //!   budget is emitted as comments + a NOTES warning — never silently
 //!   skipped.
-//! - **Schedule/cron triggers are a stub**: the contract is being designed in
-//!   `impl-docs/spec/schedule-trigger.md` (packet T0); packet T3 lands the
-//!   `[triggers].crons` arm. Non-HTTP triggers render a clearly marked
-//!   pending-T3 comment plus a NOTES warning.
+//! - **Schedule/cron triggers** (packet T3): schedule entrypoints render a
+//!   `[triggers]` / `crons = [...]` block — the sorted, deduplicated union of
+//!   `entrypoints[].schedule`, byte-verbatim (the host-workers `scheduled()`
+//!   handler routes fires by byte equality; see
+//!   `impl-docs/spec/schedule-trigger.md` §7). The union is checked against
+//!   the Cloudflare account-wide cron cap (warn, not abort). Triggers with
+//!   `kind = unspecified` still render a NOTES warning: the worker cannot
+//!   fire them.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -43,8 +47,8 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
-use dag_core::{EffectHint, FlowRequirements};
 use dag_core::requirements::TriggerKind;
+use dag_core::{EffectHint, FlowRequirements};
 
 use crate::BindingsLock;
 
@@ -66,6 +70,17 @@ const FREE_MAX_BYTES: u64 = 1024 * 1024;
 /// Paid-tier budget (`--paid`).
 const PAID_WARN_BYTES: u64 = 3 * 1024 * 1024;
 const PAID_MAX_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Cloudflare Cron Trigger caps, verified 2026-07-11 against
+/// <https://developers.cloudflare.com/workers/platform/limits/>: 5 Cron
+/// Triggers per **account** on the free plan, 250 per account on paid. The
+/// cap is account-wide (not per worker), so a single rendered worker whose
+/// crons union exceeds it definitively cannot deploy on that plan; smaller
+/// unions can still collide with other workers on the account, which only
+/// the deploy can detect. Exceeding warns (NOTES + file comment), it does
+/// not abort the render.
+const FREE_MAX_CRONS: usize = 5;
+const PAID_MAX_CRONS: usize = 250;
 
 #[derive(clap::Subcommand, Debug)]
 pub enum DeployCommand {
@@ -170,8 +185,12 @@ fn resolve_requirements(args: &RenderArgs) -> Result<FlowRequirements> {
 
 fn requirements_from_file(path: &Path) -> Result<FlowRequirements> {
     let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let requirements: FlowRequirements = serde_json::from_slice(&bytes)
-        .with_context(|| format!("{} is not a valid FlowRequirements manifest", path.display()))?;
+    let requirements: FlowRequirements = serde_json::from_slice(&bytes).with_context(|| {
+        format!(
+            "{} is not a valid FlowRequirements manifest",
+            path.display()
+        )
+    })?;
     // Versioning policy (impl-docs/spec/flow-requirements.md): consumers MUST
     // reject unknown major shapes.
     if !requirements.schema_version.starts_with("0.") {
@@ -194,8 +213,7 @@ fn load_bindings_lock(path: &Path) -> Result<BindingsLock> {
 /// a `--bundle` source falls back to the code descriptor on disk.
 fn resolve_artifact(args: &RenderArgs) -> Result<Option<ArtifactInfo>> {
     if let Some(path) = args.wasm_artifact.as_deref() {
-        let bytes =
-            fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+        let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
         return Ok(Some(ArtifactInfo {
             source: path.display().to_string(),
             compressed_bytes: gzip_len(&bytes)?,
@@ -219,8 +237,7 @@ fn resolve_artifact(args: &RenderArgs) -> Result<Option<ArtifactInfo>> {
 }
 
 fn gzip_len(bytes: &[u8]) -> Result<u64> {
-    let mut encoder =
-        flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     encoder
         .write_all(bytes)
         .context("failed to gzip wasm artifact")?;
@@ -512,7 +529,8 @@ pub(crate) fn render_wrangler(
     // Effective families = manifest families ∪ families of lock-resolved
     // connector hints (the lock-time half of the requirements story).
     let lock_hints = lock_resolved_hints(requirements, options.lock.as_ref())?;
-    let mut families: BTreeSet<EffectHint> = requirements.effects.families.iter().copied().collect();
+    let mut families: BTreeSet<EffectHint> =
+        requirements.effects.families.iter().copied().collect();
     for hints in lock_hints.values() {
         families.extend(hints.iter().map(|hint| hint.family()));
     }
@@ -572,7 +590,9 @@ pub(crate) fn render_wrangler(
                 ) {
                     Some((instance, kind, id)) => (
                         id,
-                        format!("id from bindings.lock instance `{instance}` (provider_kind = {kind})"),
+                        format!(
+                            "id from bindings.lock instance `{instance}` (provider_kind = {kind})"
+                        ),
                     ),
                     None => (
                         "REPLACE_WITH_KV_NAMESPACE_ID".to_string(),
@@ -596,20 +616,19 @@ pub(crate) fn render_wrangler(
                 ) {
                     Some((instance, kind, id)) => (
                         id,
-                        format!("id from bindings.lock instance `{instance}` (provider_kind = {kind})"),
+                        format!(
+                            "id from bindings.lock instance `{instance}` (provider_kind = {kind})"
+                        ),
                     ),
                     None => (
                         "REPLACE_WITH_D1_DATABASE_ID".to_string(),
                         format!("create with: wrangler d1 create {worker}-db"),
                     ),
                 };
-                let database_name = lock_instance_value(
-                    options.lock.as_ref(),
-                    EffectHint::Sql,
-                    &["database_name"],
-                )
-                .map(|(_, _, name)| name)
-                .unwrap_or_else(|| format!("{worker}-db"));
+                let database_name =
+                    lock_instance_value(options.lock.as_ref(), EffectHint::Sql, &["database_name"])
+                        .map(|(_, _, name)| name)
+                        .unwrap_or_else(|| format!("{worker}-db"));
                 d1_databases.push(D1Binding {
                     comment: vec![
                         format!("{} — required by node(s): {nodes_list}", family.as_str()),
@@ -628,7 +647,9 @@ pub(crate) fn render_wrangler(
                 ) {
                     Some((instance, kind, name)) => (
                         name,
-                        format!("bucket from bindings.lock instance `{instance}` (provider_kind = {kind})"),
+                        format!(
+                            "bucket from bindings.lock instance `{instance}` (provider_kind = {kind})"
+                        ),
                     ),
                     None => (
                         format!("{worker}-blob"),
@@ -660,7 +681,9 @@ pub(crate) fn render_wrangler(
                 ) {
                     Some((instance, kind, name)) => (
                         name,
-                        format!("bucket from bindings.lock instance `{instance}` (provider_kind = {kind})"),
+                        format!(
+                            "bucket from bindings.lock instance `{instance}` (provider_kind = {kind})"
+                        ),
                     ),
                     None => (
                         format!("{worker}-workspace"),
@@ -679,10 +702,7 @@ pub(crate) fn render_wrangler(
                     bucket_name,
                 });
                 durable_objects.push(DoBinding {
-                    comment: vec![format!(
-                        "{} index (cap-workspace-workers)",
-                        family.as_str()
-                    )],
+                    comment: vec![format!("{} index (cap-workspace-workers)", family.as_str())],
                     name: "WORKSPACE_DO".to_string(),
                     class_name: "WorkspaceDurableObject".to_string(),
                 });
@@ -760,39 +780,45 @@ pub(crate) fn render_wrangler(
         .map(|binding| binding.class_name.clone())
         .collect();
 
-    // Triggers: http triggers are served by the fetch handler; anything else
-    // is the T3 stub.
-    let mut pending_schedule_stub = false;
+    // Triggers: http triggers are served by the fetch handler; schedule
+    // triggers render the `[triggers].crons` union below (schedule-trigger.md
+    // §7c); an unspecified trigger has no wiring at all and cannot fire.
     for trigger in &requirements.triggers {
         match trigger.kind {
-            TriggerKind::Http => {}
-            // STUB(T3): packet T1 landed the `TriggerKind::Schedule` manifest
-            // surface (crons on TriggerRequirement); packet T3 lands the
-            // `[triggers].crons` rendering arm here, per the contract in
-            // impl-docs/spec/schedule-trigger.md (packet T0). Until then a
-            // schedule trigger renders the same pending marker as an
-            // unspecified one — the worker will NOT fire it, and the marker
-            // says so.
-            TriggerKind::Schedule => {
-                pending_schedule_stub = true;
-                notes.push(format!(
-                    "trigger `{}` is schedule/cron-fired, but `[triggers].crons` rendering is \
-                     pending packet T3 (contract: impl-docs/spec/schedule-trigger.md) — the \
-                     worker will NOT fire it until that lands",
-                    trigger.alias
-                ));
-            }
+            TriggerKind::Http | TriggerKind::Schedule => {}
             TriggerKind::Unspecified => {
-                pending_schedule_stub = true;
                 notes.push(format!(
-                    "trigger `{}` has no HTTP entrypoint wiring; if it is schedule/cron-fired, \
-                     `[triggers].crons` rendering is pending packet T3 \
-                     (contract: impl-docs/spec/schedule-trigger.md) — the worker will NOT fire \
-                     it until that lands",
+                    "trigger `{}` is wired to neither an HTTP nor a schedule entrypoint \
+                     (kind = unspecified) — the worker will NOT fire it",
                     trigger.alias
                 ));
             }
         }
+    }
+
+    // Schedule (cron) entrypoints -> [triggers].crons: sorted, deduplicated
+    // union of entrypoints[].schedule, byte-verbatim (never normalized or
+    // rewritten — the host-workers scheduled() handler routes fires by byte
+    // equality against these strings). Duplicates across entrypoints are the
+    // defined fan-out case and collapse to one crons entry (CF rejects
+    // duplicate crons).
+    let crons: BTreeSet<&str> = requirements
+        .entrypoints
+        .iter()
+        .filter_map(|entrypoint| entrypoint.schedule.as_deref())
+        .collect();
+    let (cron_cap, cron_tier) = if options.paid {
+        (PAID_MAX_CRONS, "paid plan")
+    } else {
+        (FREE_MAX_CRONS, "free plan")
+    };
+    if crons.len() > cron_cap {
+        notes.push(format!(
+            "this worker declares {} cron triggers, over the Cloudflare {cron_tier} \
+             account-wide cap of {cron_cap} — the deploy will be rejected; drop schedules \
+             or upgrade the plan",
+            crons.len()
+        ));
     }
 
     // Connector contracts → deploy notes (instance binding is lock-time; the
@@ -906,7 +932,10 @@ pub(crate) fn render_wrangler(
         out.push('\n');
     };
 
-    push_line(&mut out, "# wrangler.toml — rendered by `flows deploy render` (infra-from-code v0).");
+    push_line(
+        &mut out,
+        "# wrangler.toml — rendered by `flows deploy render` (infra-from-code v0).",
+    );
     push_line(&mut out, "#");
     push_line(
         &mut out,
@@ -937,7 +966,10 @@ pub(crate) fn render_wrangler(
     push_line(&mut out, &format!("name = \"{worker}\""));
     push_line(&mut out, &format!("main = \"{WORKER_MAIN}\""));
     push_line(&mut out, "workers_dev = true");
-    push_line(&mut out, &format!("compatibility_date = \"{COMPATIBILITY_DATE}\""));
+    push_line(
+        &mut out,
+        &format!("compatibility_date = \"{COMPATIBILITY_DATE}\""),
+    );
     push_line(&mut out, "");
     push_line(&mut out, "[build]");
     push_line(
@@ -971,7 +1003,10 @@ pub(crate) fn render_wrangler(
         }
         push_line(&mut out, "[[d1_databases]]");
         push_line(&mut out, &format!("binding = \"{}\"", d1.binding));
-        push_line(&mut out, &format!("database_name = \"{}\"", d1.database_name));
+        push_line(
+            &mut out,
+            &format!("database_name = \"{}\"", d1.database_name),
+        );
         push_line(&mut out, &format!("database_id = \"{}\"", d1.database_id));
     }
 
@@ -992,7 +1027,10 @@ pub(crate) fn render_wrangler(
         }
         push_line(&mut out, "[[durable_objects.bindings]]");
         push_line(&mut out, &format!("name = \"{}\"", durable.name));
-        push_line(&mut out, &format!("class_name = \"{}\"", durable.class_name));
+        push_line(
+            &mut out,
+            &format!("class_name = \"{}\"", durable.class_name),
+        );
     }
 
     if !migration_classes.is_empty() {
@@ -1017,24 +1055,53 @@ pub(crate) fn render_wrangler(
         push_line(&mut out, &format!("service = \"{service}\""));
     }
 
-    if pending_schedule_stub {
+    if !crons.is_empty() {
         push_line(&mut out, "");
-        push_line(&mut out, "# [triggers]");
         push_line(
             &mut out,
-            "# crons = [\"<pending>\"]  # STUB(T3): schedule/cron trigger rendering is not implemented yet.",
+            "# Cron schedules (fired into the worker scheduled() handler, which routes by",
         );
         push_line(
             &mut out,
-            "#   The schedule trigger contract is being designed in impl-docs/spec/schedule-trigger.md",
+            "# byte equality against these strings — never edit them out of sync with the",
         );
         push_line(
             &mut out,
-            "#   (packet T0); packet T3 lands this arm. Do not hand-invent the crons contract here.",
+            "# bundle; see impl-docs/spec/schedule-trigger.md):",
         );
+        for cron in &crons {
+            for entrypoint in &requirements.entrypoints {
+                if entrypoint.schedule.as_deref() != Some(*cron) {
+                    continue;
+                }
+                let deadline = entrypoint
+                    .deadline_ms
+                    .map(|ms| format!(", deadline {ms}ms"))
+                    .unwrap_or_default();
+                push_line(
+                    &mut out,
+                    &format!(
+                        "#   \"{cron}\"  (trigger `{}` -> capture `{}`{deadline})",
+                        entrypoint.trigger_alias, entrypoint.capture_alias
+                    ),
+                );
+            }
+        }
+        push_line(&mut out, "[triggers]");
+        let cron_list = crons
+            .iter()
+            .map(|cron| format!("\"{cron}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        push_line(&mut out, &format!("crons = [{cron_list}]"));
     }
 
-    if !requirements.entrypoints.is_empty() {
+    let http_entrypoints: Vec<_> = requirements
+        .entrypoints
+        .iter()
+        .filter(|entrypoint| entrypoint.schedule.is_none())
+        .collect();
+    if !http_entrypoints.is_empty() {
         push_line(&mut out, "");
         push_line(
             &mut out,
@@ -1044,7 +1111,7 @@ pub(crate) fn render_wrangler(
             &mut out,
             "# workers_dev = true exposes the <name>.workers.dev route):",
         );
-        for entrypoint in &requirements.entrypoints {
+        for entrypoint in http_entrypoints {
             let method = entrypoint.method.as_deref().unwrap_or("ANY");
             let route = entrypoint.route_path.as_deref().unwrap_or("<unrouted>");
             let deadline = entrypoint

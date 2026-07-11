@@ -91,6 +91,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "cap-kv-workers"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "capabilities",
+ "js-sys",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "thiserror",
+ "tracing",
+ "worker",
+]
+
+[[package]]
 name = "cap-workspace-workers"
 version = "0.1.0"
 dependencies = [
@@ -426,10 +442,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "capabilities",
+ "chrono",
  "dag-core",
  "js-sys",
  "kernel-exec",
  "kernel-plan",
+ "saffron",
  "serde",
  "serde_json",
  "thiserror",
@@ -887,11 +905,17 @@ name = "s1-echo-render-proof"
 version = "0.1.0"
 dependencies = [
  "cap-do-workers",
+ "cap-kv-workers",
  "capabilities",
  "dag-core",
+ "dag-macros",
  "example-s1-echo",
  "host-inproc",
  "host-workers",
+ "kernel-exec",
+ "kernel-plan",
+ "serde",
+ "serde_json",
  "worker",
 ]
 

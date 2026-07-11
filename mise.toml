@@ -67,9 +67,21 @@ run = "cargo check -p host-workers --target wasm32-unknown-unknown"
 description = "Run Miniflare/workerd host-workers harness"
 run = "cd crates/host-workers/workerd-tests && npm ci && npm test"
 
+[tasks.test-wasm-render-proof-harness]
+description = "Run Miniflare render->run proof harness (rendered wrangler.toml: fetch + cron)"
+run = "cd crates/host-workers/render-proof-tests && npm ci && npm test"
+
+[tasks.test-npm-suites]
+description = "Run BOTH host-workers npm suites (workerd-tests + render-proof-tests); the CI npm-suites job"
+depends = ["test-wasm-host-workers-harness", "test-wasm-render-proof-harness"]
+run = "echo finished host-workers npm suites"
+
 [tasks.validate-wasm]
 description = "Wasm lane validation checks for CI"
-depends = ["check-wasm-kernel", "check-wasm-host-workers", "test-wasm-host-workers-harness"]
+# The npm suites run in the dedicated `npm-suites` CI job (test-npm-suites)
+# so they are a visible gate of their own and can never silently rot again
+# (W2 finding: red for two waves unnoticed).
+depends = ["check-wasm-kernel", "check-wasm-host-workers"]
 run = "echo finished wasm validation checks"
 
 [tasks.validate]
@@ -86,6 +98,6 @@ description = "Scan the repo for committed secrets"
 run = "gitleaks dir . --config .gitleaks.toml"
 
 [tasks.validate-ci]
-description = "Full CI validation (native + wasm lanes + secret scan)"
-depends = ["validate", "validate-wasm", "secret-scan"]
+description = "Full CI validation (native + wasm lanes + npm suites + secret scan)"
+depends = ["validate", "validate-wasm", "test-npm-suites", "secret-scan"]
 run = "echo finished full CI validation"

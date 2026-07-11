@@ -1,0 +1,67 @@
+{
+  "schema_version": "0.1",
+  "flow": {
+    "id": "00000000-0000-5000-8000-000000000002",
+    "name": "schedule_demo_flow",
+    "version": "1.0.0"
+  },
+  "profile": "web",
+  "effects": {
+    "union": ["resource::kv::write"],
+    "families": ["resource::kv"],
+    "per_node": {
+      "record": ["resource::kv::write"]
+    }
+  },
+  "durability": {
+    "mode": "partial",
+    "has_halting_nodes": false,
+    "needs_checkpoint_store": true,
+    "needs_resume_scheduler": false,
+    "needs_resume_signal_source": false,
+    "needs_checkpoint_blob_store": false
+  },
+  "triggers": [
+    {
+      "alias": "tick",
+      "identifier": "schedule_demo::tick",
+      "kind": "schedule",
+      "crons": ["*/5 * * * *"]
+    },
+    {
+      "alias": "tick_shadow",
+      "identifier": "schedule_demo::tick_shadow",
+      "kind": "schedule",
+      "crons": ["*/5 * * * *"]
+    },
+    {
+      "alias": "nightly",
+      "identifier": "schedule_demo::nightly",
+      "kind": "schedule",
+      "crons": ["0 2 * * *"]
+    }
+  ],
+  "entrypoints": [
+    {
+      "trigger_alias": "tick",
+      "capture_alias": "record",
+      "schedule": "*/5 * * * *",
+      "deadline_ms": 30000
+    },
+    {
+      "trigger_alias": "tick_shadow",
+      "capture_alias": "record_shadow",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "trigger_alias": "nightly",
+      "capture_alias": "report",
+      "schedule": "0 2 * * *"
+    }
+  ],
+  "host": {
+    "requires_wasm32_compatibility": false,
+    "requires_connector_runtime": false,
+    "has_subflows": false
+  }
+}

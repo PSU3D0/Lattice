@@ -59,6 +59,8 @@ sha2 = "0.10"
 tempfile = "3.12"
 percent-encoding = "2.3"
 base64 = "0.22"
+# Parsing `--at <rfc3339>` for `flows run schedule` (dev scheduler, T2).
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 
 [features]
 # Default keeps today's behavior exactly: every bundled example is compiled in and

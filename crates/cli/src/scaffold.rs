@@ -93,8 +93,7 @@ pub fn run_new(args: NewArgs) -> Result<()> {
             fs::create_dir_all(parent)
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
-        fs::write(path, contents)
-            .with_context(|| format!("failed to write {}", path.display()))?;
+        fs::write(path, contents).with_context(|| format!("failed to write {}", path.display()))?;
     }
 
     // Workspace membership edit (default on).
@@ -112,7 +111,13 @@ pub fn run_new(args: NewArgs) -> Result<()> {
         }
     }
 
-    print_next_steps(&names, &crate_dir, &member_path, workspace_edited, args.no_workspace_edit);
+    print_next_steps(
+        &names,
+        &crate_dir,
+        &member_path,
+        workspace_edited,
+        args.no_workspace_edit,
+    );
     Ok(())
 }
 
@@ -146,9 +151,7 @@ pub fn parse_name(raw: &str) -> Result<Names> {
         .chars()
         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
     if !valid {
-        bail!(
-            "--name must be snake_case (ascii lowercase, digits, underscores): got `{raw}`"
-        );
+        bail!("--name must be snake_case (ascii lowercase, digits, underscores): got `{raw}`");
     }
     if raw.starts_with('_')
         || raw.ends_with('_')
@@ -240,9 +243,9 @@ pub fn insert_workspace_member(cargo_toml: &str, member: &str) -> Result<String>
 
     // Find the closing `]` of the members array, starting after `members = [`.
     let array_open = members_start + "members = [".len();
-    let rel_close = cargo_toml[array_open..]
-        .find(']')
-        .ok_or_else(|| anyhow!("root Cargo.toml `members` array is not closed (unexpected format)"))?;
+    let rel_close = cargo_toml[array_open..].find(']').ok_or_else(|| {
+        anyhow!("root Cargo.toml `members` array is not closed (unexpected format)")
+    })?;
     let close_idx = array_open + rel_close;
 
     let array_body = &cargo_toml[array_open..close_idx];
@@ -323,9 +326,7 @@ fn print_next_steps(
     println!("Next steps (tier a verification):");
     println!("  1. cargo check -p example-{kebab}");
     println!("  2. cargo run -q -p example-{kebab} --bin dump_ir | flows graph check");
-    println!(
-        "  3. cargo run -q -p example-{kebab} --bin dump_ir > /tmp/{snake}.ir.json && \\"
-    );
+    println!("  3. cargo run -q -p example-{kebab} --bin dump_ir > /tmp/{snake}.ir.json && \\");
     println!(
         "       flows entrypoints check --flow /tmp/{snake}.ir.json --trigger-alias trigger --capture-alias responder"
     );
@@ -333,7 +334,9 @@ fn print_next_steps(
     println!();
     println!("To serve it via `flows run local/serve --example {snake}`, register it in the CLI:");
     println!("  - add `example-{kebab}` path dep to crates/cli/Cargo.toml");
-    println!("  - add `use example_{snake} as {snake};` near the other use example_* lines in crates/cli/src/main.rs");
+    println!(
+        "  - add `use example_{snake} as {snake};` near the other use example_* lines in crates/cli/src/main.rs"
+    );
     println!(
         "  - add `\"{snake}\" => ({snake}::bundle(), false),` to load_example(...) in crates/cli/src/main.rs (the match starts near `\"s1_echo\" =>`)"
     );
@@ -366,7 +369,10 @@ mod tests {
     fn insert_member_appends_and_is_idempotent() {
         let src = "[workspace]\nmembers = [\n  \"crates/a\",\n  \"crates/b\"\n]\n";
         let once = insert_workspace_member(src, "examples/new_flow").expect("insert");
-        assert!(once.contains("\"crates/b\","), "prior last entry gets comma:\n{once}");
+        assert!(
+            once.contains("\"crates/b\","),
+            "prior last entry gets comma:\n{once}"
+        );
         assert!(once.contains("\"examples/new_flow\","));
         // Idempotent.
         let twice = insert_workspace_member(&once, "examples/new_flow").expect("insert");
@@ -377,7 +383,10 @@ mod tests {
     fn insert_member_preserves_trailing_comma_style() {
         let src = "[workspace]\nmembers = [\n  \"crates/a\",\n]\n";
         let out = insert_workspace_member(src, "examples/x").expect("insert");
-        assert!(out.contains("  \"crates/a\",\n  \"examples/x\",\n]"), "got:\n{out}");
+        assert!(
+            out.contains("  \"crates/a\",\n  \"examples/x\",\n]"),
+            "got:\n{out}"
+        );
     }
 
     #[test]

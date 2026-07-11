@@ -267,8 +267,10 @@ Emitted as `[triggers]` / `crons = [...]` only when non-empty. Requirements
 on the renderer: (1) never normalize/rewrite a cron string — §7a routing
 depends on byte equality; (2) dedupe (CF rejects duplicate crons; duplicates
 across flows are the §7a fan-out case); (3) warn when the union exceeds the
-CF per-worker cron trigger cap (three on the free tier at time of writing —
-W1 verifies the current limit and encodes it next to the size budget check).
+CF cron trigger cap (5 free / 250 paid, **per account** — verified 2026-07-11
+against developers.cloudflare.com/workers/platform/limits; encoded in the
+renderer as FREE_MAX_CRONS/PAID_MAX_CRONS, warn-not-abort since the cap is
+account-wide and the renderer only sees one worker).
 
 ## 8. Packet decomposition (T1–T4 confirmation)
 

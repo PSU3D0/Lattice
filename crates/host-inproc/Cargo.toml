@@ -22,6 +22,11 @@ uuid = { workspace = true, features = ["v4"] }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 kernel-exec = { path = "../kernel-exec" }
 tokio.workspace = true
+# Dev scheduler for cron-triggered flows (impl-docs/spec/schedule-trigger.md
+# §7b). saffron is the same parser used at validation time, so dev fire times
+# match Cloudflare. Host-only: never enters the shipped wasm32 graph.
+saffron.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3"

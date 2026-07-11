@@ -178,6 +178,171 @@ pub async fn main(req: Request, env: Env, ctx: Context) -> Result<Response> {
     handle_fetch(req, env, ctx).await
 }
 
+/// Cron-fired ingress (impl-docs/spec/schedule-trigger.md §7a).
+///
+/// Routes the platform's `scheduled()` event to the bundle's schedule
+/// entrypoints by **byte equality** between `event.cron()` and each
+/// entrypoint's declared cron string — no parsing, no normalization, ever.
+/// Parity holds because the renderer emits cron strings verbatim from the
+/// manifest and Cloudflare echoes the configured string back in the event.
+///
+/// Each matched entrypoint is invoked through the same `runtime_from_bundle`
+/// path as `fetch`, so durability preflight and per-node ScopedResources
+/// (CAP110) apply unchanged. The capture output is logged and discarded (no
+/// Response). Delivery is at-least-once; downstream idempotency should key on
+/// `scheduled_time_ms`.
+#[cfg(target_arch = "wasm32")]
+pub async fn handle_scheduled(
+    event: worker::ScheduledEvent,
+    env: Env,
+    _ctx: worker::ScheduleContext,
+) -> Result<()> {
+    if RuntimeHandle::try_current().is_err() {
+        let runtime = RuntimeBuilder::new_current_thread()
+            .build()
+            .map_err(|err| worker::Error::RustError(format!("tokio runtime init failed: {err}")))?;
+        let _guard = runtime.enter();
+        return handle_scheduled_inner(event, env).await;
+    }
+
+    handle_scheduled_inner(event, env).await
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn handle_scheduled_inner(event: worker::ScheduledEvent, env: Env) -> Result<()> {
+    let cron = event.cron();
+    // The *scheduled* fire time (epoch ms, UTC) — stable across redeliveries
+    // of the same fire, unlike the observed wall clock.
+    let scheduled_time_ms = event.schedule() as u64;
+
+    // Candidate set: every schedule entrypoint byte-equal to the fired cron,
+    // in declaration order (the defined fan-out order for colliding crons).
+    let bundle = load_bundle(&env);
+    let candidates: Vec<(String, String, Option<std::time::Duration>)> = bundle
+        .entrypoints
+        .iter()
+        .filter(|entry| entry.schedule.as_deref() == Some(cron.as_str()))
+        .map(|entry| {
+            (
+                entry.trigger_alias.clone(),
+                entry.capture_alias.clone(),
+                entry.deadline,
+            )
+        })
+        .collect();
+
+    if candidates.is_empty() {
+        // Configuration drift between the deployed [triggers].crons and the
+        // loaded bundle (e.g. dashboard-edited crons). Fail loudly so the
+        // error surfaces in tail logs; never fire "the only flow" as a
+        // fallback (schedule-trigger.md §7a).
+        worker::console_error!("unroutable cron fire: {}", cron);
+        return Err(worker::Error::RustError(format!(
+            "unroutable cron fire: {cron}"
+        )));
+    }
+
+    let payload = serde_json::to_value(dag_core::ScheduledEvent {
+        scheduled_time_ms,
+        cron: cron.clone(),
+    })
+    .map_err(|err| worker::Error::RustError(format!("failed to encode ScheduledEvent: {err}")))?;
+
+    let mut failures: Vec<String> = Vec::new();
+    for (trigger_alias, capture_alias, deadline) in candidates {
+        // Fresh bundle per candidate: runtime_from_bundle consumes it, and a
+        // colliding cron is a defined fan-out (one platform fire, every
+        // candidate invoked sequentially in declaration order). load_bundle
+        // is the same get_bundle() path fetch takes per request.
+        let runtime = runtime_from_bundle(load_bundle(&env), Some(&env));
+
+        let mut invocation = Invocation::new(
+            trigger_alias.clone(),
+            capture_alias.clone(),
+            payload.clone(),
+        )
+        .with_deadline(deadline);
+        let metadata = invocation.metadata_mut();
+        metadata.insert_label("schedule.cron", cron.clone());
+        metadata.insert_label("schedule.scheduled_time_ms", scheduled_time_ms.to_string());
+
+        match runtime.execute(invocation).await {
+            Ok(ExecutionResult::Value(value)) => {
+                // Capture output is logged and discarded: schedule
+                // entrypoints have no caller to deliver to.
+                worker::console_log!(
+                    "cron fire `{}` -> trigger `{}`: capture `{}` output {}",
+                    cron,
+                    trigger_alias,
+                    capture_alias,
+                    value
+                );
+            }
+            Ok(ExecutionResult::Halt { alias, .. }) => {
+                worker::console_log!(
+                    "cron fire `{}` -> trigger `{}`: halted at `{}` (resume via durability services)",
+                    cron,
+                    trigger_alias,
+                    alias
+                );
+            }
+            Ok(ExecutionResult::Stream(mut stream)) => {
+                // Drain the stream so the run completes; items are discarded
+                // like any other capture output.
+                let mut count = 0usize;
+                let mut stream_error: Option<String> = None;
+                while let Some(item) = stream.next().await {
+                    match item {
+                        Ok(_) => count += 1,
+                        Err(err) => {
+                            let (_, body) = map_execution_error(err);
+                            stream_error = Some(body.to_string());
+                            break;
+                        }
+                    }
+                }
+                match stream_error {
+                    None => worker::console_log!(
+                        "cron fire `{}` -> trigger `{}`: streamed {} item(s) (discarded)",
+                        cron,
+                        trigger_alias,
+                        count
+                    ),
+                    Some(message) => failures.push(format!(
+                        "trigger `{trigger_alias}` stream failed: {message}"
+                    )),
+                }
+            }
+            Err(err) => {
+                let (_, body) = map_execution_error(err);
+                failures.push(format!("trigger `{trigger_alias}` failed: {body}"));
+            }
+        }
+    }
+
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        // Execution failures propagate out of scheduled() so they are visible
+        // to observability. CF does not retry cron failures; at-least-once
+        // comes from the platform's own redelivery behavior.
+        let message = format!("cron fire `{cron}` failed: {}", failures.join("; "));
+        worker::console_error!("{}", message);
+        Err(worker::Error::RustError(message))
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "entrypoint"))]
+#[event(scheduled)]
+pub async fn main_scheduled(event: worker::ScheduledEvent, env: Env, ctx: worker::ScheduleContext) {
+    if let Err(err) = handle_scheduled(event, env, ctx).await {
+        // The workers scheduled() signature returns (): panicking is the only
+        // way to fail the invocation so the error reaches tail logs and the
+        // platform outcome. Never a silent drop (schedule-trigger.md §7a).
+        panic!("scheduled handler failed: {err}");
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 fn load_bundle(_env: &Env) -> FlowBundle {
     unsafe { get_bundle() }

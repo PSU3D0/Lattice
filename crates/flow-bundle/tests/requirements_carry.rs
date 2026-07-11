@@ -3,11 +3,11 @@
 
 use std::collections::BTreeMap;
 
-use dag_core::prelude::{Determinism, Effects, FlowBuilder, NodeSpec, Profile, SchemaSpec, Version};
-use dag_core::{EffectHint, FlowRequirements};
-use flow_bundle::{
-    AbiRef, Capabilities, CodeDescriptor, FlowEntry, Manifest, compute_bundle_id,
+use dag_core::prelude::{
+    Determinism, Effects, FlowBuilder, NodeSpec, Profile, SchemaSpec, Version,
 };
+use dag_core::{EffectHint, FlowRequirements};
+use flow_bundle::{AbiRef, Capabilities, CodeDescriptor, FlowEntry, Manifest, compute_bundle_id};
 use jsonschema::{Draft, JSONSchema};
 use serde_json::json;
 

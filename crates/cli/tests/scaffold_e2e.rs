@@ -73,7 +73,15 @@ fn scaffold_generates_checks_and_cleans_up() {
         // 1. Generate.
         let generate = Command::new(&flows_bin)
             .current_dir(&root)
-            .args(["new", "--name", SMOKE_NAME, "--profile", "web", "--tier", "a"])
+            .args([
+                "new",
+                "--name",
+                SMOKE_NAME,
+                "--profile",
+                "web",
+                "--tier",
+                "a",
+            ])
             .output()
             .expect("run flows new");
         assert!(
@@ -81,8 +89,14 @@ fn scaffold_generates_checks_and_cleans_up() {
             "flows new failed:\n{}",
             String::from_utf8_lossy(&generate.stderr)
         );
-        assert!(crate_dir.join("Cargo.toml").is_file(), "Cargo.toml not generated");
-        assert!(crate_dir.join("src/lib.rs").is_file(), "lib.rs not generated");
+        assert!(
+            crate_dir.join("Cargo.toml").is_file(),
+            "Cargo.toml not generated"
+        );
+        assert!(
+            crate_dir.join("src/lib.rs").is_file(),
+            "lib.rs not generated"
+        );
         assert!(
             crate_dir.join("payloads/sample.json").is_file(),
             "sample payload not generated"

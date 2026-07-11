@@ -79,10 +79,44 @@ jobs:
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
 
+      - name: Run wasm validation
+        run: mise run validate-wasm
+
+  # Both host-workers npm suites (workerd-tests + render-proof-tests) as a
+  # dedicated, visible gate (packet T3; W2 finding: the suites were red for
+  # two waves unnoticed while folded into other lanes — never again).
+  npm-suites:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install mold linker
+        run: sudo apt-get update && sudo apt-get install -y mold
+
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@v0.0.6
+
+      - name: Set up mise tools
+        uses: jdx/mise-action@v2
+        with:
+          cache: true
+
+      - name: Install wasm target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
       # Pre-install worker-build once so the workerd/wrangler harness build does
       # not pay `cargo install` on every invocation (see scripts/ensure-worker-build.sh).
       - name: Pre-install worker-build
         run: cargo install -q worker-build@^0.7
 
-      - name: Run wasm validation
-        run: mise run validate-wasm
+      - name: Run host-workers npm suites (workerd-tests + render-proof-tests)
+        run: mise run test-npm-suites

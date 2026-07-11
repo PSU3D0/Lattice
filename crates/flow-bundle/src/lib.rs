@@ -165,6 +165,19 @@ pub struct Entrypoint {
         deserialize_with = "deserialize_deadline_ms"
     )]
     pub deadline_ms: Option<u64>,
+    /// Cron expression for schedule-shaped entrypoints (5-field Cloudflare
+    /// dialect, UTC; byte-verbatim from the authored string). Additive,
+    /// skip-when-absent: manifests written before this field existed
+    /// deserialize unchanged and keep their `bundle_id` byte-identical
+    /// (same stability argument as `flows[].requirements`). Consumed by the
+    /// host-workers `scheduled()` handler, which routes fires by byte
+    /// equality against this string (impl-docs/spec/schedule-trigger.md §7a).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_entrypoint_schedule"
+    )]
+    pub schedule: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -346,6 +359,13 @@ where
     D: Deserializer<'de>,
 {
     deserialize_non_null_option(deserializer, "entrypoints[].deadline_ms")
+}
+
+fn deserialize_entrypoint_schedule<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_non_null_option(deserializer, "entrypoints[].schedule")
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -710,19 +730,19 @@ pub fn validate_manifest(manifest: &Manifest) -> Result<(), BundleError> {
         ));
     }
     for flow in &manifest.flows {
-        if let Some(flow_ir) = flow.flow_ir.as_ref() {
-            if !is_sha256_prefixed(&flow_ir.hash) {
-                return Err(BundleError::ManifestValidation(
-                    "flows[].flow_ir.hash must be sha256:<hex>".to_string(),
-                ));
-            }
+        if let Some(flow_ir) = flow.flow_ir.as_ref()
+            && !is_sha256_prefixed(&flow_ir.hash)
+        {
+            return Err(BundleError::ManifestValidation(
+                "flows[].flow_ir.hash must be sha256:<hex>".to_string(),
+            ));
         }
-        if let Some(flow_ir) = flow.flow_ir_expanded.as_ref() {
-            if !is_sha256_prefixed(&flow_ir.hash) {
-                return Err(BundleError::ManifestValidation(
-                    "flows[].flow_ir_expanded.hash must be sha256:<hex>".to_string(),
-                ));
-            }
+        if let Some(flow_ir) = flow.flow_ir_expanded.as_ref()
+            && !is_sha256_prefixed(&flow_ir.hash)
+        {
+            return Err(BundleError::ManifestValidation(
+                "flows[].flow_ir_expanded.hash must be sha256:<hex>".to_string(),
+            ));
         }
         if let Some(exports) = flow.wasm_guest_exports.as_ref() {
             let export_names = [&exports.alloc, &exports.free, &exports.invoke];
@@ -749,20 +769,20 @@ pub fn validate_manifest(manifest: &Manifest) -> Result<(), BundleError> {
         }
     }
     for entry in &manifest.subflows {
-        if let Some(flow_ir) = entry.flow_ir.as_ref() {
-            if !is_sha256_prefixed(&flow_ir.hash) {
-                return Err(BundleError::ManifestValidation(
-                    "subflows[].flow_ir.hash must be sha256:<hex>".to_string(),
-                ));
-            }
-        }
-    }
-    if let Some(default_flow) = manifest.default_flow.as_ref() {
-        if !manifest.flows.iter().any(|flow| flow.id == *default_flow) {
+        if let Some(flow_ir) = entry.flow_ir.as_ref()
+            && !is_sha256_prefixed(&flow_ir.hash)
+        {
             return Err(BundleError::ManifestValidation(
-                "default_flow must match a flow id".to_string(),
+                "subflows[].flow_ir.hash must be sha256:<hex>".to_string(),
             ));
         }
+    }
+    if let Some(default_flow) = manifest.default_flow.as_ref()
+        && !manifest.flows.iter().any(|flow| flow.id == *default_flow)
+    {
+        return Err(BundleError::ManifestValidation(
+            "default_flow must match a flow id".to_string(),
+        ));
     }
     let expected = compute_bundle_id(manifest)?;
     if manifest.bundle_id != expected {
@@ -825,14 +845,14 @@ pub fn read_manifest_from_custom_section(bytes: &[u8]) -> Result<Manifest, Bundl
     let parser = wasmparser::Parser::new(0);
     for payload in parser.parse_all(bytes) {
         let payload = payload.map_err(|err| BundleError::WasmParse(err.to_string()))?;
-        if let wasmparser::Payload::CustomSection(section) = payload {
-            if section.name() == MANIFEST_SECTION {
-                let json =
-                    std::str::from_utf8(section.data()).map_err(|_| BundleError::ManifestUtf8)?;
-                let manifest: Manifest = serde_json::from_str(json)?;
-                validate_manifest(&manifest)?;
-                return Ok(manifest);
-            }
+        if let wasmparser::Payload::CustomSection(section) = payload
+            && section.name() == MANIFEST_SECTION
+        {
+            let json =
+                std::str::from_utf8(section.data()).map_err(|_| BundleError::ManifestUtf8)?;
+            let manifest: Manifest = serde_json::from_str(json)?;
+            validate_manifest(&manifest)?;
+            return Ok(manifest);
         }
     }
     Err(BundleError::MissingCustomSection(MANIFEST_SECTION))
@@ -1209,6 +1229,60 @@ mod tests {
 
         let err = validate_manifest(&manifest).expect_err("duplicate exports should fail");
         assert!(err.to_string().contains("wasm_guest_exports"));
+    }
+
+    #[test]
+    fn entrypoint_schedule_is_additive_and_roundtrips() {
+        // Pre-schedule manifests (no `schedule` key) still deserialize, and
+        // serializing an entrypoint without a schedule omits the key, so
+        // existing bundle ids stay byte-identical.
+        let mut manifest = base_manifest_json();
+        manifest["flows"][0]["entrypoints"] = json!([
+            {
+                "trigger": "ingress",
+                "capture": "out",
+                "route_aliases": ["/demo"],
+                "method": "POST"
+            }
+        ]);
+        let parsed: Manifest = serde_json::from_value(manifest).expect("legacy entrypoint parses");
+        let entry = &parsed.flows[0].entrypoints[0];
+        assert_eq!(entry.schedule, None);
+        let serialized = serde_json::to_value(entry).expect("serialize entrypoint");
+        assert!(
+            serialized.get("schedule").is_none(),
+            "absent schedule must be skip-serialized (bundle_id stability)"
+        );
+
+        // Schedule-shaped entrypoints carry the cron string byte-verbatim.
+        let mut manifest = base_manifest_json();
+        manifest["flows"][0]["entrypoints"] = json!([
+            {
+                "trigger": "tick",
+                "capture": "report",
+                "schedule": "*/5 * * * *"
+            }
+        ]);
+        let parsed: Manifest =
+            serde_json::from_value(manifest).expect("schedule entrypoint parses");
+        let entry = &parsed.flows[0].entrypoints[0];
+        assert_eq!(entry.schedule.as_deref(), Some("*/5 * * * *"));
+        let serialized = serde_json::to_value(entry).expect("serialize entrypoint");
+        assert_eq!(serialized["schedule"], json!("*/5 * * * *"));
+    }
+
+    #[test]
+    fn entrypoint_rejects_null_schedule() {
+        let mut manifest = base_manifest_json();
+        manifest["flows"][0]["entrypoints"] = json!([
+            {
+                "trigger": "tick",
+                "capture": "report",
+                "schedule": null
+            }
+        ]);
+        let result: Result<Manifest, _> = serde_json::from_value(manifest);
+        assert!(result.is_err(), "schedule: null must be rejected");
     }
 
     #[test]

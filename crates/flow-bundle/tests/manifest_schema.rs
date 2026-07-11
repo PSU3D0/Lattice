@@ -909,3 +909,32 @@ fn manifest_schema_defaults_optional_arrays_when_omitted() {
     assert!(flow.capabilities.required.is_empty());
     assert!(flow.capabilities.optional.is_empty());
 }
+
+#[test]
+fn manifest_schema_accepts_schedule_entrypoint() {
+    // Packet T3: `entrypoints[].schedule` (byte-verbatim cron string) is an
+    // additive optional field — schedule-carrying manifests must validate
+    // against the canonical schema, and absent-schedule manifests already do
+    // (every other test in this file).
+    let mut manifest = sample_manifest_with_artifacts();
+    manifest.flows[0].entrypoints = vec![flow_bundle::Entrypoint {
+        trigger: "tick".to_string(),
+        capture: "report".to_string(),
+        route_aliases: Vec::new(),
+        method: None,
+        deadline_ms: Some(30000),
+        schedule: Some("*/5 * * * *".to_string()),
+    }];
+    manifest.bundle_id = compute_bundle_id(&manifest).expect("bundle id");
+
+    let schema: serde_json::Value = serde_json::from_str(FLOW_BUNDLE_SCHEMA).expect("schema");
+    let compiled = JSONSchema::options()
+        .with_draft(Draft::Draft202012)
+        .compile(&schema)
+        .expect("compile schema");
+    let instance = serde_json::to_value(&manifest).expect("manifest json");
+    if let Err(errors) = compiled.validate(&instance) {
+        let messages: Vec<String> = errors.map(|error| error.to_string()).collect();
+        panic!("schema validation failed: {}", messages.join("; "));
+    }
+}

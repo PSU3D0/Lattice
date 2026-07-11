@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "render": "cargo run --quiet --manifest-path ../../../Cargo.toml -p flows-cli --no-default-features --features example-s1 -- deploy render --example s1_echo --out .",
+    "render-cron": "cargo run --quiet --bin emit-cron-requirements -- cron/requirements.json && cargo run --quiet --manifest-path ../../../Cargo.toml -p flows-cli --no-default-features -- deploy render --requirements cron/requirements.json --bindings-lock cron-bindings.lock.json --out cron",
     "build": "bash ../../../scripts/ensure-worker-build.sh --release",
-    "test": "npm run render && npm run build && vitest run"
+    "test": "npm run render && npm run render-cron && npm run build && vitest run"
   },
   "devDependencies": {
     "miniflare": "^3.20241205.0",

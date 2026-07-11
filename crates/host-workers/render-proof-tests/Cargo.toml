@@ -11,13 +11,32 @@ publish = false
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# dag-macros gates the generated `<node>_register` host-registration fns
+# behind `host-bundle` (same idiom as ../workerd-tests).
+default = ["host-bundle"]
+host-bundle = []
+flow-registry = []
+
+# Native helper: derives the cron proof flow's FlowRequirements manifest for
+# `npm run render-cron` (see src/bin/emit_cron_requirements.rs).
+[[bin]]
+name = "emit-cron-requirements"
+path = "src/bin/emit_cron_requirements.rs"
+
 [dependencies]
 worker = { version = "=0.8.1", default-features = false, features = ["http"] }
 
 cap-do-workers = { path = "../../cap-do-workers" }
+cap-kv-workers = { path = "../../cap-kv-workers" }
 capabilities = { path = "../../capabilities" }
 dag-core = { path = "../../dag-core" }
+dag-macros = { path = "../../dag-macros" }
 host-inproc = { path = "../../host-inproc" }
 host-workers = { path = "..", default-features = false }
+kernel-exec = { path = "../../kernel-exec", default-features = false, features = ["wasm"] }
+kernel-plan = { path = "../../kernel-plan" }
+serde = "1.0"
+serde_json = "1.0"
 
 example-s1-echo = { path = "../../../examples/s1_echo" }

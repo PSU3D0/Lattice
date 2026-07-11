@@ -22,6 +22,11 @@ pub use kernel_exec::{
     ExecutionError as HostExecutionError, ExecutionResult as HostExecutionResult,
 };
 
+/// Dev scheduler core for cron-triggered flows (host-only; never wasm32).
+/// See `impl-docs/spec/schedule-trigger.md` §7b.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod schedule;
+
 pub struct FlowBundle {
     pub validated_ir: ValidatedIR,
     pub entrypoints: Vec<FlowEntrypoint>,
@@ -607,8 +612,7 @@ impl HostRuntime {
             });
         }
 
-        let connector_grants =
-            collect_lock_recorded_connector_grants(self.ir.as_ref(), resources)?;
+        let connector_grants = collect_lock_recorded_connector_grants(self.ir.as_ref(), resources)?;
         let mut required: BTreeSet<String> = self.required_effect_hints.iter().cloned().collect();
         for hints in connector_grants.values() {
             for hint in hints {

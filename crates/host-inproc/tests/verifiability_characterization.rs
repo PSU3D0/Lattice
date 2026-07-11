@@ -50,8 +50,7 @@ use dag_core::prelude::*;
 use dag_core::{ConnectorOpRefIR, ConnectorResolutionModeDecl, DurabilityMode, FlowIR};
 use host_inproc::{HostRuntime, Invocation};
 use kernel_exec::{
-    ExecutionResult, FlowExecutor, NodeContext, NodeHandler, NodeOutput, NodeRegistry,
-    NodeResolver,
+    ExecutionResult, FlowExecutor, NodeContext, NodeHandler, NodeOutput, NodeRegistry, NodeResolver,
 };
 use kernel_plan::validate;
 use serde_json::{Value as JsonValue, json};

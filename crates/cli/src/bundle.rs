@@ -111,7 +111,12 @@ pub fn run_bundle(args: BundleArgs) -> Result<()> {
     let profile = resolve_build_profile(&args);
     let mut outputs = Vec::with_capacity(targets.len());
     for target in &targets {
-        run_cargo_build(&package, target, profile.is_release(), is_wasm_target(target))?;
+        run_cargo_build(
+            &package,
+            target,
+            profile.is_release(),
+            is_wasm_target(target),
+        )?;
         let artifact_path = resolve_artifact_path(&package, target, profile.as_str())?;
         let mut bytes = fs::read(&artifact_path)
             .with_context(|| format!("failed to read {}", artifact_path.display()))?;

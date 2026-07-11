@@ -3,10 +3,12 @@
 //! bindings.lock) → wrangler.toml.
 //!
 //! Coverage:
-//! - golden files: `s1_echo` (http-only, near-empty bindings) and a synthetic
+//! - golden files: `s1_echo` (http-only, near-empty bindings), a synthetic
 //!   kv+blob manifest (no built-in example declares both today — s4 is
 //!   kv-only, s6 is blob-only, s12 is blob-only; the synthetic fixture also
-//!   exercises the pending-T3 schedule stub via an `unspecified` trigger);
+//!   exercises the `unspecified`-trigger warning), and a synthetic schedule
+//!   manifest (packet T3: `[triggers].crons` union, byte-verbatim, deduped
+//!   across colliding entrypoints — schedule-trigger.md §7c);
 //! - every rendered file must PARSE as TOML (asserted with the `toml` crate,
 //!   already in the dependency tree via trybuild);
 //! - fail-closed: a hand-built manifest with `resource::db` + `resource::rng`
@@ -90,7 +92,11 @@ fn assert_matches_golden(rendered: &str, golden_name: &str) {
 }
 
 fn fixture_arg(name: &str) -> String {
-    fixture_root().join(name).to_str().expect("fixture path").to_string()
+    fixture_root()
+        .join(name)
+        .to_str()
+        .expect("fixture path")
+        .to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -110,21 +116,26 @@ fn s1_echo_renders_golden_and_parses() {
     assert!(parsed.get("d1_databases").is_none());
     assert!(parsed.get("r2_buckets").is_none());
     // durability checkpoint store -> FLOW_DO (host-workers idiom).
-    let bindings = parsed["durable_objects"]["bindings"].as_array().expect("do bindings");
+    let bindings = parsed["durable_objects"]["bindings"]
+        .as_array()
+        .expect("do bindings");
     assert_eq!(bindings.len(), 1);
     assert_eq!(bindings[0]["name"].as_str(), Some("FLOW_DO"));
-    assert_eq!(bindings[0]["class_name"].as_str(), Some("FlowDurableObject"));
+    assert_eq!(
+        bindings[0]["class_name"].as_str(),
+        Some("FlowDurableObject")
+    );
     // Budget was not silently skipped.
     assert!(notes.contains("module size budget NOT checked"));
     assert!(rendered.contains("compressed module size was NOT checked"));
 }
 
 // ---------------------------------------------------------------------------
-// Golden: synthetic kv+blob manifest (also exercises the pending-T3 schedule
-// stub via its `unspecified` trigger).
+// Golden: synthetic kv+blob manifest (also exercises the unspecified-trigger
+// warning: an alias wired to no entrypoint cannot fire).
 // ---------------------------------------------------------------------------
 #[test]
-fn kv_blob_renders_golden_with_placeholders_and_schedule_stub() {
+fn kv_blob_renders_golden_with_placeholders_and_unspecified_warning() {
     let requirements = fixture_arg("kv_blob.requirements.json");
     let (rendered, notes) = render_ok(&["--requirements", &requirements]);
     assert_matches_golden(&rendered, "kv_blob.wrangler.toml.golden");
@@ -137,7 +148,10 @@ fn kv_blob_renders_golden_with_placeholders_and_schedule_stub() {
     let r2 = parsed["r2_buckets"].as_array().expect("r2 buckets");
     assert_eq!(r2.len(), 1);
     assert_eq!(r2[0]["binding"].as_str(), Some("BLOB_BUCKET"));
-    assert_eq!(r2[0]["bucket_name"].as_str(), Some("kv-blob-demo-flow-blob"));
+    assert_eq!(
+        r2[0]["bucket_name"].as_str(),
+        Some("kv-blob-demo-flow-blob")
+    );
 
     // A fresh user can follow the file: each placeholder carries the exact
     // creation command.
@@ -147,10 +161,102 @@ fn kv_blob_renders_golden_with_placeholders_and_schedule_stub() {
     assert!(rendered.contains("required by node(s): cache_read, cache_write"));
     assert!(rendered.contains("required by node(s): store"));
 
-    // The schedule/cron arm is a clearly marked stub until T3 lands.
-    assert!(rendered.contains("STUB(T3)"));
-    assert!(rendered.contains("impl-docs/spec/schedule-trigger.md"));
-    assert!(notes.contains("pending packet T3"));
+    // The unspecified `poller` trigger cannot fire: warned, not silently
+    // dropped — and no [triggers] block is invented for it.
+    assert!(
+        notes.contains("trigger `poller` is wired to neither an HTTP nor a schedule entrypoint")
+    );
+    assert!(!rendered.contains("[triggers]"));
+    assert!(!rendered.contains("STUB(T3)"));
+}
+
+// ---------------------------------------------------------------------------
+// Golden: synthetic schedule manifest (packet T3) — `[triggers].crons` is the
+// sorted, deduplicated, byte-verbatim union of entrypoints[].schedule; two
+// entrypoints colliding on one cron (the defined fan-out) collapse to a
+// single crons entry; schedule entrypoints are NOT listed as HTTP routes.
+// ---------------------------------------------------------------------------
+#[test]
+fn schedule_renders_golden_with_crons_union() {
+    let requirements = fixture_arg("schedule.requirements.json");
+    let (rendered, notes) = render_ok(&["--requirements", &requirements]);
+    assert_matches_golden(&rendered, "schedule.wrangler.toml.golden");
+
+    let parsed = parse_toml(&rendered, "schedule render");
+    let crons: Vec<&str> = parsed["triggers"]["crons"]
+        .as_array()
+        .expect("crons array")
+        .iter()
+        .map(|value| value.as_str().expect("cron string"))
+        .collect();
+    // Sorted + deduped ("*/5 * * * *" appears on two entrypoints), strings
+    // byte-verbatim from the manifest.
+    assert_eq!(crons, vec!["*/5 * * * *", "0 2 * * *"]);
+
+    // Attribution comments map each cron to its entrypoints (fan-out visible).
+    assert!(rendered.contains("(trigger `tick` -> capture `record`, deadline 30000ms)"));
+    assert!(rendered.contains("(trigger `tick_shadow` -> capture `record_shadow`)"));
+    assert!(rendered.contains("(trigger `nightly` -> capture `report`)"));
+
+    // Schedule entrypoints are not HTTP routes: no fetch-handler listing.
+    assert!(!rendered.contains("HTTP entrypoints"));
+
+    // kv requirement still renders its binding alongside the triggers.
+    let kv = parsed["kv_namespaces"].as_array().expect("kv namespaces");
+    assert_eq!(kv[0]["binding"].as_str(), Some("FLOW_KV"));
+
+    // 2 crons is under the account cap: no cap warning.
+    assert!(!notes.contains("account-wide cap"));
+}
+
+// ---------------------------------------------------------------------------
+// Cron cap: a union over the Cloudflare free-plan account-wide cap (5) warns
+// in NOTES (deploy will reject it; the render still succeeds so the file can
+// be inspected/edited).
+// ---------------------------------------------------------------------------
+#[test]
+fn schedule_over_free_cron_cap_warns() {
+    let base = fs::read_to_string(fixture_root().join("schedule.requirements.json"))
+        .expect("read schedule fixture");
+    let mut manifest: serde_json::Value = serde_json::from_str(&base).expect("parse fixture");
+    // Six distinct crons > free cap of 5.
+    let crons = [
+        "*/1 * * * *",
+        "*/2 * * * *",
+        "*/3 * * * *",
+        "*/4 * * * *",
+        "*/6 * * * *",
+        "*/7 * * * *",
+    ];
+    let entrypoints: Vec<serde_json::Value> = crons
+        .iter()
+        .enumerate()
+        .map(|(index, cron)| {
+            serde_json::json!({
+                "trigger_alias": format!("tick_{index}"),
+                "capture_alias": format!("record_{index}"),
+                "schedule": cron,
+            })
+        })
+        .collect();
+    manifest["entrypoints"] = serde_json::Value::Array(entrypoints);
+    manifest["triggers"] = serde_json::json!([]);
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let fixture = temp.path().join("over_cap.requirements.json");
+    fs::write(&fixture, manifest.to_string()).expect("write fixture");
+
+    let (rendered, notes) = render_ok(&["--requirements", fixture.to_str().expect("path")]);
+    assert!(
+        notes.contains("6 cron triggers, over the Cloudflare free plan account-wide cap of 5"),
+        "missing cron cap warning: {notes}"
+    );
+    let parsed = parse_toml(&rendered, "over-cap render");
+    assert_eq!(
+        parsed["triggers"]["crons"].as_array().expect("crons").len(),
+        6,
+        "the union still renders; the deploy is where the cap is enforced"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -221,8 +327,8 @@ fn reproduces_host_workers_workerd_test_binding_shapes() {
     let (rendered, _notes) = render_ok(&["--requirements", &requirements]);
     let ours = parse_toml(&rendered, "host_workers_repro render");
 
-    let hand_written_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../host-workers/workerd-tests/wrangler.toml");
+    let hand_written_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../host-workers/workerd-tests/wrangler.toml");
     let hand_written_text =
         fs::read_to_string(&hand_written_path).expect("read hand-written wrangler.toml");
     let theirs = parse_toml(&hand_written_text, "hand-written host-workers config");
@@ -264,7 +370,10 @@ fn reproduces_host_workers_workerd_test_binding_shapes() {
         .collect();
     ours_do.sort();
     theirs_do.sort();
-    assert_eq!(ours_do, theirs_do, "durable object binding shapes must match");
+    assert_eq!(
+        ours_do, theirs_do,
+        "durable object binding shapes must match"
+    );
 
     // R2: one workspace bucket with the cap-workspace-workers default binding
     // name (bucket_name is instance-specific — modulo ids).
@@ -365,7 +474,10 @@ fn size_budget_fails_free_tier_and_warns_paid() {
     ]);
     assert!(!output.status.success(), "over-budget module must fail");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("over the free tier limit of 1 MiB"), "{stderr}");
+    assert!(
+        stderr.contains("over the free tier limit of 1 MiB"),
+        "{stderr}"
+    );
     assert!(stderr.contains("--paid"), "{stderr}");
 
     // Paid tier: renders, but the warning is in NOTES and in the file.
@@ -376,9 +488,18 @@ fn size_budget_fails_free_tier_and_warns_paid() {
         artifact_arg,
         "--paid",
     ]);
-    assert!(notes.contains("above the 3 MiB warning threshold"), "{notes}");
-    assert!(rendered.contains("WARNING:"), "budget warning must be in the file");
-    assert!(rendered.contains("paid tier"), "budget comment must name the tier");
+    assert!(
+        notes.contains("above the 3 MiB warning threshold"),
+        "{notes}"
+    );
+    assert!(
+        rendered.contains("WARNING:"),
+        "budget warning must be in the file"
+    );
+    assert!(
+        rendered.contains("paid tier"),
+        "budget comment must name the tier"
+    );
     parse_toml(&rendered, "paid render");
 }
 

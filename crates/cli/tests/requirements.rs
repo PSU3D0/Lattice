@@ -83,7 +83,10 @@ fn example_s12_bound_matches_bare_golden() {
         "--example s12_sheetport_quote drifted from the bound bare-IR golden fixture"
     );
     // s12 bound: a connector op selected in bound_connection mode.
-    assert_eq!(actual["host"]["requires_connector_runtime"], Value::Bool(true));
+    assert_eq!(
+        actual["host"]["requires_connector_runtime"],
+        Value::Bool(true)
+    );
     assert_eq!(
         actual["connectors"][0]["operations"][0]["requires_bound_connection"],
         Value::Bool(true)
@@ -120,13 +123,15 @@ fn schema_flag_matches_checked_in_schema_byte_for_byte() {
         .join("../../schemas/flow_requirements.schema.json");
     let on_disk = fs::read(&schema_path).expect("read schema file");
     assert_eq!(
-        output.stdout, on_disk,
+        output.stdout,
+        on_disk,
         "--schema output is not byte-for-byte identical to {}",
         schema_path.display()
     );
 
     // And it must parse as JSON (valid schema document).
-    let parsed: Value = serde_json::from_slice(&output.stdout).expect("schema output is valid JSON");
+    let parsed: Value =
+        serde_json::from_slice(&output.stdout).expect("schema output is valid JSON");
     assert_eq!(
         parsed["$id"],
         Value::String("https://lattice.dev/schemas/flow_requirements.schema.json".to_string())

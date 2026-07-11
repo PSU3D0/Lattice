@@ -101,7 +101,11 @@
           "default": []
         },
         "method": { "type": "string" },
-        "deadline_ms": { "type": "integer", "minimum": 0 }
+        "deadline_ms": { "type": "integer", "minimum": 0 },
+        "schedule": {
+          "type": "string",
+          "description": "Cron expression for schedule-shaped entrypoints (5-field Cloudflare dialect, UTC; byte-verbatim). Additive, omitted when absent — see impl-docs/spec/schedule-trigger.md."
+        }
       },
       "required": ["trigger", "capture"],
       "additionalProperties": false

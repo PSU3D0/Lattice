@@ -73,6 +73,7 @@ mod deploy;
 mod local_durability;
 mod requirements;
 mod resume;
+mod run_schedule;
 mod scaffold;
 
 #[derive(Parser, Debug)]
@@ -133,6 +134,9 @@ enum RunCommand {
     Serve(ServeArgs),
     /// Execute a FlowBundle from a bundle directory.
     Bundle(BundleArgs),
+    /// Fire a schedule (cron) example locally: `--once` for a single synthetic
+    /// fire, or a tick loop that fires at the cron's computed times.
+    Schedule(run_schedule::ScheduleArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -242,7 +246,7 @@ struct LocalArgs {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, ValueEnum)]
-enum CheckpointStoreKind {
+pub(crate) enum CheckpointStoreKind {
     Fs,
     Memory,
 }
@@ -367,6 +371,7 @@ fn main() -> Result<()> {
         Command::Run(RunCommand::Local(args)) => run_local(args),
         Command::Run(RunCommand::Serve(args)) => run_serve(args),
         Command::Run(RunCommand::Bundle(args)) => run_bundle(args),
+        Command::Run(RunCommand::Schedule(args)) => run_schedule::run_schedule(args),
         Command::Bindings(BindingsCommand::Lock(LockCommand::Generate(args))) => {
             run_bindings_lock_generate(args)
         }
@@ -1441,7 +1446,7 @@ impl CheckpointStore for MemoryCheckpointStore {
     }
 }
 
-fn resource_bag_from_bindings(bindings: &[String]) -> Result<ResourceBag> {
+pub(crate) fn resource_bag_from_bindings(bindings: &[String]) -> Result<ResourceBag> {
     let mut bag = ResourceBag::new();
 
     for binding in bindings {
@@ -1915,8 +1920,12 @@ struct ConnectorSectionsInput {
 
 fn load_connector_sections(path: &Path) -> Result<ConnectorSectionsInput> {
     let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let sections: ConnectorSectionsInput = serde_json::from_slice(&bytes)
-        .with_context(|| format!("{} is not a valid connector sections document", path.display()))?;
+    let sections: ConnectorSectionsInput = serde_json::from_slice(&bytes).with_context(|| {
+        format!(
+            "{} is not a valid connector sections document",
+            path.display()
+        )
+    })?;
     for (flow_id, bindings) in &sections.connector_bindings {
         if !bindings.resolved_effect_hints.is_empty() {
             return Err(anyhow!(
@@ -1970,7 +1979,8 @@ fn record_resolved_connector_effect_hints(
         let runtime = BindingsLockConnectorRuntime::new(lock, flow_id)?;
         let mut recorded: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for (alias, identifier, connector_id) in bound_nodes {
-            let scope = ConnectorBindingScope::new(flow_id.clone(), alias, identifier, connector_id);
+            let scope =
+                ConnectorBindingScope::new(flow_id.clone(), alias, identifier, connector_id);
             match runtime.resolve_bound_connection(&scope) {
                 Ok((connection_name, connection)) => {
                     let hints = derive_connection_effect_hints(connection_name, connection)?;
@@ -3138,7 +3148,6 @@ impl ConnectorRuntime for BindingsLockConnectorRuntime {
             config: connection.config.clone(),
         }))
     }
-
 }
 
 /// Derive the connection-dependent effect hints a bound connection imposes on
@@ -3589,7 +3598,7 @@ fn normalize_secret_ref_env_name(secret_ref: &str) -> String {
         .collect()
 }
 
-fn resource_bag_from_bindings_lock(path: &Path, flow_id: &str) -> Result<ResourceBag> {
+pub(crate) fn resource_bag_from_bindings_lock(path: &Path, flow_id: &str) -> Result<ResourceBag> {
     let lock = load_bindings_lock(path)?;
 
     let flow = lock
@@ -3687,7 +3696,7 @@ fn connector_resolved_grants_from_lock(
     Ok(grants)
 }
 
-fn attach_checkpoint_store(
+pub(crate) fn attach_checkpoint_store(
     bag: ResourceBag,
     kind: CheckpointStoreKind,
     checkpoint_dir: Option<&Path>,
@@ -3741,7 +3750,16 @@ fn parse_payload(args: &LocalArgs) -> Result<JsonValue> {
 }
 
 fn load_example(name: &str) -> Result<ExampleHandle> {
-    let (bundle, is_streaming) = match name {
+    let (bundle, is_streaming) = example_bundle(name)?;
+    example_from_bundle(bundle, is_streaming)
+}
+
+/// Resolve a built-in example name to its `FlowBundle` (with every entrypoint
+/// intact) and its streaming flag. Shared by `flows run local` (which selects a
+/// single entrypoint) and `flows run schedule` (which needs all schedule
+/// entrypoints).
+pub(crate) fn example_bundle(name: &str) -> Result<(host_inproc::FlowBundle, bool)> {
+    let resolved = match name {
         #[cfg(feature = "example-s1")]
         "s1_echo" => (s1_echo::bundle(), false),
         #[cfg(feature = "example-s2")]
@@ -3771,7 +3789,7 @@ fn load_example(name: &str) -> Result<ExampleHandle> {
         other => return Err(anyhow!("unknown example `{other}`")),
     };
 
-    example_from_bundle(bundle, is_streaming)
+    Ok(resolved)
 }
 
 fn example_from_bundle(
@@ -4564,8 +4582,7 @@ RGKOKF9RKKgFGiXk5I97qQ==
                     operation_id: "connector.formualizer.sheetport.evaluate".to_string(),
                     connector_id: "connector.formualizer.sheetport".to_string(),
                     roles: Vec::new(),
-                    default_resolution_mode:
-                        dag_core::ConnectorResolutionModeDecl::BoundConnection,
+                    default_resolution_mode: dag_core::ConnectorResolutionModeDecl::BoundConnection,
                     selected_resolution_mode: mode,
                     supported_resolution_modes: vec![
                         dag_core::ConnectorResolutionModeDecl::BoundConnection,

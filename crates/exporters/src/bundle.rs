@@ -154,7 +154,12 @@ fn derive_flow_requirements(
     flow_ir_hash: &str,
 ) -> Result<dag_core::FlowRequirements> {
     let mut requirements = dag_core::FlowRequirements::derive(flow)
-        .map_err(|err| anyhow!("failed to derive flow requirements for `{}`: {err}", reg.name))?
+        .map_err(|err| {
+            anyhow!(
+                "failed to derive flow requirements for `{}`: {err}",
+                reg.name
+            )
+        })?
         .with_flow_ir_hash(flow_ir_hash);
 
     for entrypoint in &mut requirements.entrypoints {
@@ -186,6 +191,7 @@ fn entrypoint_from_spec(spec: &dag_core::flow_registry::EntrypointSpec) -> Entry
             .collect(),
         method: spec.method.map(str::to_string),
         deadline_ms: spec.deadline_ms,
+        schedule: spec.schedule.map(str::to_string),
     }
 }
 
