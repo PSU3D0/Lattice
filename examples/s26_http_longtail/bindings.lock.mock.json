@@ -1,0 +1,94 @@
+{
+  "version": 1,
+  "generated_at": "2026-07-11T00:00:00Z",
+  "content_hash": "14811333ebf4a154504b8d03f154f3d5683f95027fb63deacc4249c09a767876",
+  "instances": {
+    "http1": {
+      "provider_kind": "http.reqwest",
+      "provides": [
+        "resource::http"
+      ],
+      "connect": {},
+      "config": {},
+      "isolation": []
+    },
+    "kv1": {
+      "provider_kind": "kv.memory",
+      "provides": [
+        "resource::kv"
+      ],
+      "connect": {},
+      "config": {},
+      "isolation": []
+    }
+  },
+  "flows": {
+    "80aba115-1da5-5b76-af7d-a43157dcc41b": {
+      "use": {
+        "resource::http": "http1",
+        "resource::kv": "kv1"
+      }
+    }
+  },
+  "connector_handles": {
+    "auth.http_token": {
+      "provider_kind": "auth.static_bearer",
+      "handle_kind": "http.bearer",
+      "connect": {
+        "secret_ref": "S26_HTTP_BEARER"
+      },
+      "config": {},
+      "grants": {}
+    },
+    "endpoint.http_api": {
+      "provider_kind": "endpoint.profile.static",
+      "handle_kind": "endpoint.profile",
+      "connect": {},
+      "config": {
+        "base_url": "https://api.acme.example",
+        "default_headers": {
+          "Accept": "application/json"
+        }
+      },
+      "grants": {}
+    },
+    "endpoint.anywhere": {
+      "provider_kind": "endpoint.any_origin",
+      "handle_kind": "endpoint.any_origin",
+      "connect": {},
+      "config": {},
+      "grants": {}
+    }
+  },
+  "connector_connections": {
+    "http_api": {
+      "connector_id": "connector.http",
+      "roles": {
+        "endpoint_profile.http_target": "endpoint.http_api",
+        "outbound_auth.http_target_auth": "auth.http_token"
+      }
+    },
+    "anywhere": {
+      "connector_id": "connector.http",
+      "roles": {
+        "endpoint_profile.http_anywhere": "endpoint.anywhere"
+      }
+    }
+  },
+  "connector_bindings": {
+    "80aba115-1da5-5b76-af7d-a43157dcc41b": {
+      "defaults": {
+        "connector.http": "http_api"
+      },
+      "nodes": {
+        "probe_public": "anywhere"
+      },
+      "resolved_effect_hints": {
+        "fetch_product": [],
+        "push_stats": [],
+        "webhook_ping": [],
+        "probe_public": []
+      }
+    }
+  }
+}

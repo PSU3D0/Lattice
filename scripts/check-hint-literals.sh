@@ -61,6 +61,12 @@ ALLOWLIST=(
   # `provides`/`use` keys as run_schedule_s16.rs above, not NodeIR effect-hint
   # literals. Owned by the CLI packet (LOCK-BUILD/cli).
   'crates/cli/tests/run_local_s18.rs'
+  # H4 (connector.http acceptance): run_local_s26_http_longtail.rs authors the
+  # s26 connector.http bindings.lock fixture for the run + render goldens; the
+  # `resource::http`/`resource::kv` strings are the same lock manifest
+  # `provides`/`use` keys as run_schedule_s16.rs above, not NodeIR effect-hint
+  # literals. Owned by the CLI packet (LOCK-BUILD/cli).
+  'crates/cli/tests/run_local_s26_http_longtail.rs'
   # N4-T3 (clone): run_local_s22.rs authors the s22 sheets+llm+slack
   # bindings.lock fixture for the webhook-trigger golden; the
   # `resource::http`/`resource::kv` strings are the same lock manifest

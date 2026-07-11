@@ -3015,6 +3015,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-s26-http-longtail"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "cap-http-reqwest",
+ "capabilities",
+ "connector_http",
+ "connectors-std",
+ "dag-core",
+ "dag-macros",
+ "host-inproc",
+ "httpmock",
+ "kernel-exec",
+ "kernel-plan",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "example-s3-branching"
 version = "0.1.0"
 dependencies = [
@@ -3332,6 +3352,7 @@ dependencies = [
  "example-s23-crm-event-notify",
  "example-s24-lead-intake-verify",
  "example-s25-form-feedback-summary",
+ "example-s26-http-longtail",
  "example-s3-branching",
  "example-s4-preflight",
  "example-s5-unsupported-surface",

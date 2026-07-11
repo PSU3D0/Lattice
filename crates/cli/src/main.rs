@@ -89,6 +89,8 @@ use example_s23_crm_event_notify as s23_crm_event_notify;
 use example_s24_lead_intake_verify as s24_lead_intake_verify;
 #[cfg(feature = "example-s25")]
 use example_s25_form_feedback_summary as s25_form_feedback_summary;
+#[cfg(feature = "example-s26")]
+use example_s26_http_longtail as s26_http_longtail;
 
 mod bundle;
 mod deploy;
@@ -3943,6 +3945,8 @@ pub(crate) fn example_bundle(name: &str) -> Result<(host_inproc::FlowBundle, boo
         "s22_hydration_reminder" => (s22_hydration_reminder::bundle(), false),
         #[cfg(feature = "example-s24")]
         "s24_lead_intake_verify" => (s24_lead_intake_verify::bundle(), false),
+        #[cfg(feature = "example-s26")]
+        "s26_http_longtail" => (s26_http_longtail::bundle(), false),
         other => return Err(anyhow!("unknown example `{other}`")),
     };
 
