@@ -100,7 +100,7 @@ Example feature gating:
 
 ```toml
 [dependencies]
-latticeflow-stdlib = { version = "0.1", features = ["timer", "hitl", "workspace"] }
+latticeflow-stdlib = { version = "0.1", features = ["timer", "callback", "workspace"] }
 ```
 
 Only explicitly referenced modules are linked, enabling dead-code elimination.
