@@ -1,0 +1,116 @@
+{
+  "schema_version": "0.1",
+  "flow": {
+    "id": "00000000-0000-5000-8000-0000000000f0",
+    "name": "http_longtail_demo_flow",
+    "version": "1.0.0"
+  },
+  "profile": "web",
+  "effects": {
+    "union": [
+      "resource::http::read",
+      "resource::http::write"
+    ],
+    "families": [
+      "resource::http"
+    ],
+    "per_node": {
+      "fetch_crm": ["resource::http::read"],
+      "push_stats": ["resource::http::write"],
+      "fetch_public": ["resource::http::read"]
+    }
+  },
+  "connectors": [
+    {
+      "connector_id": "connector.http",
+      "operations": [
+        {
+          "operation_id": "connector.http.get",
+          "roles": [
+            {
+              "kind": "endpoint_profile",
+              "name": "http_target",
+              "expected_handle_kind": "endpoint.profile"
+            },
+            {
+              "kind": "outbound_auth",
+              "name": "http_target_auth",
+              "expected_handle_kind": "http.bearer",
+              "required": false
+            }
+          ],
+          "supported_resolution_modes": ["bound_connection"],
+          "default_resolution_mode": "bound_connection",
+          "selected_resolution_modes": ["bound_connection"],
+          "requires_bound_connection": true,
+          "nodes": ["fetch_crm"]
+        },
+        {
+          "operation_id": "connector.http.post",
+          "roles": [
+            {
+              "kind": "endpoint_profile",
+              "name": "http_target",
+              "expected_handle_kind": "endpoint.profile"
+            },
+            {
+              "kind": "outbound_auth",
+              "name": "http_target_auth",
+              "expected_handle_kind": "http.bearer",
+              "required": false
+            }
+          ],
+          "supported_resolution_modes": ["bound_connection"],
+          "default_resolution_mode": "bound_connection",
+          "selected_resolution_modes": ["bound_connection"],
+          "requires_bound_connection": true,
+          "nodes": ["push_stats"]
+        },
+        {
+          "operation_id": "connector.http.get_any_origin",
+          "roles": [
+            {
+              "kind": "endpoint_profile",
+              "name": "http_anywhere",
+              "expected_handle_kind": "endpoint.any_origin"
+            }
+          ],
+          "supported_resolution_modes": ["bound_connection"],
+          "default_resolution_mode": "bound_connection",
+          "selected_resolution_modes": ["bound_connection"],
+          "requires_bound_connection": true,
+          "nodes": ["fetch_public"]
+        }
+      ]
+    }
+  ],
+  "durability": {
+    "mode": "off",
+    "has_halting_nodes": false,
+    "needs_checkpoint_store": false,
+    "needs_resume_scheduler": false,
+    "needs_resume_signal_source": false,
+    "needs_checkpoint_blob_store": false
+  },
+  "triggers": [
+    {
+      "alias": "trigger",
+      "identifier": "http_longtail_demo::http_trigger",
+      "kind": "http"
+    }
+  ],
+  "entrypoints": [
+    {
+      "trigger_alias": "trigger",
+      "capture_alias": "capture",
+      "route_path": "/run",
+      "method": "POST",
+      "route_aliases": ["/run"]
+    }
+  ],
+  "host": {
+    "requires_wasm32_compatibility": false,
+    "requires_connector_runtime": true,
+    "has_subflows": false
+  }
+}

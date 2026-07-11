@@ -71,10 +71,18 @@ run = "cd crates/host-workers/workerd-tests && npm ci && npm test"
 description = "Run Miniflare render->run proof harness (rendered wrangler.toml: fetch + cron)"
 run = "cd crates/host-workers/render-proof-tests && npm ci && npm test"
 
+[tasks.test-wasm-cap-http-workers-harness]
+description = "Run Miniflare/workerd cap-http-workers harness (includes the redirect-off proof, packet H2a)"
+run = "cd crates/cap-http-workers/workerd-tests && npm ci && npm test"
+
 [tasks.test-npm-suites]
-description = "Run BOTH host-workers npm suites (workerd-tests + render-proof-tests); the CI npm-suites job"
-depends = ["test-wasm-host-workers-harness", "test-wasm-render-proof-harness"]
-run = "echo finished host-workers npm suites"
+description = "Run every workerd npm suite (host-workers workerd-tests + render-proof-tests + cap-http-workers workerd-tests); the CI npm-suites job"
+depends = [
+    "test-wasm-host-workers-harness",
+    "test-wasm-render-proof-harness",
+    "test-wasm-cap-http-workers-harness",
+]
+run = "echo finished workerd npm suites"
 
 [tasks.validate-wasm]
 description = "Wasm lane validation checks for CI"

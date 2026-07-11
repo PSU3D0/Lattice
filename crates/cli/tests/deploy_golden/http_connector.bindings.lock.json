@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "generated_at": "1970-01-01T00:00:00Z",
+  "content_hash": "",
+  "instances": {},
+  "flows": {
+    "00000000-0000-5000-8000-0000000000f0": { "use": {} }
+  },
+  "connector_handles": {
+    "auth.crm_token": {
+      "provider_kind": "auth.static_bearer",
+      "handle_kind": "http.bearer",
+      "connect": { "secret_ref": "CRM_TOKEN" },
+      "config": {},
+      "grants": {}
+    },
+    "endpoint.anywhere": {
+      "provider_kind": "endpoint.any_origin",
+      "handle_kind": "endpoint.any_origin",
+      "connect": {},
+      "config": {},
+      "grants": {}
+    },
+    "endpoint.crm_api": {
+      "provider_kind": "endpoint.profile.static",
+      "handle_kind": "endpoint.profile",
+      "connect": {},
+      "config": {
+        "base_url": "https://api.crm.example",
+        "default_headers": { "Accept": "application/json" }
+      },
+      "grants": {}
+    }
+  },
+  "connector_connections": {
+    "anywhere": {
+      "connector_id": "connector.http",
+      "roles": {
+        "endpoint_profile.http_anywhere": "endpoint.anywhere"
+      }
+    },
+    "crm_api": {
+      "connector_id": "connector.http",
+      "roles": {
+        "endpoint_profile.http_target": "endpoint.crm_api",
+        "outbound_auth.http_target_auth": "auth.crm_token"
+      }
+    }
+  },
+  "connector_bindings": {
+    "00000000-0000-5000-8000-0000000000f0": {
+      "defaults": { "connector.http": "crm_api" },
+      "nodes": { "fetch_public": "anywhere" },
+      "resolved_effect_hints": {
+        "fetch_crm": [],
+        "push_stats": [],
+        "fetch_public": []
+      }
+    }
+  }
+}

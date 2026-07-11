@@ -100,6 +100,86 @@ fn fixture_arg(name: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// bindings.lock content_hash helpers. The lock's `content_hash` is the sha256
+// of the canonical JSON of the lock with `content_hash` removed (matches
+// `compute_lock_content_hash` in main.rs). Tests build a lock, stamp the real
+// hash, then write it to a temp dir — so the render path's hash verification
+// (folded in with H3) accepts a well-formed lock and rejects a tampered one.
+// ---------------------------------------------------------------------------
+
+fn sha256_hex(payload: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(payload.as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn canonical_json_for_test(value: &serde_json::Value) -> String {
+    use serde_json::Value;
+    match value {
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
+            serde_json::to_string(value).expect("json")
+        }
+        Value::Array(values) => {
+            let mut out = String::from("[");
+            for (index, item) in values.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                out.push_str(&canonical_json_for_test(item));
+            }
+            out.push(']');
+            out
+        }
+        Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            let mut out = String::from("{");
+            for (index, key) in keys.into_iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                out.push_str(&serde_json::to_string(key).expect("json key"));
+                out.push(':');
+                out.push_str(&canonical_json_for_test(map.get(key).expect("present")));
+            }
+            out.push('}');
+            out
+        }
+    }
+}
+
+/// Stamp the correct `content_hash` into a lock value (hash computed over the
+/// lock WITHOUT the `content_hash` field).
+fn stamp_content_hash(lock: &mut serde_json::Value) {
+    let mut without_hash = lock.clone();
+    if let Some(obj) = without_hash.as_object_mut() {
+        obj.remove("content_hash");
+    }
+    let hash = sha256_hex(&canonical_json_for_test(&without_hash));
+    lock["content_hash"] = serde_json::json!(hash);
+}
+
+/// Write a lock value (stamped with a valid `content_hash`) to a temp dir and
+/// return its path (plus the owning tempdir, which must stay alive).
+fn write_valid_lock(lock: &serde_json::Value) -> (tempfile::TempDir, PathBuf) {
+    let mut lock = lock.clone();
+    stamp_content_hash(&mut lock);
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("bindings.lock.json");
+    fs::write(
+        &path,
+        serde_json::to_vec_pretty(&lock).expect("serialize lock"),
+    )
+    .expect("write lock");
+    (temp, path)
+}
+
+// ---------------------------------------------------------------------------
 // Golden: s1_echo — http-only flow, near-empty bindings (just the durability
 // checkpoint store Durable Object; outbound HTTP is ambient on Workers).
 // ---------------------------------------------------------------------------
@@ -508,28 +588,21 @@ fn size_budget_fails_free_tier_and_warns_paid() {
 // ---------------------------------------------------------------------------
 #[test]
 fn bindings_lock_instance_id_replaces_placeholder() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let lock_path = temp.path().join("bindings.lock.json");
-    fs::write(
-        &lock_path,
-        serde_json::json!({
-            "version": 1,
-            "generated_at": "1970-01-01T00:00:00Z",
-            "content_hash": "0000",
-            "instances": {
-                "kv_default": {
-                    "provider_kind": "workers-kv",
-                    "provides": [
-                        dag_core::EffectHint::KvRead.as_str(),
-                        dag_core::EffectHint::KvWrite.as_str()
-                    ],
-                    "connect": { "namespace_id": "6f2ab1c3d4e5f60718293a4b5c6d7e8f" }
-                }
+    let (_lock_dir, lock_path) = write_valid_lock(&serde_json::json!({
+        "version": 1,
+        "generated_at": "1970-01-01T00:00:00Z",
+        "content_hash": "",
+        "instances": {
+            "kv_default": {
+                "provider_kind": "workers-kv",
+                "provides": [
+                    dag_core::EffectHint::KvRead.as_str(),
+                    dag_core::EffectHint::KvWrite.as_str()
+                ],
+                "connect": { "namespace_id": "6f2ab1c3d4e5f60718293a4b5c6d7e8f" }
             }
-        })
-        .to_string(),
-    )
-    .expect("write lock");
+        }
+    }));
 
     let requirements = fixture_arg("kv_blob.requirements.json");
     let (rendered, _notes) = render_ok(&[
@@ -562,4 +635,128 @@ fn custom_name_overrides_derived_worker_name() {
     let services = parsed["services"].as_array().expect("services");
     assert_eq!(services[0]["service"].as_str(), Some("repro-w1"));
     assert!(rendered.contains("wrangler r2 bucket create repro-w1-workspace"));
+}
+
+// ---------------------------------------------------------------------------
+// connector.http origin-audit (packet H3, spec §8): a connector.http flow with
+// one Tier-0 authed connection (GET + POST) and one Tier-2 unauthenticated
+// any-origin GET. `resource::http` is Ambient on Workers (no binding emitted),
+// but the renderer must emit one origin-audit NOTE per bound connector.http
+// node — naming the endpoint origin, or ANY-ORIGIN for the Tier-2 grant — plus
+// a Tier-2 warning line naming every any-origin node. The bindings.lock encodes
+// the verified flat `nodes: {alias -> connection}` override map (F5).
+// ---------------------------------------------------------------------------
+#[test]
+fn http_connector_renders_origin_audit_and_tier2_warning() {
+    let requirements = fixture_arg("http_connector.requirements.json");
+    let lock_fixture: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(fixture_root().join("http_connector.bindings.lock.json"))
+            .expect("read http lock fixture"),
+    )
+    .expect("parse http lock fixture");
+    let (_lock_dir, lock_path) = write_valid_lock(&lock_fixture);
+
+    let (rendered, notes) = render_ok(&[
+        "--requirements",
+        &requirements,
+        "--bindings-lock",
+        lock_path.to_str().expect("lock path"),
+    ]);
+    assert_matches_golden(&rendered, "http_connector.wrangler.toml.golden");
+
+    // `resource::http` is Ambient: no kv/d1/r2/DO binding emitted for it.
+    let parsed = parse_toml(&rendered, "http_connector render");
+    assert!(parsed.get("kv_namespaces").is_none());
+    assert!(parsed.get("d1_databases").is_none());
+    assert!(parsed.get("r2_buckets").is_none());
+    assert!(parsed.get("durable_objects").is_none());
+
+    // Origin-audit NOTES: Tier-0 nodes name the fixed origin; the Tier-2 node
+    // renders ANY-ORIGIN. Node aliases are emitted in sorted order.
+    assert!(
+        rendered.contains(
+            "connector.http origin-audit: node `fetch_crm` (connection `crm_api`) -> origin https://api.crm.example"
+        ),
+        "missing fetch_crm origin audit:\n{rendered}"
+    );
+    assert!(
+        rendered.contains(
+            "connector.http origin-audit: node `push_stats` (connection `crm_api`) -> origin https://api.crm.example"
+        ),
+        "missing push_stats origin audit:\n{rendered}"
+    );
+    assert!(
+        rendered.contains(
+            "connector.http origin-audit: node `fetch_public` (connection `anywhere`) -> ANY-ORIGIN (Tier 2, unauthenticated)"
+        ),
+        "missing fetch_public any-origin audit:\n{rendered}"
+    );
+
+    // Tier-2 warning names exactly the any-origin node.
+    assert!(
+        rendered
+            .contains("connector.http Tier-2 (any-origin) grant present — node(s) fetch_public"),
+        "missing Tier-2 warning:\n{rendered}"
+    );
+    // The same notes reach stderr (the operator-facing channel).
+    assert!(
+        notes.contains("origin-audit: node `fetch_public`"),
+        "{notes}"
+    );
+    assert!(
+        notes.contains("Tier-2 (any-origin) grant present"),
+        "{notes}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// content_hash on render (packet H3 follow-up): the run path verifies the
+// lock's content_hash; render now does too, so a tampered lock fails render the
+// same way it fails run.
+// ---------------------------------------------------------------------------
+#[test]
+fn render_rejects_tampered_bindings_lock_content_hash() {
+    let requirements = fixture_arg("http_connector.requirements.json");
+    let mut lock: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(fixture_root().join("http_connector.bindings.lock.json"))
+            .expect("read http lock fixture"),
+    )
+    .expect("parse http lock fixture");
+
+    // Stamp the correct hash, THEN tamper an origin: the recorded hash no
+    // longer matches the (now-rewritten) content.
+    stamp_content_hash(&mut lock);
+    lock["connector_handles"]["endpoint.crm_api"]["config"]["base_url"] =
+        serde_json::json!("https://evil.example");
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let lock_path = temp.path().join("bindings.lock.json");
+    fs::write(
+        &lock_path,
+        serde_json::to_vec_pretty(&lock).expect("serialize lock"),
+    )
+    .expect("write tampered lock");
+
+    let out = temp.path().join("deploy");
+    let output = run_render(&[
+        "--requirements",
+        &requirements,
+        "--bindings-lock",
+        lock_path.to_str().expect("lock path"),
+        "--out",
+        out.to_str().expect("out"),
+    ]);
+    assert!(
+        !output.status.success(),
+        "a tampered lock must fail render, not render silently"
+    );
+    assert!(
+        !out.join("wrangler.toml").exists(),
+        "no wrangler.toml may be written when the lock is rejected"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("content_hash mismatch"),
+        "render must reject the tampered lock with a content_hash mismatch: {stderr}"
+    );
 }

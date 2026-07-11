@@ -3170,9 +3170,33 @@ impl ConnectorRuntime for BindingsLockConnectorRuntime {
         request: &mut capabilities::http::HttpRequest,
     ) -> Result<(), ConnectorRuntimeError> {
         let role_key = format!("outbound_auth.{}", profile.name);
-        let (handle_name, handle) = self
-            .resolve_role_handle(scope, &role_key)
+
+        // Role satisfaction (spec §7, packet H3). A bound connection that does
+        // NOT bind this outbound-auth role surfaces `MissingAuthOverride`, not
+        // a hard Provider error. That is the same signal the dev adapter emits
+        // when an auth env override is absent, and it lets `required: false`
+        // (optional) roles be legitimately unbound: the connector.http
+        // transport treats `MissingAuthOverride` as "no auth" and proceeds
+        // unauthenticated, while a required-auth connector's transport
+        // propagates it and fails closed. A bound-but-wrong-kind handle stays a
+        // hard failure (below). The endpoint-profile role remains required and
+        // still fails closed via `resolve_role_handle` in
+        // `resolve_endpoint_profile`.
+        let (connection_name, connection) = self
+            .resolve_bound_connection(scope)
             .map_err(ConnectorRuntimeError::Provider)?;
+        let Some(handle_name) = connection.roles.get(&role_key) else {
+            return Err(ConnectorRuntimeError::MissingAuthOverride {
+                role_name: profile.name,
+                env_var: profile.env_var,
+            });
+        };
+        let handle = self.handles.get(handle_name).ok_or_else(|| {
+            ConnectorRuntimeError::Provider(anyhow!(
+                "connector connection `{connection_name}` references unknown handle `{handle_name}`"
+            ))
+        })?;
+        let handle_name = handle_name.as_str();
         if handle.handle_kind != profile.kind.handle_kind() {
             return Err(ConnectorRuntimeError::Provider(anyhow!(
                 "connector handle `{handle_name}` has handle_kind `{}` but role `{}` expects `{}`",
@@ -5069,6 +5093,118 @@ RGKOKF9RKKgFGiXk5I97qQ==
         assert!(msg.contains("HTTP003"), "{msg}");
         assert!(msg.contains("endpoint.anywhere"), "{msg}");
         assert!(msg.contains("auth.stray_token"), "{msg}");
+    }
+
+    /// Optional-role satisfaction (spec §7, packet H3): a connector.http
+    /// connection that binds only the REQUIRED endpoint-profile role (no
+    /// `outbound_auth.http_target_auth`) is legal — a GET with no auth. The
+    /// runtime surfaces the unbound optional role as `MissingAuthOverride`, the
+    /// same signal the dev adapter emits, which the connector.http transport
+    /// treats as "no auth". A REQUIRED role left unbound still fails closed.
+    #[test]
+    fn connector_http_optional_auth_role_unbound_is_missing_override_not_hard_error() {
+        let flow_id = "test-flow";
+        let runtime = connector_runtime_from_json(
+            json!({
+                "version": 1,
+                "generated_at": "2025-12-15T00:00:00Z",
+                "content_hash": "",
+                "instances": {},
+                "flows": { flow_id: { "use": {} } },
+                "connector_handles": {
+                    "endpoint.crm_api": {
+                        "provider_kind": "endpoint.profile.static",
+                        "handle_kind": "endpoint.profile",
+                        "connect": {},
+                        "config": { "base_url": "https://api.crm.example" },
+                        "grants": {}
+                    }
+                },
+                "connector_connections": {
+                    // Binds ONLY the required endpoint role; no outbound-auth.
+                    "crm_api": {
+                        "connector_id": "connector.http",
+                        "roles": {
+                            "endpoint_profile.http_target": "endpoint.crm_api"
+                        }
+                    }
+                },
+                "connector_bindings": {
+                    flow_id: {
+                        "defaults": { "connector.http": "crm_api" },
+                        "nodes": {}
+                    }
+                }
+            }),
+            flow_id,
+        );
+        let auth_profile = OutboundAuthProfileDescriptor {
+            connector_id: "connector.http",
+            name: "http_target_auth",
+            env_var: "LATTICE_CONNECTOR_AUTH_HTTP_TARGET_AUTH",
+            kind: OutboundAuthKind::Bearer {
+                handle_kind: "http.bearer",
+            },
+        };
+        let mut request = capabilities::http::HttpRequest::new(
+            capabilities::http::HttpMethod::Get,
+            "https://api.crm.example/v1/items",
+        );
+
+        let rt = RuntimeBuilder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+
+        // Optional outbound-auth role unbound -> MissingAuthOverride (the
+        // swallow-able signal), NOT a Provider hard error.
+        let err = rt
+            .block_on(runtime.apply_outbound_auth(
+                &connector_scope(flow_id, "fetch_crm", "connector.http"),
+                &auth_profile,
+                &mut request,
+            ))
+            .expect_err("unbound optional role must surface MissingAuthOverride");
+        assert!(
+            matches!(err, ConnectorRuntimeError::MissingAuthOverride { .. }),
+            "expected MissingAuthOverride, got: {err:?}"
+        );
+
+        // The REQUIRED endpoint-profile role IS bound: it resolves cleanly.
+        let endpoint_profile = EndpointProfileDescriptor {
+            connector_id: "connector.http",
+            name: "http_target",
+            env_base_url_var: "LATTICE_CONNECTOR_ENDPOINT_HTTP_TARGET_BASE_URL",
+            base_url: "https://ignored.example.test",
+            default_headers: &[],
+        };
+        let resolved = rt
+            .block_on(runtime.resolve_endpoint_profile(
+                &connector_scope(flow_id, "fetch_crm", "connector.http"),
+                &endpoint_profile,
+            ))
+            .expect("required endpoint role resolves");
+        assert_eq!(resolved.base_url, "https://api.crm.example");
+
+        // A REQUIRED role that is NOT bound still fails closed (here: a
+        // different, unbound endpoint-profile role name).
+        let unbound_required = EndpointProfileDescriptor {
+            connector_id: "connector.http",
+            name: "http_anywhere",
+            env_base_url_var: "LATTICE_CONNECTOR_ENDPOINT_HTTP_ANYWHERE_BASE_URL",
+            base_url: "https://ignored.example.test",
+            default_headers: &[],
+        };
+        let err = rt
+            .block_on(runtime.resolve_endpoint_profile(
+                &connector_scope(flow_id, "fetch_crm", "connector.http"),
+                &unbound_required,
+            ))
+            .expect_err("unbound required endpoint role must fail closed");
+        assert!(
+            err.to_string().contains("does not bind required role"),
+            "required role must fail closed: {err}"
+        );
     }
 
     #[test]

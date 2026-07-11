@@ -1,7 +1,7 @@
 {
   "version": 1,
   "generated_at": "1970-01-01T00:00:00Z",
-  "content_hash": "0000",
+  "content_hash": "24c848cf823cf3797b15f07ab0f65156a34d27f995cfbf0bc2e8390f2eef8e9e",
   "instances": {
     "kv_cron_proof": {
       "provider_kind": "workers-kv",

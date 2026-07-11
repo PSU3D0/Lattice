@@ -204,9 +204,13 @@ fn requirements_from_file(path: &Path) -> Result<FlowRequirements> {
 }
 
 fn load_bindings_lock(path: &Path) -> Result<BindingsLock> {
-    let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
-    serde_json::from_slice(&bytes)
-        .with_context(|| format!("{} is not a valid bindings.lock.json", path.display()))
+    // Verify `content_hash` (+ version + generated_at) exactly as the run path
+    // does — `flows deploy render` previously only deserialized the lock, so a
+    // tampered lock rendered without complaint even though `flows run` rejects
+    // it (noted across Phase 1: s16/s20/s25). Fold the check into render so a
+    // tampered lock fails render the same way it fails run. This matters more
+    // now that origin grants (§8) are security-relevant.
+    crate::load_bindings_lock(path)
 }
 
 /// Locate the wasm artifact to size-check: explicit `--wasm-artifact` wins;
@@ -478,6 +482,96 @@ fn lock_resolved_hints(
         resolved.insert(alias.clone(), parsed_set);
     }
     Ok(resolved)
+}
+
+/// connector.http origin-audit (spec §8): the planner-v0 reachable-origin
+/// line. For a flow bound to `connector.http` connections, emit one NOTES line
+/// per bound node stating which endpoint origin it can reach (from the lock's
+/// `endpoint.profile` handle `config.base_url`), or `ANY-ORIGIN (Tier 2,
+/// unauthenticated)` for a Tier-2 `endpoint.any_origin` grant. The per-node
+/// connection is resolved through the verified flat `nodes: {alias ->
+/// connection}` override map, falling back to the `connector.http` default
+/// (main.rs `resolve_connection_name`). Output is deterministic (node aliases
+/// sorted). Returns `(audit_lines, tier2_node_aliases)`.
+fn connector_http_origin_audit(
+    requirements: &FlowRequirements,
+    lock: Option<&BindingsLock>,
+) -> (Vec<String>, Vec<String>) {
+    let mut audit: Vec<String> = Vec::new();
+    let mut tier2_nodes: Vec<String> = Vec::new();
+    let Some(lock) = lock else {
+        return (audit, tier2_nodes);
+    };
+    let flow_id = requirements.flow.id.as_str();
+    let Some(bindings) = lock
+        .connector_bindings
+        .get(flow_id)
+        .or_else(|| lock.connector_bindings.get(&requirements.flow.name))
+    else {
+        return (audit, tier2_nodes);
+    };
+
+    // Every bound node alias: per-node overrides plus the recorded
+    // resolved-hint aliases (the full set of bound-connection nodes, packet
+    // C2). BTreeSet keys keep the emission order deterministic.
+    let mut aliases: BTreeSet<&String> = BTreeSet::new();
+    aliases.extend(bindings.nodes.keys());
+    aliases.extend(bindings.resolved_effect_hints.keys());
+
+    for alias in aliases {
+        // Per-node override wins, else the connector.http default.
+        let Some(connection_name) = bindings
+            .nodes
+            .get(alias)
+            .or_else(|| bindings.defaults.get("connector.http"))
+        else {
+            continue;
+        };
+        let Some(connection) = lock.connector_connections.get(connection_name) else {
+            continue;
+        };
+        if connection.connector_id != "connector.http" {
+            continue;
+        }
+
+        // Classify the endpoint-profile role's handle: a Tier-2
+        // `endpoint.any_origin` grant, or a Tier-0/1 fixed origin.
+        let mut any_origin = false;
+        let mut origin: Option<String> = None;
+        for (role_key, handle_name) in &connection.roles {
+            if !role_key.starts_with("endpoint_profile.") {
+                continue;
+            }
+            let Some(handle) = lock.connector_handles.get(handle_name) else {
+                continue;
+            };
+            if handle.handle_kind == "endpoint.any_origin" {
+                any_origin = true;
+            } else if handle.handle_kind == "endpoint.profile" {
+                origin = handle
+                    .config
+                    .get("base_url")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string);
+            }
+        }
+
+        if any_origin {
+            audit.push(format!(
+                "connector.http origin-audit: node `{alias}` (connection `{connection_name}`) \
+                 -> ANY-ORIGIN (Tier 2, unauthenticated)"
+            ));
+            tier2_nodes.push(alias.clone());
+        } else {
+            let origin = origin.unwrap_or_else(|| "<unresolved origin>".to_string());
+            audit.push(format!(
+                "connector.http origin-audit: node `{alias}` (connection `{connection_name}`) \
+                 -> origin {origin}"
+            ));
+        }
+    }
+
+    (audit, tier2_nodes)
 }
 
 /// Look up a string the lock may carry for an instance providing hints of
@@ -850,6 +944,22 @@ pub(crate) fn render_wrangler(
                 op.operation_id
             ));
         }
+    }
+
+    // connector.http reachable-origin audit (spec §8): `resource::http` is
+    // Ambient on Workers (no binding), but the renderer states which origin
+    // each bound connector.http node can reach — planner v0 for HTTP — and
+    // warns loudly when any Tier-2 any-origin (unauthenticated) grant is
+    // present.
+    let (http_audit, tier2_http_nodes) =
+        connector_http_origin_audit(requirements, options.lock.as_ref());
+    notes.extend(http_audit);
+    if !tier2_http_nodes.is_empty() {
+        notes.push(format!(
+            "connector.http Tier-2 (any-origin) grant present — node(s) {} can reach ANY origin \
+             with NO platform-managed credential (spec §8/§10); review before `wrangler deploy`",
+            tier2_http_nodes.join(", ")
+        ));
     }
 
     // Size budget.
