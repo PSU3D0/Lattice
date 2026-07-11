@@ -1,0 +1,257 @@
+connector:
+  id: connector.http
+  vendor: lattice
+  family: http
+  version: 0.1.0
+  crate: connector_http
+  summary: Generic HTTP request connector (long-tail escape hatch, spec http-request-node)
+
+profiles:
+  outbound_auth:
+    # Representative declaration. The connector.http transport supports the
+    # union {Bearer, ApiKeyHeader, ApiKeyQuery, Basic} chosen at lock time; the
+    # role is OPTIONAL (a request may carry no auth) and the concrete kind is
+    # lock data, not a manifest constant.
+    http_target_auth:
+      kind: bearer
+      handle_kind: http.bearer
+  endpoint_profiles:
+    # Tier 0: base_url is overridden at lock time by the bound endpoint.profile
+    # handle; the placeholder here only satisfies manifest validation.
+    http_target:
+      base_url: https://api.example.invalid
+      default_headers:
+        Accept: application/json
+    # Tier 2 (any-origin) marker: the op composes an absolute URL from data and
+    # binds no lock credential (endpoint.any_origin handle; HTTP003).
+    http_anywhere:
+      base_url: https://any-origin.invalid
+      default_headers: {}
+  provisioning_auth: {}
+  inbound_verifiers: {}
+
+types:
+  HttpReadInput:
+    kind: object
+    fields:
+      path:
+        type: string
+      query:
+        type: json
+        optional: true
+        escape_hatch_reason: Query pairs are runtime data (percent-encoded via append_query_pair); no static schema by design (spec §3).
+      headers:
+        type: json
+        optional: true
+        escape_hatch_reason: Header name/value pairs are runtime data validated by the §10 denylist and CR/LF checks; no static schema by design.
+      target:
+        type: string
+        optional: true
+  HttpWriteInput:
+    kind: object
+    fields:
+      path:
+        type: string
+      query:
+        type: json
+        optional: true
+        escape_hatch_reason: Query pairs are runtime data (percent-encoded via append_query_pair); no static schema by design (spec §3).
+      headers:
+        type: json
+        optional: true
+        escape_hatch_reason: Header name/value pairs are runtime data validated by the §10 denylist and CR/LF checks; no static schema by design.
+      body:
+        type: json
+        optional: true
+        escape_hatch_reason: JSON request body is caller-authored payload (spec §3); the node does not impose a body schema.
+      target:
+        type: string
+        optional: true
+  HttpReadAnyOriginInput:
+    kind: object
+    fields:
+      url:
+        type: string
+      query:
+        type: json
+        optional: true
+        escape_hatch_reason: Query pairs are runtime data (percent-encoded via append_query_pair); no static schema by design (spec §3).
+      headers:
+        type: json
+        optional: true
+        escape_hatch_reason: Header name/value pairs are runtime data validated by the §10 denylist and CR/LF checks; no static schema by design.
+  HttpWriteAnyOriginInput:
+    kind: object
+    fields:
+      url:
+        type: string
+      query:
+        type: json
+        optional: true
+        escape_hatch_reason: Query pairs are runtime data (percent-encoded via append_query_pair); no static schema by design (spec §3).
+      headers:
+        type: json
+        optional: true
+        escape_hatch_reason: Header name/value pairs are runtime data validated by the §10 denylist and CR/LF checks; no static schema by design.
+      body:
+        type: json
+        optional: true
+        escape_hatch_reason: JSON request body is caller-authored payload (spec §3); the node does not impose a body schema.
+  HttpJsonOutput:
+    kind: object
+    fields:
+      body:
+        type: json
+        escape_hatch_reason: The default response mode returns the decoded 2xx JSON body verbatim (spec §5); typed decoding is invoke_typed.
+
+surfaces:
+  - kind: action
+    identifier: connector.http.get
+    name: HttpGet
+    summary: HTTP GET against a lock-bound origin (Tier 0, ReadOnly)
+    input: HttpReadInput
+    output: HttpJsonOutput
+    auth: http_target_auth
+    endpoint: http_target
+    effects: ReadOnly
+    determinism: BestEffort
+    resources:
+      - http_read(capabilities::http::HttpRead)
+    implementation: handwritten_semantic
+  - kind: action
+    identifier: connector.http.head
+    name: HttpHead
+    summary: HTTP HEAD against a lock-bound origin (Tier 0, ReadOnly)
+    input: HttpReadInput
+    output: HttpJsonOutput
+    auth: http_target_auth
+    endpoint: http_target
+    effects: ReadOnly
+    determinism: BestEffort
+    resources:
+      - http_read(capabilities::http::HttpRead)
+    implementation: handwritten_semantic
+  - kind: action
+    identifier: connector.http.post
+    name: HttpPost
+    summary: HTTP POST against a lock-bound origin (Tier 0, Effectful)
+    input: HttpWriteInput
+    output: HttpJsonOutput
+    auth: http_target_auth
+    endpoint: http_target
+    effects: Effectful
+    determinism: BestEffort
+    resources:
+      - http_write(capabilities::http::HttpWrite)
+    implementation: handwritten_semantic
+  - kind: action
+    identifier: connector.http.put
+    name: HttpPut
+    summary: HTTP PUT against a lock-bound origin (Tier 0, Effectful)
+    input: HttpWriteInput
+    output: HttpJsonOutput
+    auth: http_target_auth
+    endpoint: http_target
+    effects: Effectful
+    determinism: BestEffort
+    resources:
+      - http_write(capabilities::http::HttpWrite)
+    implementation: handwritten_semantic
+  - kind: action
+    identifier: connector.http.patch
+    name: HttpPatch
+    summary: HTTP PATCH against a lock-bound origin (Tier 0, Effectful)
+    input: HttpWriteInput
+    output: HttpJsonOutput
+    auth: http_target_auth
+    endpoint: http_target
+    effects: Effectful
+    determinism: BestEffort
+    resources:
+      - http_write(capabilities::http::HttpWrite)
+    implementation: handwritten_semantic
+  - kind: action
+    identifier: connector.http.delete
+    name: HttpDelete
+    summary: HTTP DELETE against a lock-bound origin (Tier 0, Effectful)
+    input: HttpWriteInput
+    output: HttpJsonOutput
+    auth: http_target_auth
+    endpoint: http_target
+    effects: Effectful
+    determinism: BestEffort
+    resources:
+      - http_write(capabilities::http::HttpWrite)
+    implementation: handwritten_semantic
+  - kind: action
+    identifier: connector.http.get_any_origin
+    name: HttpGetAnyOrigin
+    summary: HTTP GET against a runtime-supplied absolute URL (Tier 2, no lock auth)
+    input: HttpReadAnyOriginInput
+    output: HttpJsonOutput
+    endpoint: http_anywhere
+    effects: ReadOnly
+    determinism: BestEffort
+    resources:
+      - http_read(capabilities::http::HttpRead)
+    implementation: handwritten_semantic
+  - kind: action
+    identifier: connector.http.head_any_origin
+    name: HttpHeadAnyOrigin
+    summary: HTTP HEAD against a runtime-supplied absolute URL (Tier 2, no lock auth)
+    input: HttpReadAnyOriginInput
+    output: HttpJsonOutput
+    endpoint: http_anywhere
+    effects: ReadOnly
+    determinism: BestEffort
+    resources:
+      - http_read(capabilities::http::HttpRead)
+    implementation: handwritten_semantic
+  - kind: action
+    identifier: connector.http.post_any_origin
+    name: HttpPostAnyOrigin
+    summary: HTTP POST against a runtime-supplied absolute URL (Tier 2, no lock auth)
+    input: HttpWriteAnyOriginInput
+    output: HttpJsonOutput
+    endpoint: http_anywhere
+    effects: Effectful
+    determinism: BestEffort
+    resources:
+      - http_write(capabilities::http::HttpWrite)
+    implementation: handwritten_semantic
+  - kind: action
+    identifier: connector.http.put_any_origin
+    name: HttpPutAnyOrigin
+    summary: HTTP PUT against a runtime-supplied absolute URL (Tier 2, no lock auth)
+    input: HttpWriteAnyOriginInput
+    output: HttpJsonOutput
+    endpoint: http_anywhere
+    effects: Effectful
+    determinism: BestEffort
+    resources:
+      - http_write(capabilities::http::HttpWrite)
+    implementation: handwritten_semantic
+  - kind: action
+    identifier: connector.http.patch_any_origin
+    name: HttpPatchAnyOrigin
+    summary: HTTP PATCH against a runtime-supplied absolute URL (Tier 2, no lock auth)
+    input: HttpWriteAnyOriginInput
+    output: HttpJsonOutput
+    endpoint: http_anywhere
+    effects: Effectful
+    determinism: BestEffort
+    resources:
+      - http_write(capabilities::http::HttpWrite)
+    implementation: handwritten_semantic
+  - kind: action
+    identifier: connector.http.delete_any_origin
+    name: HttpDeleteAnyOrigin
+    summary: HTTP DELETE against a runtime-supplied absolute URL (Tier 2, no lock auth)
+    input: HttpWriteAnyOriginInput
+    output: HttpJsonOutput
+    endpoint: http_anywhere
+    effects: Effectful
+    determinism: BestEffort
+    resources:
+      - http_write(capabilities::http::HttpWrite)
+    implementation: handwritten_semantic

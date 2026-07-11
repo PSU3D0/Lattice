@@ -81,6 +81,11 @@ pub enum OutboundAuthKind {
         query_name: &'static str,
         handle_kind: &'static str,
     },
+    /// HTTP Basic auth: one `http.basic` secret handle stores `user:pass`,
+    /// applied as `Authorization: Basic base64(user:pass)` (spec §7, Q2).
+    Basic {
+        handle_kind: &'static str,
+    },
     Unsupported {
         kind_name: &'static str,
         handle_kind: &'static str,
@@ -93,6 +98,7 @@ impl OutboundAuthKind {
             OutboundAuthKind::Bearer { .. } => "bearer",
             OutboundAuthKind::ApiKeyHeader { .. } => "api_key_header",
             OutboundAuthKind::ApiKeyQuery { .. } => "api_key_query",
+            OutboundAuthKind::Basic { .. } => "basic",
             OutboundAuthKind::Unsupported { kind_name, .. } => kind_name,
         }
     }
@@ -102,6 +108,7 @@ impl OutboundAuthKind {
             OutboundAuthKind::Bearer { handle_kind }
             | OutboundAuthKind::ApiKeyHeader { handle_kind, .. }
             | OutboundAuthKind::ApiKeyQuery { handle_kind, .. }
+            | OutboundAuthKind::Basic { handle_kind }
             | OutboundAuthKind::Unsupported { handle_kind, .. } => handle_kind,
         }
     }
@@ -215,6 +222,9 @@ enum TransportOutboundAuthKind {
         query_name: String,
         handle_kind: String,
     },
+    Basic {
+        handle_kind: String,
+    },
     Unsupported {
         kind_name: String,
         handle_kind: String,
@@ -242,6 +252,9 @@ impl From<OutboundAuthKind> for TransportOutboundAuthKind {
                 handle_kind,
             } => Self::ApiKeyQuery {
                 query_name: query_name.to_string(),
+                handle_kind: handle_kind.to_string(),
+            },
+            OutboundAuthKind::Basic { handle_kind } => Self::Basic {
                 handle_kind: handle_kind.to_string(),
             },
             OutboundAuthKind::Unsupported {

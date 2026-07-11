@@ -29,6 +29,16 @@ pub(crate) fn apply_static_outbound_auth(
         OutboundAuthKind::ApiKeyQuery { query_name, .. } => {
             append_query_pair(&mut request.url, query_name, &secret);
         }
+        OutboundAuthKind::Basic { .. } => {
+            // The `http.basic` secret handle stores `user:pass`; the wire form
+            // is `Authorization: Basic base64(user:pass)` (spec §7, Q2). A
+            // caller that already base64-encoded is out of contract.
+            use base64::Engine as _;
+            let encoded = base64::engine::general_purpose::STANDARD.encode(secret.as_bytes());
+            request
+                .headers
+                .insert("Authorization", format!("Basic {encoded}"));
+        }
         OutboundAuthKind::Unsupported { kind_name, .. } => {
             return Err(ConnectorRuntimeError::UnsupportedAuthKind {
                 role_name: profile.name,

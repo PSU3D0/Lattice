@@ -19,6 +19,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 percent-encoding = "2.3"
+base64 = "0.22"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

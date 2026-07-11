@@ -1520,6 +1520,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "connector_http"
+version = "0.1.0"
+dependencies = [
+ "cap-http-reqwest",
+ "capabilities",
+ "connector-spec",
+ "connectors-std",
+ "dag-core",
+ "dag-macros",
+ "httpmock",
+ "kernel-exec",
+ "percent-encoding",
+ "serde",
+ "serde_json",
+ "testing-harness-idem",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
 name = "connector_hunter"
 version = "0.1.0"
 dependencies = [
@@ -1633,6 +1653,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "capabilities",
  "dag-core",
  "percent-encoding",
@@ -2509,6 +2530,25 @@ dependencies = [
  "kernel-exec",
  "kernel-plan",
  "percent-encoding",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "example-connector-http-local-flow"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cap-http-reqwest",
+ "capabilities",
+ "connector_http",
+ "dag-core",
+ "dag-macros",
+ "host-inproc",
+ "httpmock",
+ "kernel-exec",
+ "kernel-plan",
  "serde",
  "serde_json",
  "tokio",

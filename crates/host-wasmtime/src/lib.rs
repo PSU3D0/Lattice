@@ -108,6 +108,9 @@ enum TransportOutboundAuthKind {
         query_name: String,
         handle_kind: String,
     },
+    Basic {
+        handle_kind: String,
+    },
     Unsupported {
         kind_name: String,
         handle_kind: String,
@@ -590,6 +593,11 @@ fn transport_auth_profile_to_descriptor(
                 query_name: leak_string(query_name),
                 handle_kind: leak_string(handle_kind),
             },
+            TransportOutboundAuthKind::Basic { handle_kind } => {
+                capabilities::connector::OutboundAuthKind::Basic {
+                    handle_kind: leak_string(handle_kind),
+                }
+            }
             TransportOutboundAuthKind::Unsupported {
                 kind_name,
                 handle_kind,

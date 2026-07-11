@@ -2291,6 +2291,17 @@ fn validate_connector_handle_provider_config(
             }
             validate_handle_secret_ref(name, handle)?;
         }
+        "auth.static_basic" => {
+            // connector.http `Basic` auth (spec §7, Q2): one `http.basic`
+            // secret handle carries `user:pass`; the runtime base64-encodes it.
+            if handle.handle_kind != "http.basic" {
+                return Err(anyhow!(
+                    "bindings.lock connector handle `{name}` uses provider_kind `auth.static_basic` but has handle_kind `{}`; expected `http.basic`",
+                    handle.handle_kind,
+                ));
+            }
+            validate_handle_secret_ref(name, handle)?;
+        }
         "auth.oauth2.refresh" => {
             if handle.handle_kind != "http.bearer" {
                 return Err(anyhow!(
@@ -2336,8 +2347,8 @@ fn validate_connector_handle_provider_config(
             return Err(anyhow!(
                 "bindings.lock connector handle `{name}` uses unknown provider_kind `{other}`; \
                  known provider kinds are `auth.static_bearer`, `auth.static_secret`, \
-                 `auth.oauth2.refresh`, `auth.service_account_jwt`, `endpoint.profile.static`, \
-                 and `endpoint.any_origin` (unknown kinds fail closed)"
+                 `auth.static_basic`, `auth.oauth2.refresh`, `auth.service_account_jwt`, \
+                 `endpoint.profile.static`, and `endpoint.any_origin` (unknown kinds fail closed)"
             ));
         }
     }
@@ -3172,7 +3183,7 @@ impl ConnectorRuntime for BindingsLockConnectorRuntime {
         }
 
         match handle.provider_kind.as_str() {
-            "auth.static_bearer" | "auth.static_secret" => {
+            "auth.static_bearer" | "auth.static_secret" | "auth.static_basic" => {
                 let secret_ref = connector_handle_secret_ref(handle_name, handle)?;
                 let secret =
                     resolve_secret_ref(secret_ref).map_err(ConnectorRuntimeError::Provider)?;
@@ -3604,6 +3615,15 @@ fn apply_static_auth_to_request(
                 &percent_encoding::utf8_percent_encode(&secret, percent_encoding::NON_ALPHANUMERIC)
                     .to_string(),
             );
+        }
+        OutboundAuthKind::Basic { .. } => {
+            // `http.basic` secret handle stores `user:pass`; wire form is
+            // `Authorization: Basic base64(user:pass)` (spec §7, Q2).
+            use base64::Engine as _;
+            let encoded = base64::engine::general_purpose::STANDARD.encode(secret.as_bytes());
+            request
+                .headers
+                .insert("Authorization", format!("Basic {encoded}"));
         }
         OutboundAuthKind::Unsupported { kind_name, .. } => {
             return Err(ConnectorRuntimeError::UnsupportedAuthKind {

@@ -49,6 +49,8 @@ members = [
   "crates/connectors/slack/core/examples/local-flow",
   "crates/connectors/llm/core",
   "crates/connectors/llm/core/examples/local-flow",
+  "crates/connectors/http",
+  "crates/connectors/http/examples/local-flow",
   "crates/dag-core",
   "crates/llm-types",
   "crates/llm-agent",
