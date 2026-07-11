@@ -1,0 +1,157 @@
+{
+  "version": 1,
+  "generated_at": "2026-07-11T00:00:00Z",
+  "content_hash": "9981cfab58a285b8ddadf46539af6792ff7f4da560ea51d86b5b759d66a39ba9",
+  "instances": {
+    "http1": {
+      "provider_kind": "http.reqwest",
+      "provides": [
+        "resource::http"
+      ],
+      "connect": {},
+      "config": {},
+      "isolation": []
+    },
+    "kv1": {
+      "provider_kind": "kv.memory",
+      "provides": [
+        "resource::kv"
+      ],
+      "connect": {},
+      "config": {},
+      "isolation": []
+    }
+  },
+  "flows": {
+    "fd3124b6-57eb-54ec-80ac-a122611622b4": {
+      "use": {
+        "resource::http": "http1",
+        "resource::kv": "kv1"
+      }
+    }
+  },
+  "connector_handles": {
+    "auth.hunter": {
+      "provider_kind": "auth.static_bearer",
+      "handle_kind": "http.bearer",
+      "connect": {
+        "secret_ref": "S24_HUNTER_BEARER"
+      },
+      "config": {},
+      "grants": {}
+    },
+    "auth.google_workspace": {
+      "provider_kind": "auth.static_bearer",
+      "handle_kind": "http.bearer",
+      "connect": {
+        "secret_ref": "S24_GOOGLE_BEARER"
+      },
+      "config": {},
+      "grants": {}
+    },
+    "auth.discord": {
+      "provider_kind": "auth.static_bearer",
+      "handle_kind": "http.bearer",
+      "connect": {
+        "secret_ref": "S24_DISCORD_BEARER"
+      },
+      "config": {},
+      "grants": {}
+    },
+    "endpoint.hunter_local": {
+      "provider_kind": "endpoint.profile.static",
+      "handle_kind": "endpoint.profile",
+      "connect": {},
+      "config": {
+        "base_url": "http://127.0.0.1:8787",
+        "default_headers": {
+          "Accept": "application/json"
+        }
+      },
+      "grants": {}
+    },
+    "endpoint.sheets_local": {
+      "provider_kind": "endpoint.profile.static",
+      "handle_kind": "endpoint.profile",
+      "connect": {},
+      "config": {
+        "base_url": "http://127.0.0.1:8787",
+        "default_headers": {
+          "Accept": "application/json"
+        }
+      },
+      "grants": {}
+    },
+    "endpoint.gmail_local": {
+      "provider_kind": "endpoint.profile.static",
+      "handle_kind": "endpoint.profile",
+      "connect": {},
+      "config": {
+        "base_url": "http://127.0.0.1:8787",
+        "default_headers": {
+          "Accept": "application/json"
+        }
+      },
+      "grants": {}
+    },
+    "endpoint.discord_local": {
+      "provider_kind": "endpoint.profile.static",
+      "handle_kind": "endpoint.profile",
+      "connect": {},
+      "config": {
+        "base_url": "http://127.0.0.1:8787",
+        "default_headers": {
+          "Accept": "application/json"
+        }
+      },
+      "grants": {}
+    }
+  },
+  "connector_connections": {
+    "hunter_local": {
+      "connector_id": "connector.hunter",
+      "roles": {
+        "endpoint_profile.hunter_default": "endpoint.hunter_local",
+        "outbound_auth.hunter_api_key_auth": "auth.hunter"
+      }
+    },
+    "sheets_local": {
+      "connector_id": "connector.google.sheets",
+      "roles": {
+        "endpoint_profile.google_sheets_default": "endpoint.sheets_local",
+        "outbound_auth.google_workspace_auth": "auth.google_workspace"
+      }
+    },
+    "gmail_local": {
+      "connector_id": "connector.google.gmail",
+      "roles": {
+        "endpoint_profile.google_gmail_default": "endpoint.gmail_local",
+        "outbound_auth.google_workspace_auth": "auth.google_workspace"
+      }
+    },
+    "discord_local": {
+      "connector_id": "connector.discord",
+      "roles": {
+        "endpoint_profile.discord_webhook_default": "endpoint.discord_local",
+        "outbound_auth.discord_webhook_auth": "auth.discord"
+      }
+    }
+  },
+  "connector_bindings": {
+    "fd3124b6-57eb-54ec-80ac-a122611622b4": {
+      "defaults": {
+        "connector.hunter": "hunter_local",
+        "connector.google.sheets": "sheets_local",
+        "connector.google.gmail": "gmail_local",
+        "connector.discord": "discord_local"
+      },
+      "nodes": {},
+      "resolved_effect_hints": {
+        "verify_lead": [],
+        "record_lead_in_sheet": [],
+        "notify_lead_by_email": [],
+        "announce_lead_on_discord": []
+      }
+    }
+  }
+}

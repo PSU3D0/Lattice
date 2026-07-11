@@ -1,0 +1,55 @@
+connector:
+  id: connector.discord
+  vendor: discord
+  family: webhook
+  version: 0.1.0
+  crate: connector_discord
+  summary: Semantic Discord webhook connector
+
+profiles:
+  outbound_auth:
+    discord_webhook_auth:
+      kind: bearer
+      handle_kind: http.bearer
+  endpoint_profiles:
+    discord_webhook_default:
+      base_url: https://discord.com
+      default_headers:
+        Accept: application/json
+  provisioning_auth: {}
+  inbound_verifiers: {}
+
+types:
+  DiscordSendMessageInput:
+    kind: object
+    fields:
+      content:
+        type: string
+        optional: true
+      embeds:
+        type: json
+        escape_hatch_reason: A Discord message carries a caller-shaped list of rich embeds; the first slice keeps the embed list a semantic pass-through.
+
+  DiscordSendMessageOutput:
+    kind: object
+    fields:
+      delivered:
+        type: bool
+      message_id:
+        type: string
+        optional: true
+
+surfaces:
+  - kind: action
+    identifier: connector.discord.send_message
+    name: DiscordSendMessage
+    summary: Post one message (content plus rich embeds) to a Discord webhook
+    input: DiscordSendMessageInput
+    output: DiscordSendMessageOutput
+    auth: discord_webhook_auth
+    endpoint: discord_webhook_default
+    effects: Effectful
+    determinism: BestEffort
+    resources:
+      - http_write(capabilities::http::HttpWrite)
+    implementation: handwritten_semantic

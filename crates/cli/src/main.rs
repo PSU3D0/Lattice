@@ -79,6 +79,16 @@ use example_s18_retell_transcript_sink as s18_retell_transcript_sink;
 use example_s19_scheduled_email_dispatch as s19_scheduled_email_dispatch;
 #[cfg(feature = "example-s20")]
 use example_s20_form_signup_notify as s20_form_signup_notify;
+#[cfg(feature = "example-s21")]
+use example_s21_ai_cv_screening as s21_ai_cv_screening;
+#[cfg(feature = "example-s22")]
+use example_s22_hydration_reminder as s22_hydration_reminder;
+#[cfg(feature = "example-s23")]
+use example_s23_crm_event_notify as s23_crm_event_notify;
+#[cfg(feature = "example-s24")]
+use example_s24_lead_intake_verify as s24_lead_intake_verify;
+#[cfg(feature = "example-s25")]
+use example_s25_form_feedback_summary as s25_form_feedback_summary;
 
 mod bundle;
 mod deploy;
@@ -3810,6 +3820,16 @@ pub(crate) fn example_bundle(name: &str) -> Result<(host_inproc::FlowBundle, boo
         "s19_scheduled_email_dispatch" => (s19_scheduled_email_dispatch::bundle(), false),
         #[cfg(feature = "example-s20")]
         "s20_form_signup_notify" => (s20_form_signup_notify::bundle(), false),
+        #[cfg(feature = "example-s21")]
+        "s21_ai_cv_screening" => (s21_ai_cv_screening::bundle(), false),
+        #[cfg(feature = "example-s25")]
+        "s25_form_feedback_summary" => (s25_form_feedback_summary::bundle(), false),
+        #[cfg(feature = "example-s23")]
+        "s23_crm_event_notify" => (s23_crm_event_notify::bundle(), false),
+        #[cfg(feature = "example-s22")]
+        "s22_hydration_reminder" => (s22_hydration_reminder::bundle(), false),
+        #[cfg(feature = "example-s24")]
+        "s24_lead_intake_verify" => (s24_lead_intake_verify::bundle(), false),
         other => return Err(anyhow!("unknown example `{other}`")),
     };
 

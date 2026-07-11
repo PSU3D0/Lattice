@@ -1,0 +1,127 @@
+{
+  "version": 1,
+  "generated_at": "2026-07-11T00:00:00Z",
+  "content_hash": "ccdf94c9de35f12a14f272751e0ce100afd7c7f502d084f36f9cd4006be5c166",
+  "instances": {
+    "http1": {
+      "provider_kind": "http.reqwest",
+      "provides": [
+        "resource::http"
+      ],
+      "connect": {},
+      "config": {},
+      "isolation": []
+    },
+    "kv1": {
+      "provider_kind": "kv.memory",
+      "provides": [
+        "resource::kv"
+      ],
+      "connect": {},
+      "config": {},
+      "isolation": []
+    }
+  },
+  "flows": {
+    "c83bc035-9408-5268-906c-94e9e26e67b0": {
+      "use": {
+        "resource::http": "http1",
+        "resource::kv": "kv1"
+      }
+    }
+  },
+  "connector_handles": {
+    "auth.google_workspace": {
+      "provider_kind": "auth.static_bearer",
+      "handle_kind": "http.bearer",
+      "connect": {
+        "secret_ref": "S23_GOOGLE_BEARER"
+      },
+      "config": {},
+      "grants": {}
+    },
+    "auth.slack": {
+      "provider_kind": "auth.static_bearer",
+      "handle_kind": "http.bearer",
+      "connect": {
+        "secret_ref": "S23_SLACK_BEARER"
+      },
+      "config": {},
+      "grants": {}
+    },
+    "endpoint.sheets_local": {
+      "provider_kind": "endpoint.profile.static",
+      "handle_kind": "endpoint.profile",
+      "connect": {},
+      "config": {
+        "base_url": "http://127.0.0.1:8787",
+        "default_headers": {
+          "Accept": "application/json"
+        }
+      },
+      "grants": {}
+    },
+    "endpoint.gmail_local": {
+      "provider_kind": "endpoint.profile.static",
+      "handle_kind": "endpoint.profile",
+      "connect": {},
+      "config": {
+        "base_url": "http://127.0.0.1:8787",
+        "default_headers": {
+          "Accept": "application/json"
+        }
+      },
+      "grants": {}
+    },
+    "endpoint.slack_local": {
+      "provider_kind": "endpoint.profile.static",
+      "handle_kind": "endpoint.profile",
+      "connect": {},
+      "config": {
+        "base_url": "http://127.0.0.1:8787",
+        "default_headers": {
+          "Accept": "application/json"
+        }
+      },
+      "grants": {}
+    }
+  },
+  "connector_connections": {
+    "sheets_local": {
+      "connector_id": "connector.google.sheets",
+      "roles": {
+        "endpoint_profile.google_sheets_default": "endpoint.sheets_local",
+        "outbound_auth.google_workspace_auth": "auth.google_workspace"
+      }
+    },
+    "gmail_local": {
+      "connector_id": "connector.google.gmail",
+      "roles": {
+        "endpoint_profile.google_gmail_default": "endpoint.gmail_local",
+        "outbound_auth.google_workspace_auth": "auth.google_workspace"
+      }
+    },
+    "slack_local": {
+      "connector_id": "connector.slack.core",
+      "roles": {
+        "endpoint_profile.slack_default": "endpoint.slack_local",
+        "outbound_auth.slack_auth": "auth.slack"
+      }
+    }
+  },
+  "connector_bindings": {
+    "c83bc035-9408-5268-906c-94e9e26e67b0": {
+      "defaults": {
+        "connector.google.sheets": "sheets_local",
+        "connector.google.gmail": "gmail_local",
+        "connector.slack.core": "slack_local"
+      },
+      "nodes": {},
+      "resolved_effect_hints": {
+        "log_event": [],
+        "notify_email": [],
+        "notify_slack": []
+      }
+    }
+  }
+}

@@ -61,6 +61,36 @@ ALLOWLIST=(
   # `provides`/`use` keys as run_schedule_s16.rs above, not NodeIR effect-hint
   # literals. Owned by the CLI packet (LOCK-BUILD/cli).
   'crates/cli/tests/run_local_s18.rs'
+  # N4-T3 (clone): run_local_s22.rs authors the s22 sheets+llm+slack
+  # bindings.lock fixture for the webhook-trigger golden; the
+  # `resource::http`/`resource::kv` strings are the same lock manifest
+  # `provides`/`use` keys as run_schedule_s16.rs above, not NodeIR effect-hint
+  # literals. Owned by the CLI packet (LOCK-BUILD/cli).
+  'crates/cli/tests/run_local_s22.rs'
+  # N4-T5 (clone): run_local_s25.rs authors the s25 sheets+llm+gmail
+  # bindings.lock fixture for the manual-trigger golden; the
+  # `resource::http`/`resource::kv` strings are the same lock manifest
+  # `provides`/`use` keys as run_schedule_s16.rs above, not NodeIR effect-hint
+  # literals. Owned by the CLI packet (LOCK-BUILD/cli).
+  'crates/cli/tests/run_local_s25.rs'
+  # N4-T2 (clone): run_local_s21.rs authors the s21 llm+sheets+gmail
+  # bindings.lock fixture for the AI-CV-screening webhook golden; the
+  # `resource::http`/`resource::kv` strings are the same lock manifest
+  # `provides`/`use` keys as run_schedule_s16.rs above, not NodeIR effect-hint
+  # literals. Owned by the CLI packet (LOCK-BUILD/cli).
+  'crates/cli/tests/run_local_s21.rs'
+  # N4-T4 (clone): run_local_s23_crm_event_notify.rs authors the s23
+  # sheets+gmail+slack bindings.lock fixture for the webhook CRM-event-router
+  # golden; the `resource::http`/`resource::kv` strings are the same lock
+  # manifest `provides`/`use` keys as run_schedule_s16.rs above, not NodeIR
+  # effect-hint literals. Owned by the CLI packet (LOCK-BUILD/cli).
+  'crates/cli/tests/run_local_s23_crm_event_notify.rs'
+  # N4-T8 (clone): run_local_s24.rs authors the s24 hunter+sheets+gmail+discord
+  # bindings.lock fixture for the lead-intake webhook golden; the
+  # `resource::http`/`resource::kv` strings are the same lock manifest
+  # `provides`/`use` keys as run_schedule_s16.rs above, not NodeIR effect-hint
+  # literals. Owned by the CLI packet (LOCK-BUILD/cli).
+  'crates/cli/tests/run_local_s24.rs'
   # dag-macros golden tests pin canonical emission strings; convert to
   # capabilities::*::HINT_* consts in a macro-test cleanup packet.
   'crates/dag-macros/tests/flow_macro.rs'

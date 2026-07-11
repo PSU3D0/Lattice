@@ -1,0 +1,54 @@
+connector:
+  id: connector.hunter
+  vendor: hunter
+  family: email
+  version: 0.1.0
+  crate: connector_hunter
+  summary: Semantic Hunter.io email-verification connector
+
+profiles:
+  outbound_auth:
+    hunter_api_key_auth:
+      kind: bearer
+      handle_kind: http.bearer
+  endpoint_profiles:
+    hunter_default:
+      base_url: https://api.hunter.io
+      default_headers:
+        Accept: application/json
+  provisioning_auth: {}
+  inbound_verifiers: {}
+
+types:
+  HunterVerifyEmailInput:
+    kind: object
+    fields:
+      email:
+        type: string
+
+  HunterVerifyEmailOutput:
+    kind: object
+    fields:
+      email:
+        type: string
+      status:
+        type: string
+      result:
+        type: string
+      score:
+        type: i64
+
+surfaces:
+  - kind: action
+    identifier: connector.hunter.verify_email
+    name: HunterVerifyEmail
+    summary: Verify the deliverability of one email address via Hunter.io
+    input: HunterVerifyEmailInput
+    output: HunterVerifyEmailOutput
+    auth: hunter_api_key_auth
+    endpoint: hunter_default
+    effects: ReadOnly
+    determinism: BestEffort
+    resources:
+      - http_read(capabilities::http::HttpRead)
+    implementation: handwritten_semantic

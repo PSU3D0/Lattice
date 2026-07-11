@@ -1,13 +1,15 @@
-//! Golden end-to-end for the s18 clone (packet N4-T7 of the phase-1
-//! clone-engine plan): `flows run local --example s18_retell_transcript_sink
-//! --payload <call_analyzed>` fires the HTTP webhook entrypoint one time and
-//! drives THREE connector families (Airtable create, Sheets read+append, Notion
-//! create) plus the enforced terminal KV write, entirely against a mock server
-//! provisioned through a hand-authored bindings.lock.
+//! Golden end-to-end for the s24 clone (packet N4-T8 of the phase-1
+//! clone-engine plan): `flows run local --example s24_lead_intake_verify
+//! --payload <lead>` fires the HTTP webhook entrypoint one time and drives FOUR
+//! connector families (Hunter email-verify, Sheets read+upsert, Gmail send,
+//! Discord webhook post) plus the enforced terminal KV write, entirely against a
+//! mock server provisioned through a hand-authored bindings.lock.
 //!
-//! This is the webhook-triggered analog of the s16 schedule golden: each
-//! connector family has its own `auth.static_bearer` handle (Airtable, Google,
-//! and Notion secrets are distinct providers), bound into three connections.
+//! This is the webhook-triggered analog of the s18 golden. Sheets and Gmail
+//! share ONE `google_workspace_auth` bearer handle (two connections); Hunter and
+//! Discord are distinct providers with their own bearer handles (Hunter's key
+//! is a query parameter, Discord's secret is the webhook id/token spliced into
+//! the path).
 
 use std::process::Command;
 
@@ -61,13 +63,13 @@ fn temp_lock_path() -> std::path::PathBuf {
     let mut path = std::env::temp_dir();
     let pid = std::process::id();
     let counter = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    path.push(format!("lattice.s18.local.lock.{pid}.{counter}.json"));
+    path.push(format!("lattice.s24.local.lock.{pid}.{counter}.json"));
     path
 }
 
-/// Build the s18 bindings.lock against a mock base URL. Three connector
-/// families, each with its own bearer handle bound into one connection.
-fn s18_lock(flow_id: &str, base_url: &str) -> Value {
+/// Build the s24 bindings.lock against a mock base URL. Four connector families;
+/// Sheets + Gmail share one bearer, Hunter and Discord have their own.
+fn s24_lock(flow_id: &str, base_url: &str) -> Value {
     let mut lock = serde_json::json!({
         "version": 1,
         "generated_at": "2026-07-11T00:00:00Z",
@@ -97,28 +99,28 @@ fn s18_lock(flow_id: &str, base_url: &str) -> Value {
             }
         },
         "connector_handles": {
-            "auth.airtable": {
+            "auth.hunter": {
                 "provider_kind": "auth.static_bearer",
                 "handle_kind": "http.bearer",
-                "connect": { "secret_ref": "S18_AIRTABLE_BEARER" },
+                "connect": { "secret_ref": "S24_HUNTER_BEARER" },
                 "config": {},
                 "grants": {}
             },
             "auth.google_workspace": {
                 "provider_kind": "auth.static_bearer",
                 "handle_kind": "http.bearer",
-                "connect": { "secret_ref": "S18_GOOGLE_BEARER" },
+                "connect": { "secret_ref": "S24_GOOGLE_BEARER" },
                 "config": {},
                 "grants": {}
             },
-            "auth.notion": {
+            "auth.discord": {
                 "provider_kind": "auth.static_bearer",
                 "handle_kind": "http.bearer",
-                "connect": { "secret_ref": "S18_NOTION_BEARER" },
+                "connect": { "secret_ref": "S24_DISCORD_BEARER" },
                 "config": {},
                 "grants": {}
             },
-            "endpoint.airtable_local": {
+            "endpoint.hunter_local": {
                 "provider_kind": "endpoint.profile.static",
                 "handle_kind": "endpoint.profile",
                 "connect": {},
@@ -138,7 +140,17 @@ fn s18_lock(flow_id: &str, base_url: &str) -> Value {
                 },
                 "grants": {}
             },
-            "endpoint.notion_local": {
+            "endpoint.gmail_local": {
+                "provider_kind": "endpoint.profile.static",
+                "handle_kind": "endpoint.profile",
+                "connect": {},
+                "config": {
+                    "base_url": base_url,
+                    "default_headers": { "Accept": "application/json" }
+                },
+                "grants": {}
+            },
+            "endpoint.discord_local": {
                 "provider_kind": "endpoint.profile.static",
                 "handle_kind": "endpoint.profile",
                 "connect": {},
@@ -150,11 +162,11 @@ fn s18_lock(flow_id: &str, base_url: &str) -> Value {
             }
         },
         "connector_connections": {
-            "airtable_local": {
-                "connector_id": "connector.airtable",
+            "hunter_local": {
+                "connector_id": "connector.hunter",
                 "roles": {
-                    "endpoint_profile.airtable_default": "endpoint.airtable_local",
-                    "outbound_auth.airtable_token_auth": "auth.airtable"
+                    "endpoint_profile.hunter_default": "endpoint.hunter_local",
+                    "outbound_auth.hunter_api_key_auth": "auth.hunter"
                 }
             },
             "sheets_local": {
@@ -164,26 +176,35 @@ fn s18_lock(flow_id: &str, base_url: &str) -> Value {
                     "outbound_auth.google_workspace_auth": "auth.google_workspace"
                 }
             },
-            "notion_local": {
-                "connector_id": "connector.notion",
+            "gmail_local": {
+                "connector_id": "connector.google.gmail",
                 "roles": {
-                    "endpoint_profile.notion_default": "endpoint.notion_local",
-                    "outbound_auth.notion_api_auth": "auth.notion"
+                    "endpoint_profile.google_gmail_default": "endpoint.gmail_local",
+                    "outbound_auth.google_workspace_auth": "auth.google_workspace"
+                }
+            },
+            "discord_local": {
+                "connector_id": "connector.discord",
+                "roles": {
+                    "endpoint_profile.discord_webhook_default": "endpoint.discord_local",
+                    "outbound_auth.discord_webhook_auth": "auth.discord"
                 }
             }
         },
         "connector_bindings": {
             flow_id: {
                 "defaults": {
-                    "connector.airtable": "airtable_local",
+                    "connector.hunter": "hunter_local",
                     "connector.google.sheets": "sheets_local",
-                    "connector.notion": "notion_local"
+                    "connector.google.gmail": "gmail_local",
+                    "connector.discord": "discord_local"
                 },
                 "nodes": {},
                 "resolved_effect_hints": {
-                    "store_in_airtable": [],
-                    "store_in_sheets": [],
-                    "store_in_notion": []
+                    "verify_lead": [],
+                    "record_lead_in_sheet": [],
+                    "notify_lead_by_email": [],
+                    "announce_lead_on_discord": []
                 }
             }
         }
@@ -201,35 +222,25 @@ fn s18_lock(flow_id: &str, base_url: &str) -> Value {
     lock
 }
 
-fn call_analyzed_payload() -> Value {
+fn lead_payload() -> Value {
     serde_json::json!({
-        "event": "call_analyzed",
-        "call": {
-            "call_id": "call-golden-001",
-            "direction": "outbound",
-            "from_number": "+15550000000",
-            "to_number": "+15551234567",
-            "start_timestamp_ms": 1_782_972_000_000u64,
-            "end_timestamp_ms": 1_782_972_083_000u64,
-            "duration_seconds": 83.0,
-            "transcript": "Agent: hello. User: hi.",
-            "summary": "Caller booked a standard room.",
-            "sentiment": "positive",
-            "combined_cost_cents": 1250.0
-        }
+        "name": "Ada Lovelace",
+        "email": "ada@leads.test",
+        "query": "Do you support cron triggers?",
+        "submitted_at": "2026-07-11T09:00:00Z"
     })
 }
 
 #[test]
-fn run_local_runs_s18_clone_end_to_end_with_bindings_lock() {
+fn run_local_runs_s24_clone_end_to_end_with_bindings_lock() {
     let server = httpmock::MockServer::start();
-    let flow_id = example_s18_retell_transcript_sink::validated_ir()
+    let flow_id = example_s24_lead_intake_verify::validated_ir()
         .flow()
         .id
         .as_str()
         .to_string();
 
-    let lock = s18_lock(&flow_id, &server.base_url());
+    let lock = s24_lock(&flow_id, &server.base_url());
     let path = temp_lock_path();
     std::fs::write(
         &path,
@@ -237,40 +248,46 @@ fn run_local_runs_s18_clone_end_to_end_with_bindings_lock() {
     )
     .expect("write lock");
 
-    let airtable_create = server.mock(|when, then| {
-        when.method(httpmock::Method::POST)
-            .path("/v0/appLatticePilot01/Transcripts")
-            .header("authorization", "Bearer s18-airtable-token");
+    // Hunter verifies the lead as deliverable.
+    let hunter_verify = server.mock(|when, then| {
+        when.method(httpmock::Method::GET)
+            .path("/v2/email-verifier")
+            .query_param("email", "ada@leads.test")
+            .query_param("api_key", "s24-hunter-token");
         then.status(200).json_body_obj(&serde_json::json!({
-            "id": "rec-golden-1",
-            "createdTime": "2026-07-02T06:02:00.000Z"
+            "data": { "status": "valid", "result": "deliverable", "score": 92, "email": "ada@leads.test" }
         }));
     });
+    // Sheets upsert: read the header row (+ existing row) then update it.
     let values_read = server.mock(|when, then| {
         when.method(httpmock::Method::GET).path_contains("/values/");
         then.status(200).json_body_obj(&serde_json::json!({
-            "values": [[
-                "Call ID", "Start Datetime", "End Datetime", "Duration in seconds",
-                "Phone Number", "Transcript", "Call Summary", "User Sentiment",
-                "Total Cost in Dollars"
-            ]]
+            "values": [
+                ["Name", "Email", "Query", "Submitted On"],
+                ["Ada Lovelace", "ada@leads.test", "", ""]
+            ]
         }));
     });
-    let values_append = server.mock(|when, then| {
-        when.method(httpmock::Method::POST).path_contains("append");
+    let values_update = server.mock(|when, then| {
+        when.method(httpmock::Method::PUT).path_contains("/values/");
         then.status(200).json_body_obj(&serde_json::json!({
-            "updates": { "updatedRange": "'Transcripts'!A2:I2" }
+            "updatedRange": "'Leads'!A2:D2"
         }));
     });
-    let notion_create = server.mock(|when, then| {
+    // Gmail send.
+    let gmail_send = server.mock(|when, then| {
         when.method(httpmock::Method::POST)
-            .path("/v1/pages")
-            .header("authorization", "Bearer s18-notion-token");
+            .path("/gmail/v1/users/me/messages/send")
+            .header("authorization", "Bearer s24-google-token");
         then.status(200).json_body_obj(&serde_json::json!({
-            "object": "page",
-            "id": "page-golden-1",
-            "url": "https://www.notion.so/page-golden-1"
+            "id": "gmail-golden-1", "threadId": "thread-1", "labelIds": ["SENT"]
         }));
+    });
+    // Discord webhook post (204 No Content).
+    let discord_post = server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/api/webhooks/111/golden-webhook-token");
+        then.status(204);
     });
 
     let output = Command::cargo_bin("flows")
@@ -279,46 +296,48 @@ fn run_local_runs_s18_clone_end_to_end_with_bindings_lock() {
             "run",
             "local",
             "--example",
-            "s18_retell_transcript_sink",
+            "s24_lead_intake_verify",
             "--payload",
-            &call_analyzed_payload().to_string(),
+            &lead_payload().to_string(),
             "--bindings-lock",
             path.to_str().expect("lock path"),
             "--checkpoint-store",
             "memory",
         ])
-        .env("S18_AIRTABLE_BEARER", "s18-airtable-token")
-        .env("S18_GOOGLE_BEARER", "s18-google-token")
-        .env("S18_NOTION_BEARER", "s18-notion-token")
+        .env("S24_HUNTER_BEARER", "s24-hunter-token")
+        .env("S24_GOOGLE_BEARER", "s24-google-token")
+        .env("S24_DISCORD_BEARER", "111/golden-webhook-token")
         .output()
         .expect("run flows");
 
     assert!(
         output.status.success(),
-        "s18 run local failed: status={:?}, stderr={}",
+        "s24 run local failed: status={:?}, stderr={}",
         output.status,
         String::from_utf8_lossy(&output.stderr)
     );
 
     // Every connector family really ran against the mock.
-    airtable_create.assert_hits(1);
+    hunter_verify.assert_hits(1);
     values_read.assert_hits(1);
-    values_append.assert_hits(1);
-    notion_create.assert_hits(1);
+    values_update.assert_hits(1);
+    gmail_send.assert_hits(1);
+    discord_post.assert_hits(1);
 
     let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
     let record: Value = serde_json::from_str(stdout.trim())
-        .unwrap_or_else(|err| panic!("stdout is not a SinkRecord JSON ({err}): {stdout}"));
+        .unwrap_or_else(|err| panic!("stdout is not a LeadRecord JSON ({err}): {stdout}"));
     assert_eq!(record["stored"], serde_json::json!(true));
-    assert_eq!(record["call_id"], serde_json::json!("call-golden-001"));
+    assert_eq!(record["email"], serde_json::json!("ada@leads.test"));
+    assert_eq!(record["updated_range"], serde_json::json!("'Leads'!A2:D2"));
     assert_eq!(
-        record["airtable_record_id"],
-        serde_json::json!("rec-golden-1")
+        record["gmail_message_id"],
+        serde_json::json!("gmail-golden-1")
     );
-    assert_eq!(record["notion_page_id"], serde_json::json!("page-golden-1"));
+    assert_eq!(record["discord_delivered"], serde_json::json!(true));
     assert_eq!(
         record["key"],
-        serde_json::json!("s18_retell_transcript_sink_flow:intake:call-golden-001")
+        serde_json::json!("s24_lead_intake_verify_flow:lead_trigger:ada@leads.test")
     );
 
     std::fs::remove_file(&path).ok();

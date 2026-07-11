@@ -1,0 +1,128 @@
+{
+  "version": 1,
+  "generated_at": "2026-07-11T00:00:00Z",
+  "content_hash": "37c29ab48dce3c1522cea8848742ed87199d73c02efddb9b6c4f2f3abf9c3525",
+  "instances": {
+    "http1": {
+      "provider_kind": "http.reqwest",
+      "provides": [
+        "resource::http"
+      ],
+      "connect": {},
+      "config": {},
+      "isolation": []
+    },
+    "kv1": {
+      "provider_kind": "kv.memory",
+      "provides": [
+        "resource::kv"
+      ],
+      "connect": {},
+      "config": {},
+      "isolation": []
+    }
+  },
+  "flows": {
+    "1f82ed0f-708f-5fda-b289-338382a74a78": {
+      "use": {
+        "resource::http": "http1",
+        "resource::kv": "kv1"
+      }
+    }
+  },
+  "connector_handles": {
+    "auth.google_workspace": {
+      "provider_kind": "auth.static_bearer",
+      "handle_kind": "http.bearer",
+      "connect": {
+        "secret_ref": "S21_GOOGLE_BEARER"
+      },
+      "config": {},
+      "grants": {}
+    },
+    "auth.llm": {
+      "provider_kind": "auth.static_bearer",
+      "handle_kind": "http.bearer",
+      "connect": {
+        "secret_ref": "S21_LLM_BEARER"
+      },
+      "config": {},
+      "grants": {}
+    },
+    "endpoint.llm_local": {
+      "provider_kind": "endpoint.profile.static",
+      "handle_kind": "endpoint.profile",
+      "connect": {},
+      "config": {
+        "base_url": "http://127.0.0.1:8787",
+        "default_headers": {
+          "Accept": "application/json"
+        }
+      },
+      "grants": {}
+    },
+    "endpoint.sheets_local": {
+      "provider_kind": "endpoint.profile.static",
+      "handle_kind": "endpoint.profile",
+      "connect": {},
+      "config": {
+        "base_url": "http://127.0.0.1:8787",
+        "default_headers": {
+          "Accept": "application/json"
+        }
+      },
+      "grants": {}
+    },
+    "endpoint.gmail_local": {
+      "provider_kind": "endpoint.profile.static",
+      "handle_kind": "endpoint.profile",
+      "connect": {},
+      "config": {
+        "base_url": "http://127.0.0.1:8787",
+        "default_headers": {
+          "Accept": "application/json"
+        }
+      },
+      "grants": {}
+    }
+  },
+  "connector_connections": {
+    "llm_local": {
+      "connector_id": "connector.llm",
+      "roles": {
+        "endpoint_profile.llm_default": "endpoint.llm_local",
+        "outbound_auth.llm_api_key": "auth.llm"
+      }
+    },
+    "sheets_local": {
+      "connector_id": "connector.google.sheets",
+      "roles": {
+        "endpoint_profile.google_sheets_default": "endpoint.sheets_local",
+        "outbound_auth.google_workspace_auth": "auth.google_workspace"
+      }
+    },
+    "gmail_local": {
+      "connector_id": "connector.google.gmail",
+      "roles": {
+        "endpoint_profile.google_gmail_default": "endpoint.gmail_local",
+        "outbound_auth.google_workspace_auth": "auth.google_workspace"
+      }
+    }
+  },
+  "connector_bindings": {
+    "1f82ed0f-708f-5fda-b289-338382a74a78": {
+      "defaults": {
+        "connector.llm": "llm_local",
+        "connector.google.sheets": "sheets_local",
+        "connector.google.gmail": "gmail_local"
+      },
+      "nodes": {},
+      "resolved_effect_hints": {
+        "rate_candidate": [],
+        "record_candidate": [],
+        "confirm_candidate": [],
+        "notify_hr": []
+      }
+    }
+  }
+}

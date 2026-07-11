@@ -44,6 +44,11 @@ example-s17-telegram-broadcast = { path = "../../examples/s17_telegram_broadcast
 example-s18-retell-transcript-sink = { path = "../../examples/s18_retell_transcript_sink", optional = true }
 example-s19-scheduled-email-dispatch = { path = "../../examples/s19_scheduled_email_dispatch", optional = true }
 example-s20-form-signup-notify = { path = "../../examples/s20_form_signup_notify", optional = true }
+example-s21-ai-cv-screening = { path = "../../examples/s21_ai_cv_screening", optional = true }
+example-s25-form-feedback-summary = { path = "../../examples/s25_form_feedback_summary", optional = true }
+example-s23-crm-event-notify = { path = "../../examples/s23_crm_event_notify", optional = true }
+example-s22-hydration-reminder = { path = "../../examples/s22_hydration_reminder", optional = true }
+example-s24-lead-intake-verify = { path = "../../examples/s24_lead_intake_verify", optional = true }
 host-inproc = { path = "../host-inproc" }
 anyhow.workspace = true
 async-trait.workspace = true
@@ -94,6 +99,11 @@ example-s17 = ["dep:example-s17-telegram-broadcast"]
 example-s18 = ["dep:example-s18-retell-transcript-sink"]
 example-s19 = ["dep:example-s19-scheduled-email-dispatch"]
 example-s20 = ["dep:example-s20-form-signup-notify"]
+example-s21 = ["dep:example-s21-ai-cv-screening"]
+example-s25 = ["dep:example-s25-form-feedback-summary"]
+example-s23 = ["dep:example-s23-crm-event-notify"]
+example-s22 = ["dep:example-s22-hydration-reminder"]
+example-s24 = ["dep:example-s24-lead-intake-verify"]
 example-github-issues = ["dep:example-connector-github-issues-local-flow"]
 example-google-sheets = ["dep:example-connector-google-sheets-local-flow"]
 
@@ -114,6 +124,11 @@ all-examples = [
     "example-s18",
     "example-s19",
     "example-s20",
+    "example-s21",
+    "example-s25",
+    "example-s23",
+    "example-s22",
+    "example-s24",
     "example-github-issues",
     "example-google-sheets",
 ]

@@ -26,6 +26,10 @@ members = [
   "crates/dispatch-backend",
   "crates/connectors/airtable",
   "crates/connectors/airtable/examples/local-flow",
+  "crates/connectors/discord",
+  "crates/connectors/discord/examples/local-flow",
+  "crates/connectors/hunter",
+  "crates/connectors/hunter/examples/local-flow",
   "crates/connectors/notion",
   "crates/connectors/notion/examples/local-flow",
   "crates/connectors/github/issues",
@@ -83,7 +87,12 @@ members = [
   "examples/s18_retell_transcript_sink",
   "examples/s17_telegram_broadcast",
   "examples/s19_scheduled_email_dispatch",
-  "examples/s20_form_signup_notify"
+  "examples/s20_form_signup_notify",
+  "examples/s24_lead_intake_verify",
+  "examples/s21_ai_cv_screening",
+  "examples/s25_form_feedback_summary",
+  "examples/s23_crm_event_notify",
+  "examples/s22_hydration_reminder"
 ]
 
 [workspace.package]

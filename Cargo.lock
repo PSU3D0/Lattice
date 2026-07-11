@@ -1398,6 +1398,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "connector_discord"
+version = "0.1.0"
+dependencies = [
+ "cap-http-reqwest",
+ "capabilities",
+ "connector-spec",
+ "connectors-std",
+ "dag-core",
+ "dag-macros",
+ "httpmock",
+ "kernel-exec",
+ "serde",
+ "serde_json",
+ "testing-harness-idem",
+ "tokio",
+]
+
+[[package]]
 name = "connector_formualizer_sheetport"
 version = "0.1.0"
 dependencies = [
@@ -1496,6 +1514,23 @@ dependencies = [
  "httpmock",
  "kernel-exec",
  "percent-encoding",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "connector_hunter"
+version = "0.1.0"
+dependencies = [
+ "cap-http-reqwest",
+ "capabilities",
+ "connector-spec",
+ "connectors-std",
+ "dag-core",
+ "dag-macros",
+ "httpmock",
+ "kernel-exec",
  "serde",
  "serde_json",
  "tokio",
@@ -2382,6 +2417,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-connector-discord-local-flow"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cap-http-reqwest",
+ "capabilities",
+ "connector_discord",
+ "dag-core",
+ "dag-macros",
+ "host-inproc",
+ "httpmock",
+ "kernel-exec",
+ "kernel-plan",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "example-connector-github-issues-local-flow"
 version = "0.1.0"
 dependencies = [
@@ -2455,6 +2509,25 @@ dependencies = [
  "kernel-exec",
  "kernel-plan",
  "percent-encoding",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "example-connector-hunter-local-flow"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cap-http-reqwest",
+ "capabilities",
+ "connector_hunter",
+ "dag-core",
+ "dag-macros",
+ "host-inproc",
+ "httpmock",
+ "kernel-exec",
+ "kernel-plan",
  "serde",
  "serde_json",
  "tokio",
@@ -2796,6 +2869,112 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-s21-ai-cv-screening"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "cap-http-reqwest",
+ "capabilities",
+ "connector_google_gmail",
+ "connector_google_sheets",
+ "connector_llm",
+ "dag-core",
+ "dag-macros",
+ "host-inproc",
+ "httpmock",
+ "kernel-exec",
+ "kernel-plan",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "example-s22-hydration-reminder"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "cap-http-reqwest",
+ "capabilities",
+ "connector_google_sheets",
+ "connector_llm",
+ "connector_slack_core",
+ "dag-core",
+ "dag-macros",
+ "host-inproc",
+ "httpmock",
+ "kernel-exec",
+ "kernel-plan",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "example-s23-crm-event-notify"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "cap-http-reqwest",
+ "capabilities",
+ "connector_google_gmail",
+ "connector_google_sheets",
+ "connector_slack_core",
+ "dag-core",
+ "dag-macros",
+ "host-inproc",
+ "httpmock",
+ "kernel-exec",
+ "kernel-plan",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "example-s24-lead-intake-verify"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "cap-http-reqwest",
+ "capabilities",
+ "connector_discord",
+ "connector_google_gmail",
+ "connector_google_sheets",
+ "connector_hunter",
+ "dag-core",
+ "dag-macros",
+ "host-inproc",
+ "httpmock",
+ "kernel-exec",
+ "kernel-plan",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "example-s25-form-feedback-summary"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "cap-http-reqwest",
+ "capabilities",
+ "connector_google_gmail",
+ "connector_google_sheets",
+ "connector_llm",
+ "dag-core",
+ "dag-macros",
+ "host-inproc",
+ "httpmock",
+ "kernel-exec",
+ "kernel-plan",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "example-s3-branching"
 version = "0.1.0"
 dependencies = [
@@ -3108,6 +3287,11 @@ dependencies = [
  "example-s19-scheduled-email-dispatch",
  "example-s2-site",
  "example-s20-form-signup-notify",
+ "example-s21-ai-cv-screening",
+ "example-s22-hydration-reminder",
+ "example-s23-crm-event-notify",
+ "example-s24-lead-intake-verify",
+ "example-s25-form-feedback-summary",
  "example-s3-branching",
  "example-s4-preflight",
  "example-s5-unsupported-surface",

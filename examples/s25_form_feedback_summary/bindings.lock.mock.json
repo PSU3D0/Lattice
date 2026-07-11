@@ -1,0 +1,127 @@
+{
+  "version": 1,
+  "generated_at": "2026-07-11T00:00:00Z",
+  "content_hash": "4cfabfa5e0836da64630cbba52b01d1275855e1414945ddcc5fd37f103649a38",
+  "instances": {
+    "http1": {
+      "provider_kind": "http.reqwest",
+      "provides": [
+        "resource::http"
+      ],
+      "connect": {},
+      "config": {},
+      "isolation": []
+    },
+    "kv1": {
+      "provider_kind": "kv.memory",
+      "provides": [
+        "resource::kv"
+      ],
+      "connect": {},
+      "config": {},
+      "isolation": []
+    }
+  },
+  "flows": {
+    "d9693a3a-8bde-5671-b6d2-e701507ff359": {
+      "use": {
+        "resource::http": "http1",
+        "resource::kv": "kv1"
+      }
+    }
+  },
+  "connector_handles": {
+    "auth.google_workspace": {
+      "provider_kind": "auth.static_bearer",
+      "handle_kind": "http.bearer",
+      "connect": {
+        "secret_ref": "S25_GOOGLE_BEARER"
+      },
+      "config": {},
+      "grants": {}
+    },
+    "auth.llm_api_key": {
+      "provider_kind": "auth.static_bearer",
+      "handle_kind": "http.bearer",
+      "connect": {
+        "secret_ref": "S25_LLM_KEY"
+      },
+      "config": {},
+      "grants": {}
+    },
+    "endpoint.google_sheets_local": {
+      "provider_kind": "endpoint.profile.static",
+      "handle_kind": "endpoint.profile",
+      "connect": {},
+      "config": {
+        "base_url": "http://127.0.0.1:8787",
+        "default_headers": {
+          "Accept": "application/json"
+        }
+      },
+      "grants": {}
+    },
+    "endpoint.google_gmail_local": {
+      "provider_kind": "endpoint.profile.static",
+      "handle_kind": "endpoint.profile",
+      "connect": {},
+      "config": {
+        "base_url": "http://127.0.0.1:8787",
+        "default_headers": {
+          "Accept": "application/json"
+        }
+      },
+      "grants": {}
+    },
+    "endpoint.llm_local": {
+      "provider_kind": "endpoint.profile.static",
+      "handle_kind": "endpoint.profile",
+      "connect": {},
+      "config": {
+        "base_url": "http://127.0.0.1:8787",
+        "default_headers": {
+          "Accept": "application/json"
+        }
+      },
+      "grants": {}
+    }
+  },
+  "connector_connections": {
+    "google_sheets_local": {
+      "connector_id": "connector.google.sheets",
+      "roles": {
+        "endpoint_profile.google_sheets_default": "endpoint.google_sheets_local",
+        "outbound_auth.google_workspace_auth": "auth.google_workspace"
+      }
+    },
+    "google_gmail_local": {
+      "connector_id": "connector.google.gmail",
+      "roles": {
+        "endpoint_profile.google_gmail_default": "endpoint.google_gmail_local",
+        "outbound_auth.google_workspace_auth": "auth.google_workspace"
+      }
+    },
+    "llm_local": {
+      "connector_id": "connector.llm",
+      "roles": {
+        "endpoint_profile.llm_default": "endpoint.llm_local",
+        "outbound_auth.llm_api_key": "auth.llm_api_key"
+      }
+    }
+  },
+  "connector_bindings": {
+    "d9693a3a-8bde-5671-b6d2-e701507ff359": {
+      "defaults": {
+        "connector.google.sheets": "google_sheets_local",
+        "connector.google.gmail": "google_gmail_local",
+        "connector.llm": "llm_local"
+      },
+      "nodes": {},
+      "resolved_effect_hints": {
+        "load_feedback": [],
+        "summarize_feedback": [],
+        "send_report": []
+      }
+    }
+  }
+}

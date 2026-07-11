@@ -1,13 +1,14 @@
-//! Golden end-to-end for the s18 clone (packet N4-T7 of the phase-1
-//! clone-engine plan): `flows run local --example s18_retell_transcript_sink
-//! --payload <call_analyzed>` fires the HTTP webhook entrypoint one time and
-//! drives THREE connector families (Airtable create, Sheets read+append, Notion
-//! create) plus the enforced terminal KV write, entirely against a mock server
+//! Golden end-to-end for the s21 clone (packet N4-T2 of the phase-1
+//! clone-engine plan): `flows run local --example s21_ai_cv_screening
+//! --payload <application>` fires the HTTP webhook entrypoint one time and
+//! drives THREE connector families (LLM completion, Sheets read+append, Gmail
+//! send x2) plus the enforced terminal KV write, entirely against a mock server
 //! provisioned through a hand-authored bindings.lock.
 //!
-//! This is the webhook-triggered analog of the s16 schedule golden: each
-//! connector family has its own `auth.static_bearer` handle (Airtable, Google,
-//! and Notion secrets are distinct providers), bound into three connections.
+//! This is the webhook-triggered analog of the s18/s20 goldens and the first
+//! golden to exercise `connector.llm.complete` inside a flow. Sheets and Gmail
+//! share the one `google_workspace_auth` bearer; the LLM connection binds its
+//! own `llm_api_key` bearer — three connections, two secrets.
 
 use std::process::Command;
 
@@ -61,13 +62,14 @@ fn temp_lock_path() -> std::path::PathBuf {
     let mut path = std::env::temp_dir();
     let pid = std::process::id();
     let counter = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    path.push(format!("lattice.s18.local.lock.{pid}.{counter}.json"));
+    path.push(format!("lattice.s21.local.lock.{pid}.{counter}.json"));
     path
 }
 
-/// Build the s18 bindings.lock against a mock base URL. Three connector
-/// families, each with its own bearer handle bound into one connection.
-fn s18_lock(flow_id: &str, base_url: &str) -> Value {
+/// Build the s21 bindings.lock against a mock base URL. Three connections
+/// (llm + sheets + gmail); sheets and gmail share the google bearer, the LLM
+/// connection binds its own.
+fn s21_lock(flow_id: &str, base_url: &str) -> Value {
     let mut lock = serde_json::json!({
         "version": 1,
         "generated_at": "2026-07-11T00:00:00Z",
@@ -97,28 +99,21 @@ fn s18_lock(flow_id: &str, base_url: &str) -> Value {
             }
         },
         "connector_handles": {
-            "auth.airtable": {
-                "provider_kind": "auth.static_bearer",
-                "handle_kind": "http.bearer",
-                "connect": { "secret_ref": "S18_AIRTABLE_BEARER" },
-                "config": {},
-                "grants": {}
-            },
             "auth.google_workspace": {
                 "provider_kind": "auth.static_bearer",
                 "handle_kind": "http.bearer",
-                "connect": { "secret_ref": "S18_GOOGLE_BEARER" },
+                "connect": { "secret_ref": "S21_GOOGLE_BEARER" },
                 "config": {},
                 "grants": {}
             },
-            "auth.notion": {
+            "auth.llm": {
                 "provider_kind": "auth.static_bearer",
                 "handle_kind": "http.bearer",
-                "connect": { "secret_ref": "S18_NOTION_BEARER" },
+                "connect": { "secret_ref": "S21_LLM_BEARER" },
                 "config": {},
                 "grants": {}
             },
-            "endpoint.airtable_local": {
+            "endpoint.llm_local": {
                 "provider_kind": "endpoint.profile.static",
                 "handle_kind": "endpoint.profile",
                 "connect": {},
@@ -138,7 +133,7 @@ fn s18_lock(flow_id: &str, base_url: &str) -> Value {
                 },
                 "grants": {}
             },
-            "endpoint.notion_local": {
+            "endpoint.gmail_local": {
                 "provider_kind": "endpoint.profile.static",
                 "handle_kind": "endpoint.profile",
                 "connect": {},
@@ -150,11 +145,11 @@ fn s18_lock(flow_id: &str, base_url: &str) -> Value {
             }
         },
         "connector_connections": {
-            "airtable_local": {
-                "connector_id": "connector.airtable",
+            "llm_local": {
+                "connector_id": "connector.llm",
                 "roles": {
-                    "endpoint_profile.airtable_default": "endpoint.airtable_local",
-                    "outbound_auth.airtable_token_auth": "auth.airtable"
+                    "endpoint_profile.llm_default": "endpoint.llm_local",
+                    "outbound_auth.llm_api_key": "auth.llm"
                 }
             },
             "sheets_local": {
@@ -164,26 +159,27 @@ fn s18_lock(flow_id: &str, base_url: &str) -> Value {
                     "outbound_auth.google_workspace_auth": "auth.google_workspace"
                 }
             },
-            "notion_local": {
-                "connector_id": "connector.notion",
+            "gmail_local": {
+                "connector_id": "connector.google.gmail",
                 "roles": {
-                    "endpoint_profile.notion_default": "endpoint.notion_local",
-                    "outbound_auth.notion_api_auth": "auth.notion"
+                    "endpoint_profile.google_gmail_default": "endpoint.gmail_local",
+                    "outbound_auth.google_workspace_auth": "auth.google_workspace"
                 }
             }
         },
         "connector_bindings": {
             flow_id: {
                 "defaults": {
-                    "connector.airtable": "airtable_local",
+                    "connector.llm": "llm_local",
                     "connector.google.sheets": "sheets_local",
-                    "connector.notion": "notion_local"
+                    "connector.google.gmail": "gmail_local"
                 },
                 "nodes": {},
                 "resolved_effect_hints": {
-                    "store_in_airtable": [],
-                    "store_in_sheets": [],
-                    "store_in_notion": []
+                    "rate_candidate": [],
+                    "record_candidate": [],
+                    "confirm_candidate": [],
+                    "notify_hr": []
                 }
             }
         }
@@ -201,35 +197,48 @@ fn s18_lock(flow_id: &str, base_url: &str) -> Value {
     lock
 }
 
-fn call_analyzed_payload() -> Value {
+fn application_payload() -> Value {
     serde_json::json!({
-        "event": "call_analyzed",
-        "call": {
-            "call_id": "call-golden-001",
-            "direction": "outbound",
-            "from_number": "+15550000000",
-            "to_number": "+15551234567",
-            "start_timestamp_ms": 1_782_972_000_000u64,
-            "end_timestamp_ms": 1_782_972_083_000u64,
-            "duration_seconds": 83.0,
-            "transcript": "Agent: hello. User: hi.",
-            "summary": "Caller booked a standard room.",
-            "sentiment": "positive",
-            "combined_cost_cents": 1250.0
+        "full_name": "Ada Lovelace",
+        "email": "ada@applicant.test",
+        "expectation": "5000-6000",
+        "linkedin": "https://linkedin.test/in/ada",
+        "cv_filename": "ada_lovelace_cv.pdf",
+        "resume_text": "Ten years building analytical engines and Rust services."
+    })
+}
+
+fn openai_completion_body(content: &str) -> Value {
+    serde_json::json!({
+        "id": "chatcmpl-golden",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "gemini-1.5-flash",
+        "choices": [{
+            "index": 0,
+            "message": { "role": "assistant", "content": content, "tool_calls": [] },
+            "logprobs": null,
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 40,
+            "completion_tokens": 20,
+            "total_tokens": 60,
+            "prompt_tokens_details": { "cached_tokens": 0 }
         }
     })
 }
 
 #[test]
-fn run_local_runs_s18_clone_end_to_end_with_bindings_lock() {
+fn run_local_runs_s21_clone_end_to_end_with_bindings_lock() {
     let server = httpmock::MockServer::start();
-    let flow_id = example_s18_retell_transcript_sink::validated_ir()
+    let flow_id = example_s21_ai_cv_screening::validated_ir()
         .flow()
         .id
         .as_str()
         .to_string();
 
-    let lock = s18_lock(&flow_id, &server.base_url());
+    let lock = s21_lock(&flow_id, &server.base_url());
     let path = temp_lock_path();
     std::fs::write(
         &path,
@@ -237,39 +246,34 @@ fn run_local_runs_s18_clone_end_to_end_with_bindings_lock() {
     )
     .expect("write lock");
 
-    let airtable_create = server.mock(|when, then| {
+    let rating = "Rating: 9/10. Strong match. Recommend an interview.";
+
+    let llm_complete = server.mock(|when, then| {
         when.method(httpmock::Method::POST)
-            .path("/v0/appLatticePilot01/Transcripts")
-            .header("authorization", "Bearer s18-airtable-token");
-        then.status(200).json_body_obj(&serde_json::json!({
-            "id": "rec-golden-1",
-            "createdTime": "2026-07-02T06:02:00.000Z"
-        }));
+            .path_contains("/chat/completions")
+            .header("authorization", "Bearer s21-llm-token");
+        then.status(200).json_body(openai_completion_body(rating));
     });
     let values_read = server.mock(|when, then| {
         when.method(httpmock::Method::GET).path_contains("/values/");
         then.status(200).json_body_obj(&serde_json::json!({
             "values": [[
-                "Call ID", "Start Datetime", "End Datetime", "Duration in seconds",
-                "Phone Number", "Transcript", "Call Summary", "User Sentiment",
-                "Total Cost in Dollars"
+                "full_name", "email", "expectation", "linkedin", "cv_filename", "ai_rating"
             ]]
         }));
     });
     let values_append = server.mock(|when, then| {
         when.method(httpmock::Method::POST).path_contains("append");
         then.status(200).json_body_obj(&serde_json::json!({
-            "updates": { "updatedRange": "'Transcripts'!A2:I2" }
+            "updates": { "updatedRange": "'Candidates'!A2:F2" }
         }));
     });
-    let notion_create = server.mock(|when, then| {
+    let gmail_send = server.mock(|when, then| {
         when.method(httpmock::Method::POST)
-            .path("/v1/pages")
-            .header("authorization", "Bearer s18-notion-token");
+            .path("/gmail/v1/users/me/messages/send")
+            .header("authorization", "Bearer s21-google-token");
         then.status(200).json_body_obj(&serde_json::json!({
-            "object": "page",
-            "id": "page-golden-1",
-            "url": "https://www.notion.so/page-golden-1"
+            "id": "msg-golden", "threadId": "thread-golden", "labelIds": ["SENT"]
         }));
     });
 
@@ -279,46 +283,50 @@ fn run_local_runs_s18_clone_end_to_end_with_bindings_lock() {
             "run",
             "local",
             "--example",
-            "s18_retell_transcript_sink",
+            "s21_ai_cv_screening",
             "--payload",
-            &call_analyzed_payload().to_string(),
+            &application_payload().to_string(),
             "--bindings-lock",
             path.to_str().expect("lock path"),
             "--checkpoint-store",
             "memory",
         ])
-        .env("S18_AIRTABLE_BEARER", "s18-airtable-token")
-        .env("S18_GOOGLE_BEARER", "s18-google-token")
-        .env("S18_NOTION_BEARER", "s18-notion-token")
+        .env("S21_GOOGLE_BEARER", "s21-google-token")
+        .env("S21_LLM_BEARER", "s21-llm-token")
         .output()
         .expect("run flows");
 
     assert!(
         output.status.success(),
-        "s18 run local failed: status={:?}, stderr={}",
+        "s21 run local failed: status={:?}, stderr={}",
         output.status,
         String::from_utf8_lossy(&output.stderr)
     );
 
-    // Every connector family really ran against the mock.
-    airtable_create.assert_hits(1);
+    // Every connector family really ran against the mock; both emails sent.
+    llm_complete.assert_hits(1);
     values_read.assert_hits(1);
     values_append.assert_hits(1);
-    notion_create.assert_hits(1);
+    gmail_send.assert_hits(2);
 
     let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
     let record: Value = serde_json::from_str(stdout.trim())
-        .unwrap_or_else(|err| panic!("stdout is not a SinkRecord JSON ({err}): {stdout}"));
+        .unwrap_or_else(|err| panic!("stdout is not a ScreeningRecord JSON ({err}): {stdout}"));
     assert_eq!(record["stored"], serde_json::json!(true));
-    assert_eq!(record["call_id"], serde_json::json!("call-golden-001"));
+    assert_eq!(record["email"], serde_json::json!("ada@applicant.test"));
+    assert_eq!(record["ai_rating"], serde_json::json!(rating));
     assert_eq!(
-        record["airtable_record_id"],
-        serde_json::json!("rec-golden-1")
+        record["appended_range"],
+        serde_json::json!("'Candidates'!A2:F2")
     );
-    assert_eq!(record["notion_page_id"], serde_json::json!("page-golden-1"));
+    assert_eq!(
+        record["candidate_message_id"],
+        serde_json::json!("msg-golden")
+    );
+    assert_eq!(record["hr_message_id"], serde_json::json!("msg-golden"));
     assert_eq!(
         record["key"],
-        serde_json::json!("s18_retell_transcript_sink_flow:intake:call-golden-001")
+        serde_json::json!("s21_ai_cv_screening_flow:screening_trigger:ada@applicant.test")
     );
 
     std::fs::remove_file(&path).ok();
