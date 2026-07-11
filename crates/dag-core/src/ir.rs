@@ -158,6 +158,10 @@ pub struct ConnectorRoleRequirement {
     pub kind: ConnectorRoleKindDecl,
     pub name: &'static str,
     pub expected_handle_kind: &'static str,
+    /// Whether lock-time binding must satisfy this role. Optional roles
+    /// (`required: false`) may be left unbound; bound-but-wrong-kind is
+    /// still a failure.
+    pub required: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -194,6 +198,23 @@ pub struct ConnectorRoleRequirementIR {
     pub kind: ConnectorRoleKindDecl,
     pub name: String,
     pub expected_handle_kind: String,
+    /// Whether lock-time binding must satisfy this role. Defaults to `true`
+    /// and is omitted from serialized output when `true`, so existing IR,
+    /// requirements manifests, and goldens are byte-identical.
+    #[serde(
+        default = "connector_role_required_default",
+        skip_serializing_if = "connector_role_required_is_default"
+    )]
+    pub required: bool,
+}
+
+fn connector_role_required_default() -> bool {
+    true
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn connector_role_required_is_default(required: &bool) -> bool {
+    *required
 }
 
 /// Serializable connector operation reference emitted into Flow IR.
@@ -395,6 +416,7 @@ impl NodeSpec {
                         kind: role.kind,
                         name: role.name.to_string(),
                         expected_handle_kind: role.expected_handle_kind.to_string(),
+                        required: role.required,
                     })
                     .collect(),
                 default_resolution_mode: op.resolution.default_mode,

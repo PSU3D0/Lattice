@@ -3601,11 +3601,13 @@ mod tests {
                         kind: dag_core::ConnectorRoleKindDecl::EndpointProfile,
                         name: "demo_default",
                         expected_handle_kind: "endpoint.profile",
+                        required: true,
                     },
                     dag_core::ConnectorRoleRequirement {
                         kind: dag_core::ConnectorRoleKindDecl::OutboundAuth,
                         name: "demo_auth",
                         expected_handle_kind: "http.bearer",
+                        required: true,
                     },
                 ],
                 resolution: dag_core::ConnectorResolutionContract {

@@ -22,11 +22,13 @@ impl DemoAppendRow {
                 kind: ConnectorRoleKindDecl::EndpointProfile,
                 name: "demo_default",
                 expected_handle_kind: "endpoint.profile",
+                required: true,
             },
             ConnectorRoleRequirement {
                 kind: ConnectorRoleKindDecl::OutboundAuth,
                 name: "demo_auth",
                 expected_handle_kind: "http.bearer",
+                required: false,
             },
         ],
         resolution: ConnectorResolutionContract {
@@ -86,5 +88,20 @@ fn def_node_connector_ops_auto_hoist_effects_and_hints() {
     assert_eq!(
         refs[0].supported_resolution_modes,
         vec![ConnectorResolutionModeDecl::BoundConnection]
+    );
+
+    // Role optionality threads from the static declaration into the IR ref.
+    assert_eq!(refs[0].roles.len(), 2);
+    assert!(
+        refs[0]
+            .roles
+            .iter()
+            .any(|role| role.name == "demo_default" && role.required)
+    );
+    assert!(
+        refs[0]
+            .roles
+            .iter()
+            .any(|role| role.name == "demo_auth" && !role.required)
     );
 }

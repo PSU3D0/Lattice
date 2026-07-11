@@ -65,11 +65,13 @@ impl OpenAiIssueTriageOp {
                 kind: ConnectorRoleKindDecl::EndpointProfile,
                 name: OPENAI_ENDPOINT_PROFILE.name,
                 expected_handle_kind: "endpoint.profile",
+                required: true,
             },
             ConnectorRoleRequirement {
                 kind: ConnectorRoleKindDecl::OutboundAuth,
                 name: OPENAI_AUTH_PROFILE.name,
                 expected_handle_kind: "http.bearer",
+                required: true,
             },
         ],
         resolution: dag_core::ConnectorResolutionContract {

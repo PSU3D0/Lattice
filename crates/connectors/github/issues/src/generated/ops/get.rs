@@ -54,6 +54,7 @@ impl GithubIssuesGet {
             kind: ::dag_core::ConnectorRoleKindDecl::EndpointProfile,
             name: "github_default",
             expected_handle_kind: "endpoint.profile",
+            required: true,
         }],
         resolution: ::dag_core::ConnectorResolutionContract {
             supported_modes: &[::dag_core::ConnectorResolutionModeDecl::BoundConnection],

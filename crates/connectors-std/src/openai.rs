@@ -202,9 +202,10 @@ mod tests {
             _profile: &OutboundAuthProfileDescriptor,
             request: &mut HttpRequest,
         ) -> Result<(), HostConnectorRuntimeError> {
-            request
-                .headers
-                .insert("authorization".to_string(), format!("Bearer {}", self.token));
+            request.headers.insert(
+                "authorization".to_string(),
+                format!("Bearer {}", self.token),
+            );
             Ok(())
         }
 

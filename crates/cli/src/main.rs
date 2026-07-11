@@ -2323,7 +2323,52 @@ fn validate_connector_handle_provider_config(
             }
             validate_static_endpoint_profile_handle(name, handle)?;
         }
-        _ => {}
+        "endpoint.any_origin" => {
+            if handle.handle_kind != "endpoint.any_origin" {
+                return Err(anyhow!(
+                    "bindings.lock connector handle `{name}` uses provider_kind `endpoint.any_origin` but has handle_kind `{}`; expected `endpoint.any_origin`",
+                    handle.handle_kind,
+                ));
+            }
+            validate_any_origin_endpoint_handle(name, handle)?;
+        }
+        other => {
+            return Err(anyhow!(
+                "bindings.lock connector handle `{name}` uses unknown provider_kind `{other}`; \
+                 known provider kinds are `auth.static_bearer`, `auth.static_secret`, \
+                 `auth.oauth2.refresh`, `auth.service_account_jwt`, `endpoint.profile.static`, \
+                 and `endpoint.any_origin` (unknown kinds fail closed)"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate an `endpoint.any_origin` handle (Tier-2 dynamic-URL grant).
+///
+/// The handle is a deliberate, reviewable lock edit that grants a
+/// connector.http `*_any_origin` op the right to compose absolute URLs at
+/// runtime. It carries no configuration and no credential material: the
+/// `config` and `connect` objects must be empty (fail closed on anything
+/// else, so credential refs or base URLs cannot ride along unnoticed).
+fn validate_any_origin_endpoint_handle(name: &str, handle: &ConnectorHandleInstance) -> Result<()> {
+    match handle.config.as_object() {
+        Some(config) if config.is_empty() => {}
+        _ => {
+            return Err(anyhow!(
+                "bindings.lock connector handle `{name}` uses provider_kind `endpoint.any_origin` but has a non-empty `config`; any_origin handles carry no configuration"
+            ));
+        }
+    }
+
+    match handle.connect.as_object() {
+        Some(connect) if connect.is_empty() => {}
+        _ => {
+            return Err(anyhow!(
+                "bindings.lock connector handle `{name}` uses provider_kind `endpoint.any_origin` but has a non-empty `connect`; any_origin handles carry no credential material"
+            ));
+        }
     }
 
     Ok(())
@@ -2545,7 +2590,9 @@ fn validate_connector_role_provider_compatibility(
             provider_kind.starts_with("auth.")
         }
         ConnectorRoleKind::InboundVerifier => provider_kind.starts_with("verifier."),
-        ConnectorRoleKind::EndpointProfile => provider_kind.starts_with("endpoint.profile."),
+        ConnectorRoleKind::EndpointProfile => {
+            provider_kind.starts_with("endpoint.profile.") || provider_kind == "endpoint.any_origin"
+        }
     };
 
     if !family_matches {
@@ -2575,6 +2622,9 @@ fn validate_connector_connection_well_formed(
         ));
     }
 
+    let mut any_origin_role: Option<(&str, &str)> = None;
+    let mut outbound_auth_role: Option<(&str, &str)> = None;
+
     for (role_key, handle_name) in &connection.roles {
         let handle = handles.get(handle_name).ok_or_else(|| {
             anyhow!(
@@ -2582,6 +2632,25 @@ fn validate_connector_connection_well_formed(
             )
         })?;
         validate_connector_role_provider_compatibility(name, role_key, handle_name, handle)?;
+
+        if handle.handle_kind == "endpoint.any_origin" {
+            any_origin_role.get_or_insert((role_key.as_str(), handle_name.as_str()));
+        }
+        let (role_kind, _) = parse_connector_role_key(role_key)?;
+        if role_kind == ConnectorRoleKind::OutboundAuth {
+            outbound_auth_role.get_or_insert((role_key.as_str(), handle_name.as_str()));
+        }
+    }
+
+    // HTTP003: a Tier-2 any-origin grant must not coexist with a lock-granted
+    // outbound credential on the same connection — auth × dynamic host is
+    // forbidden (fail closed at lock preflight).
+    if let (Some((endpoint_role, endpoint_handle)), Some((auth_role, auth_handle))) =
+        (any_origin_role, outbound_auth_role)
+    {
+        return Err(anyhow!(
+            "HTTP003: bindings.lock connector connection `{name}` binds any-origin endpoint handle `{endpoint_handle}` (role `{endpoint_role}`) together with outbound-auth handle `{auth_handle}` (role `{auth_role}`); lock-granted credentials cannot attach to dynamic-host requests — remove the auth role or use a fixed `endpoint.profile` handle"
+        ));
     }
 
     validate_connector_connection_config(name, connection)?;
@@ -4849,6 +4918,137 @@ RGKOKF9RKKgFGiXk5I97qQ==
             msg.contains("expects the matching provider family"),
             "{msg}"
         );
+    }
+
+    fn any_origin_lock(flow_id: &str, extra_roles: JsonValue) -> JsonValue {
+        let mut roles = json!({
+            "endpoint_profile.http_target": "endpoint.anywhere"
+        });
+        if let (Some(base), Some(extra)) = (roles.as_object_mut(), extra_roles.as_object()) {
+            for (key, value) in extra {
+                base.insert(key.clone(), value.clone());
+            }
+        }
+        json!({
+            "version": 1,
+            "generated_at": "2025-12-15T00:00:00Z",
+            "content_hash": "",
+            "instances": {},
+            "flows": {
+                flow_id: { "use": {} }
+            },
+            "connector_handles": {
+                "endpoint.anywhere": {
+                    "provider_kind": "endpoint.any_origin",
+                    "handle_kind": "endpoint.any_origin",
+                    "connect": {},
+                    "config": {},
+                    "grants": {}
+                },
+                "auth.stray_token": {
+                    "provider_kind": "auth.static_bearer",
+                    "handle_kind": "http.bearer",
+                    "connect": { "secret_ref": "STRAY_TOKEN" },
+                    "config": {},
+                    "grants": {}
+                }
+            },
+            "connector_connections": {
+                "anywhere": {
+                    "connector_id": "connector.http",
+                    "roles": roles
+                }
+            },
+            "connector_bindings": {
+                flow_id: {
+                    "defaults": {
+                        "connector.http": "anywhere"
+                    },
+                    "nodes": {}
+                }
+            }
+        })
+    }
+
+    #[test]
+    fn bindings_lock_accepts_any_origin_endpoint_handle() {
+        let flow_id = "test-flow";
+        let lock = any_origin_lock(flow_id, json!({}));
+        BindingsLockConnectorRuntime::new(&lock_from_json(lock), flow_id)
+            .expect("endpoint.any_origin handle without auth must validate");
+    }
+
+    #[test]
+    fn bindings_lock_rejects_unknown_handle_provider_kind() {
+        let flow_id = "test-flow";
+        let mut lock = any_origin_lock(flow_id, json!({}));
+        // Misspelled provider kind must fail closed, not pass silently.
+        lock["connector_handles"]["endpoint.anywhere"]["provider_kind"] =
+            json!("endpoint.any_orgin");
+        let err = BindingsLockConnectorRuntime::new(&lock_from_json(lock), flow_id)
+            .err()
+            .expect("unknown provider_kind must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unknown provider_kind `endpoint.any_orgin`"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn bindings_lock_rejects_any_origin_handle_kind_mismatch() {
+        let flow_id = "test-flow";
+        let mut lock = any_origin_lock(flow_id, json!({}));
+        lock["connector_handles"]["endpoint.anywhere"]["handle_kind"] = json!("endpoint.profile");
+        let err = BindingsLockConnectorRuntime::new(&lock_from_json(lock), flow_id)
+            .err()
+            .expect("any_origin handle_kind mismatch must be rejected");
+        let msg = err.to_string();
+        assert!(msg.contains("expected `endpoint.any_origin`"), "{msg}");
+    }
+
+    #[test]
+    fn bindings_lock_rejects_any_origin_handle_with_config_or_connect() {
+        let flow_id = "test-flow";
+        let mut lock = any_origin_lock(flow_id, json!({}));
+        lock["connector_handles"]["endpoint.anywhere"]["config"] =
+            json!({ "base_url": "https://api.example.com" });
+        let err = BindingsLockConnectorRuntime::new(&lock_from_json(lock.clone()), flow_id)
+            .err()
+            .expect("any_origin handle with config must be rejected");
+        assert!(
+            err.to_string().contains("non-empty `config`"),
+            "{}",
+            err.to_string()
+        );
+
+        let mut lock = any_origin_lock(flow_id, json!({}));
+        lock["connector_handles"]["endpoint.anywhere"]["connect"] =
+            json!({ "secret_ref": "SNEAKY_TOKEN" });
+        let err = BindingsLockConnectorRuntime::new(&lock_from_json(lock), flow_id)
+            .err()
+            .expect("any_origin handle with connect must be rejected");
+        assert!(
+            err.to_string().contains("non-empty `connect`"),
+            "{}",
+            err.to_string()
+        );
+    }
+
+    #[test]
+    fn bindings_lock_rejects_any_origin_connection_with_outbound_auth() {
+        let flow_id = "test-flow";
+        let lock = any_origin_lock(
+            flow_id,
+            json!({ "outbound_auth.http_target_auth": "auth.stray_token" }),
+        );
+        let err = BindingsLockConnectorRuntime::new(&lock_from_json(lock), flow_id)
+            .err()
+            .expect("any_origin + outbound_auth must fail closed (HTTP003)");
+        let msg = err.to_string();
+        assert!(msg.contains("HTTP003"), "{msg}");
+        assert!(msg.contains("endpoint.anywhere"), "{msg}");
+        assert!(msg.contains("auth.stray_token"), "{msg}");
     }
 
     #[test]

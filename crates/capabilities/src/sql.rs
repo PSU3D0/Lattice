@@ -338,8 +338,8 @@ mod tests {
             .expect("sql admin constraint");
         assert_eq!(admin.minimum, dag_core::Effects::Effectful);
 
-        let determinism = dag_core::determinism::constraint_for_hint(HINT_SQL)
-            .expect("sql determinism");
+        let determinism =
+            dag_core::determinism::constraint_for_hint(HINT_SQL).expect("sql determinism");
         assert_eq!(determinism.minimum, dag_core::Determinism::BestEffort);
     }
 

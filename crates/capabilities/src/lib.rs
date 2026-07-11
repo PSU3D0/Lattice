@@ -694,6 +694,36 @@ pub mod http {
         }
     }
 
+    /// Redirect-following behavior for a single HTTP request (packet H2a).
+    ///
+    /// Additive and serde-defaulted so pre-existing serialized `HttpRequest`
+    /// payloads (every current connector, including the Workers guest's
+    /// cap-call boundary) decode unchanged. The default is `Follow`, which
+    /// preserves each provider's historical behavior; security-sensitive
+    /// callers (connector.http, spec §10) must set `Off` explicitly so a 3xx
+    /// response is surfaced to the caller (status + `Location`) and never
+    /// followed.
+    #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+    #[serde(rename_all = "snake_case")]
+    pub enum RedirectMode {
+        /// Follow redirects — the historical provider default (reqwest
+        /// follows up to 10 hops; Workers `fetch` follows by default).
+        #[default]
+        Follow,
+        /// Never follow: providers must surface the 3xx response (status +
+        /// `Location` header) to the caller as response data.
+        Off,
+    }
+
+    impl RedirectMode {
+        /// True when this is the historical default (`Follow`). Used by
+        /// `skip_serializing_if` to keep serializations byte-identical for
+        /// callers that never set the field.
+        pub fn is_follow(&self) -> bool {
+            matches!(self, RedirectMode::Follow)
+        }
+    }
+
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct HttpRequest {
         pub method: HttpMethod,
@@ -702,6 +732,10 @@ pub mod http {
         pub headers: HttpHeaders,
         pub body: Option<Vec<u8>>,
         pub timeout_ms: Option<u64>,
+        /// Redirect behavior; serde-defaulted to `Follow` and skipped when
+        /// default so pre-H2a serializations stay byte-identical.
+        #[serde(default, skip_serializing_if = "RedirectMode::is_follow")]
+        pub redirect: RedirectMode,
     }
 
     impl HttpRequest {
@@ -712,6 +746,7 @@ pub mod http {
                 headers: HttpHeaders::default(),
                 body: None,
                 timeout_ms: None,
+                redirect: RedirectMode::default(),
             }
         }
 
@@ -722,6 +757,11 @@ pub mod http {
 
         pub fn with_header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
             self.headers.insert(key, value);
+            self
+        }
+
+        pub fn with_redirect(mut self, redirect: RedirectMode) -> Self {
+            self.redirect = redirect;
             self
         }
     }
@@ -906,6 +946,28 @@ pub mod http {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn redirect_field_is_additive_and_serde_defaulted() {
+            // Pre-H2a payload (no `redirect` key) decodes to Follow.
+            let legacy =
+                r#"{"method":"GET","url":"https://example.test/","body":null,"timeout_ms":null}"#;
+            let decoded: HttpRequest = serde_json::from_str(legacy).expect("legacy decodes");
+            assert_eq!(decoded.redirect, RedirectMode::Follow);
+
+            // Default requests serialize without the field (byte-compatible
+            // with pre-H2a serializations).
+            let request = HttpRequest::new(HttpMethod::Get, "https://example.test/");
+            let json = serde_json::to_string(&request).expect("serialize");
+            assert!(!json.contains("redirect"));
+
+            // Off round-trips across the cap-call boundary.
+            let off = request.with_redirect(RedirectMode::Off);
+            let json = serde_json::to_string(&off).expect("serialize");
+            assert!(json.contains(r#""redirect":"off""#));
+            let round: HttpRequest = serde_json::from_str(&json).expect("round trip");
+            assert_eq!(round.redirect, RedirectMode::Off);
+        }
 
         #[test]
         fn ensure_http_registration_is_idempotent() {

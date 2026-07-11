@@ -192,10 +192,9 @@ impl EffectHint {
             EffectHint::Clock => EffectHint::Clock,
             EffectHint::Rng => EffectHint::Rng,
             EffectHint::Db | EffectHint::DbRead | EffectHint::DbWrite => EffectHint::Db,
-            EffectHint::Sql
-            | EffectHint::SqlRead
-            | EffectHint::SqlWrite
-            | EffectHint::SqlAdmin => EffectHint::Sql,
+            EffectHint::Sql | EffectHint::SqlRead | EffectHint::SqlWrite | EffectHint::SqlAdmin => {
+                EffectHint::Sql
+            }
             EffectHint::Kv | EffectHint::KvRead | EffectHint::KvWrite => EffectHint::Kv,
             EffectHint::Blob | EffectHint::BlobRead | EffectHint::BlobWrite => EffectHint::Blob,
             EffectHint::Queue | EffectHint::QueuePublish | EffectHint::QueueConsume => {

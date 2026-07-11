@@ -18,11 +18,13 @@ impl SlackPostMessage {
                 kind: ::dag_core::ConnectorRoleKindDecl::EndpointProfile,
                 name: "slack_default",
                 expected_handle_kind: "endpoint.profile",
+                required: true,
             },
             ::dag_core::ConnectorRoleRequirement {
                 kind: ::dag_core::ConnectorRoleKindDecl::OutboundAuth,
                 name: "slack_auth",
                 expected_handle_kind: "http.bearer",
+                required: true,
             },
         ],
         resolution: ::dag_core::ConnectorResolutionContract {

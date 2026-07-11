@@ -803,7 +803,7 @@ fn emit_connector_role_requirements(
 ) -> String {
     let mut roles = Vec::new();
     roles.push(format!(
-        "::dag_core::ConnectorRoleRequirement {{ kind: ::dag_core::ConnectorRoleKindDecl::EndpointProfile, name: \"{}\", expected_handle_kind: \"endpoint.profile\" }}",
+        "::dag_core::ConnectorRoleRequirement {{ kind: ::dag_core::ConnectorRoleKindDecl::EndpointProfile, name: \"{}\", expected_handle_kind: \"endpoint.profile\", required: true }}",
         escape_rust_string(&action.endpoint)
     ));
 
@@ -814,7 +814,7 @@ fn emit_connector_role_requirements(
             .get(auth_name)
             .expect("validated manifest outbound auth profile");
         roles.push(format!(
-            "::dag_core::ConnectorRoleRequirement {{ kind: ::dag_core::ConnectorRoleKindDecl::OutboundAuth, name: \"{}\", expected_handle_kind: \"{}\" }}",
+            "::dag_core::ConnectorRoleRequirement {{ kind: ::dag_core::ConnectorRoleKindDecl::OutboundAuth, name: \"{}\", expected_handle_kind: \"{}\", required: true }}",
             escape_rust_string(auth_name),
             escape_rust_string(profile.handle_kind())
         ));

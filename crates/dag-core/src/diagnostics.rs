@@ -417,5 +417,65 @@ pub static DIAGNOSTIC_CODES: Lazy<Vec<DiagnosticCode>> = Lazy::new(|| {
             default_severity: Severity::Error,
             summary: "Duplicate schedule entrypoint (same cron + trigger alias)",
         },
+        DiagnosticCode {
+            code: "HTTP001",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "connector.http input `path` malformed (missing `/`, `//`, `..`, control chars); checked at runtime pre-send, fail closed",
+        },
+        DiagnosticCode {
+            code: "HTTP002",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Tier-1 `target` names an endpoint-profile role not bound on the node's connection",
+        },
+        DiagnosticCode {
+            code: "HTTP003",
+            subsystem: "lock-preflight",
+            default_severity: Severity::Error,
+            summary: "`any_origin` op with an outbound-auth role bound (auth x dynamic host is forbidden)",
+        },
+        DiagnosticCode {
+            code: "HTTP004",
+            subsystem: "lock-preflight",
+            default_severity: Severity::Error,
+            summary: "Required role unbound / handle-kind mismatch for connector.http (existing failure, connector.http-attributed message)",
+        },
+        DiagnosticCode {
+            code: "HTTP101",
+            subsystem: "runtime",
+            default_severity: Severity::Error,
+            summary: "Non-2xx response in error-on-status mode (carries status + bounded body excerpt)",
+        },
+        DiagnosticCode {
+            code: "HTTP102",
+            subsystem: "runtime",
+            default_severity: Severity::Error,
+            summary: "2xx body not valid JSON in a JSON mode",
+        },
+        DiagnosticCode {
+            code: "HTTP103",
+            subsystem: "runtime",
+            default_severity: Severity::Error,
+            summary: "2xx JSON did not match typed output `T` (carries serde path)",
+        },
+        DiagnosticCode {
+            code: "HTTP104",
+            subsystem: "runtime",
+            default_severity: Severity::Error,
+            summary: "2xx body not valid UTF-8 in text mode",
+        },
+        DiagnosticCode {
+            code: "HTTP105",
+            subsystem: "runtime",
+            default_severity: Severity::Error,
+            summary: "Composed URL origin != granted profile origin (fatal invariant breach — bug or attack; never retried)",
+        },
+        DiagnosticCode {
+            code: "HTTP106",
+            subsystem: "runtime",
+            default_severity: Severity::Error,
+            summary: "Forbidden/malformed header name or CR/LF in header value",
+        },
     ]
 });

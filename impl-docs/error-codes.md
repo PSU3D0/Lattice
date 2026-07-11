@@ -99,6 +99,16 @@ ensure the registry stays in sync with the implementation.
 | TRIG002   | Macros         | Error   | `schedule` conflicts with `method`/`route_aliases` on one entrypoint (also enforced by kernel-plan on hand-built IR). |
 | TRIG003   | Validation     | Error   | Trigger alias wired to both schedule and HTTP entrypoints. |
 | TRIG004   | Validation     | Error   | Duplicate schedule entrypoint (same cron + trigger alias). |
+| HTTP001   | Validation     | Error   | connector.http input `path` malformed (missing `/`, `//`, `..`, control chars) — checked at runtime pre-send; fail closed. |
+| HTTP002   | Validation     | Error   | Tier-1 `target` names an endpoint-profile role not bound on the node's connection. |
+| HTTP003   | Lock preflight | Error   | `any_origin` op with an outbound-auth role bound (auth × dynamic host is forbidden). |
+| HTTP004   | Lock preflight | Error   | Required role unbound / handle-kind mismatch for connector.http (existing failure, connector.http-attributed message). |
+| HTTP101   | Runtime        | Error   | Non-2xx response in error-on-status mode (carries status + ≤240-char excerpt). |
+| HTTP102   | Runtime        | Error   | 2xx body not valid JSON in a JSON mode. |
+| HTTP103   | Runtime        | Error   | 2xx JSON did not match typed output `T` (carries serde path). |
+| HTTP104   | Runtime        | Error   | 2xx body not valid UTF-8 in text mode. |
+| HTTP105   | Runtime        | Fatal   | Composed URL origin ≠ granted profile origin (invariant breach — bug or attack; never retried). |
+| HTTP106   | Runtime        | Error   | Forbidden/malformed header name or CR/LF in header value. |
 
 > **Note:** The default severity column indicates how diagnostics are surfaced in the
 > absence of policy overrides. Individual organisations may escalate or demote specific

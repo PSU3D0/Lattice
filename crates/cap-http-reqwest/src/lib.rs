@@ -10,34 +10,70 @@
 use anyhow::Context;
 use async_trait::async_trait;
 use capabilities::http::{
-    self, HttpError, HttpHeaders, HttpRequest, HttpResponse, HttpResult, HttpWrite,
+    self, HttpError, HttpHeaders, HttpRequest, HttpResponse, HttpResult, HttpWrite, RedirectMode,
 };
-use reqwest::{self, Client};
+use reqwest::{self, Client, redirect};
 use std::time::Duration;
 use tracing::instrument;
 
 /// Reqwest-backed HTTP capability implementing both read and write traits.
+///
+/// Reqwest fixes its redirect policy at `Client`-build time, so honoring the
+/// per-request `HttpRequest::redirect` field (packet H2a) requires two
+/// clients: the shared follow-redirects client (historical behavior) and a
+/// companion built with `redirect::Policy::none()` used only when a request
+/// sets `RedirectMode::Off`.
 pub struct ReqwestHttpClient {
     client: Client,
+    no_redirect_client: Client,
 }
 
 impl ReqwestHttpClient {
     /// Construct a client from an existing `reqwest::Client`.
+    ///
+    /// The provided client serves `RedirectMode::Follow` requests unchanged
+    /// (the pre-H2a shared-client path). Because reqwest cannot re-derive a
+    /// builder from a built `Client`, `RedirectMode::Off` requests go through
+    /// a companion client built with the DEFAULT configuration plus
+    /// `redirect::Policy::none()`; callers that need custom TLS/proxy
+    /// settings on the no-redirect path should use
+    /// [`ReqwestHttpClient::new_with_clients`].
     pub fn new(client: Client) -> Self {
+        let no_redirect_client = Client::builder()
+            .redirect(redirect::Policy::none())
+            .build()
+            .expect("building default no-redirect reqwest client should not fail");
+        Self::new_with_clients(client, no_redirect_client)
+    }
+
+    /// Construct from an explicit pair of clients: one for
+    /// `RedirectMode::Follow` requests and one — which MUST be built with
+    /// `redirect::Policy::none()` — for `RedirectMode::Off` requests.
+    pub fn new_with_clients(client: Client, no_redirect_client: Client) -> Self {
         http::ensure_registered();
-        Self { client }
+        Self {
+            client,
+            no_redirect_client,
+        }
     }
 
     /// Build a client with the default TLS configuration.
     pub fn with_default_tls() -> Result<Self, reqwest::Error> {
         let client = Client::builder().build()?;
-        Ok(Self::new(client))
+        let no_redirect_client = Client::builder()
+            .redirect(redirect::Policy::none())
+            .build()?;
+        Ok(Self::new_with_clients(client, no_redirect_client))
     }
 
     async fn execute(&self, request: HttpRequest) -> HttpResult<HttpResponse> {
         let method = reqwest::Method::from_bytes(request.method.as_str().as_bytes())
             .context("invalid HTTP method")?;
-        let mut builder = self.client.request(method, &request.url);
+        let client = match request.redirect {
+            RedirectMode::Follow => &self.client,
+            RedirectMode::Off => &self.no_redirect_client,
+        };
+        let mut builder = client.request(method, &request.url);
 
         builder = apply_headers(builder, &request.headers);
         if let Some(timeout_ms) = request.timeout_ms {
@@ -174,5 +210,63 @@ mod tests {
         mock.assert();
         assert_eq!(response.status, 201);
         assert_eq!(String::from_utf8_lossy(&response.body), "created");
+    }
+
+    #[tokio::test]
+    async fn redirect_off_surfaces_3xx_and_never_follows() {
+        let server = MockServer::start();
+        let target_url = format!("{}/target", server.base_url());
+        let hop = server.mock(|when, then| {
+            when.method(GET).path("/hop");
+            then.status(302).header("location", target_url.as_str());
+        });
+        let target = server.mock(|when, then| {
+            when.method(GET).path("/target");
+            then.status(200).body("followed");
+        });
+
+        let client = ReqwestHttpClient::default();
+        let request = HttpRequest::new(HttpMethod::Get, format!("{}/hop", server.base_url()))
+            .with_redirect(capabilities::http::RedirectMode::Off);
+        let response = HttpRead::send(&client, request)
+            .await
+            .expect("3xx must be surfaced as a response, not an error");
+
+        // The 3xx itself is observable as response data (status + Location)...
+        hop.assert();
+        assert_eq!(response.status, 302);
+        assert_eq!(
+            response.headers.get("location").map(String::as_str),
+            Some(target_url.as_str())
+        );
+        // ...and the redirect target was NEVER fetched.
+        target.assert_hits(0);
+    }
+
+    #[tokio::test]
+    async fn redirect_default_still_follows() {
+        // Backward-compat lock: requests that never set the field keep the
+        // historical follow-redirects behavior.
+        let server = MockServer::start();
+        let target_url = format!("{}/target", server.base_url());
+        let hop = server.mock(|when, then| {
+            when.method(GET).path("/hop");
+            then.status(302).header("location", target_url.as_str());
+        });
+        let target = server.mock(|when, then| {
+            when.method(GET).path("/target");
+            then.status(200).body("followed");
+        });
+
+        let client = ReqwestHttpClient::default();
+        let request = HttpRequest::new(HttpMethod::Get, format!("{}/hop", server.base_url()));
+        let response = HttpRead::send(&client, request)
+            .await
+            .expect("followed response");
+
+        hop.assert();
+        target.assert();
+        assert_eq!(response.status, 200);
+        assert_eq!(String::from_utf8_lossy(&response.body), "followed");
     }
 }

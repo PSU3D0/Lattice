@@ -377,7 +377,8 @@ fn derive_connectors(flow: &FlowIR) -> Vec<ConnectorRequirement> {
             operations: operations
                 .into_values()
                 .map(|mut op| {
-                    op.selected_resolution_modes.sort_by_key(|mode| resolution_mode_rank(*mode));
+                    op.selected_resolution_modes
+                        .sort_by_key(|mode| resolution_mode_rank(*mode));
                     op.nodes.sort();
                     op
                 })
@@ -477,9 +478,9 @@ fn derive_entrypoints(flow: &FlowIR) -> Vec<EntrypointRequirement> {
 
 fn derive_host_constraints(flow: &FlowIR) -> HostConstraints {
     let requires_connector_runtime = flow.nodes.iter().any(|node| {
-        node.connector_ops.iter().any(|op| {
-            op.selected_resolution_mode == ConnectorResolutionModeDecl::BoundConnection
-        })
+        node.connector_ops
+            .iter()
+            .any(|op| op.selected_resolution_mode == ConnectorResolutionModeDecl::BoundConnection)
     });
     HostConstraints {
         requires_wasm32_compatibility: flow.profile == Profile::Wasm,
@@ -596,6 +597,7 @@ mod tests {
                 kind: ConnectorRoleKindDecl::OutboundAuth,
                 name: "api".to_string(),
                 expected_handle_kind: "secret.api_key".to_string(),
+                required: true,
             }],
             default_resolution_mode: ConnectorResolutionModeDecl::BoundConnection,
             selected_resolution_mode: ConnectorResolutionModeDecl::BoundConnection,
@@ -617,6 +619,134 @@ mod tests {
         assert!(reqs.host.requires_connector_runtime);
     }
 
+    /// Additive-field compatibility: a required role (the only kind that
+    /// existed before `required` was added) serializes without the field, so
+    /// pre-existing IR/manifest goldens stay byte-identical, and legacy JSON
+    /// without the field deserializes as `required: true`.
+    #[test]
+    fn required_role_serialization_is_backward_compatible() {
+        let role = ConnectorRoleRequirementIR {
+            kind: ConnectorRoleKindDecl::OutboundAuth,
+            name: "api".to_string(),
+            expected_handle_kind: "secret.api_key".to_string(),
+            required: true,
+        };
+        let json = serde_json::to_value(&role).expect("serialize");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "kind": "outbound_auth",
+                "name": "api",
+                "expected_handle_kind": "secret.api_key",
+            }),
+            "required: true must be omitted so existing goldens stay byte-identical"
+        );
+
+        let legacy = serde_json::json!({
+            "kind": "outbound_auth",
+            "name": "api",
+            "expected_handle_kind": "secret.api_key",
+        });
+        let parsed: ConnectorRoleRequirementIR =
+            serde_json::from_value(legacy).expect("deserialize legacy role");
+        assert!(parsed.required, "missing `required` must default to true");
+    }
+
+    /// An optional role (`required: false`) round-trips IR -> manifest ->
+    /// JSON -> back with the flag preserved and explicitly serialized.
+    #[test]
+    fn optional_role_round_trips_through_ir_and_manifest() {
+        let mut flow = two_node_flow();
+        flow.nodes[1].connector_ops.push(ConnectorOpRefIR {
+            operation_id: "connector.http.get".to_string(),
+            connector_id: "connector.http".to_string(),
+            roles: vec![
+                ConnectorRoleRequirementIR {
+                    kind: ConnectorRoleKindDecl::EndpointProfile,
+                    name: "http_target".to_string(),
+                    expected_handle_kind: "endpoint.profile".to_string(),
+                    required: true,
+                },
+                ConnectorRoleRequirementIR {
+                    kind: ConnectorRoleKindDecl::OutboundAuth,
+                    name: "http_target_auth".to_string(),
+                    expected_handle_kind: "http.bearer".to_string(),
+                    required: false,
+                },
+            ],
+            default_resolution_mode: ConnectorResolutionModeDecl::BoundConnection,
+            selected_resolution_mode: ConnectorResolutionModeDecl::BoundConnection,
+            supported_resolution_modes: vec![ConnectorResolutionModeDecl::BoundConnection],
+        });
+
+        // Flow IR JSON round-trip preserves the optional flag.
+        let ir_json = serde_json::to_value(&flow).expect("serialize flow ir");
+        let flow_back: FlowIR = serde_json::from_value(ir_json).expect("deserialize flow ir");
+        assert_eq!(
+            flow_back.nodes[1].connector_ops,
+            flow.nodes[1].connector_ops
+        );
+
+        // Manifest derivation carries the flag; JSON round-trips it.
+        let reqs = FlowRequirements::derive(&flow).expect("derive");
+        let op = &reqs.connectors[0].operations[0];
+        assert_eq!(op.roles.len(), 2);
+        assert!(
+            op.roles
+                .iter()
+                .any(|role| role.name == "http_target" && role.required)
+        );
+        assert!(
+            op.roles
+                .iter()
+                .any(|role| role.name == "http_target_auth" && !role.required)
+        );
+
+        let manifest_json = serde_json::to_value(&reqs).expect("serialize manifest");
+        let auth_role = &manifest_json["connectors"][0]["operations"][0]["roles"][1];
+        assert_eq!(
+            auth_role["required"],
+            serde_json::json!(false),
+            "required: false must serialize explicitly"
+        );
+        let back: FlowRequirements =
+            serde_json::from_value(manifest_json).expect("deserialize manifest");
+        assert_eq!(back, reqs);
+    }
+
+    /// A flow with no optional roles must produce a manifest whose JSON
+    /// contains no `required` key anywhere (byte-identity guard for the
+    /// goldens that predate the field).
+    #[test]
+    fn manifest_without_optional_roles_never_mentions_required_field() {
+        let mut flow = two_node_flow();
+        flow.nodes[1].connector_ops.push(ConnectorOpRefIR {
+            operation_id: "connector.demo.op".to_string(),
+            connector_id: "connector.demo".to_string(),
+            roles: vec![ConnectorRoleRequirementIR {
+                kind: ConnectorRoleKindDecl::OutboundAuth,
+                name: "api".to_string(),
+                expected_handle_kind: "secret.api_key".to_string(),
+                required: true,
+            }],
+            default_resolution_mode: ConnectorResolutionModeDecl::BoundConnection,
+            selected_resolution_mode: ConnectorResolutionModeDecl::BoundConnection,
+            supported_resolution_modes: vec![ConnectorResolutionModeDecl::BoundConnection],
+        });
+
+        let reqs = FlowRequirements::derive(&flow).expect("derive");
+        let manifest_json = serde_json::to_string(&reqs).expect("serialize manifest");
+        assert!(
+            !manifest_json.contains("\"required\""),
+            "all-required manifest must not mention the `required` key"
+        );
+        let ir_json = serde_json::to_string(&flow).expect("serialize flow ir");
+        assert!(
+            !ir_json.contains("\"required\""),
+            "all-required flow IR must not mention the `required` key"
+        );
+    }
+
     #[test]
     fn durability_defaults_require_checkpoint_store() {
         let flow = two_node_flow();
@@ -632,7 +762,9 @@ mod tests {
         let flow = two_node_flow();
         let reqs = FlowRequirements::derive(&flow)
             .expect("derive")
-            .with_flow_ir_hash("sha256:0000000000000000000000000000000000000000000000000000000000000000");
+            .with_flow_ir_hash(
+                "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            );
         let json = serde_json::to_value(&reqs).expect("serialize");
         let back: FlowRequirements = serde_json::from_value(json).expect("deserialize");
         assert_eq!(back, reqs);

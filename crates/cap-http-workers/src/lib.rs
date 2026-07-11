@@ -69,6 +69,7 @@ mod wasm {
     fn request_init_from_http(request: &HttpRequest) -> HttpResult<RequestInit> {
         let mut init = RequestInit::new();
         init.with_method(method_from_http(request.method));
+        init.with_redirect(redirect_from_http(request.redirect));
 
         let headers = headers_from_http(&request.headers)?;
         init.with_headers(headers);
@@ -89,6 +90,17 @@ mod wasm {
             http::HttpMethod::Put => worker::Method::Put,
             http::HttpMethod::Patch => worker::Method::Patch,
             http::HttpMethod::Delete => worker::Method::Delete,
+        }
+    }
+
+    /// Map the capability-level redirect mode onto the fetch knob (packet
+    /// H2a). `Off` uses `manual` so the 3xx response itself (status +
+    /// `Location`) is surfaced to the caller and never followed; `follow`
+    /// preserves the historical fetch default.
+    fn redirect_from_http(mode: http::RedirectMode) -> worker::RequestRedirect {
+        match mode {
+            http::RedirectMode::Follow => worker::RequestRedirect::Follow,
+            http::RedirectMode::Off => worker::RequestRedirect::Manual,
         }
     }
 
@@ -185,6 +197,7 @@ mod wasm {
             url: Option<String>,
             headers: HashMap<String, String>,
             body: Option<Vec<u8>>,
+            redirect: Option<String>,
             signal: Option<AbortSignal>,
             response_status: u16,
             response_headers: Vec<(String, String)>,
@@ -213,6 +226,9 @@ mod wasm {
                     }
 
                     let signal = extract_signal(&init);
+                    let redirect = js_sys::Reflect::get(&request, &JsValue::from_str("redirect"))
+                        .ok()
+                        .and_then(|value| value.as_string());
 
                     let body = if request.body().is_some() {
                         let buffer = JsFuture::from(request.array_buffer()?).await?;
@@ -229,6 +245,7 @@ mod wasm {
                         snapshot.url = Some(url);
                         snapshot.headers = header_map;
                         snapshot.body = body;
+                        snapshot.redirect = redirect;
                         snapshot.signal = signal;
                     }
 
@@ -357,6 +374,53 @@ mod wasm {
                 Some("lattice")
             );
             assert_eq!(snapshot.body.as_deref(), Some(b"payload".as_slice()));
+        }
+
+        #[wasm_bindgen_test(async)]
+        async fn redirect_off_sets_manual_and_surfaces_3xx() {
+            let state = Rc::new(RefCell::new(MockState::default()));
+            configure_response(
+                &state,
+                302,
+                &[("location", "https://example.test/elsewhere")],
+                b"",
+                0,
+            );
+            install_fetch_stub(Rc::clone(&state));
+
+            let client = WorkersHttpClient::new();
+            let request = HttpRequest::new(HttpMethod::Get, "https://example.test/hop")
+                .with_redirect(capabilities::http::RedirectMode::Off);
+            let response = HttpRead::send(&client, request)
+                .await
+                .expect("3xx must be surfaced as a response, not an error");
+
+            // The 3xx is observable as response data (status + Location).
+            assert_eq!(response.status, 302);
+            assert_eq!(
+                response.headers.get("location").map(String::as_str),
+                Some("https://example.test/elsewhere")
+            );
+
+            // Exactly one fetch was issued (never followed), and the
+            // constructed Request carried the `manual` redirect knob.
+            let snapshot = state.borrow();
+            assert_eq!(snapshot.calls, 1);
+            assert_eq!(snapshot.redirect.as_deref(), Some("manual"));
+        }
+
+        #[wasm_bindgen_test(async)]
+        async fn redirect_default_keeps_follow_knob() {
+            let state = Rc::new(RefCell::new(MockState::default()));
+            configure_response(&state, 200, &[], b"ok", 0);
+            install_fetch_stub(Rc::clone(&state));
+
+            let client = WorkersHttpClient::new();
+            let request = HttpRequest::new(HttpMethod::Get, "https://example.test/plain");
+            HttpRead::send(&client, request).await.expect("response ok");
+
+            let snapshot = state.borrow();
+            assert_eq!(snapshot.redirect.as_deref(), Some("follow"));
         }
 
         // This test requires worker::Delay which only works in the Workers runtime.

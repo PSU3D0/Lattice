@@ -22,11 +22,13 @@ impl LlmComplete {
                 kind: ::dag_core::ConnectorRoleKindDecl::EndpointProfile,
                 name: "llm_default",
                 expected_handle_kind: "endpoint.profile",
+                required: true,
             },
             ::dag_core::ConnectorRoleRequirement {
                 kind: ::dag_core::ConnectorRoleKindDecl::OutboundAuth,
                 name: "llm_api_key",
                 expected_handle_kind: "http.bearer",
+                required: true,
             },
         ],
         resolution: ::dag_core::ConnectorResolutionContract {

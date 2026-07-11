@@ -160,10 +160,7 @@ impl ScopedResources {
     }
 
     fn allows(&self, capability: &'static str, granting_hints: &'static [EffectHint]) -> bool {
-        if granting_hints
-            .iter()
-            .any(|hint| self.grants.contains(hint))
-        {
+        if granting_hints.iter().any(|hint| self.grants.contains(hint)) {
             return true;
         }
         let denial = CapabilityDenial {
@@ -351,8 +348,7 @@ mod tests {
 
     #[test]
     fn operation_hint_grants_exactly_its_accessor() {
-        let scoped =
-            ScopedResources::new("kv_node", full_bag(), [EffectHint::KvRead]);
+        let scoped = ScopedResources::new("kv_node", full_bag(), [EffectHint::KvRead]);
         assert!(scoped.kv().is_some());
         assert!(scoped.clock().is_none());
         let denials = scoped.take_denials();

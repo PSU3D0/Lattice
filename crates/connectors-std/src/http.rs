@@ -1,4 +1,4 @@
-use capabilities::http::{HttpHeaders, HttpMethod, HttpRequest};
+use capabilities::http::{HttpHeaders, HttpMethod, HttpRequest, RedirectMode};
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use serde_json::{Map, Value};
 
@@ -64,6 +64,9 @@ pub fn build_request(
         headers,
         body,
         timeout_ms: Some(10_000),
+        // Historical behavior preserved (packet H2a): existing connectors
+        // keep redirect-following; connector.http sets Off explicitly.
+        redirect: RedirectMode::Follow,
     })
 }
 
@@ -79,6 +82,8 @@ pub fn build_followup_request(url: String, request: &RequestDescriptor) -> HttpR
         headers,
         body: None,
         timeout_ms: Some(10_000),
+        // Historical behavior preserved (packet H2a); see build_request.
+        redirect: RedirectMode::Follow,
     }
 }
 

@@ -38,7 +38,8 @@ impl DeterminismConstraint {
 /// exhaustively from [`EffectHint`] (family-wide, matching the historical
 /// prefix semantics) and always take precedence, so lookups no longer depend
 /// on `ensure_registered()` call order.
-static CONSTRAINTS: Lazy<RwLock<Vec<DeterminismConstraint>>> = Lazy::new(|| RwLock::new(Vec::new()));
+static CONSTRAINTS: Lazy<RwLock<Vec<DeterminismConstraint>>> =
+    Lazy::new(|| RwLock::new(Vec::new()));
 
 fn derived_constraint(hint: EffectHint) -> Option<DeterminismConstraint> {
     hint.determinism_constraint().map(|(minimum, guidance)| {

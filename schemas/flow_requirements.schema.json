@@ -110,6 +110,10 @@
         },
         "name": {
           "type": "string"
+        },
+        "required": {
+          "description": "Whether lock-time binding must satisfy this role. Defaults to `true` and is omitted from serialized output when `true`, so existing IR, requirements manifests, and goldens are byte-identical.",
+          "type": "boolean"
         }
       },
       "required": [
