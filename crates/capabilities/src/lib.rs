@@ -8,12 +8,18 @@ use std::time::{Duration, SystemTime};
 #[cfg(target_arch = "wasm32")]
 use time::Instant;
 
+pub mod artifact;
 pub mod connector;
 pub mod durability;
 pub mod hints;
 pub mod scoped;
 pub mod sql;
 pub mod workspace;
+
+pub use artifact::{
+    Artifact, ArtifactError, ByteSource, Caveat, Exact, Handle, HandleScope, Macaroon, Prefix,
+    Scope, StoreRef, WorkspaceMinter,
+};
 
 #[cfg(target_arch = "wasm32")]
 mod wasm_transport;

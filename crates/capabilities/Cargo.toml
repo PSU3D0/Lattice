@@ -12,8 +12,12 @@ description = "Shared capability traits and registries consumed across Lattice h
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
+base64 = "0.22"
+hex.workspace = true
+hmac = "0.12"
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.10"
 thiserror.workspace = true
 tracing.workspace = true
 dag-core = { path = "../dag-core" }

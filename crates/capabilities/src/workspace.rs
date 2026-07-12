@@ -312,6 +312,76 @@ pub struct WorkspaceWriteRequest {
     pub options: WorkspaceWriteOptions,
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// H5a: binary length-prefixed workspace write framing (review F4).
+//
+// `serde_json::to_vec(&WorkspaceWriteRequest { .. })` encodes `data: Vec<u8>`
+// as a JSON array of integers — ~3.5x blowup, strictly worse than the
+// base64 the whole §16 byte-plane contract exists to avoid. This mirrors
+// `blob::encode_put_request` (lib.rs:~2142): a length-prefixed path/options
+// header followed by the raw payload bytes, no JSON re-encoding of the byte
+// slice itself.
+//
+// NOT yet wired into `RemoteWorkspace::write_normalized`/`read_normalized`
+// below: the host-side decoder for `OP_WORKSPACE_WRITE`/`OP_WORKSPACE_READ`
+// lives in `host-wasmtime` (`decode_json_request`, host-wasmtime/src/lib.rs
+// ~1100/1117) and is out of H5a's scope to edit. Cutting the guest encoder
+// over unilaterally would silently break the live host decode path. H5b (or
+// a coordinated host-wasmtime change) must adopt `decode_workspace_write_request`
+// below before `write_normalized` switches to `encode_workspace_write_request`.
+pub(crate) fn encode_workspace_write_request(path: &str, data: &[u8]) -> Vec<u8> {
+    let path_bytes = path.as_bytes();
+    let mut out = Vec::with_capacity(4 + path_bytes.len() + data.len());
+    out.extend_from_slice(&(path_bytes.len() as u32).to_le_bytes());
+    out.extend_from_slice(path_bytes);
+    out.extend_from_slice(data);
+    out
+}
+
+pub(crate) fn decode_workspace_write_request(
+    bytes: &[u8],
+) -> Result<(&str, &[u8]), WorkspaceError> {
+    if bytes.len() < 4 {
+        return Err(WorkspaceError::Backend(
+            "invalid workspace write frame: too short for length prefix".to_string(),
+        ));
+    }
+    let (len_bytes, rest) = bytes.split_at(4);
+    let path_len = u32::from_le_bytes(len_bytes.try_into().expect("4 bytes")) as usize;
+    if rest.len() < path_len {
+        return Err(WorkspaceError::Backend(
+            "invalid workspace write frame: path length exceeds payload".to_string(),
+        ));
+    }
+    let (path_bytes, data) = rest.split_at(path_len);
+    let path = std::str::from_utf8(path_bytes).map_err(|_| {
+        WorkspaceError::Backend("invalid workspace write frame: non-utf8 path".to_string())
+    })?;
+    Ok((path, data))
+}
+
+/// Same length-prefixed framing for read requests (path only, no payload) —
+/// avoids the JSON-object-with-one-string-field overhead for the hot path
+/// and keeps the read/write codecs symmetric. Same "not yet wired" note as
+/// above applies.
+pub(crate) fn encode_workspace_read_request(path: &str) -> Vec<u8> {
+    let path_bytes = path.as_bytes();
+    let mut out = Vec::with_capacity(4 + path_bytes.len());
+    out.extend_from_slice(&(path_bytes.len() as u32).to_le_bytes());
+    out.extend_from_slice(path_bytes);
+    out
+}
+
+pub(crate) fn decode_workspace_read_request(bytes: &[u8]) -> Result<&str, WorkspaceError> {
+    let (path, rest) = decode_workspace_write_request(bytes)?;
+    if !rest.is_empty() {
+        return Err(WorkspaceError::Backend(
+            "invalid workspace read frame: trailing bytes after path".to_string(),
+        ));
+    }
+    Ok(path)
+}
+
 /// Transport envelope for workspace list requests.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceListRequest {
@@ -745,5 +815,57 @@ mod tests {
     #[test]
     fn write_options_default_to_empty_host_policy_marker() {
         let _options = WorkspaceWriteOptions::default();
+    }
+
+    // ---- H5a: binary length-prefixed transport codec (review F4) ----
+
+    #[test]
+    fn workspace_write_frame_round_trips_binary() {
+        let path = "uploads/report.csv";
+        let data = b"a,b,c\n1,2,3\n".to_vec();
+
+        let encoded = encode_workspace_write_request(path, &data);
+        // Length-prefixed path + raw bytes, NOT a JSON int-array: total size
+        // is exactly 4 (u32 len) + path bytes + data bytes.
+        assert_eq!(encoded.len(), 4 + path.len() + data.len());
+
+        let (decoded_path, decoded_data) =
+            decode_workspace_write_request(&encoded).expect("decode succeeds");
+        assert_eq!(decoded_path, path);
+        assert_eq!(decoded_data, data.as_slice());
+    }
+
+    #[test]
+    fn workspace_write_frame_rejects_truncated_input() {
+        let err = decode_workspace_write_request(&[0, 1])
+            .expect_err("too short for length prefix must fail");
+        assert_eq!(err.code(), ERR_WORKSPACE_BACKEND);
+
+        // Length prefix claims more path bytes than are actually present.
+        let mut bogus = (10u32).to_le_bytes().to_vec();
+        bogus.extend_from_slice(b"short");
+        let err = decode_workspace_write_request(&bogus)
+            .expect_err("path length exceeding payload must fail");
+        assert_eq!(err.code(), ERR_WORKSPACE_BACKEND);
+    }
+
+    #[test]
+    fn workspace_read_frame_round_trips_binary() {
+        let path = "uploads/report.csv";
+        let encoded = encode_workspace_read_request(path);
+        assert_eq!(encoded.len(), 4 + path.len());
+
+        let decoded = decode_workspace_read_request(&encoded).expect("decode succeeds");
+        assert_eq!(decoded, path);
+    }
+
+    #[test]
+    fn workspace_read_frame_rejects_trailing_bytes() {
+        // A read frame with extra bytes after the path (e.g. accidentally
+        // fed a write frame) must be rejected, not silently truncated.
+        let write_frame = encode_workspace_write_request("p", b"trailing");
+        let err = decode_workspace_read_request(&write_frame)
+            .expect_err("trailing bytes after path must fail");
+        assert_eq!(err.code(), ERR_WORKSPACE_BACKEND);
     }
 }
