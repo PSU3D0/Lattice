@@ -1,7 +1,7 @@
-Status: Draft (design only — no implementation; revised per adversarial review 2026-07-11, verdict ACCEPT-WITH-REVISIONS: F1 enforcement locus, F2 redirect precondition, F3 Tier-2 guarantee scope)
+Status: v1 BUILT (H1–H4 + H2a/H2b landed, branch verifiability-substrate-hardening); v1.1 binary/artifact contract (§16, H5a–H5d) design-final + adversarially reviewed 2026-07-12 (ACCEPT-WITH-REVISIONS, revisions R1–R3 folded — §16.10), ready to build. Original v1 design revised per adversarial review 2026-07-11 (ACCEPT-WITH-REVISIONS: F1 enforcement locus, F2 redirect precondition, F3 Tier-2 guarantee scope).
 Purpose: spec
 Owner: Core
-Last reviewed: 2026-07-11
+Last reviewed: 2026-07-12
 
 # Generic HTTP Request Node (`connector.http`, v1)
 
@@ -55,8 +55,9 @@ Related docs:
    a `full_response` envelope that moves status in-band. No silent
    fallback-to-raw in typed mode; lossiness is expressed through serde
    attributes the author chooses, not through runtime mode switching.
-   Binary/file responses are **deferred to v1.1** behind the unresolved
-   binary-handoff decision (workspace-handle recommendation).
+   Binary/file responses are **v1.1**, contract now finalized in §16
+   (minted attenuable workspace-artifact handles; `ByteSource` byte-input
+   type; op-per-effect-shape floors). Not yet built (H5a–H5d, §16.8).
 5. **Non-2xx = NodeError by default** (status + truncated body, matching
    `decode_json_response_body`), with a static `full_response` opt-in that
    makes status/headers/body ordinary data (n8n `neverError` parity).
@@ -350,7 +351,7 @@ where the author has explicitly asked for wire-level truth in-band.**
 | 2xx, JSON but `T` mismatch | n/a | NodeError `[HTTP103]` carrying the serde error path (`missing field \`x\` at line…`) | n/a | n/a (envelope body is JsonValue, not T) |
 | 2xx, empty body | `body = Null` | Ok iff `T` is `()`/`Option<_>`-shaped (serde decides); else `[HTTP103]` | `""` | envelope, `body = Null`/`""` |
 | 2xx, body not valid UTF-8 | (JSON parse fails) `[HTTP102]` | `[HTTP102]` | NodeError `[HTTP104]` (strict; no lossy mode in v1) | `body_text` lossy-replaced, flagged `utf8_lossy: true` |
-| 2xx, binary content | as above — garbage in is an error, not silent bytes | same | `[HTTP104]` | v1: `body_text` lossy + flag. v1.1: `binary` mode returns a workspace artifact handle (`{ artifact: WorkspaceHandle, content_type, len }`), requires `resource::workspace::write` on the node, per the `ops/clone-playbook.md` §3 recommendation. Mode name reserved; **unusable until the binary-handoff decision is final.** |
+| 2xx, binary content | as above — garbage in is an error, not silent bytes | same | `[HTTP104]` | v1: `body_text` lossy + flag. v1.1: opt into `connector.http.get_binary` → streams the body into a workspace artifact and returns `Artifact { handle, content_type, len, content_hash }` (declares `resource::workspace::write`). Contract final in **§16**; built in H5c. |
 
 Decisions embedded in the table, with rationale:
 
@@ -764,10 +765,14 @@ coverage increment (~10% of nodes).
   for custom nodes using `connector_ops(connector_http::ops::…)` (s15
   finding). Updates `ops/clone-playbook.md` with the §4/§6 normative
   recipe rules.
-- **H5 (S, after binary-handoff decision) — v1.1 binary mode.** `binary`
-  response mode → workspace artifact handle (+`resource::workspace::write`
-  hint), multipart/binary request bodies. Blocked on `clone-playbook` §3
-  final call; do not start until it lands.
+- **H5 (v1.1 binary mode) — contract FINAL (§16), decomposed into H5a–H5d
+  (§16.8).** Binary-handoff decision resolved: minted attenuable
+  workspace-artifact handles (`Handle<S>`), `Artifact` as the data-plane
+  value, `ByteSource` as the universal byte-input, op-per-effect-shape
+  floors (`get_binary` +workspace_write, `post_multipart` +workspace_read).
+  Order H5a → H5b → (H5c ∥ H5d). Reviewed 2026-07-12 (ACCEPT-WITH-REVISIONS,
+  §16.10): H5b raised to L (handle-only surface + workspace read/write split —
+  the enforcement refactor that makes the floors real).
 
 Suggested order: H1 ∥ H2a → H2 (∥ H2b) → (H3 ∥ H4) → H5. H2 is the only
 L; it is exemplar-cloning of the existing connector shape, which Phase 1
@@ -843,3 +848,397 @@ Residual risks accepted **consciously** (each named where it is incurred):
   (~2% of nodes) carry write-side obligations they do not semantically
   need — the accepted price of refusing effect-weakening attestations
   (§11 alternative 8).
+
+## 16. v1.1 binary & artifact contract (H5) — the byte plane
+
+Status of this section: **contract finalized + adversarially reviewed
+2026-07-12** (supersedes the "reserved, unusable" placeholders in §0.4, §5,
+§13-H5 and finalizes the `ops/clone-playbook.md` §3 binary-handoff decision).
+ACCEPT-WITH-REVISIONS; revisions R1–R3 folded (§16.10). **Design-only — build
+is H5a–H5d below (H5b is the load-bearing enforcement refactor).**
+
+### 16.0 The decision, in one rule
+
+**Bytes never enter the JSON data plane.** Node-to-node data is
+`serde_json::Value` (`kernel-exec::NodeOutput::Value`); raw bytes can only
+travel as base64-in-JSON, which inflates 33%, bloats every checkpoint,
+forbids streaming, and offers no place to hang a size cap or a grant. So the
+byte plane is separate: bytes live in the run-scoped `Workspace`
+(`capabilities/src/workspace.rs`) or a `BlobStore` (`capabilities/src/lib.rs:2062`);
+a small, self-describing **`Artifact`** flows the data plane; any node that
+needs the bytes **dereferences a minted, attenuable handle** under a
+`workspace::read`/`blob::read` grant. This is the same "authority is
+lock/graph-visible, not runtime-smuggled" move the whole node makes for URLs
+(§2), applied to bytes.
+
+### 16.1 The three types
+
+```rust
+// A capability to reach bytes. Attenuable (narrow-only). Minted host-side.
+// Scope is a phantom type param so a port's authority granularity is visible
+// in its signature; a runtime witness rides inside for the deref check.
+pub struct Handle<S: Scope = Exact> {
+    store: StoreRef,        // binding name of the backing Workspace/BlobStore
+    scope: HandleScope,     // runtime witness: Exact(path|key) | Prefix(path)
+    mint: MintToken,        // unforgeable, bound to (store, scope); see 16.2
+    _s: PhantomData<S>,
+}
+pub enum Scope {}           // sealed marker trait impls: Exact, Prefix
+pub enum HandleScope { Exact(String), Prefix(String) }
+
+// The data-plane value: a handle plus enough self-description to route it
+// without re-fetching. content_hash is lifted straight from
+// WorkspaceEntry.content_hash (workspace.rs:112) when the store provides it —
+// this is the provenance-ledger seam (§16.7).
+pub struct Artifact<S = Exact> {
+    pub handle: Handle<S>,
+    pub content_type: String,
+    pub len: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
+}
+
+// The universal byte-input type. Everything that accepts "content bytes"
+// (http request body, a multipart part, a future sheets/blob byte field)
+// accepts THIS, so the effect rule (16.3) applies uniformly.
+pub enum ByteSource {
+    Inline(#[serde(with = "base64")] Vec<u8>),  // base64 is just its wire form
+    Artifact(Artifact<Exact>),                   // full Artifact — carries
+                                                 // content_type so `form!` needs
+                                                 // no extra deref (review F7);
+                                                 // deref under a read grant
+}
+// Authoring ergonomics only — the port/wire type stays the concrete enum:
+impl From<&str> for ByteSource { /* Inline */ }
+impl From<Vec<u8>> for ByteSource { /* Inline */ }
+impl From<Artifact> for ByteSource { /* Artifact(a) — keeps content_type */ }
+```
+
+`Base64` is **not** a distinct variant: any bytes crossing a JSON port are
+base64 on the wire already, so `Inline` subsumes it. Accepting an
+already-encoded external base64 string without a decode round-trip is a v1.2
+convenience at most.
+
+### 16.2 Scope, attenuation, minting (the authority model)
+
+- **One type, three granularities.** A whole-workspace handle is
+  `Prefix("")`; a subtree is `Prefix("uploads/")`; a single file is
+  `Exact("uploads/report.csv")`. A `FileHandle` is just a fully-narrowed
+  workspace handle — no separate type.
+- **Attenuation is narrow-only, guest-side, via a macaroon caveat chain**
+  (revised per review F3 — a naive `child = H(parent_mint, sub_scope)` HMAC
+  chain does NOT compose: `H(H(root,"uploads/"),"a/b")` ≠ `H(root,"uploads/a/b")`,
+  so the host could not recompute a mint without knowing how the guest split
+  the narrowing). The mint is a **macaroon**: `mint = { root_key_id, caveats:
+  [scope-bound...], tag }` where `tag` starts as `HMAC(root_key, root_key_id)`
+  and each narrowing appends a caveat and extends the tag
+  `tag' = HMAC(tag, caveat)`. `Handle<Prefix>::narrow(sub) -> Handle<Prefix>`
+  and `::file(leaf) -> Handle<Exact>` add a "scope ⊆ sub" caveat purely
+  guest-side (no root key needed — this is the property macaroons exist for).
+  Verification (gate 2, §16.4) folds the chain from the root key host-side and
+  checks the final `scope` satisfies **every** caveat. **Widening is
+  impossible**: a caveat can only restrict, and forging a tag for a broader
+  scope needs the root key, which never leaves the host. A node handed the
+  whole workspace can safely re-narrow; a node handed one file cannot climb
+  out. **Residual (new, §16.10-R2):** the mint is a bearer token that rides
+  the JSON data plane inside `Artifact`, so it enters node outputs,
+  checkpoints, and logs — the byte-plane analogue of the §7 credential-bytes
+  residual. It is scope-confined (a leaked leaf mint grants only that leaf)
+  and run-scoped (workspace dies with the run), so the blast radius is one
+  artifact; documented, not eliminated.
+- **Type-level scope, enforced at the port (the chosen design; runtime-enum
+  was the alternative).** `Handle<Exact>` vs `Handle<Prefix>` is
+  serde-transparent (phantom, no wire change), but the handle's `Deserialize`
+  **validates the wire `scope` variant against `S` and fails closed on
+  mismatch**. Consequence: a node whose port is typed `Handle<Exact>`
+  *cannot even deserialize* a directory handle — authority granularity is a
+  compile-time property of the signature, checked fail-closed at the data
+  boundary. This is the variant that stays legible to a future provenance
+  signature (§16.7): authority you can read off the type is authority you can
+  attest. Cost over the runtime enum: a sealed `Scope` trait + one validating
+  `Deserialize`. Worth it.
+- **Blob is `Exact`-only.** `BlobStore` has no `list` and no hierarchy
+  (`get/put/delete` by flat key, `lib.rs:2062`), so a `Prefix` blob handle
+  cannot enumerate — it degenerates to "a bag of exact keys you were already
+  told." `Prefix` for blob is a **mint namespace** (bounds what sub-handles
+  may be derived), never a browsable directory. The `Handle` type is unified;
+  `Prefix`'s usefulness is a per-store capability. Spec this explicitly so no
+  one expects to `list` a blob prefix.
+
+### 16.3 Accepting an Artifact is an effect (the honesty rule)
+
+Effect floors are static (`ConnectorOpMetadata`, `NodeIR.effect_hints`); they
+cannot depend on which `ByteSource` variant shows up at runtime. So the rule
+is: **an op whose input *can* carry `Artifact` bytes declares the store's
+`read`/`write` hint on its static floor, unconditionally** — because it *may*
+deref/stage. This is `min_effects`-is-a-floor (§4) applied to bytes.
+
+Mechanically this reuses the op-per-method pattern (§0.2) as **op-per-effect-shape**:
+
+| op | over the §4 floor | why |
+| --- | --- | --- |
+| `connector.http.get` / `.post` (JSON body) | unchanged | body is `Option<JsonValue>`; never touches the byte plane |
+| `connector.http.get_binary` | **+ `resource::workspace::write`** | stages the 2xx body into a workspace artifact, returns `Artifact` |
+| `connector.http.post_multipart` / `.put_multipart` | **+ `resource::workspace::read`** | a part may be `ByteSource::Artifact`, so it may deref |
+
+The floor is visible in the `operation_id`, exactly like read-vs-write is
+today. `ByteSource` is the *authoring* type (one surface everywhere bytes are
+accepted); **op selection is what sets the static floor**. Want a node that
+provably never touches the byte plane → use the JSON-body op, whose input
+type cannot express `Artifact`. That is the "widen the input, pay the effect"
+trade made concrete and compile-visible.
+
+**Resolved `min_effects` per byte op (review F5).** `HINT_WORKSPACE_WRITE`
+floors effects at `Effectful` (`workspace.rs` constraint), so **`get_binary`
+is `Effectful`, not `ReadOnly`** — a binary GET both reads the remote and
+mutates run state by staging a file. This is consistent with the §4
+webhook-GET rule (a GET *can* be Effectful) and is stated, not hidden.
+Crucially it does **not** pull in the §6 external-write idempotency ceremony:
+the write target is **run-local, idempotent-by-path** storage (re-staging the
+same artifact name overwrites; a replay re-downloads and re-stages to the same
+path), so no exactly-once edge / dedupe key is required for the staging write.
+`post_multipart` keeps its method's `Effectful` floor and adds
+`workspace::read` (no determinism change). This resolution is a required
+sentence in the H5c op metadata, not left implicit.
+
+**Prerequisite for this floor to be enforceable, not asserted (review F1/F2 —
+the load-bearing revision).** Today `ScopedResources::workspace()`
+(`capabilities/src/scoped.rs:280`) returns the **whole raw `Workspace`** trait
+(arbitrary-path `read/write/list/delete`) on *any* of
+`Workspace|WorkspaceRead|WorkspaceWrite` — there is one accessor and one trait,
+so a `workspace::read` grant confers write and delete, and a node can ignore
+its handle and touch any path. The read/write split and handle-only surface of
+§16.4 are therefore a **named enforcement refactor** (H5b), without which the
+table above and every gate in §16.4 are decorative. H5b is why this contract
+is not free.
+
+v1.1 restricts `ByteSource::Artifact` and `get_binary` to **workspace-backed**
+handles, so the added floor is exactly `resource::workspace::{read,write}`.
+Blob-backed byte sources (adding `resource::blob::read`) are additive, built
+when a template needs cross-run/content-addressed bytes.
+
+### 16.4 The handle-only byte surface + three deref gates (revised per F1/F2)
+
+The single most important correction from review: **the gates are only real if
+the handle is the *only* way a node can reach bytes.** As the code stands, a
+workspace-hinted node holds the raw `Workspace` trait and can read any path,
+so mint/scope checks on a convenience wrapper protect nothing. So §16 mandates:
+
+- **Nodes never receive the raw `Workspace` trait.** Byte-consuming nodes get a
+  capability-narrowed view whose *only* methods are handle-scoped:
+  - `WorkspaceWrite` view (granted by `resource::workspace::write`):
+    `stage_artifact(name, bytes, content_type) -> Artifact` and `read(handle)`.
+  - `WorkspaceRead` view (granted by `resource::workspace::read`):
+    `read(handle) -> Bytes` only. No `stage`, no arbitrary-path read, no
+    `list`/`delete`.
+  The raw `Workspace` trait (arbitrary path) becomes **host-internal** —
+  reachable only by the host fulfilling a handle-scoped op, never injected into
+  a node. Any existing node that used raw-path workspace access migrates to the
+  view (audited in H5b; the §16.5 example takes `ws: WorkspaceWrite`, not
+  `Workspace`).
+- **Read/write are distinct grants and distinct accessors.** `scoped.rs` gains
+  `workspace_read()` / `workspace_write()` (mirroring `http_read()`/`http_write()`,
+  scoped.rs:187–199), `GRANTS_WORKSPACE` splits so `read` does **not** confer
+  `write`/`delete`, and the four host-wasmtime opcode handlers
+  (`OP_WORKSPACE_READ`/`WRITE`/`LIST`/`DELETE`, host-wasmtime lib.rs:~1104–1123)
+  gate per-opcode against the split grants and return a **structured**
+  `MissingWorkspaceRead`/`MissingWorkspaceWrite` denial — today they route all
+  four through one `resources.workspace()` and deny with an unstructured
+  `"missing workspace provider"` backend string.
+
+With that surface, a byte crossing passes only if **all three** hold:
+
+1. **CAP110 grant** — the node holds the matching split grant
+   (`workspace::read` to `read`, `workspace::write` to `stage`); a lie about
+   the op floor yields a structured `MissingWorkspace*` denial **across the
+   wasm boundary**, like `MissingHttpWrite` (§4).
+2. **Mint verifies** — the macaroon chain folds from the host root key and the
+   final `scope` satisfies every caveat (§16.2); guest cannot forge or widen.
+3. **Scope contains target** — the requested path ⊆ `handle.scope` after
+   `normalize_path` (traversal already rejected, `workspace.rs:177`).
+
+Honesty test (mirrors the connector CAP110 denial tests, and is the H5b gate):
+a node deref/stage with an empty grant set → structured `MissingWorkspace*`; a
+`workspace::read`-only node attempting `stage`/`delete` → `MissingWorkspaceWrite`
+(proves the split); a forged/widened macaroon → gate 2 failure; an out-of-scope
+path on a valid handle → gate 3 failure. All four are load-bearing.
+
+### 16.5 Response binary mode + request multipart surface
+
+- **Ingress (`get_binary`) is a host-side composite op (revised per F4 — the
+  original "streams, never materialized in guest memory" claim was false).**
+  `HttpResponse.body` is a fully-buffered `Vec<u8>` (capabilities/src/lib.rs:774)
+  and `Workspace::write_normalized` takes a complete `&[u8]` slice — there is no
+  streaming path, and worse, routing the bytes guest→host through the current
+  wasm workspace transport re-encodes them as a JSON *array of integers*
+  (`serde_json::to_vec`, workspace.rs:~308/473), ~3.5× blowup — strictly worse
+  than the base64 this whole section exists to avoid. So `get_binary` is
+  specified as a **host-side composite**: the host performs the fetch **and**
+  the stage, so the bytes never enter guest memory and never cross the cap
+  boundary twice; the guest receives only the `Artifact` handle back. The op
+  returns `Artifact { handle, content_type: <from response Content-Type>, len,
+  content_hash }`. Size is bounded by `WorkspacePolicy.max_single_file_bytes`
+  (over-limit → NodeError, no partial artifact); non-2xx / transport errors
+  behave as §5 (NodeError). **H5a prerequisite:** fix the wasm workspace
+  transport to binary length-prefixed framing (mirror the blob transport's
+  `encode_put_request`, lib.rs:~2142, which already does this) so any
+  guest-side `stage_artifact` on the egress path is not paying the JSON-int-array
+  tax either.
+- **Egress (`post_multipart`).** Body built via a `form!` macro over
+  `(field, ByteSource)` pairs → `multipart/form-data`; each part's
+  Content-Type comes from `Artifact.content_type` (now carried on
+  `ByteSource::Artifact`, F7) or an explicit override. Raw single-body binary
+  (`Content-Type: application/octet-stream` from one `ByteSource`) is the
+  degenerate one-part case.
+- **The CSV round-trip, end to end** (the maintainer's ergonomics test —
+  two nodes, no base64, no checkpoint bloat):
+
+  ```rust
+  // Node 1: produce bytes + stage. Floor: resource::workspace::write.
+  // Receives the WRITE view (§16.4), never the raw Workspace trait.
+  #[def_node(effects = [workspace_write])]
+  async fn build_report(rows: Vec<Row>, ws: WorkspaceWrite) -> NodeResult<Artifact> {
+      let mut w = csv::Writer::from_writer(Vec::new());
+      for r in &rows { w.serialize(r)?; }
+      // stage_artifact hashes the bytes at stage time (F6), populating
+      // Artifact.content_hash — the backends leave WorkspaceEntry.content_hash
+      // None today, so the hash is computed here where the full bytes are held.
+      ws.stage_artifact("report.csv", &w.into_inner()?, "text/csv").await
+  }
+  // Node 2: send it. Floor: resource::http::write + resource::workspace::read.
+  connect!(build_report -> upload);
+  http.post_multipart(url, form!{ "file" => artifact, "kind" => "daily" })
+  ```
+
+  CSV generation is plain Rust (`csv::Writer`) — the maintainer's "code stays
+  in rust" position: serialization is a code node, not a Lattice primitive.
+  Note this is distinct from "upload to Google Sheets," which is **not** a
+  binary case — Sheets append is structured JSON rows through the typed
+  connector path and never touches this section.
+
+### 16.6 Workspace vs blob — pick workspace for transit
+
+| | `Workspace` | `BlobStore` |
+| --- | --- | --- |
+| addressing | path (hierarchy, `list`) | flat key (no `list`) |
+| lifecycle | **run-scoped, auto-GC'd** (`WorkspaceRunScope`, `WorkspacePolicy`) | caller-managed, cross-run |
+| handle scopes | `Exact` + `Prefix` | `Exact` only (16.2) |
+| use for | **transit files** (build-and-send, download-process-upload) | durable / content-addressed / cross-run artifacts |
+
+Default is **workspace**: the file's lifetime is the run, so run-scoped
+auto-cleanup prevents leaks, the sandbox blocks traversal, and
+`WorkspacePolicy.max_single_file_bytes` gives the size cap for free. Blob is
+the deliberate opt-in for durability.
+
+### 16.7 Provenance forward-reference (do not design against this)
+
+This section deliberately keeps two properties that the verifiable-compute
+ladder (`ops/verifiable-compute-ladder.md`, tier 2 → provenance/integrity)
+will consume: **artifacts stay content-addressed** (`Artifact.content_hash`,
+computed at stage time by `stage_artifact` since the backends leave
+`WorkspaceEntry.content_hash` `None` today — review F6) and **effect floors
+stay static and op-visible** (§16.3). Together they mean an artifact transiting a flow becomes
+a signable ledger line — `(op_id, workspace::{read,write}, artifact.content_hash)`
+— rather than an opaque blob with an untraceable effect. No provenance
+machinery is built here; the only ask is the negative one: **do not introduce
+a byte-plane seam that is hard to attest later** (e.g. mutable-in-place handles
+with no content hash, or a runtime-variant effect floor). The type-level scope
+choice (16.2) is the more-attestable option for the same reason.
+
+### 16.8 Packet decomposition (H5a–H5d, subagent-dispatchable — revised post-review)
+
+- **H5a (M) — the byte-plane types + transport fix.** `Handle<S>` (sealed
+  `Scope`, validating `Deserialize`, guest-side `narrow`/`file` **macaroon**
+  attenuation — §16.2), `Artifact<S>`, `ByteSource` (carries `Artifact<Exact>`,
+  F7) + `From` impls. Macaroon verification host-side (root key never in guest;
+  fold chain, check caveats). **`stage_artifact` computes `content_hash` at
+  stage time** (F6). **Fix the wasm workspace transport to binary
+  length-prefixed framing** (mirror the blob transport `encode_put_request`;
+  today it uses `serde_json::to_vec` → JSON-int-array blowup, F4). No http yet.
+  Unit tests: macaroon narrows-not-widens and composes across split points,
+  cross-scope deref fails, `Handle<Exact>` refuses a prefix wire value.
+- **H5b (L — raised from M; the load-bearing enforcement refactor, F1/F2).**
+  This is what makes "accepting an Artifact is an effect" *true* rather than
+  asserted, and it is not free:
+  1. **Handle-only node surface** — introduce `WorkspaceRead` / `WorkspaceWrite`
+     views (handle-scoped methods only); stop injecting the raw `Workspace`
+     trait into nodes (it becomes host-internal); migrate any existing
+     raw-path node users (audit `scoped.rs` consumers).
+  2. **Read/write grant + accessor split** — `scoped.rs` gains
+     `workspace_read()`/`workspace_write()`, `GRANTS_WORKSPACE` splits so
+     `read` does not confer `write`/`delete`.
+  3. **Per-opcode host gating + structured denials** — the four host-wasmtime
+     workspace opcode handlers gate against the split grants and emit
+     structured `MissingWorkspaceRead`/`MissingWorkspaceWrite` across the wasm
+     boundary (not the current unstructured `"missing workspace provider"`).
+  4. **The four-case honesty test** (§16.4): empty-grant denial; read-only node
+     denied `stage`/`delete`; forged/widened macaroon; out-of-scope path.
+  Benefits every workspace consumer, not just connector.http — like H2b did for
+  auth. H5c is gated on it.
+- **H5c (M) — connector.http byte ops.** `get_binary` as a **host-side
+  composite** (host fetches + stages; bytes never enter guest memory, F4;
+  +workspace_write; **Effectful floor, run-local-idempotent so no dedupe edge**,
+  F5) and `post_multipart`/`put_multipart` (+workspace_read, `form!` builder),
+  §16.3 floors static in `ConnectorOpMetadata`, cross-mirror plumbing (same four
+  mirror sites as Basic-auth, §7-F8). Runtime tests: binary download → artifact,
+  multipart with inline + artifact parts, non-2xx unchanged. **Byte ops are
+  Tier 0/1 only, both directions** — no `get_binary_any_origin` / multipart on
+  Tier-2 (F8: a Tier-2 binary GET would stage attacker-chosen bytes under a
+  valid handle; SSRF residual (a) must not upgrade to the byte plane).
+- **H5d (S) — acceptance example + recipe.** Extend the s26 longtail example
+  (or a new `sNN_binary`) with the CSV build-and-POST round-trip and a
+  download→process→upload round-trip; CLI end-to-end + render clean; add the
+  §16 normative recipe rules to `ops/clone-playbook.md` §3 (done: the
+  binary-handoff row is flipped to RESOLVED).
+
+Order: **H5a → H5b → (H5c ∥ H5d-scaffold) → H5d**. H5b gates H5c (no byte op
+ships without its denial test). Blob-backed `ByteSource`, `Artifact<Prefix>`
+(multi-file), and Tier-2 byte ops are explicitly out of H5 (additive
+follow-ups).
+
+### 16.9 Open questions (H5-specific)
+
+1. **Macaroon vs host-call attenuation** — RESOLVED by review F3: macaroon
+   caveat chain (guest-side narrowing composes correctly; host folds from root
+   to verify). The naive HMAC-of-parent-mint chain is rejected (does not
+   compose across narrowing split points).
+2. **`get_binary` size ceiling** — cap via `WorkspacePolicy.max_single_file_bytes`
+   (already exists) vs a per-op limit. Recommendation: reuse the policy cap;
+   over-limit → NodeError, no partial artifact.
+3. **`Artifact<Prefix>` (a directory as one value)** — needed for
+   "download N files → hand the folder downstream." Recommendation: spec the
+   type (it is free from `Handle<Prefix>`), build only when a template needs
+   the multi-file case; v1.1 ships `Artifact<Exact>` (the `= Exact` default).
+4. **Content-hash trust** — advisory in v1.1 (populate at stage, do not gate
+   on it), promoted to load-bearing in the T-PROV provenance packet
+   (`ops/verifiable-compute-ladder.md` §4) so the two land coherently.
+
+### 16.10 Adversarial review record (2026-07-12)
+
+Verdict: **ACCEPT-WITH-REVISIONS** (fable, all source verified). The core
+decision — bytes off the JSON plane, `Artifact` indirection, static
+op-shaped floors, type-level scope — survived and is consistent with §2/§4/§5.
+The security narrative around it was *asserted, not achievable with the cited
+machinery*; the load-bearing revisions are folded above:
+
+- **R1 (F1+F2) — handle-only surface + workspace read/write split.** As-was,
+  `ScopedResources::workspace()` returns the whole raw trait on any workspace
+  hint, so all three deref gates and the read/write floor were decorative.
+  Fixed: §16.4 mandates the views + accessor/grant split + per-opcode host
+  gating; H5b raised to L and named as the reason this contract is not free.
+- **R2 (F3) — macaroon mint, not HMAC-of-parent chain.** The naive chain does
+  not compose; §16.2 now specifies a macaroon caveat chain (guest-side
+  attenuation preserved, host-verifiable). Mint-token-is-a-bearer-secret-in-
+  checkpoints recorded as an accepted, scope-confined, run-scoped residual.
+- **R3 (F4+F5) — streaming claim corrected + effect floor stated.**
+  `get_binary` is a host-side composite (no guest materialization; wasm
+  workspace transport re-framed to binary in H5a), and is `Effectful`
+  (workspace::write) but run-local-idempotent so it needs no dedupe edge.
+- Also folded: F6 (hash at stage time), F7 (`ByteSource` carries `Artifact`),
+  F8 (byte ops Tier 0/1 both directions). F9 (type-level scope soundness) held
+  unchanged.
+
+Residuals accepted consciously: (R2) scope-confined mint bytes in the data
+plane / checkpoints; the pre-existing native-host single-trust-domain model
+(a malicious Rust node can call the host-internal `Workspace` directly — same
+posture as every capability, §7). These do not block H5.
