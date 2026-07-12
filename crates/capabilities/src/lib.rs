@@ -17,8 +17,8 @@ pub mod sql;
 pub mod workspace;
 
 pub use artifact::{
-    Artifact, ArtifactError, ByteSource, Caveat, Exact, Handle, HandleScope, Macaroon, Prefix,
-    Scope, StoreRef, WorkspaceMinter,
+    Artifact, ArtifactError, ByteAccessError, ByteSource, Caveat, Exact, Handle, HandleScope,
+    Macaroon, Prefix, Scope, StoreRef, WorkspaceMinter, WorkspaceRead, WorkspaceWrite,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -116,6 +116,21 @@ pub trait ResourceAccess: Send + Sync + 'static {
 
     fn workspace(&self) -> Option<&dyn workspace::Workspace> {
         None
+    }
+
+    /// Host-internal workspace surface gated on the `resource::workspace::read`
+    /// grant (H5b, §16.4). Mirrors `http_read()`. Defaults to the bare
+    /// `workspace()` so unscoped bags (and pass-through wrapper layers) grant
+    /// it; `ScopedResources` overrides this with the split-grant check so a
+    /// read grant does NOT confer write/delete.
+    fn workspace_read(&self) -> Option<&dyn workspace::Workspace> {
+        self.workspace()
+    }
+
+    /// Host-internal workspace surface gated on the `resource::workspace::write`
+    /// grant (H5b, §16.4). Mirrors `http_write()`.
+    fn workspace_write(&self) -> Option<&dyn workspace::Workspace> {
+        self.workspace()
     }
 
     fn connector_runtime(&self) -> Option<Arc<dyn connector::ConnectorRuntime>> {

@@ -8,6 +8,12 @@ pub const ERR_WORKSPACE_PATH_TRAVERSAL: &str = "CAP-WS-002";
 pub const ERR_WORKSPACE_NOT_FOUND: &str = "CAP-WS-003";
 pub const ERR_WORKSPACE_UNSUPPORTED: &str = "CAP-WS-004";
 pub const ERR_WORKSPACE_BACKEND: &str = "CAP-WS-005";
+/// H5b: the requesting node holds no `resource::workspace::read` grant
+/// (structured CAP110-family denial emitted per-opcode across the wasm
+/// boundary, §16.4 gate 1).
+pub const ERR_WORKSPACE_MISSING_READ: &str = "CAP-WS-006";
+/// H5b: the requesting node holds no `resource::workspace::write` grant.
+pub const ERR_WORKSPACE_MISSING_WRITE: &str = "CAP-WS-007";
 
 pub const HINT_WORKSPACE: &str = dag_core::EffectHint::Workspace.as_str();
 pub const HINT_WORKSPACE_READ: &str = dag_core::EffectHint::WorkspaceRead.as_str();
@@ -152,6 +158,13 @@ pub enum WorkspaceError {
     Unsupported(String),
     #[error("workspace backend error: {0}")]
     Backend(String),
+    /// H5b: node lacks the `resource::workspace::read` grant (§16.4 gate 1).
+    /// The payload is the denied opcode label, e.g. `"workspace read"`.
+    #[error("missing workspace read capability: {0}")]
+    MissingWorkspaceRead(String),
+    /// H5b: node lacks the `resource::workspace::write` grant (§16.4 gate 1).
+    #[error("missing workspace write capability: {0}")]
+    MissingWorkspaceWrite(String),
 }
 
 impl WorkspaceError {
@@ -162,6 +175,8 @@ impl WorkspaceError {
             WorkspaceError::NotFound(_) => ERR_WORKSPACE_NOT_FOUND,
             WorkspaceError::Unsupported(_) => ERR_WORKSPACE_UNSUPPORTED,
             WorkspaceError::Backend(_) => ERR_WORKSPACE_BACKEND,
+            WorkspaceError::MissingWorkspaceRead(_) => ERR_WORKSPACE_MISSING_READ,
+            WorkspaceError::MissingWorkspaceWrite(_) => ERR_WORKSPACE_MISSING_WRITE,
         }
     }
 }
@@ -313,23 +328,25 @@ pub struct WorkspaceWriteRequest {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// H5a: binary length-prefixed workspace write framing (review F4).
+// H5b (cutover done): binary length-prefixed workspace read/write framing
+// (review F4). H5a shipped these codecs but left them unwired to avoid
+// breaking the live host decode path unilaterally; H5b cuts both ends over
+// together (§16.8-H5b bullet 4).
 //
-// `serde_json::to_vec(&WorkspaceWriteRequest { .. })` encodes `data: Vec<u8>`
+// `serde_json::to_vec(&WorkspaceWriteRequest { .. })` encoded `data: Vec<u8>`
 // as a JSON array of integers — ~3.5x blowup, strictly worse than the
 // base64 the whole §16 byte-plane contract exists to avoid. This mirrors
-// `blob::encode_put_request` (lib.rs:~2142): a length-prefixed path/options
-// header followed by the raw payload bytes, no JSON re-encoding of the byte
-// slice itself.
+// `blob::encode_put_request` (lib.rs:~2142): a length-prefixed path header
+// followed by the raw payload bytes, no JSON re-encoding of the byte slice.
 //
-// NOT yet wired into `RemoteWorkspace::write_normalized`/`read_normalized`
-// below: the host-side decoder for `OP_WORKSPACE_WRITE`/`OP_WORKSPACE_READ`
-// lives in `host-wasmtime` (`decode_json_request`, host-wasmtime/src/lib.rs
-// ~1100/1117) and is out of H5a's scope to edit. Cutting the guest encoder
-// over unilaterally would silently break the live host decode path. H5b (or
-// a coordinated host-wasmtime change) must adopt `decode_workspace_write_request`
-// below before `write_normalized` switches to `encode_workspace_write_request`.
-pub(crate) fn encode_workspace_write_request(path: &str, data: &[u8]) -> Vec<u8> {
+// Both ends now use these codecs in lockstep:
+//   guest encode: `RemoteWorkspace::{write,read}_normalized` below.
+//   host decode:  `handle_workspace_{write,read}` in host-wasmtime/src/lib.rs.
+// `WorkspaceWriteOptions` is currently a zero-field host-policy marker, so the
+// frame carries only (path, data); the host reconstructs `default()` options.
+// They are re-exported `pub` so host-wasmtime can decode; that also retires
+// the H5a `dead_code` warnings (pub items are not dead-code-checked).
+pub fn encode_workspace_write_request(path: &str, data: &[u8]) -> Vec<u8> {
     let path_bytes = path.as_bytes();
     let mut out = Vec::with_capacity(4 + path_bytes.len() + data.len());
     out.extend_from_slice(&(path_bytes.len() as u32).to_le_bytes());
@@ -338,9 +355,7 @@ pub(crate) fn encode_workspace_write_request(path: &str, data: &[u8]) -> Vec<u8>
     out
 }
 
-pub(crate) fn decode_workspace_write_request(
-    bytes: &[u8],
-) -> Result<(&str, &[u8]), WorkspaceError> {
+pub fn decode_workspace_write_request(bytes: &[u8]) -> Result<(&str, &[u8]), WorkspaceError> {
     if bytes.len() < 4 {
         return Err(WorkspaceError::Backend(
             "invalid workspace write frame: too short for length prefix".to_string(),
@@ -364,7 +379,7 @@ pub(crate) fn decode_workspace_write_request(
 /// avoids the JSON-object-with-one-string-field overhead for the hot path
 /// and keeps the read/write codecs symmetric. Same "not yet wired" note as
 /// above applies.
-pub(crate) fn encode_workspace_read_request(path: &str) -> Vec<u8> {
+pub fn encode_workspace_read_request(path: &str) -> Vec<u8> {
     let path_bytes = path.as_bytes();
     let mut out = Vec::with_capacity(4 + path_bytes.len());
     out.extend_from_slice(&(path_bytes.len() as u32).to_le_bytes());
@@ -372,7 +387,7 @@ pub(crate) fn encode_workspace_read_request(path: &str) -> Vec<u8> {
     out
 }
 
-pub(crate) fn decode_workspace_read_request(bytes: &[u8]) -> Result<&str, WorkspaceError> {
+pub fn decode_workspace_read_request(bytes: &[u8]) -> Result<&str, WorkspaceError> {
     let (path, rest) = decode_workspace_write_request(bytes)?;
     if !rest.is_empty() {
         return Err(WorkspaceError::Backend(
@@ -404,6 +419,8 @@ pub enum WorkspaceErrorEnvelope {
     NotFound { message: String },
     Unsupported { message: String },
     Backend { message: String },
+    MissingWorkspaceRead { message: String },
+    MissingWorkspaceWrite { message: String },
 }
 
 impl WorkspaceErrorEnvelope {
@@ -424,6 +441,12 @@ impl WorkspaceErrorEnvelope {
             WorkspaceError::Backend(msg) => Self::Backend {
                 message: msg.clone(),
             },
+            WorkspaceError::MissingWorkspaceRead(msg) => Self::MissingWorkspaceRead {
+                message: msg.clone(),
+            },
+            WorkspaceError::MissingWorkspaceWrite(msg) => Self::MissingWorkspaceWrite {
+                message: msg.clone(),
+            },
         }
     }
 
@@ -435,6 +458,10 @@ impl WorkspaceErrorEnvelope {
             Self::NotFound { message } => WorkspaceError::NotFound(message),
             Self::Unsupported { message } => WorkspaceError::Unsupported(message),
             Self::Backend { message } => WorkspaceError::Backend(message),
+            Self::MissingWorkspaceRead { message } => WorkspaceError::MissingWorkspaceRead(message),
+            Self::MissingWorkspaceWrite { message } => {
+                WorkspaceError::MissingWorkspaceWrite(message)
+            }
         }
     }
 }
@@ -504,11 +531,9 @@ impl Workspace for RemoteWorkspace {
         &self,
         normalized_path: &str,
     ) -> Result<Option<WorkspaceReadResult>, WorkspaceError> {
-        let req = WorkspaceReadRequest {
-            path: normalized_path.to_string(),
-        };
-        let req_bytes = serde_json::to_vec(&req)
-            .map_err(|err| WorkspaceError::Backend(format!("encode workspace read: {err}")))?;
+        // H5b: binary length-prefixed framing (F4) — host decodes with
+        // `decode_workspace_read_request`.
+        let req_bytes = encode_workspace_read_request(normalized_path);
         let resp = crate::wasm_transport::cap_call(OP_WORKSPACE_READ, &req_bytes)
             .map_err(|err| WorkspaceError::Backend(err.to_string()))?;
         let (status, payload) = decode_workspace_response(&resp)?;
@@ -540,13 +565,12 @@ impl Workspace for RemoteWorkspace {
         data: &[u8],
         options: WorkspaceWriteOptions,
     ) -> Result<WorkspaceWriteResult, WorkspaceError> {
-        let req = WorkspaceWriteRequest {
-            path: normalized_path.to_string(),
-            data: data.to_vec(),
-            options,
-        };
-        let req_bytes = serde_json::to_vec(&req)
-            .map_err(|err| WorkspaceError::Backend(format!("encode workspace write: {err}")))?;
+        // H5b: binary length-prefixed framing (F4) — host decodes with
+        // `decode_workspace_write_request`. `WorkspaceWriteOptions` is a
+        // zero-field marker today; the frame drops it and the host rebuilds
+        // `default()`.
+        let _ = options;
+        let req_bytes = encode_workspace_write_request(normalized_path, data);
         let resp = crate::wasm_transport::cap_call(OP_WORKSPACE_WRITE, &req_bytes)
             .map_err(|err| WorkspaceError::Backend(err.to_string()))?;
         let (status, payload) = decode_workspace_response(&resp)?;

@@ -41,8 +41,8 @@ use capabilities::kv::{
 };
 use capabilities::workspace::{
     OP_WORKSPACE_DELETE, OP_WORKSPACE_LIST, OP_WORKSPACE_READ, OP_WORKSPACE_WRITE,
-    WorkspaceDeleteRequest, WorkspaceErrorEnvelope, WorkspaceListRequest, WorkspaceReadRequest,
-    WorkspaceWriteRequest,
+    WorkspaceDeleteRequest, WorkspaceError, WorkspaceErrorEnvelope, WorkspaceListRequest,
+    WorkspaceWriteOptions, decode_workspace_read_request, decode_workspace_write_request,
 };
 
 /// Drive an async future to completion from inside a synchronous wasmtime import handler.
@@ -1096,16 +1096,28 @@ fn handle_kv_list(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8> {
 // Workspace host handlers
 // ─────────────────────────────────────────────────────────────────────────
 
+// H5b (§16.4, F1/F2): each workspace opcode gates against the SPLIT grant and
+// emits a structured `MissingWorkspaceRead`/`MissingWorkspaceWrite` denial
+// across the wasm boundary (via `WorkspaceErrorEnvelope`), not the old
+// unstructured `"missing workspace provider"` string. READ/LIST require the
+// read grant; WRITE/DELETE require the write grant. The read/write request
+// frames now use the H5a binary length-prefixed codec (guest encode ↔ host
+// decode in lockstep); LIST/DELETE keep their JSON envelopes.
+
 fn handle_workspace_read(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8> {
-    let request: WorkspaceReadRequest = match decode_json_request(req, "workspace read") {
-        Ok(request) => request,
-        Err(err) => return encode_err(err),
+    let path = match decode_workspace_read_request(req) {
+        Ok(path) => path,
+        Err(err) => return encode_workspace_err(err),
     };
-    let workspace = match resources.workspace() {
+    let workspace = match resources.workspace_read() {
         Some(ws) => ws,
-        None => return encode_err("missing workspace provider"),
+        None => {
+            return encode_workspace_err(WorkspaceError::MissingWorkspaceRead(
+                "workspace read".to_string(),
+            ));
+        }
     };
-    let result = host_block_on(workspace.read_normalized(&request.path));
+    let result = host_block_on(workspace.read_normalized(path));
     match result {
         Ok(Some(read_result)) => encode_json_ok(&read_result),
         Ok(None) => encode_not_found(),
@@ -1114,16 +1126,20 @@ fn handle_workspace_read(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8> 
 }
 
 fn handle_workspace_write(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8> {
-    let request: WorkspaceWriteRequest = match decode_json_request(req, "workspace write") {
-        Ok(request) => request,
-        Err(err) => return encode_err(err),
+    let (path, data) = match decode_workspace_write_request(req) {
+        Ok(parts) => parts,
+        Err(err) => return encode_workspace_err(err),
     };
-    let workspace = match resources.workspace() {
+    let workspace = match resources.workspace_write() {
         Some(ws) => ws,
-        None => return encode_err("missing workspace provider"),
+        None => {
+            return encode_workspace_err(WorkspaceError::MissingWorkspaceWrite(
+                "workspace write".to_string(),
+            ));
+        }
     };
     let result =
-        host_block_on(workspace.write_normalized(&request.path, &request.data, request.options));
+        host_block_on(workspace.write_normalized(path, data, WorkspaceWriteOptions::default()));
     match result {
         Ok(write_result) => encode_json_ok(&write_result),
         Err(err) => encode_workspace_err(err),
@@ -1135,9 +1151,13 @@ fn handle_workspace_list(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8> 
         Ok(request) => request,
         Err(err) => return encode_err(err),
     };
-    let workspace = match resources.workspace() {
+    let workspace = match resources.workspace_read() {
         Some(ws) => ws,
-        None => return encode_err("missing workspace provider"),
+        None => {
+            return encode_workspace_err(WorkspaceError::MissingWorkspaceRead(
+                "workspace list".to_string(),
+            ));
+        }
     };
     let options = capabilities::workspace::WorkspaceListOptions {
         prefix: request.prefix,
@@ -1154,9 +1174,13 @@ fn handle_workspace_delete(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8
         Ok(request) => request,
         Err(err) => return encode_err(err),
     };
-    let workspace = match resources.workspace() {
+    let workspace = match resources.workspace_write() {
         Some(ws) => ws,
-        None => return encode_err("missing workspace provider"),
+        None => {
+            return encode_workspace_err(WorkspaceError::MissingWorkspaceWrite(
+                "workspace delete".to_string(),
+            ));
+        }
     };
     let result = host_block_on(workspace.delete_normalized(&request.path));
     match result {
@@ -1685,5 +1709,161 @@ mod connector_auth_boundary_tests {
         let response = expect_ok_json(handle_http_send(&state, &send_payload(&request), true));
         assert_eq!(response["status"], json!(200));
         assert_eq!(http.sent.lock().expect("capture lock").len(), 1);
+    }
+}
+
+/// H5b (§16.4, F1/F2): the per-opcode workspace enforcement boundary. These
+/// drive the workspace cap-call handlers exactly as the guest-side
+/// `RemoteWorkspace` transport does (binary length-prefixed frames for
+/// read/write), through a `ScopedResources` grant set, and assert the split:
+/// a read-only node is denied WRITE/DELETE with a structured
+/// `MissingWorkspaceWrite` denial across the boundary.
+#[cfg(test)]
+mod workspace_enforcement_tests {
+    use super::*;
+    use capabilities::scoped::ScopedResources;
+    use capabilities::workspace::{
+        Workspace, WorkspaceDeleteResult, WorkspaceEntry, WorkspaceListOptions,
+        WorkspaceReadResult, WorkspaceWriteResult, encode_workspace_read_request,
+        encode_workspace_write_request,
+    };
+    use capabilities::{Capability, ResourceAccess, ResourceBag};
+    use dag_core::EffectHint;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct MapWorkspace {
+        files: Mutex<HashMap<String, Vec<u8>>>,
+        last_read: Mutex<Option<String>>,
+    }
+    impl Capability for MapWorkspace {
+        fn name(&self) -> &'static str {
+            "workspace.map.test"
+        }
+    }
+    #[async_trait]
+    impl Workspace for MapWorkspace {
+        async fn read_normalized(
+            &self,
+            p: &str,
+        ) -> Result<Option<WorkspaceReadResult>, WorkspaceError> {
+            *self.last_read.lock().unwrap() = Some(p.to_string());
+            Ok(self
+                .files
+                .lock()
+                .unwrap()
+                .get(p)
+                .cloned()
+                .map(WorkspaceReadResult::Bytes))
+        }
+        async fn write_normalized(
+            &self,
+            p: &str,
+            data: &[u8],
+            _o: WorkspaceWriteOptions,
+        ) -> Result<WorkspaceWriteResult, WorkspaceError> {
+            self.files
+                .lock()
+                .unwrap()
+                .insert(p.to_string(), data.to_vec());
+            Ok(WorkspaceWriteResult {
+                path: p.to_string(),
+                size_bytes: data.len() as u64,
+                updated_at_ms: 0,
+            })
+        }
+        async fn list_normalized(
+            &self,
+            _o: WorkspaceListOptions,
+        ) -> Result<Vec<WorkspaceEntry>, WorkspaceError> {
+            Ok(Vec::new())
+        }
+        async fn delete_normalized(
+            &self,
+            _p: &str,
+        ) -> Result<WorkspaceDeleteResult, WorkspaceError> {
+            Ok(WorkspaceDeleteResult { deleted: false })
+        }
+    }
+
+    fn scoped_with(
+        grants: impl IntoIterator<Item = EffectHint>,
+    ) -> (Arc<dyn ResourceAccess>, Arc<MapWorkspace>) {
+        let ws = Arc::new(MapWorkspace::default());
+        let bag = Arc::new(ResourceBag::new().with_workspace(ws.clone()));
+        (Arc::new(ScopedResources::new("ws_node", bag, grants)), ws)
+    }
+
+    fn scoped(grants: impl IntoIterator<Item = EffectHint>) -> Arc<dyn ResourceAccess> {
+        scoped_with(grants).0
+    }
+
+    fn expect_ws_denial(response: Vec<u8>) -> WorkspaceErrorEnvelope {
+        assert_eq!(response[0], RESP_ERR, "expected RESP_ERR");
+        serde_json::from_slice(&response[1..]).expect("structured workspace error envelope")
+    }
+
+    #[test]
+    fn empty_grant_denies_read_with_structured_missing_read() {
+        let res = scoped([]);
+        let frame = encode_workspace_read_request("uploads/x.csv");
+        let env = expect_ws_denial(handle_workspace_read(res.as_ref(), &frame));
+        assert!(matches!(
+            env,
+            WorkspaceErrorEnvelope::MissingWorkspaceRead { .. }
+        ));
+    }
+
+    #[test]
+    fn read_only_node_denied_write_and_delete_with_structured_missing_write() {
+        let res = scoped([EffectHint::WorkspaceRead]);
+
+        // READ is allowed (round-trips through the binary frame).
+        let write_frame = encode_workspace_write_request("uploads/x.csv", b"hi");
+        let denied = expect_ws_denial(handle_workspace_write(res.as_ref(), &write_frame));
+        assert!(
+            matches!(denied, WorkspaceErrorEnvelope::MissingWorkspaceWrite { .. }),
+            "read-only node must be denied WRITE with MissingWorkspaceWrite"
+        );
+
+        let del = serde_json::to_vec(&serde_json::json!({ "path": "uploads/x.csv" })).unwrap();
+        let denied_del = expect_ws_denial(handle_workspace_delete(res.as_ref(), &del));
+        assert!(
+            matches!(
+                denied_del,
+                WorkspaceErrorEnvelope::MissingWorkspaceWrite { .. }
+            ),
+            "read-only node must be denied DELETE with MissingWorkspaceWrite"
+        );
+    }
+
+    #[test]
+    fn write_grant_round_trips_binary_frame_guest_encode_to_host_decode() {
+        let (res, ws) = scoped_with([EffectHint::WorkspaceWrite]);
+
+        // Guest-side encode (exactly what RemoteWorkspace emits) → host decode.
+        // Proves the H5a binary codec cutover: the host decodes the same frame
+        // the guest produces and lands the bytes at the intended path.
+        let write_frame = encode_workspace_write_request("uploads/report.csv", b"a,b\n1,2\n");
+        let ok = handle_workspace_write(res.as_ref(), &write_frame);
+        assert_eq!(ok[0], RESP_OK, "write should succeed under write grant");
+        assert_eq!(
+            ws.files.lock().unwrap().get("uploads/report.csv").cloned(),
+            Some(b"a,b\n1,2\n".to_vec()),
+            "binary write frame must round-trip guest-encode -> host-decode"
+        );
+
+        // Read frame decodes to the same path (write implies read). The read
+        // response byte-payload encoding is a separate host->guest concern
+        // (internally-tagged WorkspaceReadResult::Bytes, pre-existing), so we
+        // assert the request-codec round-trip via the backend-observed path.
+        let read_frame = encode_workspace_read_request("uploads/report.csv");
+        let _ = handle_workspace_read(res.as_ref(), &read_frame);
+        assert_eq!(
+            ws.last_read.lock().unwrap().clone(),
+            Some("uploads/report.csv".to_string()),
+            "binary read frame must decode to the requested path host-side"
+        );
     }
 }

@@ -119,11 +119,28 @@ const GRANTS_QUEUE: &[EffectHint] = &[
     EffectHint::QueueConsume,
 ];
 const GRANTS_DEDUPE: &[EffectHint] = &[EffectHint::Dedupe, EffectHint::DedupeWrite];
+// H5b (F1/F2): the workspace grant is split so `read` does NOT confer
+// `write`/`delete`, mirroring HTTP's `Http`/`HttpRead`/`HttpWrite`. Bare
+// `Workspace` is defined as read+write (back-compat, like bare `Http`); the
+// per-opcode byte surface (`workspace_read()`/`workspace_write()`) uses the
+// specific split grants. `GRANTS_WORKSPACE` is retained for the deprecated
+// bare `workspace()` accessor and host preflight satisfaction.
 const GRANTS_WORKSPACE: &[EffectHint] = &[
     EffectHint::Workspace,
     EffectHint::WorkspaceRead,
     EffectHint::WorkspaceWrite,
 ];
+// Read is the lesser privilege: bare `Workspace`, `WorkspaceRead`, AND
+// `WorkspaceWrite` all confer it (write implies read, matching the
+// `WorkspaceWrite` view which exposes `read(handle)`). Write is conferred only
+// by bare `Workspace` or `WorkspaceWrite` — a `WorkspaceRead`-only node is
+// denied write/delete (the F2 fix).
+const GRANTS_WORKSPACE_READ: &[EffectHint] = &[
+    EffectHint::Workspace,
+    EffectHint::WorkspaceRead,
+    EffectHint::WorkspaceWrite,
+];
+const GRANTS_WORKSPACE_WRITE: &[EffectHint] = &[EffectHint::Workspace, EffectHint::WorkspaceWrite];
 
 impl ScopedResources {
     /// Build a scoped view for `node_alias` over `inner`, granting exactly
@@ -284,6 +301,24 @@ impl ResourceAccess for ScopedResources {
         self.inner.workspace()
     }
 
+    // H5b (F1/F2): the split byte accessors. A `workspace::read` grant reaches
+    // only `workspace_read()`; `write`/`delete` opcodes go through
+    // `workspace_write()`. This is what makes the read/write split real rather
+    // than "one accessor, one trait, any hint grants everything".
+    fn workspace_read(&self) -> Option<&dyn workspace::Workspace> {
+        if !self.allows("workspace_read", GRANTS_WORKSPACE_READ) {
+            return None;
+        }
+        self.inner.workspace()
+    }
+
+    fn workspace_write(&self) -> Option<&dyn workspace::Workspace> {
+        if !self.allows("workspace_write", GRANTS_WORKSPACE_WRITE) {
+            return None;
+        }
+        self.inner.workspace()
+    }
+
     // Connector access is declared via NodeIR.connector_ops and constrained
     // by ConnectorBindingScope; pass through (see module docs).
     fn connector_runtime(&self) -> Option<Arc<dyn connector::ConnectorRuntime>> {
@@ -379,6 +414,89 @@ mod tests {
         assert!(scoped.checkpoint_store().is_none()); // bag has none; no denial either way
         assert!(scoped.connector_runtime().is_none());
         assert!(scoped.take_denials().is_empty());
+    }
+
+    // ---- H5b: workspace read/write grant split (§16.4, F1/F2) ----
+
+    struct NoopWorkspace;
+    impl crate::Capability for NoopWorkspace {
+        fn name(&self) -> &'static str {
+            "workspace.noop.scoped"
+        }
+    }
+    #[async_trait::async_trait]
+    impl workspace::Workspace for NoopWorkspace {
+        async fn read_normalized(
+            &self,
+            _p: &str,
+        ) -> Result<Option<workspace::WorkspaceReadResult>, workspace::WorkspaceError> {
+            Ok(None)
+        }
+        async fn write_normalized(
+            &self,
+            p: &str,
+            data: &[u8],
+            _o: workspace::WorkspaceWriteOptions,
+        ) -> Result<workspace::WorkspaceWriteResult, workspace::WorkspaceError> {
+            Ok(workspace::WorkspaceWriteResult {
+                path: p.to_string(),
+                size_bytes: data.len() as u64,
+                updated_at_ms: 0,
+            })
+        }
+        async fn list_normalized(
+            &self,
+            _o: workspace::WorkspaceListOptions,
+        ) -> Result<Vec<workspace::WorkspaceEntry>, workspace::WorkspaceError> {
+            Ok(Vec::new())
+        }
+        async fn delete_normalized(
+            &self,
+            _p: &str,
+        ) -> Result<workspace::WorkspaceDeleteResult, workspace::WorkspaceError> {
+            Ok(workspace::WorkspaceDeleteResult { deleted: false })
+        }
+    }
+
+    fn ws_bag() -> Arc<dyn ResourceAccess> {
+        Arc::new(ResourceBag::new().with_workspace(Arc::new(NoopWorkspace)))
+    }
+
+    #[test]
+    fn empty_grant_denies_both_workspace_accessors() {
+        let scoped = ScopedResources::new("pure_node", ws_bag(), []);
+        assert!(scoped.workspace_read().is_none());
+        assert!(scoped.workspace_write().is_none());
+        let denials = scoped.take_denials();
+        assert_eq!(denials.len(), 2);
+        assert!(denials.iter().any(|d| d.capability == "workspace_read"));
+        assert!(denials.iter().any(|d| d.capability == "workspace_write"));
+    }
+
+    #[test]
+    fn read_only_node_gets_read_but_not_write() {
+        let scoped = ScopedResources::new("reader", ws_bag(), [EffectHint::WorkspaceRead]);
+        assert!(scoped.workspace_read().is_some());
+        assert!(scoped.workspace_write().is_none());
+        let denials = scoped.take_denials();
+        assert_eq!(denials.len(), 1);
+        assert_eq!(denials[0].capability, "workspace_write");
+        assert_eq!(denials[0].granting_hints, GRANTS_WORKSPACE_WRITE);
+    }
+
+    #[test]
+    fn write_grant_confers_write_and_read_but_bare_read_hint_does_not_confer_write() {
+        // Bare Workspace hint grants both (back-compat, like bare Http).
+        let both = ScopedResources::new("bare", ws_bag(), [EffectHint::Workspace]);
+        assert!(both.workspace_read().is_some());
+        assert!(both.workspace_write().is_some());
+        assert!(both.take_denials().is_empty());
+
+        // Write hint grants write AND read (write implies read).
+        let writer = ScopedResources::new("writer", ws_bag(), [EffectHint::WorkspaceWrite]);
+        assert!(writer.workspace_write().is_some());
+        assert!(writer.workspace_read().is_some());
+        assert!(writer.take_denials().is_empty());
     }
 
     #[test]

@@ -1,19 +1,21 @@
 //! The byte-plane types for the `connector.http` v1.1 binary/artifact
 //! contract (`impl-docs/spec/http-request-node.md` §16).
 //!
-//! This module ships the H5a slice only: `Handle<S>`, `Artifact<S>`,
-//! `ByteSource`, the guest-side macaroon attenuation (`narrow`/`file`), and
-//! host-side macaroon mint/verify. It does NOT build the `WorkspaceRead` /
-//! `WorkspaceWrite` capability-narrowed views, the grant/accessor split, or
-//! any host-wasmtime enforcement wiring — that is H5b (see
-//! `impl-docs/spec/http-request-node.md` §16.8).
+//! H5a shipped the byte-plane types: `Handle<S>`, `Artifact<S>`, `ByteSource`,
+//! the guest-side macaroon attenuation (`narrow`/`file`), and host-side
+//! macaroon mint/verify. H5b adds the capability-narrowed node-facing views
+//! `WorkspaceRead` / `WorkspaceWrite` (handle-only surface enforcing §16.4
+//! gate 2 = `Macaroon::verify_tag` and gate 3 = `Macaroon::caveats_permit`).
+//! The grant/accessor split lives in `scoped.rs`; per-opcode host enforcement
+//! in `host-wasmtime` (see `impl-docs/spec/http-request-node.md` §16.4/§16.8).
 
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 use std::marker::PhantomData;
+use std::sync::Arc;
 
-use crate::workspace::WorkspaceError;
+use crate::workspace::{Workspace, WorkspaceError, WorkspaceReadResult, normalize_path};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -243,22 +245,35 @@ impl Macaroon {
         }
     }
 
-    /// Host-side: recompute the tag by folding the caveat chain from the
-    /// root key, constant-time compare against the carried tag, and check
-    /// `final_scope` satisfies **every** caveat (§16.4 gate 2).
-    pub fn verify(&self, root_key: &[u8], final_scope: &HandleScope) -> bool {
+    /// Host-side gate 2 (§16.4): recompute the tag by folding the caveat chain
+    /// from the root key and constant-time compare against the carried tag.
+    /// A forged or widened mint (whose caveat chain was tampered) fails here.
+    /// This is deliberately split from the scope-containment check
+    /// ([`caveats_permit`]) so the two deref gates are independently
+    /// enforceable and independently testable (§16.4 "three deref gates").
+    pub fn verify_tag(&self, root_key: &[u8]) -> bool {
         let mut mac = HmacSha256::new_from_slice(root_key).expect("HMAC accepts any key length");
         mac.update(self.root_key_id.as_bytes());
         let mut tag = mac.finalize().into_bytes().to_vec();
         for caveat in &self.caveats {
             tag = extend_tag(&tag, caveat);
         }
+        constant_time_eq(&tag, &self.tag)
+    }
 
-        if !constant_time_eq(&tag, &self.tag) {
-            return false;
-        }
+    /// Host-side gate 3 (§16.4): does `target` satisfy **every** caveat in the
+    /// chain? A handle whose runtime `scope` witness was widened past what its
+    /// (validly-tagged) caveats permit fails here even though [`verify_tag`]
+    /// passes.
+    pub fn caveats_permit(&self, target: &HandleScope) -> bool {
+        self.caveats.iter().all(|c| c.scope.contains(target))
+    }
 
-        self.caveats.iter().all(|c| c.scope.contains(final_scope))
+    /// Host-side: recompute the tag by folding the caveat chain from the
+    /// root key, constant-time compare against the carried tag, and check
+    /// `final_scope` satisfies **every** caveat (§16.4 gates 2+3 combined).
+    pub fn verify(&self, root_key: &[u8], final_scope: &HandleScope) -> bool {
+        self.verify_tag(root_key) && self.caveats_permit(final_scope)
     }
 }
 
@@ -513,16 +528,15 @@ mod base64_bytes {
 // stage_artifact sugar + content-hash-at-stage (review F6)
 // ─────────────────────────────────────────────────────────────────────────
 
-/// Host-side minting seam that `stage_artifact` uses to produce a handle for
-/// the freshly-written file. A real host wires this to its root key store;
-/// this trait exists so H5a can compile and be unit-tested without the H5b
-/// `WorkspaceWrite` view / host-wasmtime plumbing.
+/// Host-side minting seam that the free `stage_artifact` helper uses to
+/// produce a handle for the freshly-written file. A real host wires this to
+/// its root key store.
 ///
-/// H5b: the real `WorkspaceWrite` view carries a minter (or root key
-/// reference) internally and exposes `stage_artifact(name, bytes,
-/// content_type)` with no explicit minter parameter (§16.5's
-/// `ws.stage_artifact(...)` call shape) — this free function is the H5a
-/// scaffold that shape will be built on top of.
+/// H5b (done): the `WorkspaceWrite` view (above) now carries the root key +
+/// key id internally and exposes the §16.5 `ws.stage_artifact(name, bytes,
+/// content_type)` shape with no explicit minter parameter. This trait + the
+/// free function below remain the minter-injecting scaffold used by the H5a
+/// unit tests and any caller that wants an explicit minter.
 pub trait WorkspaceMinter: Send + Sync {
     fn mint_exact(&self, path: &str) -> Handle<Exact>;
 }
@@ -560,6 +574,171 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     hex::encode(hasher.finalize())
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Capability-narrowed node-facing views (§16.4 — the handle-only byte surface)
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Failure surfaced by the handle-scoped workspace views when a byte crossing
+/// is refused by one of the three deref gates (§16.4), or by the backing
+/// workspace itself.
+#[derive(Debug, thiserror::Error)]
+pub enum ByteAccessError {
+    /// Backend / path-normalization failure from the wrapped `Workspace`.
+    #[error(transparent)]
+    Workspace(#[from] WorkspaceError),
+    /// Gate 2: the handle's macaroon tag did not verify against the host root
+    /// key — a forged or tampered mint.
+    #[error("gate 2: handle macaroon failed to verify against the host root key")]
+    MintVerification,
+    /// Gate 3: the concrete requested path is not contained by the handle's
+    /// caveat chain (a widened runtime scope witness).
+    #[error("gate 3: requested path `{requested}` is not permitted by handle scope caveats")]
+    OutOfScope { requested: String },
+    /// The handle names a different store than the view is bound to.
+    #[error("handle names store `{handle_store}`, view is bound to `{view_store}`")]
+    StoreMismatch {
+        handle_store: String,
+        view_store: String,
+    },
+    /// The requested entry does not exist.
+    #[error("workspace entry not found: {0}")]
+    NotFound(String),
+}
+
+/// Shared read path for both views: enforce store binding + gate 2 (mint
+/// verify) + gate 3 (scope caveats) before touching the raw `Workspace`.
+async fn read_via_handle(
+    workspace: &dyn Workspace,
+    root_key: &[u8],
+    store: &StoreRef,
+    handle: &Handle<Exact>,
+) -> Result<Vec<u8>, ByteAccessError> {
+    if handle.store() != store {
+        return Err(ByteAccessError::StoreMismatch {
+            handle_store: handle.store().as_str().to_string(),
+            view_store: store.as_str().to_string(),
+        });
+    }
+    // Gate 2 — macaroon tag verifies against the host root key.
+    if !handle.mint().verify_tag(root_key) {
+        return Err(ByteAccessError::MintVerification);
+    }
+    // Resolve the concrete leaf; traversal is rejected here exactly as raw
+    // workspace paths are.
+    let normalized = normalize_path(handle.scope().path())?;
+    let target = HandleScope::Exact(normalized.clone());
+    // Gate 3 — the concrete path is contained by every caveat.
+    if !handle.mint().caveats_permit(&target) {
+        return Err(ByteAccessError::OutOfScope {
+            requested: normalized,
+        });
+    }
+    match workspace.read_normalized(&normalized).await? {
+        Some(WorkspaceReadResult::Bytes(bytes)) => Ok(bytes),
+        Some(WorkspaceReadResult::BlobRef(_)) => Err(ByteAccessError::Workspace(
+            WorkspaceError::Unsupported("workspace returned a blob reference, not bytes".into()),
+        )),
+        None => Err(ByteAccessError::NotFound(normalized)),
+    }
+}
+
+/// Read-only handle-scoped view (§16.4). Granted by `resource::workspace::read`.
+/// Its ONLY method is `read(handle)` — no `stage`, no arbitrary-path read, no
+/// `list`/`delete`. Wraps the host-internal `Workspace`; the raw trait is never
+/// handed to a node.
+#[derive(Clone)]
+pub struct WorkspaceRead {
+    workspace: Arc<dyn Workspace>,
+    root_key: Arc<[u8]>,
+    store: StoreRef,
+}
+
+impl WorkspaceRead {
+    /// Host-side constructor. `root_key` never leaves the host; the node only
+    /// ever holds this view, not the key.
+    pub fn new(
+        workspace: Arc<dyn Workspace>,
+        root_key: impl Into<Arc<[u8]>>,
+        store: StoreRef,
+    ) -> Self {
+        Self {
+            workspace,
+            root_key: root_key.into(),
+            store,
+        }
+    }
+
+    /// Deref a single-file handle to its bytes, enforcing all three gates.
+    pub async fn read(&self, handle: &Handle<Exact>) -> Result<Vec<u8>, ByteAccessError> {
+        read_via_handle(self.workspace.as_ref(), &self.root_key, &self.store, handle).await
+    }
+}
+
+/// Read+write handle-scoped view (§16.4). Granted by `resource::workspace::write`.
+/// Exposes `stage_artifact` (the §16.5 3-arg shape — the minter/root key ride
+/// internally) and `read(handle)`. Still no arbitrary-path read or `delete`.
+#[derive(Clone)]
+pub struct WorkspaceWrite {
+    workspace: Arc<dyn Workspace>,
+    root_key: Arc<[u8]>,
+    root_key_id: String,
+    store: StoreRef,
+}
+
+impl WorkspaceWrite {
+    /// Host-side constructor. Carries the root key + key id used to mint the
+    /// `Exact` handle for each staged file.
+    pub fn new(
+        workspace: Arc<dyn Workspace>,
+        root_key: impl Into<Arc<[u8]>>,
+        root_key_id: impl Into<String>,
+        store: StoreRef,
+    ) -> Self {
+        Self {
+            workspace,
+            root_key: root_key.into(),
+            root_key_id: root_key_id.into(),
+            store,
+        }
+    }
+
+    /// Stage bytes and return an `Artifact` whose `content_hash` is computed
+    /// here at stage time (§16.5, review F6). The freshly-written path is
+    /// minted into an `Exact` handle bound to this view's store + root key.
+    pub async fn stage_artifact(
+        &self,
+        name: &str,
+        bytes: &[u8],
+        content_type: impl Into<String>,
+    ) -> Result<Artifact<Exact>, ByteAccessError> {
+        let write_result = self
+            .workspace
+            .write(
+                name,
+                bytes,
+                crate::workspace::WorkspaceWriteOptions::default(),
+            )
+            .await?;
+        let handle = Handle::host_mint_exact(
+            self.store.clone(),
+            &self.root_key,
+            self.root_key_id.clone(),
+            write_result.path,
+        );
+        Ok(Artifact {
+            handle,
+            content_type: content_type.into(),
+            len: bytes.len() as u64,
+            content_hash: Some(sha256_hex(bytes)),
+        })
+    }
+
+    /// Deref a single-file handle to its bytes, enforcing all three gates.
+    pub async fn read(&self, handle: &Handle<Exact>) -> Result<Vec<u8>, ByteAccessError> {
+        read_via_handle(self.workspace.as_ref(), &self.root_key, &self.store, handle).await
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -759,6 +938,91 @@ mod tests {
         fn mint_exact(&self, path: &str) -> Handle<Exact> {
             Handle::host_mint_exact(StoreRef::new("ws"), ROOT_KEY, "root-1", path)
         }
+    }
+
+    // ---- H5b: handle-only views + gate 2/gate 3 honesty tests (§16.4) ----
+
+    fn ws_arc() -> Arc<InMemoryWorkspace> {
+        Arc::new(InMemoryWorkspace::default())
+    }
+
+    #[tokio::test]
+    async fn write_view_stage_then_read_round_trips_through_gates() {
+        let ws = ws_arc();
+        let writer =
+            WorkspaceWrite::new(ws.clone(), ROOT_KEY.to_vec(), "root-1", StoreRef::new("ws"));
+        let artifact = writer
+            .stage_artifact("uploads/report.csv", b"a,b\n1,2\n", "text/csv")
+            .await
+            .expect("stage");
+        assert_eq!(artifact.content_hash, Some(sha256_hex(b"a,b\n1,2\n")));
+
+        // Read the same handle back through the read-only view.
+        let reader = WorkspaceRead::new(ws.clone(), ROOT_KEY.to_vec(), StoreRef::new("ws"));
+        let bytes = reader.read(&artifact.handle).await.expect("read");
+        assert_eq!(bytes, b"a,b\n1,2\n");
+    }
+
+    #[tokio::test]
+    async fn gate2_forged_mint_fails_verify() {
+        let ws = ws_arc();
+        ws.files
+            .lock()
+            .unwrap()
+            .insert("uploads/report.csv".into(), b"secret".to_vec());
+        let reader = WorkspaceRead::new(ws, ROOT_KEY.to_vec(), StoreRef::new("ws"));
+
+        let mut handle = root_handle().file("uploads/report.csv").expect("file");
+        // Corrupt the tag → forged mint.
+        handle.mint.tag[0] ^= 0xFF;
+
+        let err = reader
+            .read(&handle)
+            .await
+            .expect_err("forged mint must fail");
+        assert!(matches!(err, ByteAccessError::MintVerification));
+    }
+
+    #[tokio::test]
+    async fn gate3_out_of_scope_path_fails_after_valid_tag() {
+        let ws = ws_arc();
+        ws.files
+            .lock()
+            .unwrap()
+            .insert("uploads/secret.csv".into(), b"secret".to_vec());
+        let reader = WorkspaceRead::new(ws, ROOT_KEY.to_vec(), StoreRef::new("ws"));
+
+        // Valid mint for uploads/report.csv, but the runtime scope witness is
+        // widened to a sibling the caveats do NOT cover. Tag still verifies
+        // (it folds only the caveat chain), so this isolates gate 3.
+        let mut handle = root_handle().file("uploads/report.csv").expect("file");
+        assert!(handle.mint().verify_tag(ROOT_KEY));
+        handle.scope = HandleScope::Exact("uploads/secret.csv".into());
+
+        let err = reader
+            .read(&handle)
+            .await
+            .expect_err("out-of-scope path must fail");
+        assert!(matches!(err, ByteAccessError::OutOfScope { .. }));
+    }
+
+    #[tokio::test]
+    async fn view_rejects_handle_from_another_store() {
+        let ws = ws_arc();
+        let reader = WorkspaceRead::new(ws, ROOT_KEY.to_vec(), StoreRef::new("ws"));
+        let handle = Handle::<Prefix>::host_mint_prefix(
+            StoreRef::new("other-store"),
+            ROOT_KEY,
+            "root-1",
+            "",
+        )
+        .file("uploads/report.csv")
+        .expect("file");
+        let err = reader
+            .read(&handle)
+            .await
+            .expect_err("cross-store handle must fail");
+        assert!(matches!(err, ByteAccessError::StoreMismatch { .. }));
     }
 
     #[tokio::test]
