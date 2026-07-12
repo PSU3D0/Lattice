@@ -95,7 +95,8 @@ members = [
   "examples/s25_form_feedback_summary",
   "examples/s23_crm_event_notify",
   "examples/s22_hydration_reminder",
-  "examples/s26_http_longtail"
+  "examples/s26_http_longtail",
+  "examples/s27_binary"
 ]
 
 [workspace.package]

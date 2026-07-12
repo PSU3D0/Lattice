@@ -3040,6 +3040,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-s27-binary"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "cap-http-reqwest",
+ "cap-workspace-fs",
+ "capabilities",
+ "connector_http",
+ "dag-core",
+ "dag-macros",
+ "host-inproc",
+ "httpmock",
+ "kernel-exec",
+ "kernel-plan",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "example-s3-branching"
 version = "0.1.0"
 dependencies = [
