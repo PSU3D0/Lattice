@@ -428,11 +428,11 @@ pub async fn export_evaluated_workbook(
         })?;
 
         let result = context::with_current_async(|resources| async move {
-            // H5b (§16.4): this stages an artifact (a write), so it goes through
-            // the split write accessor — the node must hold the
-            // `resource::workspace::write` grant, not merely bare workspace.
+            // H5b/H5c-enforcement (§16.4): this stages by path (raw workspace),
+            // so it uses the grant-gated raw write accessor — the node must hold
+            // the `resource::workspace::write` grant, not merely bare workspace.
             let workspace = resources
-                .workspace_write()
+                .workspace_write_raw()
                 .ok_or(SheetPortConnectorError::MissingWorkspaceCapability)?;
             workspace
                 .write(&path, &bytes, WorkspaceWriteOptions::default())

@@ -85,7 +85,7 @@ pub async fn workspace_write(input: WorkspaceWriteInput) -> NodeResult<Workspace
 
     context::with_current_async(|resources| async move {
         let workspace = resources
-            .workspace_write()
+            .workspace_write_raw()
             .ok_or_else(|| missing_workspace_error("write"))?;
         let result = workspace
             .write_normalized(
@@ -119,7 +119,7 @@ pub async fn workspace_read(input: WorkspaceReadInput) -> NodeResult<WorkspaceRe
 
     context::with_current_async(|resources| async move {
         let workspace = resources
-            .workspace_read()
+            .workspace_read_raw()
             .ok_or_else(|| missing_workspace_error("read"))?;
         let result = workspace
             .read_normalized(&normalized_path)
@@ -159,7 +159,7 @@ pub async fn workspace_list(input: WorkspaceListInput) -> NodeResult<WorkspaceLi
 
     context::with_current_async(|resources| async move {
         let workspace = resources
-            .workspace_read()
+            .workspace_read_raw()
             .ok_or_else(|| missing_workspace_error("list"))?;
         let entries = workspace
             .list_normalized(options)
@@ -188,7 +188,7 @@ pub async fn workspace_delete(input: WorkspaceDeleteInput) -> NodeResult<Workspa
 
     context::with_current_async(|resources| async move {
         let workspace = resources
-            .workspace_write()
+            .workspace_write_raw()
             .ok_or_else(|| missing_workspace_error("delete"))?;
         let result = workspace
             .delete_normalized(&normalized_path)

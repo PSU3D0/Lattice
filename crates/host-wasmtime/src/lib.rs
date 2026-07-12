@@ -1103,13 +1103,20 @@ fn handle_kv_list(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8> {
 // read grant; WRITE/DELETE require the write grant. The read/write request
 // frames now use the H5a binary length-prefixed codec (guest encode ↔ host
 // decode in lockstep); LIST/DELETE keep their JSON envelopes.
+//
+// H5c-enforcement: these generic path opcodes take a path by contract and
+// legitimately keep raw arbitrary-path access, so they go through the grant-
+// gated `workspace_read_raw()`/`workspace_write_raw()` accessors (SAME split
+// grants, SAME `CAP-WS-006/007` denials, zero behavior change) rather than the
+// handle-only views. Handle-carrying wasm opcodes are a follow-up (§16.4 F1
+// residual).
 
 fn handle_workspace_read(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8> {
     let path = match decode_workspace_read_request(req) {
         Ok(path) => path,
         Err(err) => return encode_workspace_err(err),
     };
-    let workspace = match resources.workspace_read() {
+    let workspace = match resources.workspace_read_raw() {
         Some(ws) => ws,
         None => {
             return encode_workspace_err(WorkspaceError::MissingWorkspaceRead(
@@ -1130,7 +1137,7 @@ fn handle_workspace_write(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8>
         Ok(parts) => parts,
         Err(err) => return encode_workspace_err(err),
     };
-    let workspace = match resources.workspace_write() {
+    let workspace = match resources.workspace_write_raw() {
         Some(ws) => ws,
         None => {
             return encode_workspace_err(WorkspaceError::MissingWorkspaceWrite(
@@ -1151,7 +1158,7 @@ fn handle_workspace_list(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8> 
         Ok(request) => request,
         Err(err) => return encode_err(err),
     };
-    let workspace = match resources.workspace_read() {
+    let workspace = match resources.workspace_read_raw() {
         Some(ws) => ws,
         None => {
             return encode_workspace_err(WorkspaceError::MissingWorkspaceRead(
@@ -1174,7 +1181,7 @@ fn handle_workspace_delete(resources: &dyn ResourceAccess, req: &[u8]) -> Vec<u8
         Ok(request) => request,
         Err(err) => return encode_err(err),
     };
-    let workspace = match resources.workspace_write() {
+    let workspace = match resources.workspace_write_raw() {
         Some(ws) => ws,
         None => {
             return encode_workspace_err(WorkspaceError::MissingWorkspaceWrite(

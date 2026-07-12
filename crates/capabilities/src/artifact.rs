@@ -577,6 +577,39 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// Per-run macaroon root-key derivation (§16.2 — per-run, derived, never
+// persisted). Computed host-side in the workspace binding layer on BOTH
+// execute and resume, so the key is identical across a halt/resume with
+// nothing persisted and no checkpoint-schema change.
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Domain-separation prefix for the per-run root-key derivation. Versioned so
+/// a future scheme change cannot collide with v1 keys.
+const RUN_ROOT_KEY_DOMAIN: &[u8] = b"lf.ws.root.v1:";
+
+/// Derive the per-run macaroon root key from a per-host master key (§16.2):
+/// `run_key = HMAC-SHA256(master, "lf.ws.root.v1:" ‖ flow_id ‖ ":" ‖ run_id)`.
+///
+/// Per-run derivation (not a flat per-host key) is load-bearing for security:
+/// workspace paths are run-relative and the store binding does not carry the
+/// run, so a flat key would let a run-A handle verify in run B (a cross-run
+/// confused deputy). Per-run keys make a foreign-run handle fail gate 2.
+pub fn derive_run_root_key(master: &[u8], flow_id: &str, run_id: &str) -> Vec<u8> {
+    let mut mac = HmacSha256::new_from_slice(master).expect("HMAC accepts any key length");
+    mac.update(RUN_ROOT_KEY_DOMAIN);
+    mac.update(flow_id.as_bytes());
+    mac.update(b":");
+    mac.update(run_id.as_bytes());
+    mac.finalize().into_bytes().to_vec()
+}
+
+/// The stable `root_key_id` label carried in every minted macaroon for a run:
+/// `ws:{flow_id}:{run_id}` (§16.2).
+pub fn run_root_key_id(flow_id: &str, run_id: &str) -> String {
+    format!("ws:{flow_id}:{run_id}")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // Capability-narrowed node-facing views (§16.4 — the handle-only byte surface)
 // ─────────────────────────────────────────────────────────────────────────
 

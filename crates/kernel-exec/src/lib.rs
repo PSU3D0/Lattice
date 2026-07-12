@@ -680,6 +680,26 @@ impl ResourceAccess for NodeScopedResources {
         self.base.workspace()
     }
 
+    // H5c-enforcement: after the accessor cutover the trait defaults for these
+    // four are `None`/bare, so `NodeScopedResources` MUST explicitly delegate to
+    // `self.base` or workspace access breaks (the base carries the per-run root
+    // key; silently inheriting the defaults would drop the views).
+    fn workspace_read(&self) -> Option<capabilities::WorkspaceRead> {
+        self.base.workspace_read()
+    }
+
+    fn workspace_write(&self) -> Option<capabilities::WorkspaceWrite> {
+        self.base.workspace_write()
+    }
+
+    fn workspace_read_raw(&self) -> Option<&dyn capabilities::workspace::Workspace> {
+        self.base.workspace_read_raw()
+    }
+
+    fn workspace_write_raw(&self) -> Option<&dyn capabilities::workspace::Workspace> {
+        self.base.workspace_write_raw()
+    }
+
     fn connector_runtime(&self) -> Option<Arc<dyn capabilities::connector::ConnectorRuntime>> {
         self.base.connector_runtime()
     }

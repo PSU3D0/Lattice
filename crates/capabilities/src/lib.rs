@@ -19,6 +19,7 @@ pub mod workspace;
 pub use artifact::{
     Artifact, ArtifactError, ByteAccessError, ByteSource, Caveat, Exact, Handle, HandleScope,
     Macaroon, Prefix, Scope, StoreRef, WorkspaceMinter, WorkspaceRead, WorkspaceWrite,
+    derive_run_root_key, run_root_key_id,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -118,18 +119,36 @@ pub trait ResourceAccess: Send + Sync + 'static {
         None
     }
 
-    /// Host-internal workspace surface gated on the `resource::workspace::read`
-    /// grant (H5b, §16.4). Mirrors `http_read()`. Defaults to the bare
-    /// `workspace()` so unscoped bags (and pass-through wrapper layers) grant
-    /// it; `ScopedResources` overrides this with the split-grant check so a
-    /// read grant does NOT confer write/delete.
-    fn workspace_read(&self) -> Option<&dyn workspace::Workspace> {
+    /// Handle-only read view gated on the `resource::workspace::read` grant
+    /// (H5c-enforcement, §16.4). Returns an OWNED [`artifact::WorkspaceRead`]
+    /// (cheap `Arc` clones) whose only method is `read(handle)` — no
+    /// arbitrary-path read, `list`, or `delete`. Defaults to `None` (fail
+    /// closed): a plain bag with no root key exposes no handle view. Path-shaped
+    /// consumers use [`ResourceAccess::workspace_read_raw`] instead.
+    fn workspace_read(&self) -> Option<artifact::WorkspaceRead> {
+        None
+    }
+
+    /// Handle-only read+write view gated on the `resource::workspace::write`
+    /// grant (H5c-enforcement, §16.4). Returns an OWNED
+    /// [`artifact::WorkspaceWrite`] exposing `stage_artifact` + `read(handle)`.
+    /// Defaults to `None` (fail closed).
+    fn workspace_write(&self) -> Option<artifact::WorkspaceWrite> {
+        None
+    }
+
+    /// Raw arbitrary-path workspace surface gated on the
+    /// `resource::workspace::read` grant. For path-by-contract consumers
+    /// (stdlib path nodes, the generic wasm workspace opcodes) that legitimately
+    /// keep raw access. Defaults to the bare `workspace()` so unscoped bags and
+    /// pass-through wrapper layers grant it.
+    fn workspace_read_raw(&self) -> Option<&dyn workspace::Workspace> {
         self.workspace()
     }
 
-    /// Host-internal workspace surface gated on the `resource::workspace::write`
-    /// grant (H5b, §16.4). Mirrors `http_write()`.
-    fn workspace_write(&self) -> Option<&dyn workspace::Workspace> {
+    /// Raw arbitrary-path workspace surface gated on the
+    /// `resource::workspace::write` grant. Defaults to the bare `workspace()`.
+    fn workspace_write_raw(&self) -> Option<&dyn workspace::Workspace> {
         self.workspace()
     }
 
@@ -158,6 +177,30 @@ pub trait ResourceAccess: Send + Sync + 'static {
     }
 }
 
+/// Generate a per-bag ephemeral macaroon root key (H5c-enforcement, §16.2).
+///
+/// Used only on the factory-less `ResourceBag` path (embedded hosts / tests)
+/// where no per-run derivation layer exists; produces a key unique per call
+/// within a process so the handle-only views round-trip within a bag. It is NOT
+/// stable across process restarts — cross-process resume requires a configured
+/// stable key (`with_workspace_root_key`), the same operational class as
+/// configuring the checkpoint store. Wasm-safe (no `SystemTime`).
+fn ephemeral_root_key() -> Arc<[u8]> {
+    use sha2::{Digest, Sha256};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    // A stack address gives per-process (ASLR) variation; the counter gives
+    // per-call uniqueness. Casting a raw pointer to usize is safe.
+    let marker = 0u8;
+    let addr = (&marker as *const u8) as usize as u64;
+    let mut hasher = Sha256::new();
+    hasher.update(b"lf.ws.ephemeral-root.v1");
+    hasher.update(n.to_le_bytes());
+    hasher.update(addr.to_le_bytes());
+    Arc::from(hasher.finalize().to_vec())
+}
+
 /// Mutable collection of capability providers surfaced to the executor.
 #[derive(Clone)]
 pub struct ResourceBag {
@@ -177,6 +220,14 @@ pub struct ResourceBag {
     resume_signal_source: Option<Arc<dyn durability::ResumeSignalSource>>,
     checkpoint_blob_store: Option<Arc<dyn durability::CheckpointBlobStore>>,
     workspace: Option<Arc<dyn workspace::Workspace>>,
+    // H5c-enforcement (§16.2): the per-run macaroon root key + key id used to
+    // construct the handle-only `WorkspaceRead`/`WorkspaceWrite` views for
+    // factory-less hosts/tests. Auto-generated (ephemeral) when a workspace is
+    // attached and none was configured; a stable key can be supplied via
+    // `with_workspace_root_key`. Factory-backed hosts derive this per run in the
+    // workspace binding layer instead (host-inproc).
+    ws_root_key: Option<Arc<[u8]>>,
+    ws_root_key_id: Option<String>,
     connector_runtime: Option<Arc<dyn connector::ConnectorRuntime>>,
     connector_scope: Option<connector::ConnectorBindingScope>,
     connector_resolved_effect_hints: Option<Arc<connector::ConnectorResolvedEffectHints>>,
@@ -202,6 +253,8 @@ impl Default for ResourceBag {
             resume_signal_source: None,
             checkpoint_blob_store: None,
             workspace: None,
+            ws_root_key: None,
+            ws_root_key_id: None,
             connector_runtime: None,
             connector_scope: None,
             connector_resolved_effect_hints: None,
@@ -356,6 +409,26 @@ impl ResourceBag {
     {
         let capability: Arc<dyn workspace::Workspace> = capability;
         self.workspace = Some(capability);
+        // Auto-generate an ephemeral per-bag root key so the handle-only views
+        // are constructible on factory-less hosts/tests. A stable key (needed
+        // for cross-process resume) can override via `with_workspace_root_key`.
+        if self.ws_root_key.is_none() {
+            self.ws_root_key = Some(ephemeral_root_key());
+            self.ws_root_key_id = Some("ws:resource-bag:ephemeral".to_string());
+        }
+        self
+    }
+
+    /// Supply a stable macaroon root key + key id for the handle-only workspace
+    /// views (H5c-enforcement, §16.2). Overrides the ephemeral key that
+    /// `with_workspace` auto-generates. Order-independent with `with_workspace`.
+    pub fn with_workspace_root_key(
+        mut self,
+        root_key: impl Into<Arc<[u8]>>,
+        root_key_id: impl Into<String>,
+    ) -> Self {
+        self.ws_root_key = Some(root_key.into());
+        self.ws_root_key_id = Some(root_key_id.into());
         self
     }
 
@@ -628,6 +701,39 @@ impl ResourceAccess for ResourceBag {
         self.workspace
             .as_ref()
             .map(|cap| cap.as_ref() as &dyn workspace::Workspace)
+    }
+
+    // Construct the handle-only views from the bag's workspace + root key +
+    // the canonical `"workspace"` store binding. `None` unless BOTH a workspace
+    // and a root key are present (fail closed).
+    fn workspace_read(&self) -> Option<artifact::WorkspaceRead> {
+        let workspace = self.workspace.clone()?;
+        let root_key = self.ws_root_key.clone()?;
+        Some(artifact::WorkspaceRead::new(
+            workspace,
+            root_key,
+            artifact::StoreRef::new("workspace"),
+        ))
+    }
+
+    fn workspace_write(&self) -> Option<artifact::WorkspaceWrite> {
+        let workspace = self.workspace.clone()?;
+        let root_key = self.ws_root_key.clone()?;
+        let root_key_id = self.ws_root_key_id.clone()?;
+        Some(artifact::WorkspaceWrite::new(
+            workspace,
+            root_key,
+            root_key_id,
+            artifact::StoreRef::new("workspace"),
+        ))
+    }
+
+    fn workspace_read_raw(&self) -> Option<&dyn workspace::Workspace> {
+        self.workspace()
+    }
+
+    fn workspace_write_raw(&self) -> Option<&dyn workspace::Workspace> {
+        self.workspace()
     }
 
     fn connector_runtime(&self) -> Option<Arc<dyn connector::ConnectorRuntime>> {

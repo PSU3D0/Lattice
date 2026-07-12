@@ -30,22 +30,23 @@ use std::time::Duration;
 use async_stream::stream;
 use cap_do_workers::{DurableObjectBinding, WorkersDurableObject};
 use cap_workspace_workers::{WorkersWorkspaceConfig, WorkersWorkspaceFactory};
+use capabilities::ResourceBag;
 use capabilities::connector::{
     ConnectorBindingScope, ConnectorRuntime, ConnectorRuntimeError, ResolvedEndpointProfile,
 };
+use capabilities::durability::{CheckpointFilter, CheckpointStore};
 use capabilities::http::{
     HttpError, HttpMethod, HttpRead, HttpRequest, HttpResponse, HttpResult, HttpWrite,
 };
 use capabilities::workspace::{
-    Workspace, WorkspaceCompletionDisposition, WorkspaceFactory, WorkspacePolicy,
-    WorkspaceRunScope,
+    Workspace, WorkspaceCompletionDisposition, WorkspaceFactory, WorkspacePolicy, WorkspaceRunScope,
 };
-use capabilities::ResourceBag;
-use capabilities::durability::{CheckpointFilter, CheckpointStore};
 use dag_core::{DurabilityMode, NodeError, NodeResult};
 use dag_macros::{def_node, node};
 use futures::Stream;
 use host_inproc::{FlowBundle, FlowEntrypoint, NodeContract, NodeSource};
+#[cfg(target_arch = "wasm32")]
+use js_sys::JsString;
 use kernel_exec::{NodeRegistry, RegistryError};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
@@ -53,8 +54,6 @@ use stdlib::workspace::{
     WorkspaceDeleteInput, WorkspaceListInput, WorkspaceReadInput, WorkspaceWriteInput,
     workspace_write,
 };
-#[cfg(target_arch = "wasm32")]
-use js_sys::JsString;
 #[cfg(target_arch = "wasm32")]
 use worker::{Context, Env, Method, Request, RequestInit, Response, Result, event};
 
@@ -179,7 +178,8 @@ impl HttpWrite for S13MockHttpClient {
             (HttpMethod::Post, url) if url.ends_with("/chat/completions") => Ok(HttpResponse {
                 status: 200,
                 headers: Default::default(),
-                body: serde_json::to_vec(&s13_openai_triage_response()).expect("serialize triage response"),
+                body: serde_json::to_vec(&s13_openai_triage_response())
+                    .expect("serialize triage response"),
             }),
             (HttpMethod::Post, url) if url.ends_with("/jobs/investigate") => Ok(HttpResponse {
                 status: 202,
@@ -364,7 +364,9 @@ async fn handle_test_checkpoint(req: Request, env: &Env) -> Result<Response> {
         .await
         .map_err(|err| worker::Error::RustError(err.to_string()))?;
 
-    let found = handles.iter().any(|handle| handle.checkpoint_id == checkpoint_id);
+    let found = handles
+        .iter()
+        .any(|handle| handle.checkpoint_id == checkpoint_id);
     Response::from_json(&json!({
         "checkpoint_id": checkpoint_id,
         "found": found,
@@ -428,12 +430,13 @@ struct WorkspaceRetainedCleanupRequest {
 #[cfg(target_arch = "wasm32")]
 async fn handle_test_workspace_retained_cleanup(mut req: Request, env: &Env) -> Result<Response> {
     let payload: WorkspaceRetainedCleanupRequest = req.json().await?;
-    let scope_name = workspace_scope_name_from_object_key(&payload.object_key).ok_or_else(|| {
-        worker::Error::RustError(format!(
-            "workspace object key does not encode a scope: {}",
-            payload.object_key
-        ))
-    })?;
+    let scope_name =
+        workspace_scope_name_from_object_key(&payload.object_key).ok_or_else(|| {
+            worker::Error::RustError(format!(
+                "workspace object key does not encode a scope: {}",
+                payload.object_key
+            ))
+        })?;
 
     let namespace = env.durable_object("WORKSPACE_DO")?;
     let id = namespace.id_from_name(&scope_name)?;
@@ -443,10 +446,7 @@ async fn handle_test_workspace_retained_cleanup(mut req: Request, env: &Env) -> 
     let mut init = RequestInit::new();
     init.with_method(Method::Post);
     init.with_body(Some(JsString::from(body).into()));
-    let request = Request::new_with_init(
-        "http://do/__debug/run-retained-cleanup",
-        &init,
-    )?;
+    let request = Request::new_with_init("http://do/__debug/run-retained-cleanup", &init)?;
     let mut response = stub.fetch_with_request(request).await?;
     let value: JsonValue = response.json().await?;
     Response::from_json(&value)
@@ -518,7 +518,8 @@ async fn handle_test_workspace_complete(mut req: Request, env: &Env) -> Result<R
         ))
     })?;
 
-    let factory = WorkersWorkspaceFactory::new(env.clone(), workspace_config_for_path("/workspace"));
+    let factory =
+        WorkersWorkspaceFactory::new(env.clone(), workspace_config_for_path("/workspace"));
     factory
         .complete(scope, WorkspaceCompletionDisposition::Succeeded)
         .await
@@ -544,7 +545,8 @@ async fn handle_test_workspace_delete_object(mut req: Request, env: &Env) -> Res
 #[cfg(target_arch = "wasm32")]
 async fn handle_s11_lead_intake(mut req: Request, env: &Env) -> Result<Response> {
     let submission: LeadSubmission = req.json().await?;
-    let workspace_factory = WorkersWorkspaceFactory::new(env.clone(), workspace_config_for_path("/leads"));
+    let workspace_factory =
+        WorkersWorkspaceFactory::new(env.clone(), workspace_config_for_path("/leads"));
     let scope = WorkspaceRunScope::new(
         "s11_lead_intake_flow".to_string(),
         format!("lead-intake-{}", js_sys::Date::now() as u64),
@@ -646,7 +648,9 @@ impl Workspace for WorkspaceHandle {
         capabilities::workspace::WorkspaceWriteResult,
         capabilities::workspace::WorkspaceError,
     > {
-        self.0.write_normalized(normalized_path, data, options).await
+        self.0
+            .write_normalized(normalized_path, data, options)
+            .await
     }
 
     async fn list_normalized(
@@ -817,7 +821,8 @@ fn mock_high_priority_lead() -> LeadInfo {
 fn mock_outreach_draft() -> OutreachDraft {
     OutreachDraft {
         subject: "Fast follow-up for workflow automation".to_string(),
-        body: "Hi Ada, we can move quickly and help with the workflow automation review.".to_string(),
+        body: "Hi Ada, we can move quickly and help with the workflow automation review."
+            .to_string(),
         tone: "warm".to_string(),
     }
 }
@@ -1068,7 +1073,9 @@ async fn timer_trigger(payload: JsonValue) -> NodeResult<LocalTimerWaitInput> {
 )]
 async fn timer_wait_local(input: LocalTimerWaitInput) -> NodeResult<LocalTimerWaitOutput> {
     let duration = input.duration.unwrap_or(Duration::from_millis(25));
-    let delay_ms = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX).max(1);
+    let delay_ms = u64::try_from(duration.as_millis())
+        .unwrap_or(u64::MAX)
+        .max(1);
     let scheduled_at_ms = (js_sys::Date::now() as i64).saturating_add(delay_ms as i64);
 
     let schedule_result: Option<Result<(), NodeError>> =
@@ -1081,13 +1088,17 @@ async fn timer_wait_local(input: LocalTimerWaitInput) -> NodeResult<LocalTimerWa
             scheduler
                 .schedule_after(handle, duration)
                 .await
-                .map_err(|err| NodeError::new(format!("timer_wait_local schedule failed: {err}")))?;
+                .map_err(|err| {
+                    NodeError::new(format!("timer_wait_local schedule failed: {err}"))
+                })?;
             Ok(())
         })
         .await;
 
     if schedule_result.is_none() {
-        return Err(NodeError::new("timer_wait_local missing ResourceAccess context"));
+        return Err(NodeError::new(
+            "timer_wait_local missing ResourceAccess context",
+        ));
     }
     schedule_result.unwrap()?;
 
@@ -1149,7 +1160,7 @@ async fn workspace_roundtrip_stage(input: WorkspaceRoundtripInput) -> NodeResult
 
     let result = capabilities::context::with_current_async(|resources| async move {
         let workspace = resources
-            .workspace()
+            .workspace_write_raw()
             .ok_or_else(|| NodeError::new("workspace_roundtrip_stage missing Workspace capability"))?;
 
         workspace
@@ -1250,15 +1261,17 @@ async fn workspace_resume_trigger(payload: JsonValue) -> NodeResult<WorkspaceRes
     determinism = "BestEffort",
     resources(workspace_write(capabilities::workspace::Workspace))
 )]
-async fn workspace_write_before_wait(input: WorkspaceResumeInput) -> NodeResult<LocalTimerWaitInput> {
+async fn workspace_write_before_wait(
+    input: WorkspaceResumeInput,
+) -> NodeResult<LocalTimerWaitInput> {
     let path = "resume/input.txt".to_string();
     let content = input.content;
     let duration = input.duration;
 
     let result = capabilities::context::with_current_async(|resources| async move {
-        let workspace = resources
-            .workspace()
-            .ok_or_else(|| NodeError::new("workspace_write_before_wait missing Workspace capability"))?;
+        let workspace = resources.workspace_write_raw().ok_or_else(|| {
+            NodeError::new("workspace_write_before_wait missing Workspace capability")
+        })?;
         workspace
             .write(
                 &path,
@@ -1301,9 +1314,9 @@ async fn workspace_read_after_wait(payload: LocalTimerWaitOutput) -> NodeResult<
         .to_string();
 
     let result = capabilities::context::with_current_async(|resources| async move {
-        let workspace = resources
-            .workspace()
-            .ok_or_else(|| NodeError::new("workspace_read_after_wait missing Workspace capability"))?;
+        let workspace = resources.workspace_read_raw().ok_or_else(|| {
+            NodeError::new("workspace_read_after_wait missing Workspace capability")
+        })?;
         let read_back = workspace
             .read(&path)
             .await
@@ -1335,11 +1348,15 @@ fn decode_workspace_bytes(
     value: Option<capabilities::workspace::WorkspaceReadResult>,
 ) -> NodeResult<String> {
     match value {
-        Some(capabilities::workspace::WorkspaceReadResult::Bytes(bytes)) => String::from_utf8(bytes)
-            .map_err(|err| NodeError::new(format!("invalid utf-8 workspace bytes: {err}"))),
-        Some(capabilities::workspace::WorkspaceReadResult::BlobRef(reference)) => Err(NodeError::new(
-            format!("unexpected blob ref workspace payload: {reference}"),
-        )),
+        Some(capabilities::workspace::WorkspaceReadResult::Bytes(bytes)) => {
+            String::from_utf8(bytes)
+                .map_err(|err| NodeError::new(format!("invalid utf-8 workspace bytes: {err}")))
+        }
+        Some(capabilities::workspace::WorkspaceReadResult::BlobRef(reference)) => {
+            Err(NodeError::new(format!(
+                "unexpected blob ref workspace payload: {reference}"
+            )))
+        }
         None => Err(NodeError::new("workspace artifact missing")),
     }
 }
@@ -1371,7 +1388,7 @@ async fn workspace_quota_trigger(payload: JsonValue) -> NodeResult<WorkspaceQuot
 async fn workspace_quota_stage(input: WorkspaceQuotaInput) -> NodeResult<JsonValue> {
     let result = capabilities::context::with_current_async(|resources| async move {
         let workspace = resources
-            .workspace()
+            .workspace_write_raw()
             .ok_or_else(|| NodeError::new("workspace_quota_stage missing Workspace capability"))?;
 
         match input.kind.as_str() {
@@ -1444,7 +1461,9 @@ struct WorkspaceInvalidPathInput {
     effects = "Pure",
     determinism = "Strict"
 )]
-async fn workspace_invalid_path_trigger(payload: JsonValue) -> NodeResult<WorkspaceInvalidPathInput> {
+async fn workspace_invalid_path_trigger(
+    payload: JsonValue,
+) -> NodeResult<WorkspaceInvalidPathInput> {
     serde_json::from_value(payload)
         .map_err(|err| NodeError::new(format!("invalid workspace invalid-path payload: {err}")))
 }
@@ -1461,9 +1480,9 @@ async fn workspace_invalid_path_trigger(payload: JsonValue) -> NodeResult<Worksp
 )]
 async fn workspace_invalid_path_stage(input: WorkspaceInvalidPathInput) -> NodeResult<JsonValue> {
     let result = capabilities::context::with_current_async(|resources| async move {
-        let workspace = resources
-            .workspace()
-            .ok_or_else(|| NodeError::new("workspace_invalid_path_stage missing Workspace capability"))?;
+        let workspace = resources.workspace_write_raw().ok_or_else(|| {
+            NodeError::new("workspace_invalid_path_stage missing Workspace capability")
+        })?;
 
         match input.kind.as_str() {
             "write_traversal" => {
@@ -1539,9 +1558,9 @@ async fn workspace_retained_stage(input: WorkspaceRetainedInput) -> NodeResult<J
     let content = input.content;
 
     let result = capabilities::context::with_current_async(|resources| async move {
-        let workspace = resources
-            .workspace()
-            .ok_or_else(|| NodeError::new("workspace_retained_stage missing Workspace capability"))?;
+        let workspace = resources.workspace_write_raw().ok_or_else(|| {
+            NodeError::new("workspace_retained_stage missing Workspace capability")
+        })?;
         workspace
             .write(
                 &path,
@@ -1605,9 +1624,9 @@ async fn workspace_mutation_trigger(payload: JsonValue) -> NodeResult<WorkspaceM
 )]
 async fn workspace_mutation_stage(input: WorkspaceMutationInput) -> NodeResult<JsonValue> {
     let result = capabilities::context::with_current_async(|resources| async move {
-        let workspace = resources
-            .workspace()
-            .ok_or_else(|| NodeError::new("workspace_mutation_stage missing Workspace capability"))?;
+        let workspace = resources.workspace_write_raw().ok_or_else(|| {
+            NodeError::new("workspace_mutation_stage missing Workspace capability")
+        })?;
 
         match input.kind.as_str() {
             "overwrite_delta" => {
@@ -1697,7 +1716,9 @@ struct WorkspaceBlockedPrefixInput {
     effects = "Pure",
     determinism = "Strict"
 )]
-async fn workspace_blocked_prefix_trigger(payload: JsonValue) -> NodeResult<WorkspaceBlockedPrefixInput> {
+async fn workspace_blocked_prefix_trigger(
+    payload: JsonValue,
+) -> NodeResult<WorkspaceBlockedPrefixInput> {
     serde_json::from_value(payload)
         .map_err(|err| NodeError::new(format!("invalid workspace blocked-prefix payload: {err}")))
 }
@@ -1712,11 +1733,13 @@ async fn workspace_blocked_prefix_trigger(payload: JsonValue) -> NodeResult<Work
         workspace_write(capabilities::workspace::Workspace)
     )
 )]
-async fn workspace_blocked_prefix_stage(input: WorkspaceBlockedPrefixInput) -> NodeResult<JsonValue> {
+async fn workspace_blocked_prefix_stage(
+    input: WorkspaceBlockedPrefixInput,
+) -> NodeResult<JsonValue> {
     let result = capabilities::context::with_current_async(|resources| async move {
-        let workspace = resources
-            .workspace()
-            .ok_or_else(|| NodeError::new("workspace_blocked_prefix_stage missing Workspace capability"))?;
+        let workspace = resources.workspace_write_raw().ok_or_else(|| {
+            NodeError::new("workspace_blocked_prefix_stage missing Workspace capability")
+        })?;
 
         match input.kind.as_str() {
             "write_blocked" => {
@@ -1821,7 +1844,7 @@ async fn workspace_stdlib_read_trigger(payload: JsonValue) -> NodeResult<Workspa
     let content = input.content;
 
     let result = capabilities::context::with_current_async(|resources| async move {
-        let workspace = resources.workspace().ok_or_else(|| {
+        let workspace = resources.workspace_write_raw().ok_or_else(|| {
             NodeError::new("workspace_stdlib_read_trigger missing Workspace capability")
         })?;
         workspace
@@ -1863,7 +1886,7 @@ async fn workspace_stdlib_list_trigger(payload: JsonValue) -> NodeResult<Workspa
     let prefix = input.prefix.unwrap_or_else(|| "stdlib/list".to_string());
 
     let result = capabilities::context::with_current_async(|resources| async move {
-        let workspace = resources.workspace().ok_or_else(|| {
+        let workspace = resources.workspace_write_raw().ok_or_else(|| {
             NodeError::new("workspace_stdlib_list_trigger missing Workspace capability")
         })?;
         workspace
@@ -1911,14 +1934,15 @@ struct WorkspaceStdlibDeleteRequest {
     resources(workspace_write(capabilities::workspace::Workspace))
 )]
 async fn workspace_stdlib_delete_trigger(payload: JsonValue) -> NodeResult<WorkspaceDeleteInput> {
-    let input: WorkspaceStdlibDeleteRequest = serde_json::from_value(payload).map_err(|err| {
-        NodeError::new(format!("invalid stdlib workspace delete payload: {err}"))
-    })?;
-    let path = input.path.unwrap_or_else(|| "stdlib/delete.txt".to_string());
+    let input: WorkspaceStdlibDeleteRequest = serde_json::from_value(payload)
+        .map_err(|err| NodeError::new(format!("invalid stdlib workspace delete payload: {err}")))?;
+    let path = input
+        .path
+        .unwrap_or_else(|| "stdlib/delete.txt".to_string());
     let content = input.content;
 
     let result = capabilities::context::with_current_async(|resources| async move {
-        let workspace = resources.workspace().ok_or_else(|| {
+        let workspace = resources.workspace_write_raw().ok_or_else(|| {
             NodeError::new("workspace_stdlib_delete_trigger missing Workspace capability")
         })?;
         workspace
@@ -2369,12 +2393,10 @@ fn register_nodes(registry: &mut NodeRegistry) {
     timer_trigger_register(registry).expect("register timer_trigger");
     timer_wait_local_register(registry).expect("register timer_wait_local");
     timer_capture_register(registry).expect("register timer_capture");
-    workspace_roundtrip_trigger_register(registry)
-        .expect("register workspace_roundtrip_trigger");
+    workspace_roundtrip_trigger_register(registry).expect("register workspace_roundtrip_trigger");
     workspace_roundtrip_stage_register(registry).expect("register workspace_roundtrip_stage");
     workspace_resume_trigger_register(registry).expect("register workspace_resume_trigger");
-    workspace_write_before_wait_register(registry)
-        .expect("register workspace_write_before_wait");
+    workspace_write_before_wait_register(registry).expect("register workspace_write_before_wait");
     workspace_read_after_wait_register(registry).expect("register workspace_read_after_wait");
     workspace_retained_trigger_register(registry).expect("register workspace_retained_trigger");
     workspace_retained_stage_register(registry).expect("register workspace_retained_stage");
@@ -2382,8 +2404,7 @@ fn register_nodes(registry: &mut NodeRegistry) {
     workspace_quota_stage_register(registry).expect("register workspace_quota_stage");
     workspace_invalid_path_trigger_register(registry)
         .expect("register workspace_invalid_path_trigger");
-    workspace_invalid_path_stage_register(registry)
-        .expect("register workspace_invalid_path_stage");
+    workspace_invalid_path_stage_register(registry).expect("register workspace_invalid_path_stage");
     workspace_mutation_trigger_register(registry).expect("register workspace_mutation_trigger");
     workspace_mutation_stage_register(registry).expect("register workspace_mutation_stage");
     workspace_blocked_prefix_trigger_register(registry)

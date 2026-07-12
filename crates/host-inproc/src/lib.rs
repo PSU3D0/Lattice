@@ -388,6 +388,11 @@ fn is_hint_satisfied_by_resources(hint: &str, resources: &dyn ResourceAccess) ->
 struct InvocationResources {
     base: Arc<dyn ResourceAccess>,
     workspace: Arc<dyn Workspace>,
+    // H5c-enforcement (§16.2): the per-run macaroon root key + key id derived in
+    // `bind_workspace_resources` from the host master key on both execute and
+    // resume. Never persisted; identical across a halt/resume.
+    ws_root_key: Arc<[u8]>,
+    ws_root_key_id: String,
 }
 
 impl ResourceAccess for InvocationResources {
@@ -455,6 +460,34 @@ impl ResourceAccess for InvocationResources {
         Some(self.workspace.as_ref())
     }
 
+    // H5c-enforcement: construct the handle-only views from this invocation's
+    // workspace + the per-run derived root key. `_raw` returns the arbitrary-path
+    // trait for path-by-contract consumers.
+    fn workspace_read(&self) -> Option<capabilities::WorkspaceRead> {
+        Some(capabilities::WorkspaceRead::new(
+            self.workspace.clone(),
+            self.ws_root_key.clone(),
+            capabilities::StoreRef::new("workspace"),
+        ))
+    }
+
+    fn workspace_write(&self) -> Option<capabilities::WorkspaceWrite> {
+        Some(capabilities::WorkspaceWrite::new(
+            self.workspace.clone(),
+            self.ws_root_key.clone(),
+            self.ws_root_key_id.clone(),
+            capabilities::StoreRef::new("workspace"),
+        ))
+    }
+
+    fn workspace_read_raw(&self) -> Option<&dyn Workspace> {
+        Some(self.workspace.as_ref())
+    }
+
+    fn workspace_write_raw(&self) -> Option<&dyn Workspace> {
+        Some(self.workspace.as_ref())
+    }
+
     fn connector_runtime(&self) -> Option<Arc<dyn capabilities::connector::ConnectorRuntime>> {
         self.base.connector_runtime()
     }
@@ -482,9 +515,25 @@ pub struct HostRuntime {
     plugins: Arc<Vec<Arc<dyn EnvironmentPlugin>>>,
     resources: Arc<dyn ResourceAccess>,
     workspace_factory: Option<Arc<dyn WorkspaceFactory>>,
+    // H5c-enforcement (§16.2): per-host master key for macaroon root-key
+    // derivation. Default = random bytes generated once per `HostRuntime`
+    // instance. The per-run key is derived from this in
+    // `bind_workspace_resources`. A stable master key (needed for cross-process
+    // resume) is supplied via `with_workspace_root_key`.
+    ws_root_key: Arc<[u8]>,
     required_effect_hints: Arc<Vec<String>>,
     bundle_id: Option<String>,
     allow_legacy_unpinned_checkpoints: bool,
+}
+
+/// Generate a random per-instance master key for macaroon root-key derivation.
+/// Uses `uuid::Uuid::new_v4` (OS RNG via getrandom) — already a dependency —
+/// concatenating two v4 UUIDs for 32 bytes of key material.
+fn random_master_key() -> Arc<[u8]> {
+    let mut bytes = Vec::with_capacity(32);
+    bytes.extend_from_slice(uuid::Uuid::new_v4().as_bytes());
+    bytes.extend_from_slice(uuid::Uuid::new_v4().as_bytes());
+    Arc::from(bytes)
 }
 
 impl HostRuntime {
@@ -504,6 +553,7 @@ impl HostRuntime {
             plugins: Arc::new(Vec::new()),
             resources,
             workspace_factory: None,
+            ws_root_key: random_master_key(),
             required_effect_hints,
             bundle_id,
             allow_legacy_unpinned_checkpoints: true,
@@ -530,6 +580,7 @@ impl HostRuntime {
             plugins: Arc::new(plugins),
             resources,
             workspace_factory: None,
+            ws_root_key: random_master_key(),
             required_effect_hints,
             bundle_id,
             allow_legacy_unpinned_checkpoints: true,
@@ -565,6 +616,17 @@ impl HostRuntime {
     /// Bind a host-managed workspace factory used to open per-run workspaces.
     pub fn with_workspace_factory(mut self, factory: Arc<dyn WorkspaceFactory>) -> Self {
         self.workspace_factory = Some(factory);
+        self
+    }
+
+    /// Supply a stable per-host master key for macaroon root-key derivation
+    /// (H5c-enforcement, §16.2). Defaults to random bytes per `HostRuntime`
+    /// instance; configuring a stable key is required for cross-process resume
+    /// (the same operational class as configuring the checkpoint store). The
+    /// per-run key is `HMAC-SHA256(master, "lf.ws.root.v1:" ‖ flow_id ‖ ":" ‖
+    /// run_id)`, derived in `bind_workspace_resources`.
+    pub fn with_workspace_root_key(mut self, master: impl Into<Arc<[u8]>>) -> Self {
+        self.ws_root_key = master.into();
         self
     }
 
@@ -641,12 +703,25 @@ impl HostRuntime {
             return Ok(self.resources.clone());
         };
         let workspace = factory
-            .open(scope)
+            .open(scope.clone())
             .await
             .map_err(ExecutionError::HostEnvironment)?;
+        // Derive the per-run macaroon root key from the host master key on BOTH
+        // execute and resume (this fn serves both), so the key is identical
+        // after a halt/resume with nothing persisted and no checkpoint-schema
+        // change (§16.2). Per-run derivation makes a foreign-run handle fail
+        // gate 2 (cross-run confused-deputy prevention).
+        let ws_root_key: Arc<[u8]> = Arc::from(capabilities::derive_run_root_key(
+            &self.ws_root_key,
+            &scope.flow_id,
+            &scope.run_id,
+        ));
+        let ws_root_key_id = capabilities::run_root_key_id(&scope.flow_id, &scope.run_id);
         Ok(Arc::new(InvocationResources {
             base: self.resources.clone(),
             workspace,
+            ws_root_key,
+            ws_root_key_id,
         }))
     }
 
@@ -1595,6 +1670,177 @@ mod tests {
         > {
             Ok(capabilities::workspace::WorkspaceDeleteResult { deleted: false })
         }
+    }
+
+    /// In-memory workspace that actually stores bytes, so artifacts survive a
+    /// halt/resume (H5c-enforcement round-trip test).
+    #[derive(Default)]
+    struct SharedMemWorkspace {
+        files: Mutex<HashMap<String, Vec<u8>>>,
+    }
+
+    impl capabilities::Capability for SharedMemWorkspace {
+        fn name(&self) -> &'static str {
+            "workspace.mem.h5c"
+        }
+    }
+
+    #[async_trait]
+    impl Workspace for SharedMemWorkspace {
+        async fn read_normalized(
+            &self,
+            normalized_path: &str,
+        ) -> Result<
+            Option<capabilities::workspace::WorkspaceReadResult>,
+            capabilities::workspace::WorkspaceError,
+        > {
+            Ok(self
+                .files
+                .lock()
+                .expect("files lock")
+                .get(normalized_path)
+                .cloned()
+                .map(capabilities::workspace::WorkspaceReadResult::Bytes))
+        }
+
+        async fn write_normalized(
+            &self,
+            normalized_path: &str,
+            data: &[u8],
+            _options: capabilities::workspace::WorkspaceWriteOptions,
+        ) -> Result<
+            capabilities::workspace::WorkspaceWriteResult,
+            capabilities::workspace::WorkspaceError,
+        > {
+            self.files
+                .lock()
+                .expect("files lock")
+                .insert(normalized_path.to_string(), data.to_vec());
+            Ok(capabilities::workspace::WorkspaceWriteResult {
+                path: normalized_path.to_string(),
+                size_bytes: data.len() as u64,
+                updated_at_ms: 0,
+            })
+        }
+
+        async fn list_normalized(
+            &self,
+            _options: capabilities::workspace::WorkspaceListOptions,
+        ) -> Result<
+            Vec<capabilities::workspace::WorkspaceEntry>,
+            capabilities::workspace::WorkspaceError,
+        > {
+            Ok(Vec::new())
+        }
+
+        async fn delete_normalized(
+            &self,
+            _normalized_path: &str,
+        ) -> Result<
+            capabilities::workspace::WorkspaceDeleteResult,
+            capabilities::workspace::WorkspaceError,
+        > {
+            Ok(capabilities::workspace::WorkspaceDeleteResult { deleted: false })
+        }
+    }
+
+    // H5c-enforcement (§16.2): these two tests exercise the exact derivation the
+    // workspace binding layer (`HostRuntime::bind_workspace_resources`) performs
+    // on BOTH the execute and resume paths — `derive_run_root_key(master,
+    // flow_id, run_id)` + `run_root_key_id(...)` — over the real handle-only
+    // view deref path (`WorkspaceWrite::stage_artifact` → `WorkspaceRead::read`,
+    // gates 2+3). The end-to-end fact that the SAME `WorkspaceRunScope` is
+    // re-opened on resume is separately covered by
+    // `resume_reuses_run_scoped_workspace` (opened[1] == opened[0]); a fixed
+    // master + identical scope on resume therefore yields the identical key.
+
+    #[tokio::test]
+    async fn derived_root_key_is_stable_across_resume_and_round_trips_a_handle() {
+        let master: std::sync::Arc<[u8]> =
+            std::sync::Arc::from(b"stable-master-key-for-resume-test".to_vec());
+        let scope = WorkspaceRunScope::new("flow-x", "run-42");
+        let ws: std::sync::Arc<dyn Workspace> = std::sync::Arc::new(SharedMemWorkspace::default());
+        let store = capabilities::StoreRef::new("workspace");
+
+        // execute path: bind + stage an artifact.
+        let key_exec: std::sync::Arc<[u8]> = std::sync::Arc::from(
+            capabilities::derive_run_root_key(&master, &scope.flow_id, &scope.run_id),
+        );
+        let key_id = capabilities::run_root_key_id(&scope.flow_id, &scope.run_id);
+        assert_eq!(key_id, "ws:flow-x:run-42");
+        let writer =
+            capabilities::WorkspaceWrite::new(ws.clone(), key_exec.clone(), key_id, store.clone());
+        let artifact = writer
+            .stage_artifact("uploads/report.csv", b"a,b\n1,2\n", "text/csv")
+            .await
+            .expect("stage");
+        // The artifact (and its mint) rides the JSON data plane across the halt.
+        let carried = serde_json::to_string(&artifact).expect("serialize artifact");
+
+        // resume path: re-derive from the SAME master + SAME scope. Nothing was
+        // persisted; the key must be byte-identical.
+        let key_resume: std::sync::Arc<[u8]> = std::sync::Arc::from(
+            capabilities::derive_run_root_key(&master, &scope.flow_id, &scope.run_id),
+        );
+        assert_eq!(
+            key_exec.as_ref(),
+            key_resume.as_ref(),
+            "per-run derived key must be identical across resume"
+        );
+        let decoded: capabilities::Artifact =
+            serde_json::from_str(&carried).expect("deserialize artifact");
+        let reader = capabilities::WorkspaceRead::new(ws.clone(), key_resume, store);
+        let bytes = reader
+            .read(&decoded.handle)
+            .await
+            .expect("deref handle after resume");
+        assert_eq!(bytes, b"a,b\n1,2\n");
+    }
+
+    #[tokio::test]
+    async fn handle_from_one_run_scope_fails_gate2_under_a_different_run_scope() {
+        let master: std::sync::Arc<[u8]> = std::sync::Arc::from(b"master-key".to_vec());
+        let ws: std::sync::Arc<dyn Workspace> = std::sync::Arc::new(SharedMemWorkspace::default());
+        let store = capabilities::StoreRef::new("workspace");
+        let scope_a = WorkspaceRunScope::new("flow-x", "run-A");
+        let scope_b = WorkspaceRunScope::new("flow-x", "run-B");
+
+        let key_a: std::sync::Arc<[u8]> = std::sync::Arc::from(capabilities::derive_run_root_key(
+            &master,
+            &scope_a.flow_id,
+            &scope_a.run_id,
+        ));
+        let id_a = capabilities::run_root_key_id(&scope_a.flow_id, &scope_a.run_id);
+        let writer = capabilities::WorkspaceWrite::new(ws.clone(), key_a, id_a, store.clone());
+        let artifact = writer
+            .stage_artifact("uploads/x", b"secret", "text/plain")
+            .await
+            .expect("stage");
+
+        // Present the run-A handle under run B's derived key: gate 2 fails.
+        let key_b: std::sync::Arc<[u8]> = std::sync::Arc::from(capabilities::derive_run_root_key(
+            &master,
+            &scope_b.flow_id,
+            &scope_b.run_id,
+        ));
+        let reader_b = capabilities::WorkspaceRead::new(ws.clone(), key_b, store.clone());
+        let err = reader_b
+            .read(&artifact.handle)
+            .await
+            .expect_err("cross-run handle must fail gate 2");
+        assert!(matches!(
+            err,
+            capabilities::ByteAccessError::MintVerification
+        ));
+
+        // Sanity: under run A's key the same handle verifies and derefs.
+        let key_a2: std::sync::Arc<[u8]> = std::sync::Arc::from(capabilities::derive_run_root_key(
+            &master,
+            &scope_a.flow_id,
+            &scope_a.run_id,
+        ));
+        let reader_a = capabilities::WorkspaceRead::new(ws, key_a2, store);
+        assert!(reader_a.read(&artifact.handle).await.is_ok());
     }
 
     #[async_trait]

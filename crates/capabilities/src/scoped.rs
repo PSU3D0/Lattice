@@ -120,16 +120,19 @@ const GRANTS_QUEUE: &[EffectHint] = &[
 ];
 const GRANTS_DEDUPE: &[EffectHint] = &[EffectHint::Dedupe, EffectHint::DedupeWrite];
 // H5b (F1/F2): the workspace grant is split so `read` does NOT confer
-// `write`/`delete`, mirroring HTTP's `Http`/`HttpRead`/`HttpWrite`. Bare
-// `Workspace` is defined as read+write (back-compat, like bare `Http`); the
-// per-opcode byte surface (`workspace_read()`/`workspace_write()`) uses the
-// specific split grants. `GRANTS_WORKSPACE` is retained for the deprecated
-// bare `workspace()` accessor and host preflight satisfaction.
-const GRANTS_WORKSPACE: &[EffectHint] = &[
-    EffectHint::Workspace,
-    EffectHint::WorkspaceRead,
-    EffectHint::WorkspaceWrite,
-];
+// `write`/`delete`, mirroring HTTP's `Http`/`HttpRead`/`HttpWrite`. The
+// per-opcode byte surface (`workspace_read()`/`workspace_write()` +
+// `_raw`) uses the specific split grants below.
+//
+// H5c-enforcement (F2 native fix): the deprecated bare `workspace()` accessor
+// is re-gated to `[EffectHint::Workspace]` ONLY — it no longer accepts a
+// `WorkspaceRead`/`WorkspaceWrite` hint. Previously it was gated on the
+// *combined* set, so a `workspace::read`-only node could obtain the full raw
+// write/delete trait through bare `workspace()`, bypassing the split on native
+// hosts. Gating on bare `Workspace` alone closes that (a read-only node holds
+// only `WorkspaceRead`, which no longer reaches this accessor). Preflight is
+// unaffected — it runs against the unscoped bag, not `ScopedResources`.
+const GRANTS_WORKSPACE_BARE: &[EffectHint] = &[EffectHint::Workspace];
 // Read is the lesser privilege: bare `Workspace`, `WorkspaceRead`, AND
 // `WorkspaceWrite` all confer it (write implies read, matching the
 // `WorkspaceWrite` view which exposes `read(handle)`). Write is conferred only
@@ -295,28 +298,48 @@ impl ResourceAccess for ScopedResources {
     }
 
     fn workspace(&self) -> Option<&dyn workspace::Workspace> {
-        if !self.allows("workspace", GRANTS_WORKSPACE) {
+        // H5c-enforcement (F2 native fix): bare `workspace()` is gated on
+        // `[EffectHint::Workspace]` ONLY, so a read-only node cannot climb to
+        // the raw write/delete trait through it.
+        if !self.allows("workspace", GRANTS_WORKSPACE_BARE) {
             return None;
         }
         self.inner.workspace()
     }
 
-    // H5b (F1/F2): the split byte accessors. A `workspace::read` grant reaches
-    // only `workspace_read()`; `write`/`delete` opcodes go through
-    // `workspace_write()`. This is what makes the read/write split real rather
-    // than "one accessor, one trait, any hint grants everything".
-    fn workspace_read(&self) -> Option<&dyn workspace::Workspace> {
+    // H5c-enforcement: the split accessors now delegate to the INNER VIEW
+    // accessors (not `inner.workspace()`), so the per-run root key arrives from
+    // the base layer (`InvocationResources`/`ResourceBag`) and gates 2+3 become
+    // load-bearing. A `workspace::read` grant reaches only `workspace_read()`;
+    // `write`/`delete` go through `workspace_write()`. The `_raw` variants keep
+    // the split grants but return the arbitrary-path trait for path-by-contract
+    // consumers (stdlib path nodes, the wasm workspace opcodes).
+    fn workspace_read(&self) -> Option<crate::WorkspaceRead> {
         if !self.allows("workspace_read", GRANTS_WORKSPACE_READ) {
             return None;
         }
-        self.inner.workspace()
+        self.inner.workspace_read()
     }
 
-    fn workspace_write(&self) -> Option<&dyn workspace::Workspace> {
+    fn workspace_write(&self) -> Option<crate::WorkspaceWrite> {
         if !self.allows("workspace_write", GRANTS_WORKSPACE_WRITE) {
             return None;
         }
-        self.inner.workspace()
+        self.inner.workspace_write()
+    }
+
+    fn workspace_read_raw(&self) -> Option<&dyn workspace::Workspace> {
+        if !self.allows("workspace_read_raw", GRANTS_WORKSPACE_READ) {
+            return None;
+        }
+        self.inner.workspace_read_raw()
+    }
+
+    fn workspace_write_raw(&self) -> Option<&dyn workspace::Workspace> {
+        if !self.allows("workspace_write_raw", GRANTS_WORKSPACE_WRITE) {
+            return None;
+        }
+        self.inner.workspace_write_raw()
     }
 
     // Connector access is declared via NodeIR.connector_ops and constrained
@@ -497,6 +520,44 @@ mod tests {
         assert!(writer.workspace_write().is_some());
         assert!(writer.workspace_read().is_some());
         assert!(writer.take_denials().is_empty());
+    }
+
+    // ---- H5c-enforcement: F2 native fix — read cannot reach write, all three
+    // surfaces (view, raw, AND bare workspace()) ----
+
+    #[test]
+    fn read_only_node_cannot_reach_any_write_surface() {
+        let scoped = ScopedResources::new("reader", ws_bag(), [EffectHint::WorkspaceRead]);
+        // The read surfaces are granted.
+        assert!(scoped.workspace_read().is_some());
+        assert!(scoped.workspace_read_raw().is_some());
+        // None of the write surfaces — including the previously-bypassable bare
+        // `workspace()` accessor (the F2-native fix) — are reachable.
+        assert!(scoped.workspace_write().is_none());
+        assert!(scoped.workspace_write_raw().is_none());
+        assert!(scoped.workspace().is_none());
+        let denials = scoped.take_denials();
+        assert!(denials.iter().any(|d| d.capability == "workspace_write"));
+        assert!(
+            denials
+                .iter()
+                .any(|d| d.capability == "workspace_write_raw")
+        );
+        assert!(denials.iter().any(|d| d.capability == "workspace"));
+    }
+
+    #[test]
+    fn bare_workspace_requires_the_bare_workspace_hint() {
+        // Only `EffectHint::Workspace` confers the deprecated raw bare
+        // `workspace()`; a split write hint alone does NOT (it grants the split
+        // write surfaces instead). This is the re-gating that closes F2.
+        let bare = ScopedResources::new("bare", ws_bag(), [EffectHint::Workspace]);
+        assert!(bare.workspace().is_some());
+        assert!(bare.take_denials().is_empty());
+
+        let writer = ScopedResources::new("writer", ws_bag(), [EffectHint::WorkspaceWrite]);
+        assert!(writer.workspace().is_none());
+        assert_eq!(writer.take_denials()[0].capability, "workspace");
     }
 
     #[test]
