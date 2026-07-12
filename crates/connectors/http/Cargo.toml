@@ -25,6 +25,7 @@ thiserror.workspace = true
 percent-encoding = "2.3"
 
 [dev-dependencies]
+async-trait.workspace = true
 cap-http-reqwest = { path = "../../cap-http-reqwest" }
 connector-spec = { path = "../../connector-spec" }
 httpmock = "0.7"

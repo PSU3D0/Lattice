@@ -109,6 +109,10 @@ ensure the registry stays in sync with the implementation.
 | HTTP104   | Runtime        | Error   | 2xx body not valid UTF-8 in text mode. |
 | HTTP105   | Runtime        | Fatal   | Composed URL origin ≠ granted profile origin (invariant breach — bug or attack; never retried). |
 | HTTP106   | Runtime        | Error   | Forbidden/malformed header name or CR/LF in header value. |
+| HTTP110   | Runtime        | Error   | `connector.http.get_binary` staging denied: node lacks the `workspace::write` grant (H5c byte op). |
+| HTTP111   | Runtime        | Error   | `connector.http.post_multipart` artifact deref denied: node lacks the `workspace::read` grant (H5c byte op). |
+| HTTP112   | Runtime        | Error   | `connector.http.get_binary` response body exceeds the workspace artifact size cap; no partial artifact staged. |
+| HTTP113   | Runtime        | Error   | `connector.http` workspace byte access failed (macaroon verification, out-of-scope path, or store mismatch). |
 
 > **Note:** The default severity column indicates how diagnostics are surfaced in the
 > absence of policy overrides. Individual organisations may escalate or demote specific

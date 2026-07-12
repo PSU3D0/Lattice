@@ -104,6 +104,19 @@ types:
         type: json
         escape_hatch_reason: The default response mode returns the decoded 2xx JSON body verbatim (spec §5); typed decoding is invoke_typed.
 
+# Byte-plane ops (spec §16.5, packet H5c-ops native): `connector.http.get_binary`
+# (http_read + workspace_write, Effectful/run-local-idempotent),
+# `connector.http.post_multipart` and `.put_multipart` (http_write +
+# workspace_read, Effectful). Their `ConnectorOpMetadata` lives in
+# `src/ops/byte_ops.rs` and is asserted in `tests/manifest.rs`
+# (`byte_op_effect_metadata_is_honest`). They are intentionally NOT declared as
+# machine-parsed `surfaces` below: `connector_spec::ResourceRequirement` is a
+# closed enum {HttpRead, HttpWrite} that cannot express `workspace::{read,write}`
+# resources, and `get_binary`'s `Artifact` output is not in the manifest `types`
+# map. Wiring them into the parsed manifest requires extending connector-spec
+# (ResourceRequirement + validate.rs) — out of scope for H5c-ops (see build
+# report). The Rust op metadata is the load-bearing effect declaration; the YAML
+# surface is a secondary view.
 surfaces:
   - kind: action
     identifier: connector.http.get

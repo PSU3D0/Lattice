@@ -18,6 +18,9 @@ fn register_all_binds_all_actions() {
         "connector.http.put_any_origin",
         "connector.http.patch_any_origin",
         "connector.http.delete_any_origin",
+        "connector.http.get_binary",
+        "connector.http.post_multipart",
+        "connector.http.put_multipart",
     ] {
         assert!(
             registry.handler(identifier).is_some(),

@@ -477,5 +477,29 @@ pub static DIAGNOSTIC_CODES: Lazy<Vec<DiagnosticCode>> = Lazy::new(|| {
             default_severity: Severity::Error,
             summary: "Forbidden/malformed header name or CR/LF in header value",
         },
+        DiagnosticCode {
+            code: "HTTP110",
+            subsystem: "runtime",
+            default_severity: Severity::Error,
+            summary: "connector.http.get_binary staging denied: node lacks the workspace::write grant",
+        },
+        DiagnosticCode {
+            code: "HTTP111",
+            subsystem: "runtime",
+            default_severity: Severity::Error,
+            summary: "connector.http.post_multipart artifact deref denied: node lacks the workspace::read grant",
+        },
+        DiagnosticCode {
+            code: "HTTP112",
+            subsystem: "runtime",
+            default_severity: Severity::Error,
+            summary: "connector.http.get_binary response body exceeds the workspace artifact size cap (no partial artifact staged)",
+        },
+        DiagnosticCode {
+            code: "HTTP113",
+            subsystem: "runtime",
+            default_severity: Severity::Error,
+            summary: "connector.http workspace byte access failed (macaroon verification, out-of-scope path, or store mismatch)",
+        },
     ]
 });

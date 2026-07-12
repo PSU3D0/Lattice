@@ -15,5 +15,9 @@ pub fn register_all(registry: &mut NodeRegistry) -> Result<(), RegistryError> {
     crate::actions::http_put_any_origin_register(registry)?;
     crate::actions::http_patch_any_origin_register(registry)?;
     crate::actions::http_delete_any_origin_register(registry)?;
+    // Byte-plane ops (spec §16.5, H5c-ops native): get_binary + multipart.
+    crate::actions::http_get_binary_register(registry)?;
+    crate::actions::http_post_multipart_register(registry)?;
+    crate::actions::http_put_multipart_register(registry)?;
     Ok(())
 }

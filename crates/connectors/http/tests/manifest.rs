@@ -4,8 +4,9 @@
 
 use connector_http::generated::manifest::{CONNECTOR_ID, CONNECTOR_YAML};
 use connector_http::ops::{
-    HttpDelete, HttpDeleteAnyOrigin, HttpGet, HttpGetAnyOrigin, HttpHead, HttpHeadAnyOrigin,
-    HttpPatch, HttpPatchAnyOrigin, HttpPost, HttpPostAnyOrigin, HttpPut, HttpPutAnyOrigin,
+    HttpDelete, HttpDeleteAnyOrigin, HttpGet, HttpGetAnyOrigin, HttpGetBinary, HttpHead,
+    HttpHeadAnyOrigin, HttpPatch, HttpPatchAnyOrigin, HttpPost, HttpPostAnyOrigin,
+    HttpPostMultipart, HttpPut, HttpPutAnyOrigin, HttpPutMultipart,
 };
 use connector_spec::{ConnectorManifest, ResourceRequirement, SurfaceDecl};
 use dag_core::{ConnectorOpMetadata, ConnectorRoleKindDecl};
@@ -153,4 +154,66 @@ fn method_effect_metadata_is_honest_by_construction() {
         .find(|role| role.kind == ConnectorRoleKindDecl::OutboundAuth)
         .expect("tier-0 declares an optional auth role");
     assert!(!auth.required, "connector.http auth role must be optional");
+}
+
+/// The byte-plane effect-floor honesty thesis (spec §16.3, review F5):
+/// `get_binary` declares `http_read + workspace_write` and floors Effectful;
+/// `post_multipart`/`put_multipart` declare `http_write + workspace_read` and
+/// floor Effectful. Asserted on the op metadata directly (the byte ops are not
+/// machine-parsed manifest surfaces — see connector.yaml note).
+#[test]
+fn byte_op_effect_metadata_is_honest() {
+    assert_eq!(
+        HttpGetBinary::META.operation_id,
+        "connector.http.get_binary"
+    );
+    assert_eq!(
+        HttpGetBinary::META.min_effects,
+        dag_core::Effects::Effectful
+    );
+    assert_eq!(
+        HttpGetBinary::META.effect_hints,
+        &[
+            capabilities::http::HINT_HTTP_READ,
+            capabilities::workspace::HINT_WORKSPACE_WRITE,
+        ]
+    );
+
+    for meta in [&HttpPostMultipart::META, &HttpPutMultipart::META] {
+        assert_eq!(meta.min_effects, dag_core::Effects::Effectful);
+        assert_eq!(
+            meta.effect_hints,
+            &[
+                capabilities::http::HINT_HTTP_WRITE,
+                capabilities::workspace::HINT_WORKSPACE_READ,
+            ],
+            "multipart op `{}` must declare http_write + workspace_read",
+            meta.operation_id
+        );
+    }
+
+    // Tier 0/1 only — no `*_any_origin` binary variants exist (F8): every byte
+    // op carries the standard endpoint-profile role, none carry an any-origin
+    // grant.
+    for meta in [
+        &HttpGetBinary::META,
+        &HttpPostMultipart::META,
+        &HttpPutMultipart::META,
+    ] {
+        assert!(
+            meta.roles.iter().any(|role| {
+                role.kind == ConnectorRoleKindDecl::EndpointProfile && role.name == "http_target"
+            }),
+            "byte op `{}` must bind the Tier-0 endpoint profile",
+            meta.operation_id
+        );
+        assert!(
+            !meta
+                .roles
+                .iter()
+                .any(|role| role.expected_handle_kind == "endpoint.any_origin"),
+            "byte op `{}` must not be Tier 2",
+            meta.operation_id
+        );
+    }
 }

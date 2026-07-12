@@ -7,6 +7,7 @@
 
 pub mod actions;
 pub mod ext;
+pub mod form;
 pub mod generated;
 pub mod ops;
 pub mod runtime;
@@ -17,5 +18,9 @@ pub use generated::profiles::*;
 #[cfg(feature = "host-bundle")]
 pub use generated::register::register_all;
 pub use generated::types::*;
+
+// Byte-plane types re-exported at the crate root so `form!` and node inputs can
+// name them as `connector_http::{Artifact, ByteSource}` (spec §16.1).
+pub use capabilities::{Artifact, ByteSource};
 
 pub const CONNECTOR_FAMILY: &str = "connector.http";

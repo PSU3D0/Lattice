@@ -35,6 +35,32 @@ pub enum HttpConnectorError {
     /// Tier-2 SSRF guard rejection (https-only + hostname/IP denylist, §10).
     #[error("connector.http SSRF guard rejected any-origin URL: {0}")]
     Ssrf(String),
+    /// `get_binary` staging denied: the node holds no `resource::workspace::write`
+    /// grant, so the `workspace_write()` view is unreachable (§16.4 gate 1 —
+    /// the byte-plane analogue of `MissingHttpWrite`).
+    #[error(
+        "[HTTP110] connector.http.get_binary requires the workspace::write grant (staging denied)"
+    )]
+    MissingWorkspaceWrite,
+    /// Multipart artifact-part deref denied: the node holds no
+    /// `resource::workspace::read` grant (§16.4 gate 1).
+    #[error(
+        "[HTTP111] connector.http multipart requires the workspace::read grant (artifact deref denied)"
+    )]
+    MissingWorkspaceRead,
+    /// `get_binary` 2xx body exceeds the size ceiling (§16.9 Q2). No partial
+    /// artifact is staged.
+    #[error(
+        "[HTTP112] connector.http.get_binary body of {actual} bytes exceeds cap of {cap} bytes"
+    )]
+    ArtifactTooLarge { cap: u64, actual: u64 },
+    /// The byte op ran with no scoped `ResourceAccess` in the task context.
+    #[error("connector.http byte op missing ResourceAccess context")]
+    MissingResourceContext,
+    /// A workspace view (stage/deref) failed one of the deref gates or the
+    /// backend rejected the operation (§16.4 gates 2/3).
+    #[error("[HTTP113] connector.http workspace access failed: {0}")]
+    Workspace(#[from] capabilities::ByteAccessError),
     #[error(transparent)]
     Runtime(#[from] ConnectorRuntimeError),
     #[error(transparent)]
@@ -53,6 +79,10 @@ impl HttpConnectorError {
             HttpConnectorError::BodyNotUtf8 => "HTTP104",
             HttpConnectorError::OriginMismatch { .. } => "HTTP105",
             HttpConnectorError::ForbiddenHeader(_) => "HTTP106",
+            HttpConnectorError::MissingWorkspaceWrite => "HTTP110",
+            HttpConnectorError::MissingWorkspaceRead => "HTTP111",
+            HttpConnectorError::ArtifactTooLarge { .. } => "HTTP112",
+            HttpConnectorError::Workspace(_) => "HTTP113",
             _ => return None,
         })
     }

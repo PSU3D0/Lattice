@@ -71,6 +71,22 @@ pub struct HttpCall<'a> {
     pub auth: Option<&'static OutboundAuthProfileDescriptor>,
 }
 
+/// A single HTTP call carrying a pre-assembled raw body + explicit
+/// `Content-Type` (the byte-egress path — `multipart/form-data` for
+/// `post_multipart`/`put_multipart`, spec §16.5). Distinct from [`HttpCall`],
+/// whose body is JSON that the transport serializes and content-types itself.
+pub struct HttpRawCall<'a> {
+    pub method: HttpMethod,
+    pub path_or_url: &'a str,
+    pub query: &'a [(String, String)],
+    pub headers: &'a BTreeMap<String, String>,
+    /// `Content-Type` header value for the whole body (carries the multipart
+    /// boundary).
+    pub content_type: &'a str,
+    pub body: Vec<u8>,
+    pub auth: Option<&'static OutboundAuthProfileDescriptor>,
+}
+
 enum Binding {
     /// Tier 0/1: origin bound at lock time.
     Origin(ResolvedEndpointProfile),
@@ -166,6 +182,68 @@ impl HttpApi {
     pub async fn full(&self, call: HttpCall<'_>) -> Result<HttpFullResponse, HttpConnectorError> {
         Ok(decode_full(&self.send(call).await?))
     }
+
+    /// Binary/artifact ingress (spec §16.5): send, require a 2xx status (else
+    /// HTTP101, unchanged from §5), and return the raw response body plus its
+    /// `Content-Type` (defaulting to `application/octet-stream`). The caller
+    /// stages the bytes into the run workspace through the `workspace_write()`
+    /// view — the transport never touches the byte plane.
+    pub async fn bytes(&self, call: HttpCall<'_>) -> Result<(Vec<u8>, String), HttpConnectorError> {
+        let response = self.send(call).await?;
+        if !response.is_success() {
+            return Err(non_success_error(&response));
+        }
+        let content_type = response_content_type(&response);
+        Ok((response.body, content_type))
+    }
+
+    /// Build + send a request carrying a pre-assembled raw body + explicit
+    /// `Content-Type` (byte egress; spec §16.5). Mirrors [`Self::send`] but sets
+    /// the caller's body/content-type instead of JSON-serializing.
+    pub async fn send_raw(
+        &self,
+        call: HttpRawCall<'_>,
+    ) -> Result<HttpResponse, HttpConnectorError> {
+        let url = match &self.binding {
+            Binding::Origin(endpoint) => compose_tier0_url(endpoint, call.path_or_url, call.query)?,
+            Binding::AnyOrigin => compose_tier2_url(call.path_or_url, call.query)?,
+        };
+
+        let mut request = HttpRequest::new(call.method, url);
+        request.timeout_ms = Some(10_000);
+        request.redirect = RedirectMode::Off;
+
+        if let Binding::Origin(endpoint) = &self.binding {
+            apply_default_headers(&mut request.headers, endpoint);
+        }
+        apply_user_headers(&mut request, call.headers)?;
+
+        request.headers.insert("Content-Type", call.content_type);
+        request.body = Some(call.body);
+
+        if let Some(auth) = call.auth {
+            apply_optional_auth(&mut request, auth, &self.context).await?;
+        }
+
+        let response = send_request_from_current(self.action_id, call.method, request).await?;
+        Ok(response)
+    }
+
+    /// `json` decode over a raw-body send (byte egress). Non-2xx → HTTP101.
+    pub async fn json_raw(&self, call: HttpRawCall<'_>) -> Result<JsonValue, HttpConnectorError> {
+        decode_json(&self.send_raw(call).await?)
+    }
+}
+
+/// The 2xx response `Content-Type` (case-insensitive header lookup), or
+/// `application/octet-stream` when absent (spec §16.5).
+pub fn response_content_type(response: &HttpResponse) -> String {
+    response
+        .headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+        .map(|(_, value)| value.clone())
+        .unwrap_or_else(|| "application/octet-stream".to_string())
 }
 
 /// Apply an OPTIONAL outbound-auth descriptor. An unbound optional role
