@@ -964,6 +964,24 @@ convenience at most.
   may be derived), never a browsable directory. The `Handle` type is unified;
   `Prefix`'s usefulness is a per-store capability. Spec this explicitly so no
   one expects to `list` a blob prefix.
+- **Root key: per-run, derived, never persisted (design-review corrected).** The
+  macaroon root key is NOT random-and-checkpointed (that would put a secret at
+  rest in the checkpoint store — worse than the mint-in-checkpoint residual
+  above). It is **derived** per run from a per-host master key:
+  `run_key = HMAC-SHA256(master, "lf.ws.root.v1:" ‖ flow_id ‖ ":" ‖ run_id)`,
+  `root_key_id = "ws:{flow_id}:{run_id}"`, computed host-side in the workspace
+  binding layer (`HostRuntime::bind_workspace_resources`) on **both** first
+  execute and resume — so it is identical across a halt/resume with nothing
+  persisted and no checkpoint-schema change. This mirrors how the run-scoped
+  workspace itself is re-derived from `WorkspaceRunScope` rather than persisted.
+  **Per-run derivation (not a flat per-host key) is load-bearing for security:**
+  workspace paths are run-relative and the store binding does not carry the run,
+  so a flat key would let a run-A handle for `Exact("uploads/x")` verify in run B
+  and deref run B's `uploads/x` — a cross-run confused-deputy. Per-run keys make
+  a foreign-run handle fail gate 2. Master key: `HostRuntime` builder
+  (`with_workspace_root_key`), default random per instance; **cross-process
+  resume requires a configured stable master key** (same operational class as
+  configuring the checkpoint store) — documented limitation, not a silent one.
 
 ### 16.3 Accepting an Artifact is an effect (the honesty rule)
 
@@ -1068,15 +1086,23 @@ on the above).** H5b split into what is enforceable without threading a host
 root key through `ResourceAccess` (a core-host-API change that would ripple
 across every impl) and what needs it:
 
-- **Enforced now (closes F2, narrows F1):** the read/write **grant + accessor
-  split** (`workspace_read()`/`workspace_write()` in `scoped.rs`, split
+- **Enforced now (closes F2 on wasm; narrows F1):** the read/write **grant +
+  accessor split** (`workspace_read()`/`workspace_write()` in `scoped.rs`, split
   `GRANTS_WORKSPACE_READ`/`_WRITE`) and **per-opcode host-wasmtime gating** with
   structured `MissingWorkspaceRead`/`MissingWorkspaceWrite` denials
-  (`CAP-WS-006/007`) across the wasm boundary. A `workspace::read`-hinted node
-  can no longer write or delete, on native and wasm hosts. This is the piece
-  §16.3's effect-floor honesty actually requires, and it is real.
-- **Built but not yet wired (deferred to H5c):** the `WorkspaceRead` /
-  `WorkspaceWrite` **view types** with gates 2+3 (macaroon verify +
+  (`CAP-WS-006/007`) across the wasm boundary. On wasm hosts a
+  `workspace::read`-hinted node can no longer write or delete.
+- **KNOWN GAP found in the H5c design review (fix scheduled H5c-enforcement):**
+  on **native** hosts the split is bypassable via the deprecated bare
+  `ScopedResources::workspace()` accessor, which is still gated on the *combined*
+  `GRANTS_WORKSPACE = {Workspace, WorkspaceRead, WorkspaceWrite}` (scoped.rs:297)
+  — so a `workspace::read`-only node can obtain the full raw write/delete trait
+  through it. H5b's "F2 closed on native" was therefore **overstated**; F2 is
+  closed on wasm today, and on native only once H5c-enforcement re-gates bare
+  `workspace()` to `[EffectHint::Workspace]` alone. (Preflight is unaffected — it
+  runs against the unscoped bag, not `ScopedResources`.)
+- **Built but not yet wired (deferred to H5c-enforcement):** the `WorkspaceRead`
+  / `WorkspaceWrite` **view types** with gates 2+3 (macaroon verify +
   scope-containment) and the four honesty tests exist and pass — but the
   accessors currently return the **raw split `&dyn Workspace` surface**
   (mirroring `http_read()`/`http_write()` returning `&dyn HttpRead`/`HttpWrite`),
@@ -1084,10 +1110,17 @@ across every impl) and what needs it:
   threaded through `ResourceAccess` yet. **Consequence, stated honestly:
   handle-scope node confinement (a node holding a handle to file X cannot read
   file Y) is NOT yet enforced at the node boundary** — within a granted read a
-  node still reaches arbitrary paths. H5c threads the root key (it needs it
-  anyway for host-side minting + the `get_binary` composite) and cuts the
-  accessors over to the views, at which point gates 2+3 become load-bearing for
-  real nodes and F1 is fully closed. Until then the macaroon/handle apparatus is
+  node still reaches arbitrary paths. H5c-enforcement threads the root key (it
+  needs it anyway for host-side minting + the `get_binary` composite) and cuts
+  the accessors over to the views, at which point gates 2+3 become load-bearing
+  for the native view surface and all connector.http byte ops. **F1 is NOT
+  "fully closed" even after H5c** (design-review correction): the generic wasm
+  workspace opcodes (`OP_WORKSPACE_READ/WRITE/LIST/DELETE`) stay gate-1-only — a
+  wasm `#[def_node]` with a workspace grant still reaches arbitrary paths within
+  its grant (run-scoped, traversal-rejected — "Unix within the run sandbox," not
+  unconfined). Closing that needs handle-carrying opcodes + a guest-side view,
+  specced as a follow-up and built only when a wasm template needs raw byte IO.
+  Until H5c-enforcement lands, the macaroon/handle apparatus is
   types-ready, not yet runtime-enforcing for node-facing access.
 
 ### 16.5 Response binary mode + request multipart surface
@@ -1207,37 +1240,67 @@ choice (16.2) is the more-attestable option for the same reason.
      bags correctly keep raw `Workspace`.
   Benefits every workspace consumer, not just connector.http — like H2b did for
   auth.
-- **H5c (M→L — now also carries the deferred H5b root-key work). connector.http
-  byte ops + finish the handle-only surface.**
-  - **Thread the macaroon root key through `ResourceAccess`** and cut
-    `workspace_read()`/`workspace_write()` over to return the handle-only
-    `WorkspaceRead`/`WorkspaceWrite` **views** (gates 2+3 become load-bearing for
-    node access; F1 fully closed). This is the core-host-API change H5b
-    deliberately did not sprawl into.
-  - **Fix the host→guest response serialization** for
-    `WorkspaceReadResult::Bytes(Vec<u8>)` (internally-tagged enum + serde_json
-    limitation, surfaced by H5b) — or moot it: the **host-side composite
-    `get_binary`** keeps bytes host-side and never serializes them to the guest,
-    which is the preferred path anyway (F4).
-  - `get_binary` (host-side composite; +workspace_write; **Effectful floor,
-    run-local-idempotent so no dedupe edge**, F5) and `post_multipart`/
-    `put_multipart` (+workspace_read, `form!` builder), §16.3 floors static in
-    `ConnectorOpMetadata`, cross-mirror plumbing (same four mirror sites as
-    Basic-auth, §7-F8). Runtime tests: binary download → artifact, multipart with
-    inline + artifact parts, non-2xx unchanged. **Byte ops are Tier 0/1 only,
-    both directions** — no `get_binary_any_origin` / multipart on Tier-2 (F8: a
-    Tier-2 binary GET would stage attacker-chosen bytes under a valid handle;
-    SSRF residual (a) must not upgrade to the byte plane).
+H5c splits into two packets (design-review validated; enforcement gates ops):
+
+- **H5c-enforcement (M) — finish the handle-only surface + root key + the F2
+  native fix.**
+  - **Root key:** `HostRuntime::with_workspace_root_key` (master; default random
+    per instance) + per-run derivation (§16.2) computed in
+    `bind_workspace_resources` on execute AND resume; stored in
+    `InvocationResources` (+ optional fields on `ResourceBag` for factory-less
+    hosts/tests). No `WorkspaceFactory` change, no checkpoint-schema change.
+  - **Accessor cutover (compiler-forced audit):** change `workspace_read()`/
+    `workspace_write()` to return **owned** `Option<WorkspaceRead>`/
+    `Option<WorkspaceWrite>` views (cheap `Arc` clones); add grant-gated
+    `workspace_read_raw()`/`workspace_write_raw()` returning `&dyn Workspace` for
+    path-shaped consumers; **re-gate bare `workspace()` to `[EffectHint::Workspace]`
+    only** (fixes the native F2 bypass). Update all five `impl ResourceAccess`
+    (trait defaults → `None`/bare; `ResourceBag`; `ScopedResources` delegate to
+    inner *view* accessors; `NodeScopedResources` explicit delegations;
+    `InvocationResources` construct views; `NoHttpAccess` no-op).
+  - **Call-site migration:** stdlib workspace path nodes + sheetport export →
+    `_raw`; host-wasmtime opcode handlers → `_raw` (same grants/denials).
+  - Tests: stage→halt→resume(same HostRuntime)→deref succeeds; a handle
+    re-presented under a *different* run scope fails gate 2; a `read`-hinted node
+    cannot reach any write surface (view, raw, OR bare `workspace()`); wasm
+    four-case honesty tests still pass.
+- **H5c-ops (M→L) — connector.http byte ops (host-side composites).**
+  - Two **new cap-call opcodes** (the biggest ripple — host cap-call ABI, mirror
+    set = host-wasmtime + wasm_transport + host-workers, same sites as §7-F8):
+    `OP_HTTP_GET_BINARY` (frame: `HttpRequest` JSON + stage-name; host applies the
+    existing `ConnectorAuthGate`, enforces `WorkspacePolicy.max_single_file_bytes`
+    pre-stage, stages via the `workspace_write()` view, returns `Artifact` JSON)
+    and `OP_HTTP_SEND_MULTIPART` (frame: request skeleton + parts, inline parts
+    length-prefixed raw, artifact parts as handle JSON; host verifies each handle
+    through the `workspace_read()` view — gates 2+3 — assembles + sends). Bytes
+    never enter guest memory either direction.
+  - `get_binary` (+workspace_write; **Effectful floor, run-local-idempotent so no
+    dedupe edge**, F5) and `post_multipart`/`put_multipart` (+workspace_read,
+    `form!` builder), §16.3 floors static in `ConnectorOpMetadata`. **Byte ops
+    Tier 0/1 only, both directions** (F8: a Tier-2 binary GET would stage
+    attacker-chosen bytes under a valid handle).
+  - **Retire the `WorkspaceReadResult::Bytes` serialize-time error** (design
+    review P5: the internally-tagged newtype-over-`Vec<u8>` *errors today* on the
+    generic wasm read path — it is a live trap, not a dormant gap) via binary
+    response framing mirroring the H5a request codec. The composites moot it for
+    connector.http; fix it here so the first generic wasm workspace node does not
+    hit it. If deferred, the spec must say "wasm raw byte reads error" verbatim.
+  - Runtime tests: binary download → artifact, multipart inline + artifact parts,
+    non-2xx unchanged, Tier-2 denied.
 - **H5d (S) — acceptance example + recipe.** Extend the s26 longtail example
   (or a new `sNN_binary`) with the CSV build-and-POST round-trip and a
   download→process→upload round-trip; CLI end-to-end + render clean; add the
   §16 normative recipe rules to `ops/clone-playbook.md` §3 (done: the
-  binary-handoff row is flipped to RESOLVED).
+  binary-handoff row is flipped to RESOLVED). NOTE (design review): the §16.5
+  `ws: WorkspaceWrite` def_node **parameter** shape implies macro resource-
+  injection that does not exist — nodes fetch resources via
+  `context::with_current_async` (see stdlib workspace nodes); H5d uses the
+  context-fetch style, and the dag-macros param sugar is a separate follow-up.
 
-Order: **H5a → H5b → (H5c ∥ H5d-scaffold) → H5d**. H5b gates H5c (no byte op
-ships without its denial test). Blob-backed `ByteSource`, `Artifact<Prefix>`
-(multi-file), and Tier-2 byte ops are explicitly out of H5 (additive
-follow-ups).
+Order: **H5a → H5b → H5c-enforcement → (H5c-ops ∥ H5d-scaffold) → H5d**
+(H5a/H5b landed). Blob-backed `ByteSource`, `Artifact<Prefix>` (multi-file),
+Tier-2 byte ops, and handle-carrying wasm workspace opcodes (the generic-wasm
+F1 residual) are out of H5 (additive follow-ups).
 
 ### 16.9 Open questions (H5-specific)
 
