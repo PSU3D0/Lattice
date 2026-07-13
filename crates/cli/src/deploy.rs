@@ -82,6 +82,14 @@ const PAID_MAX_BYTES: u64 = 10 * 1024 * 1024;
 const FREE_MAX_CRONS: usize = 5;
 const PAID_MAX_CRONS: usize = 250;
 
+/// Native-only connector.http byte operations. These require the deferred
+/// H5c-ops-wasm host composites and cannot execute in a Workers guest yet.
+const NATIVE_ONLY_HTTP_BYTE_OPERATIONS: &[&str] = &[
+    "connector.http.get_binary",
+    "connector.http.post_multipart",
+    "connector.http.put_multipart",
+];
+
 #[derive(clap::Subcommand, Debug)]
 pub enum DeployCommand {
     /// Render a wrangler.toml from a flow's static requirements manifest.
@@ -617,6 +625,8 @@ pub(crate) fn render_wrangler(
     requirements: &FlowRequirements,
     options: &RenderOptions,
 ) -> Result<Rendered> {
+    reject_native_only_http_byte_operations(requirements)?;
+
     let worker = &options.worker_name;
     let mut notes: Vec<String> = Vec::new();
 
@@ -1255,6 +1265,40 @@ pub(crate) fn render_wrangler(
         wrangler_toml: out,
         notes,
     })
+}
+
+fn reject_native_only_http_byte_operations(requirements: &FlowRequirements) -> Result<()> {
+    let unsupported: Vec<_> = requirements
+        .connectors
+        .iter()
+        .flat_map(|connector| connector.operations.iter())
+        .filter(|operation| {
+            NATIVE_ONLY_HTTP_BYTE_OPERATIONS.contains(&operation.operation_id.as_str())
+        })
+        .collect();
+    if unsupported.is_empty() {
+        return Ok(());
+    }
+
+    let mut message = format!(
+        "flow `{}` cannot be rendered for Cloudflare Workers: H5c-ops-wasm is absent, so these connector.http byte operations are native-only:\n",
+        requirements.flow.name
+    );
+    for operation in unsupported {
+        let nodes = if operation.nodes.is_empty() {
+            "<no per-node attribution recorded>".to_string()
+        } else {
+            operation.nodes.join(", ")
+        };
+        message.push_str(&format!(
+            "\n  `{}` — required by node(s): {nodes}",
+            operation.operation_id
+        ));
+    }
+    message.push_str(
+        "\n\nRun this flow on a native host (`flows run local --example <name>` / host-web-axum). Workers deployment requires implementing H5c-ops-wasm first.",
+    );
+    Err(anyhow!(message))
 }
 
 /// Planner v0: the fail-closed error for requirements Workers cannot satisfy.

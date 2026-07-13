@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use axum::http::Method;
 use cargo_metadata::MetadataCommand;
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use dag_core::{Diagnostic, DurabilityMode, FlowIR, Severity};
+use dag_core::{Diagnostic, DurabilityMode, EffectHint, FlowIR, Severity};
 use exporters::{harness::HarnessConfig, to_dot, to_json_value};
 #[cfg(feature = "host-wasmtime")]
 use flow_bundle::ExecPolicy;
@@ -31,6 +31,7 @@ use tokio::net::TcpListener;
 use tokio::runtime::Builder as RuntimeBuilder;
 use tokio::signal;
 
+use cap_workspace_fs::{FsWorkspaceConfig, FsWorkspaceFactory};
 use capabilities::Capability;
 use capabilities::connector::{
     ConnectorBindingScope, ConnectorRoleKind, ConnectorRuntime, ConnectorRuntimeError,
@@ -40,6 +41,7 @@ use capabilities::connector::{
 use capabilities::durability::{
     CheckpointError, CheckpointFilter, CheckpointHandle, CheckpointRecord, CheckpointStore, Lease,
 };
+use capabilities::workspace::WorkspacePolicy;
 use capabilities::{ResourceAccess, ResourceBag};
 use host_inproc::{EnvironmentPlugin, HostRuntime, Invocation};
 
@@ -91,6 +93,8 @@ use example_s24_lead_intake_verify as s24_lead_intake_verify;
 use example_s25_form_feedback_summary as s25_form_feedback_summary;
 #[cfg(feature = "example-s26")]
 use example_s26_http_longtail as s26_http_longtail;
+#[cfg(feature = "example-s27")]
+use example_s27_binary as s27_binary;
 
 mod bundle;
 mod deploy;
@@ -267,6 +271,9 @@ struct LocalArgs {
     /// Root directory for filesystem checkpoints (used with --checkpoint-store fs).
     #[arg(long)]
     checkpoint_dir: Option<PathBuf>,
+    /// Root directory for run-scoped filesystem workspaces.
+    #[arg(long, default_value = ".flow/workspaces")]
+    workspace_dir: PathBuf,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, ValueEnum)]
@@ -657,6 +664,29 @@ fn run_local(args: LocalArgs) -> Result<()> {
     }
     let handle = load_example(&args.example)?;
 
+    if burst > 1 {
+        let requirements = kernel_plan::derive_requirements(&handle.ir);
+        let workspace_hints: Vec<_> = requirements
+            .effects
+            .union
+            .iter()
+            .copied()
+            .filter(|hint| {
+                matches!(
+                    hint,
+                    EffectHint::Workspace | EffectHint::WorkspaceRead | EffectHint::WorkspaceWrite
+                )
+            })
+            .map(EffectHint::as_str)
+            .collect();
+        if !workspace_hints.is_empty() {
+            return Err(anyhow!(
+                "--burst > 1 is not supported for flows requiring workspace capabilities ({}) because burst mode bypasses HostRuntime workspace binding; rerun with --burst 1",
+                workspace_hints.join(", ")
+            ));
+        }
+    }
+
     if handle.is_streaming && !stream_mode {
         return Err(anyhow!(
             "example `{}` produces streaming output; re-run with --stream to consume events",
@@ -715,8 +745,13 @@ fn run_local(args: LocalArgs) -> Result<()> {
     let start = Instant::now();
 
     let outcome: RunOutcome = runtime.block_on(async move {
+        let workspace_factory = FsWorkspaceFactory::new(FsWorkspaceConfig {
+            root: args.workspace_dir,
+            policy: WorkspacePolicy::default(),
+        });
         let host_runtime = HostRuntime::with_plugins(executor, ir.clone(), environment_plugins)
-            .with_resource_bag(resources);
+            .with_resource_bag(resources)
+            .with_workspace_factory(Arc::new(workspace_factory));
 
         if burst == 1 {
             let invocation =
@@ -3947,6 +3982,8 @@ pub(crate) fn example_bundle(name: &str) -> Result<(host_inproc::FlowBundle, boo
         "s24_lead_intake_verify" => (s24_lead_intake_verify::bundle(), false),
         #[cfg(feature = "example-s26")]
         "s26_http_longtail" => (s26_http_longtail::bundle(), false),
+        #[cfg(feature = "example-s27")]
+        "s27_binary" => (s27_binary::bundle(), false),
         other => return Err(anyhow!("unknown example `{other}`")),
     };
 

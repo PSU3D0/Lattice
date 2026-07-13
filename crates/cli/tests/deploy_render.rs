@@ -638,6 +638,43 @@ fn custom_name_overrides_derived_worker_name() {
 }
 
 // ---------------------------------------------------------------------------
+// S27/H5d: its byte operations are native-only until H5c-ops-wasm exists.
+// Static generic requirements derivation still identifies the exact ops and
+// nodes, so Workers render must fail closed before writing a config.
+// ---------------------------------------------------------------------------
+#[test]
+fn s27_binary_fails_workers_render_with_native_byte_operations() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let out_dir = temp.path().join("deploy");
+    let output = run_render(&[
+        "--example",
+        "s27_binary",
+        "--out",
+        out_dir.to_str().expect("out path"),
+    ]);
+
+    assert!(
+        !output.status.success(),
+        "S27 Workers render must fail closed"
+    );
+    assert!(!out_dir.join("wrangler.toml").exists());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("H5c-ops-wasm is absent"), "{stderr}");
+    assert!(
+        stderr.contains("`connector.http.get_binary` — required by node(s): download"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "`connector.http.post_multipart` — required by node(s): reupload, upload_report"
+        ),
+        "{stderr}"
+    );
+    assert!(stderr.contains("native host"), "{stderr}");
+    assert!(stderr.contains("flows run local"), "{stderr}");
+}
+
+// ---------------------------------------------------------------------------
 // connector.http origin-audit (packet H3, spec §8): a connector.http flow with
 // one Tier-0 authed connection (GET + POST) and one Tier-2 unauthenticated
 // any-origin GET. `resource::http` is Ambient on Workers (no binding emitted),

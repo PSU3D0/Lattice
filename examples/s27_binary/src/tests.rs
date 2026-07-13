@@ -1,6 +1,7 @@
 //! In-crate acceptance tests for the S27 byte-plane flow (packet H5d), driven
-//! through the real `host-inproc` runtime — NOT the `flows` CLI (workspace
-//! provisioning for the CLI is a deliberately deferred packet). Each test wires:
+//! through the real `host-inproc` runtime. The separate CLI golden proves the
+//! report/egress path with CLI-provisioned workspace; these tests own the mirror
+//! ingress path and the negative workspace-grant proof. Each runtime test wires:
 //!
 //! - an `FsWorkspaceFactory` over a temp dir (the run-scoped workspace the byte
 //!   plane stages into) plus a stable `with_workspace_root_key` (macaroon master

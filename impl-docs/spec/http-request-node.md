@@ -1,7 +1,7 @@
-Status: v1 BUILT (H1–H4 + H2a/H2b landed, branch verifiability-substrate-hardening); v1.1 binary/artifact contract (§16) design-final + adversarially reviewed 2026-07-12 (ACCEPT-WITH-REVISIONS, R1–R3 folded — §16.10). **H5a + H5b + H5c-enforcement + H5c-ops-native LANDED** (byte-plane types + macaroon handles; workspace read/write grant split + per-opcode host gating + structured denials + binary codec cutover; per-run derived root key + accessor→view cutover + F2-native fix; native `get_binary`/`post_multipart` connector ops with load-bearing workspace-denial honesty tests). **PENDING: H5d** (acceptance example) and **H5c-ops-wasm** (Workers-runtime composite opcodes — deferred, not needed for the CLI/render proof). F1 residual: generic wasm workspace opcodes stay gate-1-only (§16.4). Original v1 design revised per adversarial review 2026-07-11 (ACCEPT-WITH-REVISIONS: F1 enforcement locus, F2 redirect precondition, F3 Tier-2 guarantee scope).
+Status: v1 BUILT (H1–H4 + H2a/H2b landed); v1.1 native byte plane BUILT (H5a–H5d landed 2026-07-13). The proof ladder is explicit: lower-level artifact tests own macaroon verification and scope-containment gates; S27 in-crate tests prove native mirror ingress and the CAP110 workspace-write negative; and the real `flows` CLI proves report CSV stage → multipart egress, receipt, and terminal workspace cleanup. **H5c-ops-wasm remains DEFERRED** (Workers-runtime composite opcodes), so `flows deploy render --example s27_binary` now fails closed and names the native-only byte operations rather than claiming Workers deployability. Original reviews remain ACCEPT-WITH-REVISIONS (2026-07-11/12, revisions folded).
 Purpose: spec
 Owner: Core
-Last reviewed: 2026-07-12
+Last reviewed: 2026-07-13
 
 # Generic HTTP Request Node (`connector.http`, v1)
 
@@ -20,8 +20,8 @@ Related docs:
   (`examples/s16_drive_permissions_audit/bindings.lock.mock.json`)
 - `impl-docs/spec/flow-requirements.md`; `crates/cli/src/deploy.rs`
   (`FAMILY_MAPPINGS`: `resource::http` → Ambient on Workers)
-- `ops/clone-playbook.md` §3 (binary handoff: DEFERRED, workspace-capability
-  recommendation), `ops/clone-economics.md` §5 (demand + gap list)
+- `ops/clone-playbook.md` §3 (binary handoff: RESOLVED to the workspace-artifact
+  recipe), `ops/clone-economics.md` §5 (demand + gap list)
 - `impl-docs/error-codes.md` (EFFECT201/202, CAP110, IDEM/EXACT, RETRY010)
 
 ## 0. Decision summary
@@ -57,7 +57,8 @@ Related docs:
    attributes the author chooses, not through runtime mode switching.
    Binary/file responses are **v1.1**, contract now finalized in §16
    (minted attenuable workspace-artifact handles; `ByteSource` byte-input
-   type; op-per-effect-shape floors). Not yet built (H5a–H5d, §16.8).
+   type; op-per-effect-shape floors). Built for the native/local path (H5a–H5d,
+   §16.8); Workers composite byte opcodes remain deferred.
 5. **Non-2xx = NodeError by default** (status + truncated body, matching
    `decode_json_response_body`), with a static `full_response` opt-in that
    makes status/headers/body ordinary data (n8n `neverError` parity).
@@ -351,7 +352,7 @@ where the author has explicitly asked for wire-level truth in-band.**
 | 2xx, JSON but `T` mismatch | n/a | NodeError `[HTTP103]` carrying the serde error path (`missing field \`x\` at line…`) | n/a | n/a (envelope body is JsonValue, not T) |
 | 2xx, empty body | `body = Null` | Ok iff `T` is `()`/`Option<_>`-shaped (serde decides); else `[HTTP103]` | `""` | envelope, `body = Null`/`""` |
 | 2xx, body not valid UTF-8 | (JSON parse fails) `[HTTP102]` | `[HTTP102]` | NodeError `[HTTP104]` (strict; no lossy mode in v1) | `body_text` lossy-replaced, flagged `utf8_lossy: true` |
-| 2xx, binary content | as above — garbage in is an error, not silent bytes | same | `[HTTP104]` | v1: `body_text` lossy + flag. v1.1: opt into `connector.http.get_binary` → streams the body into a workspace artifact and returns `Artifact { handle, content_type, len, content_hash }` (declares `resource::workspace::write`). Contract final in **§16**; built in H5c. |
+| 2xx, binary content | as above — garbage in is an error, not silent bytes | same | `[HTTP104]` | v1: `body_text` lossy + flag. v1.1: opt into `connector.http.get_binary` → buffers the response under the native cap, stages it into a workspace artifact, and returns `Artifact { handle, content_type, len, content_hash }` (declares `resource::workspace::write`). Contract final in **§16**; built in H5c. |
 
 Decisions embedded in the table, with rationale:
 
@@ -770,13 +771,13 @@ coverage increment (~10% of nodes).
   workspace-artifact handles (`Handle<S>`), `Artifact` as the data-plane
   value, `ByteSource` as the universal byte-input, op-per-effect-shape
   floors (`get_binary` +workspace_write, `post_multipart` +workspace_read).
-  Order H5a → H5b → (H5c ∥ H5d). Reviewed 2026-07-12 (ACCEPT-WITH-REVISIONS,
-  §16.10): H5b raised to L (handle-only surface + workspace read/write split —
-  the enforcement refactor that makes the floors real).
+  Native order H5a → H5b → H5c-enforcement → H5c-ops-native → H5d is complete.
+  Reviewed 2026-07-12 (ACCEPT-WITH-REVISIONS, §16.10): H5b was raised to L
+  because the handle-only surface + workspace read/write split makes the floors real.
 
-Suggested order: H1 ∥ H2a → H2 (∥ H2b) → (H3 ∥ H4) → H5. H2 is the only
-L; it is exemplar-cloning of the existing connector shape, which Phase 1
-measured at ~95% one-shot rate.
+Suggested order: H1 ∥ H2a → H2 (∥ H2b) → (H3 ∥ H4) → H5. H2 was the
+only L-sized packet in the original v1 sequence; H5b and deferred H5c-ops-wasm
+were subsequently assessed as L because they cross capability/host boundaries.
 
 ## 14. Open questions (maintainer), each with a recommendation
 
@@ -851,11 +852,11 @@ Residual risks accepted **consciously** (each named where it is incurred):
 
 ## 16. v1.1 binary & artifact contract (H5) — the byte plane
 
-Status of this section: **contract finalized + adversarially reviewed
-2026-07-12** (supersedes the "reserved, unusable" placeholders in §0.4, §5,
-§13-H5 and finalizes the `ops/clone-playbook.md` §3 binary-handoff decision).
-ACCEPT-WITH-REVISIONS; revisions R1–R3 folded (§16.10). **Design-only — build
-is H5a–H5d below (H5b is the load-bearing enforcement refactor).**
+Status of this section: **native/local contract built and acceptance-gated
+2026-07-13**, after the 2026-07-12 adversarial review
+(ACCEPT-WITH-REVISIONS; R1–R3 folded, §16.10). H5a–H5d are complete for the
+native path; H5c-ops-wasm is a separately deferred Workers-runtime extension.
+H5b/H5c-enforcement remain the load-bearing enforcement refactors.
 
 ### 16.0 The decision, in one rule
 
@@ -1075,75 +1076,39 @@ With that surface, a byte crossing passes only if **all three** hold:
 3. **Scope contains target** — the requested path ⊆ `handle.scope` after
    `normalize_path` (traversal already rejected, `workspace.rs:177`).
 
-Honesty test (mirrors the connector CAP110 denial tests, and is the H5b gate):
-a node deref/stage with an empty grant set → structured `MissingWorkspace*`; a
-`workspace::read`-only node attempting `stage`/`delete` → `MissingWorkspaceWrite`
-(proves the split); a forged/widened macaroon → gate 2 failure; an out-of-scope
-path on a valid handle → gate 3 failure. All four are load-bearing.
+Honesty ownership is split deliberately. S27 owns the compositional CAP110
+negative: a read-only-granted staging node fails with `MissingWorkspaceWrite`
+before egress. Lower-level artifact/workspace tests own the macaroon and scope
+gates: forged or widened mints fail gate 2, and an out-of-scope path on a valid
+handle fails gate 3. Those lower-level tests, rather than S27 or the CLI golden,
+are the load-bearing proof for handle verification and scope containment.
 
-**Implementation status after H5b (landed 2026-07-12 — read this before relying
-on the above).** H5b split into what is enforceable without threading a host
-root key through `ResourceAccess` (a core-host-API change that would ripple
-across every impl) and what needs it:
+**Implementation status after H5c-enforcement (landed 2026-07-12).** The
+read/write grant and accessor split, per-opcode host gating, random per-runtime
+master key with per-run derivation, and owned `WorkspaceRead`/`WorkspaceWrite`
+views are wired. Native node-facing byte operations use the views, so grant,
+macaroon, and scope-containment gates are load-bearing; bare `workspace()` is
+gated only by the legacy combined `resource::workspace` hint, closing the
+native read-to-write bypass. Structured `MissingWorkspaceRead` /
+`MissingWorkspaceWrite` denials remain enforced across the wasm boundary.
 
-- **Enforced now (closes F2 on wasm; narrows F1):** the read/write **grant +
-  accessor split** (`workspace_read()`/`workspace_write()` in `scoped.rs`, split
-  `GRANTS_WORKSPACE_READ`/`_WRITE`) and **per-opcode host-wasmtime gating** with
-  structured `MissingWorkspaceRead`/`MissingWorkspaceWrite` denials
-  (`CAP-WS-006/007`) across the wasm boundary. On wasm hosts a
-  `workspace::read`-hinted node can no longer write or delete.
-- **KNOWN GAP found in the H5c design review (fix scheduled H5c-enforcement):**
-  on **native** hosts the split is bypassable via the deprecated bare
-  `ScopedResources::workspace()` accessor, which is still gated on the *combined*
-  `GRANTS_WORKSPACE = {Workspace, WorkspaceRead, WorkspaceWrite}` (scoped.rs:297)
-  — so a `workspace::read`-only node can obtain the full raw write/delete trait
-  through it. H5b's "F2 closed on native" was therefore **overstated**; F2 is
-  closed on wasm today, and on native only once H5c-enforcement re-gates bare
-  `workspace()` to `[EffectHint::Workspace]` alone. (Preflight is unaffected — it
-  runs against the unscoped bag, not `ScopedResources`.)
-- **Built but not yet wired (deferred to H5c-enforcement):** the `WorkspaceRead`
-  / `WorkspaceWrite` **view types** with gates 2+3 (macaroon verify +
-  scope-containment) and the four honesty tests exist and pass — but the
-  accessors currently return the **raw split `&dyn Workspace` surface**
-  (mirroring `http_read()`/`http_write()` returning `&dyn HttpRead`/`HttpWrite`),
-  not the handle-only views, because gate 2 needs the host root key that is not
-  threaded through `ResourceAccess` yet. **Consequence, stated honestly:
-  handle-scope node confinement (a node holding a handle to file X cannot read
-  file Y) is NOT yet enforced at the node boundary** — within a granted read a
-  node still reaches arbitrary paths. H5c-enforcement threads the root key (it
-  needs it anyway for host-side minting + the `get_binary` composite) and cuts
-  the accessors over to the views, at which point gates 2+3 become load-bearing
-  for the native view surface and all connector.http byte ops. **F1 is NOT
-  "fully closed" even after H5c** (design-review correction): the generic wasm
-  workspace opcodes (`OP_WORKSPACE_READ/WRITE/LIST/DELETE`) stay gate-1-only — a
-  wasm `#[def_node]` with a workspace grant still reaches arbitrary paths within
-  its grant (run-scoped, traversal-rejected — "Unix within the run sandbox," not
-  unconfined). Closing that needs handle-carrying opcodes + a guest-side view,
-  specced as a follow-up and built only when a wasm template needs raw byte IO.
-  Until H5c-enforcement lands, the macaroon/handle apparatus is
-  types-ready, not yet runtime-enforcing for node-facing access.
-
+The residual is narrower and explicit: generic wasm path-based workspace
+opcodes remain gate-1-only within the run sandbox. They do not carry artifact
+handles, so handle-scope confinement for those generic opcodes awaits the
+separate handle-carrying wasm-opcode packet. This does not weaken the native
+S27 proof or CAP110 enforcement.
 ### 16.5 Response binary mode + request multipart surface
 
-- **Ingress (`get_binary`) is a host-side composite op (revised per F4 — the
-  original "streams, never materialized in guest memory" claim was false).**
-  `HttpResponse.body` is a fully-buffered `Vec<u8>` (capabilities/src/lib.rs:774)
-  and `Workspace::write_normalized` takes a complete `&[u8]` slice — there is no
-  streaming path, and worse, routing the bytes guest→host through the current
-  wasm workspace transport re-encodes them as a JSON *array of integers*
-  (`serde_json::to_vec`, workspace.rs:~308/473), ~3.5× blowup — strictly worse
-  than the base64 this whole section exists to avoid. So `get_binary` is
-  specified as a **host-side composite**: the host performs the fetch **and**
-  the stage, so the bytes never enter guest memory and never cross the cap
-  boundary twice; the guest receives only the `Artifact` handle back. The op
-  returns `Artifact { handle, content_type: <from response Content-Type>, len,
-  content_hash }`. Size is bounded by `WorkspacePolicy.max_single_file_bytes`
-  (over-limit → NodeError, no partial artifact); non-2xx / transport errors
-  behave as §5 (NodeError). **H5a prerequisite:** fix the wasm workspace
-  transport to binary length-prefixed framing (mirror the blob transport's
-  `encode_put_request`, lib.rs:~2142, which already does this) so any
-  guest-side `stage_artifact` on the egress path is not paying the JSON-int-array
-  tax either.
+- **Ingress (`get_binary`) is buffered, not streaming (revised per F4).** On
+  the shipped native path `HttpResponse.body` is a fully-buffered `Vec<u8>`;
+  the op enforces its 32 MiB native cap, then stages the complete slice and
+  returns only `Artifact { handle, content_type, len, content_hash }` through
+  the JSON data plane. Non-2xx and transport errors behave as §5. The generic
+  wasm workspace transport already uses length-prefixed binary framing, but a
+  Workers `get_binary` composite does not ship yet; claims that bytes never
+  enter guest memory apply only to the deferred H5c-ops-wasm design, not to
+  current acceptance. `WorkspacePolicy.max_single_file_bytes` integration is
+  a named follow-up; native `get_binary` currently uses its own 32 MiB cap.
 - **Egress (`post_multipart`).** Body built via a `form!` macro over
   `(field, ByteSource)` pairs → `multipart/form-data`; each part's
   Content-Type comes from `Artifact.content_type` (now carried on
@@ -1207,7 +1172,7 @@ choice (16.2) is the more-attestable option for the same reason.
 
 ### 16.8 Packet decomposition (H5a–H5d, subagent-dispatchable — revised post-review)
 
-- **H5a (M) — the byte-plane types + transport fix.** `Handle<S>` (sealed
+- **H5a (M) — the byte-plane types + transport fix. LANDED 2026-07-12.** `Handle<S>` (sealed
   `Scope`, validating `Deserialize`, guest-side `narrow`/`file` **macaroon**
   attenuation — §16.2), `Artifact<S>`, `ByteSource` (carries `Artifact<Exact>`,
   F7) + `From` impls. Macaroon verification host-side (root key never in guest;
@@ -1217,8 +1182,7 @@ choice (16.2) is the more-attestable option for the same reason.
   today it uses `serde_json::to_vec` → JSON-int-array blowup, F4). No http yet.
   Unit tests: macaroon narrows-not-widens and composes across split points,
   cross-scope deref fails, `Handle<Exact>` refuses a prefix wire value.
-- **H5b (L — the load-bearing enforcement refactor, F1/F2). LANDED 2026-07-12,
-  partially (delivered/deferred split; see §16.4 implementation-status note).**
+- **H5b (L — the load-bearing enforcement refactor, F1/F2). LANDED 2026-07-12.**
   1. **Read/write grant + accessor split** — DONE. `scoped.rs` has
      `workspace_read()`/`workspace_write()` + split `GRANTS_WORKSPACE_READ`/`_WRITE`
      (`read` does not confer `write`/`delete`).
@@ -1230,20 +1194,15 @@ choice (16.2) is the more-attestable option for the same reason.
      over together to the H5a length-prefixed frame (retires the JSON-int-array
      blowup and the H5a `dead_code` warnings).
   4. **The four-case honesty test** (§16.4) — DONE and passing.
-  5. **Handle-only node surface** — **DEFERRED to H5c.** The `WorkspaceRead`/
-     `WorkspaceWrite` view types (with gates 2+3) are built and tested, but the
-     accessors still return the raw split `&dyn Workspace` surface because gate 2
-     needs a host root key not yet threaded through `ResourceAccess`. So the
-     grant split (F2) is enforced; handle-scope node confinement (F1) is not yet.
-     Migrated the actual native node-facing consumers to the split accessors
-     (stdlib workspace nodes, sheetport export); backends/factory/pass-through
-     bags correctly keep raw `Workspace`.
+  5. **Handle-only node surface** — DONE in H5c-enforcement. Owned read/write
+     views carry the per-run root key and enforce macaroon + scope containment;
+     path-shaped native consumers use separately grant-gated raw accessors.
   Benefits every workspace consumer, not just connector.http — like H2b did for
   auth.
 H5c splits into two packets (design-review validated; enforcement gates ops):
 
-- **H5c-enforcement (M) — finish the handle-only surface + root key + the F2
-  native fix.**
+- **H5c-enforcement (M) — handle-only surface + root key + native F2 fix.
+  LANDED 2026-07-12.**
   - **Root key:** `HostRuntime::with_workspace_root_key` (master; default random
     per instance) + per-run derivation (§16.2) computed in
     `bind_workspace_resources` on execute AND resume; stored in
@@ -1289,8 +1248,8 @@ H5c splits into two packets (design-review validated; enforcement gates ops):
      `WorkspacePolicy.max_single_file_bytes`, because the `WorkspaceWrite` view
      (by §16.4 design) exposes only `stage_artifact`/`read` and carries no policy
      handle. Follow-up: thread the policy into the view.
-- **H5c-ops-wasm (M→L — DEFERRED; needed for Workers runtime, NOT for the CLI/
-  render acceptance proof).** Two **new cap-call opcodes** (the biggest ripple —
+- **H5c-ops-wasm (M→L — DEFERRED; needed for Workers runtime and therefore for
+  a successful Workers render/deploy proof, but not for the native CLI proof).** Two **new cap-call opcodes** (the biggest ripple —
   host cap-call ABI, mirror set = host-wasmtime + wasm_transport + host-workers,
   same sites as §7-F8): `OP_HTTP_GET_BINARY` (frame: `HttpRequest` JSON +
   stage-name; host applies the existing `ConnectorAuthGate`, enforces the size
@@ -1304,18 +1263,23 @@ H5c splits into two packets (design-review validated; enforcement gates ops):
   read path — a live trap) via binary response framing mirroring the H5a request
   codec. Split out because it is a host-ABI change and the native path already
   proves the byte plane end-to-end (CLI + render, the project's proof discipline).
-- **H5d (S) — acceptance example + recipe.** Extend the s26 longtail example
-  (or a new `sNN_binary`) with the CSV build-and-POST round-trip and a
-  download→process→upload round-trip; CLI end-to-end + render clean; add the
-  §16 normative recipe rules to `ops/clone-playbook.md` §3 (done: the
-  binary-handoff row is flipped to RESOLVED). NOTE (design review): the §16.5
-  `ws: WorkspaceWrite` def_node **parameter** shape implies macro resource-
-  injection that does not exist — nodes fetch resources via
-  `context::with_current_async` (see stdlib workspace nodes); H5d uses the
-  context-fetch style, and the dag-macros param sugar is a separate follow-up.
+- **H5d (S) — acceptance example + recipe. LANDED 2026-07-13.** The new
+  `s27_binary` flow implements both CSV build→stage→multipart egress and
+  download→transform→re-upload ingress using context-fetched workspace views.
+  Proof levels are intentionally split: in-crate tests prove flow shape, mirror
+  ingress, and the negative `MissingWorkspaceWrite` denial; the real
+  `flows run local --example s27_binary` golden proves report egress, multipart
+  content type/body, receipt, and default-policy terminal workspace cleanup.
+  H5d's original "render clean" criterion is revised: because H5c-ops-wasm is
+  absent, `flows deploy render --example s27_binary` must fail closed, naming
+  `get_binary`/`post_multipart` and their nodes with native-host remediation.
+  Generic `FlowRequirements` derivation remains intact; the target-placement
+  check rejects operations the Workers host cannot execute. The clone-playbook
+  binary-handoff recipe is RESOLVED.
+  Def-node parameter injection remains a separate convenience follow-up.
 
-Order: **H5a → H5b → H5c-enforcement → H5c-ops-native → H5d** (all landed
-except H5d). **H5c-ops-wasm** (Workers-runtime opcodes) and the follow-ups
+Order: **H5a → H5b → H5c-enforcement → H5c-ops-native → H5d** is
+complete for native/local execution. **H5c-ops-wasm** (Workers-runtime opcodes) and the follow-ups
 above run after / independently. Blob-backed `ByteSource`, `Artifact<Prefix>`
 (multi-file), Tier-2 byte ops, and handle-carrying wasm workspace opcodes (the
 generic-wasm F1 residual) are out of H5 (additive follow-ups).
@@ -1326,9 +1290,9 @@ generic-wasm F1 residual) are out of H5 (additive follow-ups).
    caveat chain (guest-side narrowing composes correctly; host folds from root
    to verify). The naive HMAC-of-parent-mint chain is rejected (does not
    compose across narrowing split points).
-2. **`get_binary` size ceiling** — cap via `WorkspacePolicy.max_single_file_bytes`
-   (already exists) vs a per-op limit. Recommendation: reuse the policy cap;
-   over-limit → NodeError, no partial artifact.
+2. **`get_binary` size ceiling** — RESOLVED for the shipped native op as a
+   32 MiB per-op cap; threading `WorkspacePolicy.max_single_file_bytes` into
+   the write view remains a named follow-up.
 3. **`Artifact<Prefix>` (a directory as one value)** — needed for
    "download N files → hand the folder downstream." Recommendation: spec the
    type (it is free from `Handle<Prefix>`), build only when a template needs
