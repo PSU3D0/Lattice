@@ -1017,6 +1017,10 @@ impl HostRuntime {
 
         match result {
             Ok(outcome @ ExecutionResult::Halt { .. }) => {
+                if let Err(err) = store.ack(&handle).await {
+                    let _ = store.release_lease(lease).await;
+                    return Err(map_checkpoint_error(&handle, err));
+                }
                 let _ = store.release_lease(lease).await;
                 Ok(outcome)
             }
@@ -3023,6 +3027,167 @@ mod tests {
             })
             .await
             .expect("list checkpoints after resume");
+        assert!(remaining.is_empty());
+    }
+
+    #[tokio::test]
+    async fn successive_timer_halts_ack_superseded_checkpoints() {
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn(
+                "tests::two_timer_trigger",
+                |value: stdlib::timer::TimerWaitInput| async move { Ok(value) },
+            )
+            .unwrap();
+        registry
+            .register_fn(
+                "tests::next_timer",
+                |value: stdlib::timer::TimerWaitOutput| async move {
+                    Ok(stdlib::timer::TimerWaitInput {
+                        duration: Some(Duration::from_millis(1)),
+                        until: None,
+                        payload: value.payload,
+                    })
+                },
+            )
+            .unwrap();
+        registry
+            .register_fn(
+                "tests::two_timer_capture",
+                |value: stdlib::timer::TimerWaitOutput| async move { Ok(value.payload) },
+            )
+            .unwrap();
+        stdlib::timer::timer_wait_register(&mut registry).unwrap();
+
+        let mut builder = FlowBuilder::new("two_timer_resume", Version::new(1, 0, 0), Profile::Dev);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::two_timer_trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let wait_one = builder
+            .add_node("wait_one", stdlib::timer::timer_wait_node_spec())
+            .unwrap();
+        let next = builder
+            .add_node(
+                "next",
+                &NodeSpec::inline(
+                    "tests::next_timer",
+                    "Next timer",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let wait_two = builder
+            .add_node("wait_two", stdlib::timer::timer_wait_node_spec())
+            .unwrap();
+        let capture = builder
+            .add_node(
+                "capture",
+                &NodeSpec::inline(
+                    "tests::two_timer_capture",
+                    "Capture",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &wait_one);
+        builder.connect(&wait_one, &next);
+        builder.connect(&next, &wait_two);
+        builder.connect(&wait_two, &capture);
+
+        let ir = Arc::new(validate(&builder.build()).expect("flow validates"));
+        let checkpoint_store = Arc::new(MemoryCheckpointStore::default());
+        let resources = ResourceBag::new()
+            .with_checkpoint_store(Arc::clone(&checkpoint_store))
+            .with_resume_scheduler(Arc::new(StubResumeScheduler));
+        let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), Arc::clone(&ir))
+            .with_resource_bag(resources);
+
+        let input = stdlib::timer::TimerWaitInput {
+            duration: Some(Duration::from_millis(1)),
+            until: None,
+            payload: serde_json::json!({"ok": true}),
+        };
+        let first_halt = runtime
+            .execute(Invocation::new(
+                "trigger",
+                "capture",
+                serde_json::to_value(input).unwrap(),
+            ))
+            .await
+            .expect("first timer halt");
+        let first_checkpoint_id = match first_halt {
+            ExecutionResult::Halt { alias, payload } => {
+                assert_eq!(alias, "wait_one");
+                payload["checkpoint_id"].as_str().unwrap().to_string()
+            }
+            _ => panic!("expected first timer halt"),
+        };
+
+        let second_halt = runtime
+            .resume(&first_checkpoint_id)
+            .await
+            .expect("second timer halt");
+        let second_checkpoint_id = match second_halt {
+            ExecutionResult::Halt { alias, payload } => {
+                assert_eq!(alias, "wait_two");
+                payload["checkpoint_id"].as_str().unwrap().to_string()
+            }
+            _ => panic!("expected second timer halt"),
+        };
+        assert_ne!(first_checkpoint_id, second_checkpoint_id);
+
+        let remaining = checkpoint_store
+            .list(CheckpointFilter {
+                flow_id: Some(ir.flow().id.clone()),
+                run_id: None,
+                status: None,
+            })
+            .await
+            .expect("list after successor halt");
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].checkpoint_id, second_checkpoint_id);
+        assert!(matches!(
+            runtime.resume(&first_checkpoint_id).await,
+            Err(ExecutionError::CheckpointNotFound { .. })
+        ));
+
+        let terminal = runtime
+            .resume(&second_checkpoint_id)
+            .await
+            .expect("terminal resume");
+        match terminal {
+            ExecutionResult::Value(value) => {
+                assert_eq!(value, serde_json::json!({"ok": true}));
+            }
+            _ => panic!("expected terminal value"),
+        }
+        let remaining = checkpoint_store
+            .list(CheckpointFilter {
+                flow_id: Some(ir.flow().id.clone()),
+                run_id: None,
+                status: None,
+            })
+            .await
+            .expect("list after terminal resume");
         assert!(remaining.is_empty());
     }
 

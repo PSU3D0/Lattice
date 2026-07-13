@@ -3061,6 +3061,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-s28-timer-resume"
+version = "0.1.0"
+dependencies = [
+ "dag-core",
+ "dag-macros",
+ "host-inproc",
+ "kernel-exec",
+ "kernel-plan",
+ "serde",
+ "serde_json",
+ "stdlib",
+]
+
+[[package]]
 name = "example-s3-branching"
 version = "0.1.0"
 dependencies = [
@@ -3381,6 +3395,7 @@ dependencies = [
  "example-s25-form-feedback-summary",
  "example-s26-http-longtail",
  "example-s27-binary",
+ "example-s28-timer-resume",
  "example-s3-branching",
  "example-s4-preflight",
  "example-s5-unsupported-surface",

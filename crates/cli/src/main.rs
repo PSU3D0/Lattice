@@ -40,6 +40,7 @@ use capabilities::connector::{
 };
 use capabilities::durability::{
     CheckpointError, CheckpointFilter, CheckpointHandle, CheckpointRecord, CheckpointStore, Lease,
+    LocalResumeScheduler,
 };
 use capabilities::workspace::WorkspacePolicy;
 use capabilities::{ResourceAccess, ResourceBag};
@@ -95,6 +96,8 @@ use example_s25_form_feedback_summary as s25_form_feedback_summary;
 use example_s26_http_longtail as s26_http_longtail;
 #[cfg(feature = "example-s27")]
 use example_s27_binary as s27_binary;
+#[cfg(feature = "example-s28")]
+use example_s28_timer_resume as s28_timer_resume;
 
 mod bundle;
 mod deploy;
@@ -274,6 +277,9 @@ struct LocalArgs {
     /// Root directory for run-scoped filesystem workspaces.
     #[arg(long, default_value = ".flow/workspaces")]
     workspace_dir: PathBuf,
+    /// Return timer halts for manual or cross-process resume instead of following them.
+    #[arg(long)]
+    no_follow_resumes: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, ValueEnum)]
@@ -653,10 +659,64 @@ struct LocalJsonOutput {
     summary: RunSummary,
 }
 
+async fn follow_local_timer_resumes(
+    host_runtime: &HostRuntime,
+    ir: &ValidatedIR,
+    scheduler: &LocalResumeScheduler,
+    mut execution: ExecutionResult,
+) -> Result<ExecutionResult> {
+    loop {
+        let ExecutionResult::Halt { alias, payload } = &execution else {
+            return Ok(execution);
+        };
+        let is_timer = ir
+            .flow()
+            .nodes
+            .iter()
+            .any(|node| node.alias == *alias && node.identifier == "std.timer.wait");
+        if !is_timer {
+            return Ok(execution);
+        }
+
+        let checkpoint_id = payload
+            .get("checkpoint_id")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| anyhow!("timer halt `{alias}` is missing checkpoint_id"))?;
+        let scheduled_at_ms = payload
+            .get("scheduled_at_ms")
+            .and_then(JsonValue::as_i64)
+            .and_then(|value| u64::try_from(value).ok())
+            .ok_or_else(|| anyhow!("timer halt `{alias}` is missing a valid scheduled_at_ms"))?;
+
+        let claimed = scheduler
+            .wait_and_claim_next()
+            .await
+            .map_err(|err| anyhow!("local resume dispatch failed: {err}"))?;
+        if claimed.handle.checkpoint_id != checkpoint_id || claimed.fires_at_ms != scheduled_at_ms {
+            return Err(anyhow!(
+                "local resume dispatch mismatch: timer checkpoint `{checkpoint_id}` at {scheduled_at_ms} ms, claimed `{}` at {} ms",
+                claimed.handle.checkpoint_id,
+                claimed.fires_at_ms,
+            ));
+        }
+
+        execution = host_runtime
+            .resume(checkpoint_id)
+            .await
+            .map_err(|err| match &err {
+                kernel_exec::ExecutionError::MissingCapabilities { hints } => {
+                    anyhow!("[CAP101] missing required capabilities: {hints:?}")
+                }
+                _ => anyhow::Error::new(err),
+            })?;
+    }
+}
+
 fn run_local(args: LocalArgs) -> Result<()> {
     let example_name = args.example.clone();
     let stream_mode = args.stream;
     let json_mode = args.json;
+    let no_follow_resumes = args.no_follow_resumes;
     let burst = args.burst.max(1);
     let payload = parse_payload(&args)?;
     if args.bindings_lock.is_some() && !args.bindings.is_empty() {
@@ -731,6 +791,8 @@ fn run_local(args: LocalArgs) -> Result<()> {
     } else if resources.max_durability_mode() == DurabilityMode::Off {
         resources = resources.with_max_durability_mode(DurabilityMode::Partial);
     }
+    let local_resume_scheduler = Arc::new(LocalResumeScheduler::new());
+    resources = resources.with_resume_scheduler(Arc::clone(&local_resume_scheduler));
 
     let flow_name = ir.flow().name.clone();
     let capture_alias_str = capture_alias.to_string();
@@ -758,15 +820,25 @@ fn run_local(args: LocalArgs) -> Result<()> {
                 Invocation::new(trigger_alias.as_str(), capture_alias.as_str(), payload)
                     .with_deadline(deadline);
 
-            let execution = host_runtime
-                .execute(invocation)
-                .await
-                .map_err(|err| match &err {
-                    kernel_exec::ExecutionError::MissingCapabilities { hints } => {
-                        anyhow!("[CAP101] missing required capabilities: {hints:?}")
-                    }
-                    _ => anyhow::Error::new(err),
-                })?;
+            let mut execution =
+                host_runtime
+                    .execute(invocation)
+                    .await
+                    .map_err(|err| match &err {
+                        kernel_exec::ExecutionError::MissingCapabilities { hints } => {
+                            anyhow!("[CAP101] missing required capabilities: {hints:?}")
+                        }
+                        _ => anyhow::Error::new(err),
+                    })?;
+            if !no_follow_resumes {
+                execution = follow_local_timer_resumes(
+                    &host_runtime,
+                    ir.as_ref(),
+                    local_resume_scheduler.as_ref(),
+                    execution,
+                )
+                .await?;
+            }
 
             let result: Result<RunOutcome> = match execution {
                 ExecutionResult::Value(value) => Ok(RunOutcome {
@@ -3984,6 +4056,8 @@ pub(crate) fn example_bundle(name: &str) -> Result<(host_inproc::FlowBundle, boo
         "s26_http_longtail" => (s26_http_longtail::bundle(), false),
         #[cfg(feature = "example-s27")]
         "s27_binary" => (s27_binary::bundle(), false),
+        #[cfg(feature = "example-s28")]
+        "s28_timer_resume" => (s28_timer_resume::bundle(), false),
         other => return Err(anyhow!("unknown example `{other}`")),
     };
 

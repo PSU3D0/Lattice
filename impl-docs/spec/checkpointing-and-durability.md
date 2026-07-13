@@ -536,8 +536,10 @@ If a host lacks `CheckpointStore`, durability mode is forced to `off`.
    - Load checkpoint record + blobs
    - Reconstruct execution context
    - Continue from frontier.pending nodes
-7. On completion:
-   - Ack checkpoint (allows cleanup)
+7. After a successful resume:
+   - If execution completes, ack the resumed checkpoint (allows cleanup)
+   - If execution durably halts again, persist the successor checkpoint, then ack
+     the superseded checkpoint
    - Release lease
 ```
 
@@ -721,6 +723,26 @@ pub struct TimerWaitOutput {
 
 Code-defined usage patterns live in `impl-docs/spec/stdlib-and-node-registry.md` and the Epic 04
 implementation notes.
+
+#### Local CLI parity
+
+Built-in examples executed by `flows run local` and reconstructed by
+`flows resume run --example ...` receive a validating process-local
+`LocalResumeScheduler`. It records the checkpoint handle and the exact absolute
+epoch also persisted as `CheckpointRecord.resume_after_ms`. By default,
+`flows run local` waits in the foreground, atomically claims each timer schedule,
+and calls `HostRuntime::resume` until the flow reaches a terminal result or a
+non-timer halt. A schedule becomes fired only when claimed, not merely because
+wall time passes. This is a foreground CLI driver, not a daemon or a second
+durable schedule store, and it disappears with the process.
+
+`CheckpointRecord.resume_after_ms` remains the only durable due source across
+processes. `flows run local --no-follow-resumes` preserves the manual path:
+inspect with `flows resume list --due`, then consume with `flows resume run`.
+Manual resume rejects future timed checkpoints unless `--force` is explicit;
+checkpoints without a due epoch retain manual semantics. This proof covers
+built-in native examples only. Bundle, serve, and schedule paths are unchanged,
+and this does not claim Workers runtime parity.
 
 ### 8.3 HITL Approval Node (`std.hitl.approval`)
 

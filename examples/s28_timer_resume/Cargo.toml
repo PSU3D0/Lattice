@@ -1,0 +1,32 @@
+[package]
+name = "example-s28-timer-resume"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Canonical local timer suspend and resume example."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+dag-core = { path = "../../crates/dag-core" }
+dag-macros = { path = "../../crates/dag-macros" }
+host-inproc = { path = "../../crates/host-inproc", optional = true }
+kernel-exec = { path = "../../crates/kernel-exec", optional = true }
+kernel-plan = { path = "../../crates/kernel-plan" }
+serde.workspace = true
+serde_json.workspace = true
+stdlib = { path = "../../crates/stdlib", features = ["timer"] }
+
+[features]
+default = ["host-bundle"]
+host-bundle = ["host-inproc", "kernel-exec", "stdlib/host-bundle"]
+flow-registry = ["dag-core/flow-registry", "dag-macros/flow-registry"]
+
+[package.metadata.latticeflow]
+flows = ["s28_timer_resume_flow"]
+default_flow = "s28_timer_resume_flow"

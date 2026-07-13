@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-#[cfg(feature = "host-wasmtime")]
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -15,6 +14,7 @@ use kernel_exec::ExecutionResult;
 
 use capabilities::durability::{
     CheckpointFilter, CheckpointHandle, CheckpointRecord, CheckpointStatus, CheckpointStore,
+    LocalResumeScheduler,
 };
 use dag_core::FlowId;
 use tokio::runtime::Builder as RuntimeBuilder;
@@ -93,6 +93,9 @@ pub struct ResumeRunArgs {
     /// Root directory for filesystem checkpoints.
     #[arg(long, default_value = ".flow/checkpoints")]
     checkpoint_dir: PathBuf,
+    /// Resume a timed checkpoint before its scheduled due epoch.
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -213,6 +216,8 @@ fn detect_example_for_flow(flow_id: &FlowId) -> Result<Option<String>> {
         "s12_sheetport_quote",
         #[cfg(feature = "example-s13")]
         "s13_github_issue_investigator",
+        #[cfg(feature = "example-s28")]
+        "s28_timer_resume",
     ];
 
     for candidate in EXAMPLES {
@@ -313,13 +318,25 @@ async fn resume_run(args: ResumeRunArgs) -> Result<()> {
         args.run.as_deref(),
     )
     .await?;
-    let _record = store.get(&handle).await.map_err(map_checkpoint_error)?;
+    let record = store.get(&handle).await.map_err(map_checkpoint_error)?;
+    if !args.force
+        && record
+            .resume_after_ms
+            .is_some_and(|resume_after_ms| resume_after_ms > now_ms())
+    {
+        return Err(anyhow!(
+            "checkpoint `{}` is scheduled for {} ms and is not due; pass --force to resume it early",
+            record.checkpoint_id,
+            record.resume_after_ms.unwrap(),
+        ));
+    }
 
     let resources = checkpoint_resources(&args, handle.flow_id.as_str())?;
     let source = resolve_source(&args, &handle.flow_id)?;
 
     let execution = match source {
         ResumeSource::Example(example_name) => {
+            let resources = resources.with_resume_scheduler(Arc::new(LocalResumeScheduler::new()));
             let example = crate::load_example(&example_name)?;
             if example.ir.flow().id != handle.flow_id {
                 return Err(anyhow!(

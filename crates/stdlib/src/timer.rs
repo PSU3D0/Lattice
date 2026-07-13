@@ -44,6 +44,12 @@ async fn timer_wait(input: TimerWaitInput) -> NodeResult<TimerWaitOutput> {
         (duration, until) => (duration, until),
     };
 
+    if duration.is_some_and(|duration| duration.is_zero()) {
+        return Err(NodeError::new(
+            "std.timer.wait schedule failed: invalid delay: delay must be nonzero",
+        ));
+    }
+
     let now = Utc::now();
     let target = if let Some(duration) = duration {
         let chrono_duration = chrono::Duration::from_std(duration)
@@ -55,30 +61,24 @@ async fn timer_wait(input: TimerWaitInput) -> NodeResult<TimerWaitOutput> {
         now
     };
 
+    let at_ms = target.timestamp_millis();
+    if at_ms < 0 {
+        return Err(NodeError::new(
+            "std.timer.wait target time must be after unix epoch",
+        ));
+    }
+
     let schedule_result = context::with_current_async(|resources| async move {
         let scheduler = resources
             .resume_scheduler()
             .ok_or_else(|| NodeError::new("std.timer.wait requires ResumeScheduler"))?;
         let handle = context::current_checkpoint_handle()
             .ok_or_else(|| NodeError::new("std.timer.wait missing checkpoint handle"))?;
-        if let Some(duration) = duration {
-            scheduler
-                .schedule_after(handle, duration)
-                .await
-                .map_err(|err| NodeError::new(format!("std.timer.wait schedule failed: {err}")))?;
-        } else {
-            let at_ms = target.timestamp_millis();
-            if at_ms < 0 {
-                return Err(NodeError::new(
-                    "std.timer.wait target time must be after unix epoch",
-                ));
-            }
-            scheduler
-                .schedule_at(handle, at_ms as u64)
-                .await
-                .map_err(|err| NodeError::new(format!("std.timer.wait schedule failed: {err}")))?;
-        }
-        Ok(())
+        scheduler
+            .schedule_at(handle, at_ms as u64)
+            .await
+            .map_err(|err| NodeError::new(format!("std.timer.wait schedule failed: {err}")))?;
+        Ok::<(), NodeError>(())
     })
     .await;
 

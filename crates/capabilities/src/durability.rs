@@ -1,9 +1,17 @@
 use std::collections::HashMap;
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::SystemTime;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+#[cfg(not(target_arch = "wasm32"))]
+use tokio::sync::Notify;
 
 use crate::Capability;
 use crate::blob::BlobStore;
@@ -157,6 +165,250 @@ pub trait ResumeScheduler: Capability {
     ) -> Result<ScheduleId, ScheduleError>;
     async fn cancel(&self, schedule_id: ScheduleId) -> Result<(), ScheduleError>;
     async fn status(&self, schedule_id: ScheduleId) -> Result<ScheduleStatus, ScheduleError>;
+}
+
+/// A validating, process-local resume scheduler for foreground local development.
+///
+/// Its registry is intentionally lost when the process exits.
+/// [`CheckpointRecord::resume_after_ms`] remains the durable source of truth for
+/// due checkpoints across CLI processes.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct LocalResumeScheduler {
+    schedules: Mutex<HashMap<String, LocalSchedule>>,
+    clock: Arc<dyn LocalSchedulerClock>,
+    changed: Notify,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone)]
+struct LocalSchedule {
+    handle: CheckpointHandle,
+    fires_at_ms: u64,
+    state: LocalScheduleState,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy)]
+enum LocalScheduleState {
+    Pending,
+    Fired { fired_at_ms: u64 },
+    Cancelled,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaimedLocalSchedule {
+    pub schedule_id: ScheduleId,
+    pub handle: CheckpointHandle,
+    pub fires_at_ms: u64,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[async_trait]
+trait LocalSchedulerClock: Send + Sync + 'static {
+    fn now_ms(&self) -> u64;
+    async fn sleep_until_ms(&self, target_ms: u64);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct SystemSchedulerClock;
+
+#[cfg(not(target_arch = "wasm32"))]
+#[async_trait]
+impl LocalSchedulerClock for SystemSchedulerClock {
+    fn now_ms(&self) -> u64 {
+        let millis = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        u64::try_from(millis).unwrap_or(u64::MAX)
+    }
+
+    async fn sleep_until_ms(&self, target_ms: u64) {
+        tokio::time::sleep(Duration::from_millis(
+            target_ms.saturating_sub(self.now_ms()),
+        ))
+        .await;
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl LocalResumeScheduler {
+    pub fn new() -> Self {
+        Self::with_clock(Arc::new(SystemSchedulerClock))
+    }
+
+    fn with_clock(clock: Arc<dyn LocalSchedulerClock>) -> Self {
+        Self {
+            schedules: Mutex::new(HashMap::new()),
+            clock,
+            changed: Notify::new(),
+        }
+    }
+
+    fn register(
+        &self,
+        handle: CheckpointHandle,
+        fires_at_ms: u64,
+    ) -> Result<ScheduleId, ScheduleError> {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+        let mut schedules = self
+            .schedules
+            .lock()
+            .map_err(|_| ScheduleError::Unavailable("local schedule registry poisoned".into()))?;
+        loop {
+            let sequence = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+            let id = format!("local-resume-{sequence}");
+            if !schedules.contains_key(&id) {
+                schedules.insert(
+                    id.clone(),
+                    LocalSchedule {
+                        handle,
+                        fires_at_ms,
+                        state: LocalScheduleState::Pending,
+                    },
+                );
+                self.changed.notify_one();
+                return Ok(ScheduleId(id));
+            }
+        }
+    }
+
+    /// Wait until the earliest pending schedule is due and atomically claim it.
+    ///
+    /// Claiming is the only wall-clock-driven transition to `Fired`; merely
+    /// querying a due schedule leaves it pending.
+    pub async fn wait_and_claim_next(&self) -> Result<ClaimedLocalSchedule, ScheduleError> {
+        loop {
+            let changed = self.changed.notified();
+            let next = {
+                let schedules = self.schedules.lock().map_err(|_| {
+                    ScheduleError::Unavailable("local schedule registry poisoned".into())
+                })?;
+                schedules
+                    .iter()
+                    .filter(|(_, schedule)| matches!(schedule.state, LocalScheduleState::Pending))
+                    .min_by_key(|(id, schedule)| (schedule.fires_at_ms, id.as_str()))
+                    .map(|(id, schedule)| (id.clone(), schedule.fires_at_ms))
+            };
+
+            let Some((id, fires_at_ms)) = next else {
+                changed.await;
+                continue;
+            };
+
+            let now_ms = self.clock.now_ms();
+            if fires_at_ms <= now_ms {
+                let mut schedules = self.schedules.lock().map_err(|_| {
+                    ScheduleError::Unavailable("local schedule registry poisoned".into())
+                })?;
+                let Some(schedule) = schedules.get_mut(&id) else {
+                    continue;
+                };
+                if !matches!(schedule.state, LocalScheduleState::Pending)
+                    || schedule.fires_at_ms > now_ms
+                {
+                    continue;
+                }
+                schedule.state = LocalScheduleState::Fired {
+                    fired_at_ms: now_ms,
+                };
+                return Ok(ClaimedLocalSchedule {
+                    schedule_id: ScheduleId(id),
+                    handle: schedule.handle.clone(),
+                    fires_at_ms: schedule.fires_at_ms,
+                });
+            }
+
+            tokio::select! {
+                _ = self.clock.sleep_until_ms(fires_at_ms) => {}
+                _ = changed => {}
+            }
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Default for LocalResumeScheduler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Capability for LocalResumeScheduler {
+    fn name(&self) -> &'static str {
+        "resume_scheduler.local"
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[async_trait]
+impl ResumeScheduler for LocalResumeScheduler {
+    async fn schedule_at(
+        &self,
+        handle: CheckpointHandle,
+        at_ms: u64,
+    ) -> Result<ScheduleId, ScheduleError> {
+        self.register(handle, at_ms)
+    }
+
+    async fn schedule_after(
+        &self,
+        handle: CheckpointHandle,
+        delay: Duration,
+    ) -> Result<ScheduleId, ScheduleError> {
+        if delay.is_zero() {
+            return Err(ScheduleError::InvalidDelay(
+                "delay must be nonzero".to_string(),
+            ));
+        }
+        let delay_ms = u64::try_from(delay.as_millis()).map_err(|_| {
+            ScheduleError::InvalidDelay("delay exceeds the supported millisecond range".into())
+        })?;
+        let fires_at_ms = self.clock.now_ms().checked_add(delay_ms).ok_or_else(|| {
+            ScheduleError::InvalidDelay("target epoch exceeds the supported range".into())
+        })?;
+        self.register(handle, fires_at_ms)
+    }
+
+    async fn cancel(&self, schedule_id: ScheduleId) -> Result<(), ScheduleError> {
+        let mut schedules = self
+            .schedules
+            .lock()
+            .map_err(|_| ScheduleError::Unavailable("local schedule registry poisoned".into()))?;
+        let schedule = schedules
+            .get_mut(&schedule_id.0)
+            .ok_or(ScheduleError::NotFound)?;
+        match schedule.state {
+            LocalScheduleState::Pending => {
+                schedule.state = LocalScheduleState::Cancelled;
+                self.changed.notify_one();
+                Ok(())
+            }
+            LocalScheduleState::Cancelled => Ok(()),
+            LocalScheduleState::Fired { .. } => Err(ScheduleError::Unavailable(
+                "schedule has already fired".to_string(),
+            )),
+        }
+    }
+
+    async fn status(&self, schedule_id: ScheduleId) -> Result<ScheduleStatus, ScheduleError> {
+        let schedules = self
+            .schedules
+            .lock()
+            .map_err(|_| ScheduleError::Unavailable("local schedule registry poisoned".into()))?;
+        let schedule = schedules
+            .get(&schedule_id.0)
+            .ok_or(ScheduleError::NotFound)?;
+        Ok(match schedule.state {
+            LocalScheduleState::Pending => ScheduleStatus::Pending {
+                fires_at_ms: schedule.fires_at_ms,
+            },
+            LocalScheduleState::Fired { fired_at_ms } => ScheduleStatus::Fired { fired_at_ms },
+            LocalScheduleState::Cancelled => ScheduleStatus::Cancelled,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -588,5 +840,176 @@ pub fn current_checkpoint_handle_remote() -> Option<CheckpointHandle> {
         }
         1 => None, // RESP_NOT_FOUND — no handle set
         _ => None, // Error or unknown
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod local_scheduler_tests {
+    use super::*;
+
+    struct ManualClock {
+        now_ms: AtomicU64,
+        changed: Notify,
+    }
+
+    impl ManualClock {
+        fn new(now_ms: u64) -> Self {
+            Self {
+                now_ms: AtomicU64::new(now_ms),
+                changed: Notify::new(),
+            }
+        }
+
+        fn set(&self, now_ms: u64) {
+            self.now_ms.store(now_ms, Ordering::Relaxed);
+            self.changed.notify_one();
+        }
+    }
+
+    #[async_trait]
+    impl LocalSchedulerClock for ManualClock {
+        fn now_ms(&self) -> u64 {
+            self.now_ms.load(Ordering::Relaxed)
+        }
+
+        async fn sleep_until_ms(&self, target_ms: u64) {
+            while self.now_ms() < target_ms {
+                self.changed.notified().await;
+            }
+        }
+    }
+
+    fn handle(checkpoint_id: &str) -> CheckpointHandle {
+        CheckpointHandle {
+            checkpoint_id: checkpoint_id.into(),
+            flow_id: FlowId("flow".into()),
+            run_id: "run".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn due_observation_stays_pending_until_atomic_claim() {
+        let clock = Arc::new(ManualClock::new(100));
+        let epoch_scheduler = LocalResumeScheduler::with_clock(clock.clone());
+        let epoch_id = epoch_scheduler
+            .schedule_at(handle("unix-epoch"), 0)
+            .await
+            .unwrap();
+        assert_eq!(
+            epoch_scheduler.status(epoch_id.clone()).await.unwrap(),
+            ScheduleStatus::Pending { fires_at_ms: 0 }
+        );
+        let epoch_claim = epoch_scheduler.wait_and_claim_next().await.unwrap();
+        assert_eq!(epoch_claim.schedule_id, epoch_id);
+        assert_eq!(epoch_claim.fires_at_ms, 0);
+
+        let scheduler = LocalResumeScheduler::with_clock(clock.clone());
+        let expected_handle = handle("checkpoint");
+        let id = scheduler
+            .schedule_at(expected_handle.clone(), 150)
+            .await
+            .unwrap();
+        clock.set(151);
+        assert_eq!(
+            scheduler.status(id.clone()).await.unwrap(),
+            ScheduleStatus::Pending { fires_at_ms: 150 }
+        );
+
+        let claimed = scheduler.wait_and_claim_next().await.unwrap();
+        assert_eq!(claimed.schedule_id, id.clone());
+        assert_eq!(claimed.handle, expected_handle);
+        assert_eq!(claimed.fires_at_ms, 150);
+        assert_eq!(
+            scheduler.status(id).await.unwrap(),
+            ScheduleStatus::Fired { fired_at_ms: 151 }
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_uses_manual_clock_and_claims_earliest_pending_schedule() {
+        let clock = Arc::new(ManualClock::new(1_000));
+        let scheduler = Arc::new(LocalResumeScheduler::with_clock(clock.clone()));
+        let later = scheduler.schedule_at(handle("later"), 1_100).await.unwrap();
+        let earlier = scheduler
+            .schedule_at(handle("earlier"), 1_050)
+            .await
+            .unwrap();
+
+        let waiter = {
+            let scheduler = Arc::clone(&scheduler);
+            tokio::spawn(async move { scheduler.wait_and_claim_next().await.unwrap() })
+        };
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+        clock.set(1_050);
+        let claimed = waiter.await.unwrap();
+        assert_eq!(claimed.schedule_id, earlier);
+        assert_eq!(claimed.handle, handle("earlier"));
+        assert_eq!(
+            scheduler.status(later).await.unwrap(),
+            ScheduleStatus::Pending { fires_at_ms: 1_100 }
+        );
+    }
+
+    #[tokio::test]
+    async fn schedule_after_uses_clock_and_ids_are_unique() {
+        let clock = Arc::new(ManualClock::new(1_000));
+        let scheduler = LocalResumeScheduler::with_clock(clock);
+        assert!(matches!(
+            scheduler
+                .schedule_after(handle("invalid"), Duration::ZERO)
+                .await,
+            Err(ScheduleError::InvalidDelay(_))
+        ));
+        let first = scheduler
+            .schedule_after(handle("first"), Duration::from_millis(25))
+            .await
+            .unwrap();
+        let second = scheduler
+            .schedule_after(handle("second"), Duration::from_millis(25))
+            .await
+            .unwrap();
+        assert_ne!(first, second);
+        assert_eq!(
+            scheduler.status(first).await.unwrap(),
+            ScheduleStatus::Pending { fires_at_ms: 1_025 }
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_and_not_found_are_observable() {
+        let scheduler = LocalResumeScheduler::with_clock(Arc::new(ManualClock::new(10)));
+        let id = scheduler
+            .schedule_at(handle("cancelled"), 20)
+            .await
+            .unwrap();
+        scheduler.cancel(id.clone()).await.unwrap();
+        scheduler.cancel(id.clone()).await.unwrap();
+        assert_eq!(
+            scheduler.status(id).await.unwrap(),
+            ScheduleStatus::Cancelled
+        );
+
+        let fired = scheduler.schedule_at(handle("fired"), 1).await.unwrap();
+        let claimed = scheduler.wait_and_claim_next().await.unwrap();
+        assert_eq!(claimed.schedule_id, fired);
+        assert!(matches!(
+            scheduler.cancel(fired.clone()).await,
+            Err(ScheduleError::Unavailable(_))
+        ));
+        assert!(matches!(
+            scheduler.status(fired).await.unwrap(),
+            ScheduleStatus::Fired { .. }
+        ));
+
+        let missing = ScheduleId("missing".into());
+        assert!(matches!(
+            scheduler.status(missing.clone()).await,
+            Err(ScheduleError::NotFound)
+        ));
+        assert!(matches!(
+            scheduler.cancel(missing).await,
+            Err(ScheduleError::NotFound)
+        ));
     }
 }
