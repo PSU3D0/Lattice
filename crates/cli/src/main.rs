@@ -19,7 +19,7 @@ use flow_bundle::Manifest;
 use futures::StreamExt;
 #[cfg(feature = "host-wasmtime")]
 use host_wasmtime::load_flow_bundle;
-use host_web_axum::{HostHandle, RouteConfig};
+use host_web_axum::{HostHandle, MultipartIngressConfig, RouteConfig};
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use kernel_exec::{ExecutionResult, FlowExecutor};
 use kernel_plan::{ValidatedIR, validate};
@@ -311,6 +311,15 @@ struct ServeArgs {
     /// Path to a machine-generated `bindings.lock.json` file.
     #[arg(long)]
     bindings_lock: Option<PathBuf>,
+    /// Enable one bounded PDF multipart field and inject its Artifact at the same payload field.
+    #[arg(long, conflicts_with = "bundle")]
+    multipart_pdf_field: Option<String>,
+    /// Optional payload field that receives the client filename as display metadata.
+    #[arg(long, requires = "multipart_pdf_field")]
+    multipart_filename_field: Option<String>,
+    /// Root directory for multipart ingress run workspaces.
+    #[arg(long, default_value = ".flow/workspaces")]
+    workspace_dir: PathBuf,
     /// Address to bind (host:port).
     #[arg(long, default_value = "127.0.0.1:8080")]
     addr: SocketAddr,
@@ -1252,6 +1261,9 @@ fn run_serve(args: ServeArgs) -> Result<()> {
         ..
     } = handle;
 
+    let multipart_pdf_field = args.multipart_pdf_field;
+    let multipart_filename_field = args.multipart_filename_field;
+    let workspace_dir = args.workspace_dir;
     let addr = args.addr;
     let runtime = RuntimeBuilder::new_multi_thread()
         .enable_all()
@@ -1273,6 +1285,19 @@ fn run_serve(args: ServeArgs) -> Result<()> {
         }
         for plugin in environment_plugins {
             config = config.with_environment_plugin(plugin);
+        }
+        if let Some(file_field) = multipart_pdf_field {
+            let mut multipart = MultipartIngressConfig::pdf(file_field.clone(), file_field.clone());
+            if let Some(filename_field) = multipart_filename_field {
+                multipart = multipart.with_filename_metadata_field(filename_field);
+            }
+            let workspace_factory = FsWorkspaceFactory::new(FsWorkspaceConfig {
+                root: workspace_dir,
+                policy: WorkspacePolicy::default(),
+            });
+            config = config
+                .with_workspace_factory(Arc::new(workspace_factory))
+                .with_multipart_ingress(multipart);
         }
 
         let host = HostHandle::try_new(executor, ir, config).map_err(anyhow::Error::new)?;
