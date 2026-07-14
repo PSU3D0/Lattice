@@ -6034,6 +6034,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "processing-context"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "sha2",
+ "tokio",
+ "tokio-util",
+ "wasmparser 0.118.2",
+ "wasmtime",
+ "wat",
+]
+
+[[package]]
 name = "procfs"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
