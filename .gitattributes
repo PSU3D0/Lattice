@@ -1,0 +1,2 @@
+crates/processing-context/tests/fixtures/*.pdf binary
+crates/processing-context/guests/pdf-extract/*.wasm binary

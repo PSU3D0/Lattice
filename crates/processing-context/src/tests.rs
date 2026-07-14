@@ -1,6 +1,13 @@
 use super::*;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::time::{sleep, timeout};
+
+const QPDF_ENCRYPTED_PDF: &[u8] = include_bytes!("../tests/fixtures/qpdf-encrypted.pdf");
+const FLATE_OUTPUT_EXPANSION_PDF: &[u8] =
+    include_bytes!("../tests/fixtures/flate-output-expansion.pdf");
+const TYPE0_MISSING_DESCENDANTS_PDF: &[u8] =
+    include_bytes!("../tests/fixtures/type0-missing-descendants.pdf");
 
 const NORMAL: &str = r#"
 (module
@@ -633,4 +640,297 @@ async fn bounded_test_observer_retains_latest_success_and_failure_records() {
         TerminationClass::Failure(PublicError::InputTooLarge)
     );
     assert_eq!(records[1].termination_class, TerminationClass::Success);
+}
+
+fn pdf_context() -> &'static ProcessingContext {
+    static CONTEXT: OnceLock<ProcessingContext> = OnceLock::new();
+    CONTEXT.get_or_init(|| {
+        ProcessingRuntime::new_pdf_host()
+            .and_then(|runtime| runtime.create_pdf_extract_context())
+            .unwrap_or_else(|error| {
+                panic!(
+                    "PDF module initialization failed: {:?}",
+                    error.private_source()
+                )
+            })
+    })
+}
+
+async fn run_pdf(input: Vec<u8>) -> Result<ProcessingOutcome, ProcessingFailure> {
+    loop {
+        match pdf_context().try_begin(PDF_EXTRACT_TRANSFORM_ID) {
+            Ok(lease) => return lease.run(input).await,
+            Err(BeginError::Busy) => tokio::task::yield_now().await,
+            Err(error) => panic!("PDF transform admission failed: {error}"),
+        }
+    }
+}
+
+fn escape_pdf_literal(text: &[u8]) -> Vec<u8> {
+    let mut escaped = Vec::with_capacity(text.len());
+    for byte in text {
+        match byte {
+            b'(' | b')' | b'\\' => {
+                escaped.push(b'\\');
+                escaped.push(*byte);
+            }
+            _ => escaped.push(*byte),
+        }
+    }
+    escaped
+}
+
+fn finish_synthetic_pdf(objects: Vec<Vec<u8>>, trailer_extra: &str) -> Vec<u8> {
+    let mut pdf = b"%PDF-1.4\n% synthetic independent fixture\n".to_vec();
+    let mut offsets = vec![0];
+    for (index, object) in objects.iter().enumerate() {
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(format!("{} 0 obj\n", index + 1).as_bytes());
+        pdf.extend_from_slice(object);
+        pdf.extend_from_slice(b"\nendobj\n");
+    }
+    let xref = pdf.len();
+    pdf.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+    pdf.extend_from_slice(b"0000000000 65535 f \n");
+    for offset in offsets.into_iter().skip(1) {
+        pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    pdf.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R{trailer_extra} >>\nstartxref\n{xref}\n%%EOF\n",
+            objects.len() + 1
+        )
+        .as_bytes(),
+    );
+    pdf
+}
+
+fn synthetic_pdf(page_text: &[Vec<u8>], encrypted: bool) -> Vec<u8> {
+    let page_count = page_text.len();
+    let font_id = 3 + page_count * 2;
+    let encrypt_id = font_id + 1;
+    let mut objects = Vec::new();
+    objects.push(b"<< /Type /Catalog /Pages 2 0 R >>".to_vec());
+
+    let kids = (0..page_count)
+        .map(|index| format!("{} 0 R", 3 + index * 2))
+        .collect::<Vec<_>>()
+        .join(" ");
+    objects.push(format!("<< /Type /Pages /Kids [{kids}] /Count {page_count} >>").into_bytes());
+
+    for (index, text) in page_text.iter().enumerate() {
+        let page_id = 3 + index * 2;
+        let content_id = page_id + 1;
+        objects.push(
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 {font_id} 0 R >> >> /Contents {content_id} 0 R >>"
+            )
+            .into_bytes(),
+        );
+        let escaped = escape_pdf_literal(text);
+        let mut stream = b"BT /F1 12 Tf 72 720 Td (".to_vec();
+        stream.extend_from_slice(&escaped);
+        stream.extend_from_slice(b") Tj ET");
+        let mut object = format!("<< /Length {} >>\nstream\n", stream.len()).into_bytes();
+        object.extend_from_slice(&stream);
+        object.extend_from_slice(b"\nendstream");
+        objects.push(object);
+    }
+    objects.push(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec());
+    if encrypted {
+        objects.push(b"<< /Filter /Standard /V 1 /R 2 /O <0000000000000000000000000000000000000000000000000000000000000000> /U <0000000000000000000000000000000000000000000000000000000000000000> /P -4 >>".to_vec());
+    }
+
+    let trailer_extra = if encrypted {
+        format!(
+            " /Encrypt {encrypt_id} 0 R /ID [<00112233445566778899aabbccddeeff><00112233445566778899aabbccddeeff>]"
+        )
+    } else {
+        String::new()
+    };
+    finish_synthetic_pdf(objects, &trailer_extra)
+}
+
+fn synthetic_normalization_pdf() -> Vec<u8> {
+    let content = b"BT /F1 12 Tf 72 720 Td (A) Tj ET";
+    let mut content_stream = format!("<< /Length {} >>\nstream\n", content.len()).into_bytes();
+    content_stream.extend_from_slice(content);
+    content_stream.extend_from_slice(b"\nendstream");
+
+    let cmap = b"begincmap\n1 begincodespacerange\n<41> <41>\nendcodespacerange\n1 beginbfchar\n<41> <006800e9000d000a00780001007f>\nendbfchar\nendcmap";
+    let mut cmap_stream = format!("<< /Length {} >>\nstream\n", cmap.len()).into_bytes();
+    cmap_stream.extend_from_slice(cmap);
+    cmap_stream.extend_from_slice(b"\nendstream");
+
+    finish_synthetic_pdf(
+        vec![
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>".to_vec(),
+            content_stream,
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /ToUnicode 6 0 R >>".to_vec(),
+            cmap_stream,
+        ],
+        "",
+    )
+}
+
+fn pdf_envelope(output: &[u8]) -> (u32, &str) {
+    let page_count = u32::from_le_bytes(output[..4].try_into().unwrap());
+    (page_count, std::str::from_utf8(&output[4..]).unwrap())
+}
+
+#[tokio::test]
+async fn checked_pdf_module_is_admitted_and_extracts_one_and_multiple_pages() {
+    assert_eq!(ProcessingBudgets::default().fuel, 10_000_000);
+    assert_eq!(pdf_extract_processing_budgets().fuel, 100_000_000);
+    assert_eq!(PDF_EXTRACT_MODULE.transform_id(), PDF_EXTRACT_TRANSFORM_ID);
+    assert_eq!(
+        PDF_EXTRACT_MODULE.module_sha256(),
+        PDF_EXTRACT_MODULE_SHA256
+    );
+
+    let one = run_pdf(synthetic_pdf(&[b"one page".to_vec()], false))
+        .await
+        .unwrap();
+    let (pages, text) = pdf_envelope(&one.output);
+    assert_eq!(pages, 1);
+    assert!(text.contains("one page"), "extracted text: {text:?}");
+
+    let multiple = run_pdf(synthetic_pdf(
+        &[b"first page".to_vec(), b"second page".to_vec()],
+        false,
+    ))
+    .await
+    .unwrap();
+    let (pages, text) = pdf_envelope(&multiple.output);
+    assert_eq!(pages, 2);
+    assert!(text.contains("first page"), "extracted text: {text:?}");
+    assert!(text.contains("second page"), "extracted text: {text:?}");
+}
+
+#[tokio::test]
+async fn pdf_module_rejects_malformed_truncated_encrypted_zero_page_and_no_text() {
+    let valid = synthetic_pdf(&[b"truncate me".to_vec()], false);
+    let malformed = [b"not a PDF".to_vec(), valid[..valid.len() / 2].to_vec()];
+    for (index, fixture) in malformed.into_iter().enumerate() {
+        let error = run_pdf(fixture).await.unwrap_err();
+        assert!(
+            matches!(
+                error.public_error,
+                PublicError::UnsupportedDocument | PublicError::GuestFailed
+            ),
+            "malformed fixture {index} returned {}",
+            error.public_error
+        );
+    }
+
+    let unsupported = [
+        synthetic_pdf(&[b"secret".to_vec()], true),
+        synthetic_pdf(&[], false),
+        synthetic_pdf(&[Vec::new()], false),
+    ];
+    for (index, fixture) in unsupported.into_iter().enumerate() {
+        let error = run_pdf(fixture).await.unwrap_err();
+        assert_eq!(
+            error.public_error,
+            PublicError::UnsupportedDocument,
+            "unsupported fixture {index}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn pdf_module_rejects_genuine_qpdf_encryption_as_unsupported() {
+    assert!(
+        QPDF_ENCRYPTED_PDF
+            .windows(8)
+            .any(|bytes| bytes == b"/Encrypt")
+    );
+    let error = run_pdf(QPDF_ENCRYPTED_PDF.to_vec()).await.unwrap_err();
+    assert_eq!(error.public_error, PublicError::UnsupportedDocument);
+    assert_eq!(
+        error.record.termination_class,
+        TerminationClass::Failure(PublicError::UnsupportedDocument)
+    );
+}
+
+#[tokio::test]
+async fn pdf_module_rejects_201_pages_before_extraction() {
+    let pages = (0..201)
+        .map(|index| format!("page {index}").into_bytes())
+        .collect::<Vec<_>>();
+    let error = run_pdf(synthetic_pdf(&pages, false)).await.unwrap_err();
+    assert_eq!(error.public_error, PublicError::UnsupportedDocument);
+}
+
+#[tokio::test]
+async fn pdf_module_contains_flate_expansion_and_survives_with_a_fresh_store() {
+    assert!(FLATE_OUTPUT_EXPANSION_PDF.len() < 2 * 1024);
+    assert!(
+        FLATE_OUTPUT_EXPANSION_PDF
+            .windows(12)
+            .any(|bytes| bytes == b"/FlateDecode")
+    );
+    let error = run_pdf(FLATE_OUTPUT_EXPANSION_PDF.to_vec())
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error.public_error,
+        PublicError::UnsupportedDocument
+            | PublicError::FuelExhausted
+            | PublicError::WallTimeExceeded
+            | PublicError::MemoryExhausted
+    ));
+    assert!(error.record.output_sha256.is_none());
+
+    let recovered = run_pdf(synthetic_pdf(&[b"after flate failure".to_vec()], false))
+        .await
+        .unwrap();
+    assert!(
+        pdf_envelope(&recovered.output)
+            .1
+            .contains("after flate failure")
+    );
+}
+
+#[tokio::test]
+async fn pdf_module_contains_known_pdf_extract_panic_and_survives() {
+    let error = run_pdf(TYPE0_MISSING_DESCENDANTS_PDF.to_vec())
+        .await
+        .unwrap_err();
+    assert_eq!(error.public_error, PublicError::GuestFailed);
+    assert_eq!(error.to_string(), "guest_failed");
+
+    let recovered = run_pdf(synthetic_pdf(&[b"after panic".to_vec()], false))
+        .await
+        .unwrap();
+    assert!(pdf_envelope(&recovered.output).1.contains("after panic"));
+}
+
+#[tokio::test]
+async fn actual_pdf_output_is_canonically_normalized() {
+    let outcome = run_pdf(synthetic_normalization_pdf()).await.unwrap();
+    let (pages, text) = pdf_envelope(&outcome.output);
+    assert_eq!(pages, 1);
+    assert!(
+        text.contains("hé\nx\u{fffd}\u{fffd}"),
+        "normalized extracted text: {text:?}"
+    );
+    assert!(!text.contains('\r'));
+    assert!(
+        text.chars()
+            .all(|character| character == '\n' || character == '\t' || !character.is_control())
+    );
+}
+
+#[tokio::test]
+async fn pdf_module_output_is_stable_across_fresh_stores() {
+    let fixture = synthetic_pdf(&[b"stable output".to_vec()], false);
+    let first = run_pdf(fixture.clone()).await.unwrap();
+    for _ in 0..4 {
+        let repeated = run_pdf(fixture.clone()).await.unwrap();
+        assert_eq!(repeated.output, first.output);
+        assert_eq!(repeated.record.output_sha256, first.record.output_sha256);
+    }
 }

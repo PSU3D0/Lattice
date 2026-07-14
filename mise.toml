@@ -7,6 +7,7 @@ fnox = "latest"
 gitleaks = "latest"
 uv = "latest"
 "npm:wrangler" = "latest"
+"cargo:wasm-tools" = "1.245.1"
 
 [env]
 CARGO_TERM_COLOR = "always"
@@ -84,17 +85,25 @@ depends = [
 ]
 run = "echo finished workerd npm suites"
 
+[tasks.test-pdf-extract-guest-native]
+description = "Run direct native unit tests for the excluded PDF guest crate"
+run = "cargo +1.93.0 test --manifest-path crates/processing-context/guests/pdf-extract/Cargo.toml --locked"
+
+[tasks.verify-pdf-extract-wasm]
+description = "Rebuild twice and verify the checked normalized PDF guest wasm"
+run = "crates/processing-context/guests/pdf-extract/build.sh --verify"
+
 [tasks.validate-wasm]
 description = "Wasm lane validation checks for CI"
 # The npm suites run in the dedicated `npm-suites` CI job (test-npm-suites)
 # so they are a visible gate of their own and can never silently rot again
 # (W2 finding: red for two waves unnoticed).
-depends = ["check-wasm-kernel", "check-wasm-host-workers"]
+depends = ["check-wasm-kernel", "check-wasm-host-workers", "verify-pdf-extract-wasm"]
 run = "echo finished wasm validation checks"
 
 [tasks.validate]
 description = "Aggregate validation task for CI"
-depends = ["fmt", "clippy", "test"]
+depends = ["fmt", "clippy", "test", "test-pdf-extract-guest-native"]
 run = "echo finished validation checks"
 
 [tasks.hint-gate]

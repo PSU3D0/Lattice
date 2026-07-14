@@ -2,6 +2,7 @@
 resolver = "3"
 exclude = [
   "crates/cap-http-workers/workerd-tests",
+  "crates/processing-context/guests/pdf-extract",
 ]
 members = [
   "crates/cap-blob-fs",

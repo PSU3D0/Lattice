@@ -12,14 +12,20 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
 use tokio_util::sync::CancellationToken;
 use wasmparser::{Encoding, Parser, Payload};
 use wasmtime::{
-    Config, Engine, ExternType, Instance, Linker, Memory, Module, ResourceLimiter, Store,
-    StoreLimits, StoreLimitsBuilder, Trap, UpdateDeadline, ValType,
+    Config, Engine, ExternType, Instance, Linker, Memory, Module, Mutability, ResourceLimiter,
+    Store, StoreLimits, StoreLimitsBuilder, Trap, UpdateDeadline, ValType,
 };
 
 pub const ABI_VERSION: &str = "lattice.transform.v1";
 pub const RUNTIME_VERSION: &str = "wasmtime-16.0.0";
 pub const MAX_HOST_CONCURRENCY: usize = 2;
 pub const GUEST_ERROR_UNSUPPORTED_DOCUMENT: i32 = 1;
+pub const PDF_EXTRACT_TRANSFORM_ID: &str = "lattice.pdf.extract_text.v1";
+const PDF_EXTRACT_MODULE_SHA256: [u8; 32] = [
+    0x78, 0x8d, 0x78, 0x86, 0x95, 0xc4, 0x0d, 0xa2, 0x32, 0x5b, 0x55, 0x69, 0x91, 0xaf, 0x48, 0x01,
+    0x59, 0xdb, 0x6e, 0xb3, 0x59, 0xfa, 0x32, 0xdd, 0x87, 0x22, 0xe4, 0xdf, 0x0f, 0xef, 0xf7, 0xb3,
+];
+const PDF_EXTRACT_MODULE_BYTES: &[u8] = include_bytes!("../guests/pdf-extract/pdf_extract.wasm");
 const WASM_PAGE_BYTES: u64 = 65_536;
 const MIN_EPOCH_INTERVAL: Duration = Duration::from_millis(1);
 const MIN_STALE_HEARTBEAT: Duration = Duration::from_millis(4);
@@ -103,10 +109,6 @@ impl Default for ProcessingBudgets {
 }
 
 impl ProcessingBudgets {
-    fn effective(requested: Self) -> Result<Self, InitializationError> {
-        Self::bounded_by(requested, &Self::default())
-    }
-
     fn bounded_by(requested: Self, ceiling: &Self) -> Result<Self, InitializationError> {
         let effective = Self {
             module_bytes: requested.module_bytes.min(ceiling.module_bytes),
@@ -194,6 +196,25 @@ impl ModuleDescriptor {
         module_bytes: &'static [u8],
     ) -> Self {
         Self::host_allowlisted(transform_id, module_sha256, module_bytes)
+    }
+}
+
+pub static PDF_EXTRACT_MODULE: ModuleDescriptor = ModuleDescriptor::host_allowlisted(
+    PDF_EXTRACT_TRANSFORM_ID,
+    PDF_EXTRACT_MODULE_SHA256,
+    PDF_EXTRACT_MODULE_BYTES,
+);
+
+/// Returns the PDF-only sandbox policy.
+///
+/// The 100M fuel ceiling is calibrated against the checked qpdf-encrypted,
+/// FlateDecode expansion, panic-containment, one-page, and multi-page fixtures.
+/// It is deliberately separate from the 10M general-processing default; rerun
+/// that fixture suite before changing the PDF ceiling.
+pub fn pdf_extract_processing_budgets() -> ProcessingBudgets {
+    ProcessingBudgets {
+        fuel: 100_000_000,
+        ..ProcessingBudgets::default()
     }
 }
 
@@ -581,7 +602,27 @@ pub struct ProcessingRuntime {
 
 impl ProcessingRuntime {
     pub fn new(requested_policy: ProcessingBudgets) -> Result<Self, InitializationError> {
-        let policy = ProcessingBudgets::effective(requested_policy)?;
+        Self::new_with_ceiling(requested_policy, &ProcessingBudgets::default())
+    }
+
+    /// Creates the one host-owned runtime with the calibrated PDF ceiling.
+    /// All PDF and future transform contexts in that host must derive from
+    /// this shared runtime so aggregate admission remains process-wide.
+    pub fn new_pdf_host() -> Result<Self, InitializationError> {
+        let policy = pdf_extract_processing_budgets();
+        Self::new_with_ceiling(policy.clone(), &policy)
+    }
+
+    /// Compiles the checked PDF module into this host's shared runtime.
+    pub fn create_pdf_extract_context(&self) -> Result<ProcessingContext, InitializationError> {
+        self.create_context(&PDF_EXTRACT_MODULE, pdf_extract_processing_budgets())
+    }
+
+    fn new_with_ceiling(
+        requested_policy: ProcessingBudgets,
+        ceiling: &ProcessingBudgets,
+    ) -> Result<Self, InitializationError> {
+        let policy = ProcessingBudgets::bounded_by(requested_policy, ceiling)?;
         let engine = configured_engine()?;
         // Construction does not succeed until the ticker thread has incremented
         // the engine epoch and published a real heartbeat.
@@ -614,7 +655,7 @@ impl ProcessingRuntime {
         admit_descriptor(descriptor, &budgets)?;
         let module =
             Module::from_binary(&self.inner.engine, descriptor.module_bytes).map_err(|error| {
-                InitializationError::new(PublicError::InvalidModule, error.to_string())
+                InitializationError::new(PublicError::InvalidModule, format!("{error:#}"))
             })?;
         admit_compiled_module(&module, &budgets)?;
         Ok(ProcessingContext {
@@ -1295,6 +1336,22 @@ fn admit_compiled_module(
 
     let mut required = [false; 5];
     for export in module.exports() {
+        if matches!(export.name(), "__data_end" | "__heap_base") {
+            match export.ty() {
+                ExternType::Global(global)
+                    if *global.content() == ValType::I32
+                        && global.mutability() == Mutability::Const =>
+                {
+                    continue;
+                }
+                _ => {
+                    return Err(InitializationError::new(
+                        PublicError::InvalidAbi,
+                        "toolchain global exceeds v1 profile",
+                    ));
+                }
+            }
+        }
         let slot = match (export.name(), export.ty()) {
             ("memory", ExternType::Memory(memory)) => {
                 if memory.is_64()
