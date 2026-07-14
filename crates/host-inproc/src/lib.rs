@@ -176,6 +176,66 @@ pub struct InvocationParts {
     pub metadata: InvocationMetadata,
 }
 
+/// Host-ingress bytes staged before graph execution.
+///
+/// This type is deliberately separate from [`Invocation`] and
+/// [`InvocationParts`]: attachment bytes are host transport data and must
+/// never enter the canonical JSON invocation, checkpoints, or plugin metadata.
+pub struct IngressAttachment {
+    payload_field: String,
+    content_type: String,
+    bytes: Vec<u8>,
+}
+
+impl IngressAttachment {
+    pub fn new(
+        payload_field: impl Into<String>,
+        content_type: impl Into<String>,
+        bytes: Vec<u8>,
+    ) -> Self {
+        Self {
+            payload_field: payload_field.into(),
+            content_type: content_type.into(),
+            bytes,
+        }
+    }
+}
+
+impl std::fmt::Debug for IngressAttachment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IngressAttachment")
+            .field("payload_field", &self.payload_field)
+            .field("content_type", &self.content_type)
+            .field("len", &self.bytes.len())
+            .finish()
+    }
+}
+
+struct ValidatedIngressAttachment {
+    payload_field: String,
+    stage_path: String,
+    content_type: String,
+    bytes: Vec<u8>,
+}
+
+/// Explicit bounds applied before host-ingress attachments are staged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IngressAttachmentPolicy {
+    pub max_attachments: usize,
+    pub max_attachment_bytes: u64,
+    pub max_total_bytes: u64,
+}
+
+impl Default for IngressAttachmentPolicy {
+    fn default() -> Self {
+        Self {
+            max_attachments: 8,
+            max_attachment_bytes: 8 * 1024 * 1024,
+            max_total_bytes: 10 * 1024 * 1024,
+        }
+    }
+}
+
 /// Arbitrary metadata supplied by bridges (request IDs, headers, environment hints, etc.).
 #[derive(Debug, Clone, Default)]
 pub struct InvocationMetadata {
@@ -739,16 +799,115 @@ impl HostRuntime {
             .map_err(ExecutionError::HostEnvironment)
     }
 
+    async fn fail_ingress_workspace(
+        &self,
+        scope: WorkspaceRunScope,
+        primary: ExecutionError,
+    ) -> ExecutionError {
+        match self
+            .complete_workspace(scope, WorkspaceCompletionDisposition::Failed)
+            .await
+        {
+            Ok(()) => primary,
+            Err(cleanup) => ExecutionError::HostEnvironment(anyhow::anyhow!(
+                "ingress execution failed: {primary}; workspace cleanup also failed: {cleanup}"
+            )),
+        }
+    }
+
     /// Execute a single invocation, returning the captured result or error.
     pub async fn execute(&self, invocation: Invocation) -> Result<ExecutionResult, ExecutionError> {
+        self.execute_internal(invocation, Vec::new(), IngressAttachmentPolicy::default())
+            .await
+    }
+
+    /// Stage host-ingress attachments into the invocation's run-scoped
+    /// workspace, inject only their [`capabilities::Artifact`] values into the
+    /// top-level JSON payload, then execute normally.
+    pub async fn execute_with_ingress_attachments(
+        &self,
+        invocation: Invocation,
+        attachments: Vec<IngressAttachment>,
+        policy: IngressAttachmentPolicy,
+    ) -> Result<ExecutionResult, ExecutionError> {
+        if attachments.is_empty() {
+            return Err(ExecutionError::HostEnvironment(anyhow::anyhow!(
+                "ingress attachment execution requires at least one attachment"
+            )));
+        }
+        self.execute_internal(invocation, attachments, policy).await
+    }
+
+    async fn execute_internal(
+        &self,
+        invocation: Invocation,
+        attachments: Vec<IngressAttachment>,
+        policy: IngressAttachmentPolicy,
+    ) -> Result<ExecutionResult, ExecutionError> {
         let InvocationParts {
             trigger_alias,
             capture_alias,
-            payload,
+            mut payload,
             deadline,
             mut metadata,
         } = invocation.into_parts();
 
+        let normalized_attachments = validate_ingress_attachments(&payload, attachments, policy)?;
+        let has_ingress_attachments = !normalized_attachments.is_empty();
+        if has_ingress_attachments {
+            if metadata.labels().contains_key("lf.run_id") {
+                return Err(ExecutionError::HostEnvironment(anyhow::anyhow!(
+                    "ingress attachment invocations require a host-generated run id"
+                )));
+            }
+            if self.workspace_factory.is_none() {
+                return Err(ExecutionError::HostEnvironment(anyhow::anyhow!(
+                    "ingress attachments require a host-owned workspace factory"
+                )));
+            }
+            let trigger = self
+                .ir
+                .flow()
+                .nodes
+                .iter()
+                .find(|node| node.alias == trigger_alias)
+                .ok_or_else(|| ExecutionError::UnknownTrigger {
+                    alias: trigger_alias.clone(),
+                })?;
+            if self
+                .ir
+                .flow()
+                .edges
+                .iter()
+                .any(|edge| edge.to == trigger_alias)
+            {
+                return Err(ExecutionError::UnknownTrigger {
+                    alias: trigger_alias.clone(),
+                });
+            }
+            if !self
+                .ir
+                .flow()
+                .nodes
+                .iter()
+                .any(|node| node.alias == capture_alias)
+            {
+                return Err(ExecutionError::UnknownCapture {
+                    alias: capture_alias.clone(),
+                });
+            }
+            let permits_ingress_write = trigger.effect_hints.iter().any(|hint| {
+                matches!(
+                    dag_core::EffectHint::parse(hint),
+                    Ok(dag_core::EffectHint::WorkspaceWrite | dag_core::EffectHint::Workspace)
+                )
+            });
+            if !permits_ingress_write {
+                return Err(ExecutionError::MissingCapabilities {
+                    hints: vec![capabilities::workspace::HINT_WORKSPACE_WRITE.to_string()],
+                });
+            }
+        }
         let run_id = metadata
             .labels()
             .get("lf.run_id")
@@ -761,12 +920,53 @@ impl HostRuntime {
         let connector_grants = match self.preflight_with_resources(resources.as_ref()) {
             Ok(grants) => grants,
             Err(err) => {
+                if has_ingress_attachments {
+                    return Err(self.fail_ingress_workspace(workspace_scope, err).await);
+                }
                 let _ = self
                     .complete_workspace(workspace_scope, WorkspaceCompletionDisposition::Failed)
                     .await;
                 return Err(err);
             }
         };
+
+        if has_ingress_attachments {
+            let Some(writer) = resources.workspace_write() else {
+                let primary = ExecutionError::MissingCapabilities {
+                    hints: vec![capabilities::workspace::HINT_WORKSPACE_WRITE.to_string()],
+                };
+                return Err(self.fail_ingress_workspace(workspace_scope, primary).await);
+            };
+            let object = payload.as_object_mut().expect("validated object payload");
+            for attachment in normalized_attachments {
+                let artifact = match writer
+                    .stage_artifact(
+                        &attachment.stage_path,
+                        &attachment.bytes,
+                        attachment.content_type,
+                    )
+                    .await
+                {
+                    Ok(artifact) => artifact,
+                    Err(err) => {
+                        let primary = ExecutionError::HostEnvironment(anyhow::anyhow!(
+                            "ingress attachment staging failed: {err}"
+                        ));
+                        return Err(self.fail_ingress_workspace(workspace_scope, primary).await);
+                    }
+                };
+                let value = match serde_json::to_value(artifact) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        let primary = ExecutionError::HostEnvironment(anyhow::anyhow!(
+                            "ingress artifact serialization failed: {err}"
+                        ));
+                        return Err(self.fail_ingress_workspace(workspace_scope, primary).await);
+                    }
+                };
+                object.insert(attachment.payload_field, value);
+            }
+        }
 
         metadata.insert_label("lf.run_id", run_id.clone());
         if !metadata.labels().contains_key("lf.flow_id") {
@@ -797,6 +997,19 @@ impl HostRuntime {
                 deadline,
             )
             .await;
+        let mut ingress_cleanup_done = false;
+        let result = match result {
+            Ok(ExecutionResult::Stream(_)) if has_ingress_attachments => {
+                let primary = ExecutionError::HostEnvironment(anyhow::anyhow!(
+                    "streaming capture is not supported for ingress attachment execution"
+                ));
+                ingress_cleanup_done = true;
+                Err(self
+                    .fail_ingress_workspace(workspace_scope.clone(), primary)
+                    .await)
+            }
+            other => other,
+        };
 
         for plugin in self.plugins.iter() {
             plugin.after_execute(
@@ -816,6 +1029,12 @@ impl HostRuntime {
                 Ok(value)
             }
             Err(err) => {
+                if has_ingress_attachments && !ingress_cleanup_done {
+                    return Err(self.fail_ingress_workspace(workspace_scope, err).await);
+                }
+                if ingress_cleanup_done {
+                    return Err(err);
+                }
                 let _ = self
                     .complete_workspace(workspace_scope, WorkspaceCompletionDisposition::Failed)
                     .await;
@@ -1042,6 +1261,82 @@ impl HostRuntime {
     }
 }
 
+fn validate_ingress_attachments(
+    payload: &JsonValue,
+    attachments: Vec<IngressAttachment>,
+    policy: IngressAttachmentPolicy,
+) -> Result<Vec<ValidatedIngressAttachment>, ExecutionError> {
+    if attachments.is_empty() {
+        return Ok(Vec::new());
+    }
+    let Some(object) = payload.as_object() else {
+        return Err(ExecutionError::HostEnvironment(anyhow::anyhow!(
+            "ingress attachments require a top-level object payload"
+        )));
+    };
+    if attachments.len() > policy.max_attachments {
+        return Err(ExecutionError::HostEnvironment(anyhow::anyhow!(
+            "ingress attachment count {} exceeds limit {}",
+            attachments.len(),
+            policy.max_attachments
+        )));
+    }
+
+    let mut fields = BTreeSet::new();
+    let mut total_bytes = 0u64;
+    let mut normalized = Vec::with_capacity(attachments.len());
+    for (index, attachment) in attachments.into_iter().enumerate() {
+        if attachment.payload_field.is_empty() {
+            return Err(ExecutionError::HostEnvironment(anyhow::anyhow!(
+                "ingress attachment payload field must not be empty"
+            )));
+        }
+        if object.contains_key(&attachment.payload_field)
+            || !fields.insert(attachment.payload_field.clone())
+        {
+            return Err(ExecutionError::HostEnvironment(anyhow::anyhow!(
+                "ingress attachment would replace duplicate payload field `{}`",
+                attachment.payload_field
+            )));
+        }
+        if attachment.content_type.trim().is_empty() {
+            return Err(ExecutionError::HostEnvironment(anyhow::anyhow!(
+                "ingress attachment `{}` has an empty content type",
+                attachment.payload_field
+            )));
+        }
+        let len = u64::try_from(attachment.bytes.len()).unwrap_or(u64::MAX);
+        if len > policy.max_attachment_bytes {
+            return Err(ExecutionError::HostEnvironment(anyhow::anyhow!(
+                "ingress attachment `{}` size {} exceeds limit {}",
+                attachment.payload_field,
+                len,
+                policy.max_attachment_bytes
+            )));
+        }
+        total_bytes = total_bytes.checked_add(len).ok_or_else(|| {
+            ExecutionError::HostEnvironment(anyhow::anyhow!(
+                "ingress attachment total size overflow"
+            ))
+        })?;
+        if total_bytes > policy.max_total_bytes {
+            return Err(ExecutionError::HostEnvironment(anyhow::anyhow!(
+                "ingress attachment total size {} exceeds limit {}",
+                total_bytes,
+                policy.max_total_bytes
+            )));
+        }
+        let content_hash = capabilities::artifact::sha256_hex(&attachment.bytes);
+        normalized.push(ValidatedIngressAttachment {
+            payload_field: attachment.payload_field,
+            stage_path: format!("ingress/{index:04}-{content_hash}"),
+            content_type: attachment.content_type,
+            bytes: attachment.bytes,
+        });
+    }
+    Ok(normalized)
+}
+
 #[derive(Debug, Deserialize)]
 struct ResumeFrameV1 {
     version: u32,
@@ -1202,7 +1497,10 @@ mod tests {
     use kernel_plan::validate;
     use std::collections::HashMap;
     use std::fs;
-    use std::sync::{Arc as StdArc, Mutex};
+    use std::sync::{
+        Arc as StdArc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
     use std::time::Duration;
     use tempfile::tempdir;
 
@@ -1681,6 +1979,8 @@ mod tests {
     #[derive(Default)]
     struct SharedMemWorkspace {
         files: Mutex<HashMap<String, Vec<u8>>>,
+        write_attempts: AtomicUsize,
+        fail_on_write: AtomicUsize,
     }
 
     impl capabilities::Capability for SharedMemWorkspace {
@@ -1716,6 +2016,13 @@ mod tests {
             capabilities::workspace::WorkspaceWriteResult,
             capabilities::workspace::WorkspaceError,
         > {
+            let attempt = self.write_attempts.fetch_add(1, Ordering::Relaxed) + 1;
+            let fail_on_write = self.fail_on_write.load(Ordering::Relaxed);
+            if fail_on_write != 0 && attempt == fail_on_write {
+                return Err(capabilities::workspace::WorkspaceError::Backend(
+                    "injected ingress write failure".to_string(),
+                ));
+            }
             self.files
                 .lock()
                 .expect("files lock")
@@ -1746,6 +2053,478 @@ mod tests {
         > {
             Ok(capabilities::workspace::WorkspaceDeleteResult { deleted: false })
         }
+    }
+
+    #[derive(Default)]
+    struct IngressWorkspaceFactory {
+        workspace: StdArc<SharedMemWorkspace>,
+        opened: Mutex<Vec<WorkspaceRunScope>>,
+        completed: Mutex<Vec<(WorkspaceRunScope, WorkspaceCompletionDisposition)>>,
+        fail_completion: AtomicBool,
+    }
+
+    impl IngressWorkspaceFactory {
+        fn opened(&self) -> Vec<WorkspaceRunScope> {
+            self.opened.lock().expect("opened lock").clone()
+        }
+
+        fn completed(&self) -> Vec<(WorkspaceRunScope, WorkspaceCompletionDisposition)> {
+            self.completed.lock().expect("completed lock").clone()
+        }
+    }
+
+    #[async_trait]
+    impl WorkspaceFactory for IngressWorkspaceFactory {
+        async fn open(&self, scope: WorkspaceRunScope) -> anyhow::Result<Arc<dyn Workspace>> {
+            self.opened.lock().expect("opened lock").push(scope);
+            Ok(self.workspace.clone())
+        }
+
+        async fn complete(
+            &self,
+            scope: WorkspaceRunScope,
+            disposition: WorkspaceCompletionDisposition,
+        ) -> anyhow::Result<()> {
+            if self.fail_completion.load(Ordering::Relaxed) {
+                anyhow::bail!("injected ingress cleanup failure");
+            }
+            self.workspace.files.lock().expect("files lock").clear();
+            self.completed
+                .lock()
+                .expect("completed lock")
+                .push((scope, disposition));
+            Ok(())
+        }
+    }
+
+    fn ingress_test_runtime(
+        trigger_write: bool,
+        capture_read: bool,
+        require_http: bool,
+        halt: bool,
+    ) -> (
+        HostRuntime,
+        StdArc<IngressWorkspaceFactory>,
+        StdArc<AtomicUsize>,
+    ) {
+        const WRITE_HINTS: [&str; 1] = [capabilities::workspace::HINT_WORKSPACE_WRITE];
+        const READ_HINTS: [&str; 1] = [capabilities::workspace::HINT_WORKSPACE_READ];
+        const READ_HTTP_HINTS: [&str; 2] = [
+            capabilities::workspace::HINT_WORKSPACE_READ,
+            capabilities::http::HINT_HTTP_READ,
+        ];
+
+        let downstream = StdArc::new(AtomicUsize::new(0));
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn("tests::ingress_trigger", |value: JsonValue| async move {
+                Ok(value)
+            })
+            .unwrap();
+        let downstream_for_node = downstream.clone();
+        registry
+            .register_fn("tests::ingress_sink", |value: JsonValue| async move {
+                Ok(value)
+            })
+            .unwrap();
+        let capture_handler = move |value: JsonValue| {
+            let downstream = downstream_for_node.clone();
+            async move {
+                let artifact_value = value
+                    .get("cv")
+                    .cloned()
+                    .ok_or_else(|| NodeError::new("missing cv artifact"))?;
+                let artifact: capabilities::Artifact =
+                    serde_json::from_value(artifact_value.clone())
+                        .map_err(|err| NodeError::new(format!("invalid cv artifact: {err}")))?;
+                let bytes =
+                    capabilities::context::with_current_async(move |resources| async move {
+                        let reader = resources
+                            .workspace_read()
+                            .ok_or_else(|| NodeError::new("missing workspace read capability"))?;
+                        reader
+                            .read(&artifact.handle)
+                            .await
+                            .map_err(|err| NodeError::new(err.to_string()))
+                    })
+                    .await
+                    .ok_or_else(|| NodeError::new("missing resource context"))??;
+                downstream.fetch_add(1, Ordering::Relaxed);
+                Ok(serde_json::json!({
+                    "artifact": artifact_value,
+                    "byte_len": bytes.len(),
+                    "metadata": value.get("metadata").cloned().unwrap_or(JsonValue::Null),
+                }))
+            }
+        };
+        if halt {
+            registry
+                .register_halt_fn("tests::ingress_capture", capture_handler)
+                .unwrap();
+        } else {
+            registry
+                .register_fn("tests::ingress_capture", capture_handler)
+                .unwrap();
+        }
+
+        let mut builder = FlowBuilder::new(
+            "ingress_attachment_test",
+            Version::new(1, 0, 0),
+            Profile::Dev,
+        );
+        let trigger_hints: &[&str] = if trigger_write { &WRITE_HINTS } else { &[] };
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline_with_hints(
+                    "tests::ingress_trigger",
+                    "IngressTrigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    if trigger_write {
+                        Effects::Effectful
+                    } else {
+                        Effects::Pure
+                    },
+                    Determinism::BestEffort,
+                    None,
+                    &[],
+                    trigger_hints,
+                ),
+            )
+            .unwrap();
+        let capture_hints: &[&str] = if require_http {
+            &READ_HTTP_HINTS
+        } else if capture_read {
+            &READ_HINTS
+        } else {
+            &[]
+        };
+        let capture = builder
+            .add_node(
+                "capture",
+                &NodeSpec::inline_with_hints(
+                    "tests::ingress_capture",
+                    "IngressCapture",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::ReadOnly,
+                    Determinism::BestEffort,
+                    None,
+                    &[],
+                    capture_hints,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &capture);
+        if halt {
+            let sink = builder
+                .add_node(
+                    "sink",
+                    &NodeSpec::inline(
+                        "tests::ingress_sink",
+                        "IngressSink",
+                        SchemaSpec::Opaque,
+                        SchemaSpec::Opaque,
+                        Effects::Pure,
+                        Determinism::Strict,
+                        None,
+                    ),
+                )
+                .unwrap();
+            builder.connect(&capture, &sink);
+        }
+
+        let mut flow = builder.build();
+        if trigger_write {
+            flow.nodes
+                .iter_mut()
+                .find(|node| node.alias == "trigger")
+                .unwrap()
+                .idempotency
+                .key = Some("ingress-trigger".to_string());
+        }
+        if halt {
+            flow.nodes
+                .iter_mut()
+                .find(|node| node.alias == "capture")
+                .unwrap()
+                .durability
+                .halts = true;
+        }
+        let ir = Arc::new(validate(&flow).expect("ingress flow validates"));
+        let factory = StdArc::new(IngressWorkspaceFactory::default());
+        let runtime = HostRuntime::new(FlowExecutor::new(Arc::new(registry)), ir)
+            .with_resource_bag(resource_bag_with_checkpoint())
+            .with_workspace_factory(factory.clone());
+        (runtime, factory, downstream)
+    }
+
+    fn ingress_attachment(bytes: &[u8]) -> IngressAttachment {
+        IngressAttachment::new("cv", "application/pdf", bytes.to_vec())
+    }
+
+    trait ExpectExecutionError {
+        fn expect_execution_error(self, message: &str) -> ExecutionError;
+    }
+
+    impl ExpectExecutionError for Result<ExecutionResult, ExecutionError> {
+        fn expect_execution_error(self, message: &str) -> ExecutionError {
+            match self {
+                Err(err) => err,
+                Ok(_) => panic!("{message}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn ingress_attachment_uses_generated_scope_and_injects_only_artifact_json() {
+        let (runtime, factory, downstream) = ingress_test_runtime(true, true, false, false);
+        let invocation = Invocation::new(
+            "trigger",
+            "capture",
+            serde_json::json!({"metadata": "candidate-1"}),
+        );
+        let secret = b"private-cv-bytes";
+
+        let result = runtime
+            .execute_with_ingress_attachments(
+                invocation,
+                vec![ingress_attachment(secret)],
+                IngressAttachmentPolicy::default(),
+            )
+            .await
+            .expect("ingress execution succeeds");
+        let value = match result {
+            ExecutionResult::Value(value) => value,
+            _ => panic!("expected value result"),
+        };
+        assert_eq!(value["byte_len"], secret.len());
+        assert_eq!(value["metadata"], "candidate-1");
+        assert_eq!(downstream.load(Ordering::Relaxed), 1);
+        assert!(
+            !serde_json::to_string(&value)
+                .unwrap()
+                .contains("private-cv-bytes")
+        );
+
+        let artifact: capabilities::Artifact =
+            serde_json::from_value(value["artifact"].clone()).unwrap();
+        assert_eq!(
+            artifact.handle.scope().path(),
+            format!(
+                "ingress/0000-{}",
+                capabilities::artifact::sha256_hex(secret)
+            )
+        );
+        let opened = factory.opened();
+        assert_eq!(opened.len(), 1);
+        assert!(!opened[0].run_id.is_empty());
+        assert_eq!(
+            artifact.handle.mint().root_key_id,
+            capabilities::run_root_key_id(&opened[0].flow_id, &opened[0].run_id)
+        );
+        assert_eq!(factory.opened(), vec![opened[0].clone()]);
+        assert_eq!(
+            factory.completed(),
+            vec![(opened[0].clone(), WorkspaceCompletionDisposition::Succeeded)]
+        );
+    }
+
+    #[tokio::test]
+    async fn ingress_attachment_rejects_caller_supplied_run_id() {
+        let (runtime, factory, downstream) = ingress_test_runtime(true, true, false, false);
+        let mut invocation = Invocation::new("trigger", "capture", serde_json::json!({}));
+        invocation
+            .metadata_mut()
+            .insert_label("lf.run_id", "caller-controlled");
+        let err = runtime
+            .execute_with_ingress_attachments(
+                invocation,
+                vec![ingress_attachment(b"pdf")],
+                IngressAttachmentPolicy::default(),
+            )
+            .await
+            .expect_execution_error("caller run id denied");
+        assert!(err.to_string().contains("host-generated run id"));
+        assert!(factory.opened().is_empty());
+        assert_eq!(downstream.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn ingress_attachment_validation_rejects_replacement_and_size() {
+        let (runtime, factory, _) = ingress_test_runtime(true, true, false, false);
+        let empty = runtime
+            .execute_with_ingress_attachments(
+                Invocation::new("trigger", "capture", serde_json::json!({})),
+                Vec::new(),
+                IngressAttachmentPolicy::default(),
+            )
+            .await
+            .expect_execution_error("empty attachment execution denied");
+        assert!(empty.to_string().contains("at least one attachment"));
+
+        let duplicate = runtime
+            .execute_with_ingress_attachments(
+                Invocation::new("trigger", "capture", serde_json::json!({"cv": "existing"})),
+                vec![ingress_attachment(b"pdf")],
+                IngressAttachmentPolicy::default(),
+            )
+            .await
+            .expect_execution_error("payload replacement denied");
+        assert!(
+            duplicate
+                .to_string()
+                .contains("replace duplicate payload field")
+        );
+
+        let oversized = runtime
+            .execute_with_ingress_attachments(
+                Invocation::new("trigger", "capture", serde_json::json!({})),
+                vec![ingress_attachment(b"too-large")],
+                IngressAttachmentPolicy {
+                    max_attachments: 1,
+                    max_attachment_bytes: 2,
+                    max_total_bytes: 2,
+                },
+            )
+            .await
+            .expect_execution_error("oversize denied");
+        assert!(oversized.to_string().contains("exceeds limit"));
+        assert!(factory.opened().is_empty());
+    }
+
+    #[tokio::test]
+    async fn ingress_attachment_failures_cleanup_and_do_not_reach_downstream() {
+        let (runtime, factory, downstream) = ingress_test_runtime(false, true, false, false);
+        let err = runtime
+            .execute_with_ingress_attachments(
+                Invocation::new("trigger", "capture", serde_json::json!({})),
+                vec![ingress_attachment(b"pdf")],
+                IngressAttachmentPolicy::default(),
+            )
+            .await
+            .expect_execution_error("trigger without write floor denied");
+        assert!(matches!(err, ExecutionError::MissingCapabilities { .. }));
+        assert_eq!(downstream.load(Ordering::Relaxed), 0);
+        assert!(factory.opened().is_empty());
+        assert!(factory.completed().is_empty());
+        assert!(factory.workspace.files.lock().unwrap().is_empty());
+
+        let (runtime, factory, downstream) = ingress_test_runtime(true, false, false, false);
+        let err = runtime
+            .execute_with_ingress_attachments(
+                Invocation::new("trigger", "capture", serde_json::json!({})),
+                vec![ingress_attachment(b"pdf")],
+                IngressAttachmentPolicy::default(),
+            )
+            .await
+            .expect_execution_error("capture without read floor denied");
+        assert!(matches!(err, ExecutionError::NodeFailed { .. }));
+        assert_eq!(downstream.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            factory.completed()[0].1,
+            WorkspaceCompletionDisposition::Failed
+        );
+
+        let (runtime, factory, downstream) = ingress_test_runtime(true, true, true, false);
+        let err = runtime
+            .execute_with_ingress_attachments(
+                Invocation::new("trigger", "capture", serde_json::json!({})),
+                vec![ingress_attachment(b"pdf")],
+                IngressAttachmentPolicy::default(),
+            )
+            .await
+            .expect_execution_error("preflight missing http denied");
+        assert!(matches!(err, ExecutionError::MissingCapabilities { .. }));
+        assert_eq!(downstream.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            factory.completed()[0].1,
+            WorkspaceCompletionDisposition::Failed
+        );
+        assert!(factory.workspace.files.lock().unwrap().is_empty());
+
+        let (runtime, factory, downstream) = ingress_test_runtime(true, true, false, false);
+        factory.workspace.fail_on_write.store(1, Ordering::Relaxed);
+        let err = runtime
+            .execute_with_ingress_attachments(
+                Invocation::new("trigger", "capture", serde_json::json!({})),
+                vec![ingress_attachment(b"pdf")],
+                IngressAttachmentPolicy::default(),
+            )
+            .await
+            .expect_execution_error("staging failure surfaced");
+        assert!(matches!(err, ExecutionError::HostEnvironment(_)));
+        assert_eq!(downstream.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            factory.completed()[0].1,
+            WorkspaceCompletionDisposition::Failed
+        );
+        assert!(factory.workspace.files.lock().unwrap().is_empty());
+
+        let (runtime, factory, downstream) = ingress_test_runtime(true, true, false, false);
+        factory.workspace.fail_on_write.store(2, Ordering::Relaxed);
+        let err = runtime
+            .execute_with_ingress_attachments(
+                Invocation::new("trigger", "capture", serde_json::json!({})),
+                vec![
+                    ingress_attachment(b"first"),
+                    IngressAttachment::new("cover_letter", "text/plain", b"second".to_vec()),
+                ],
+                IngressAttachmentPolicy::default(),
+            )
+            .await
+            .expect_execution_error("second staging failure surfaced");
+        assert!(matches!(err, ExecutionError::HostEnvironment(_)));
+        assert_eq!(downstream.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            factory.completed()[0].1,
+            WorkspaceCompletionDisposition::Failed
+        );
+        assert!(factory.workspace.files.lock().unwrap().is_empty());
+
+        let (runtime, factory, downstream) = ingress_test_runtime(true, false, false, false);
+        factory.fail_completion.store(true, Ordering::Relaxed);
+        let err = runtime
+            .execute_with_ingress_attachments(
+                Invocation::new("trigger", "capture", serde_json::json!({})),
+                vec![ingress_attachment(b"pdf")],
+                IngressAttachmentPolicy::default(),
+            )
+            .await
+            .expect_execution_error("cleanup failure surfaced");
+        assert!(matches!(err, ExecutionError::HostEnvironment(_)));
+        assert!(err.to_string().contains("workspace cleanup also failed"));
+        assert_eq!(downstream.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn ingress_attachment_halt_preserves_workspace() {
+        let (runtime, factory, downstream) = ingress_test_runtime(true, true, false, true);
+        let result = runtime
+            .execute_with_ingress_attachments(
+                Invocation::new("trigger", "sink", serde_json::json!({})),
+                vec![ingress_attachment(b"pdf")],
+                IngressAttachmentPolicy::default(),
+            )
+            .await
+            .expect("halt succeeds");
+        assert!(matches!(result, ExecutionResult::Halt { .. }));
+        assert_eq!(downstream.load(Ordering::Relaxed), 1);
+        assert!(factory.completed().is_empty());
+        assert_eq!(
+            factory
+                .workspace
+                .files
+                .lock()
+                .unwrap()
+                .get(&format!(
+                    "ingress/0000-{}",
+                    capabilities::artifact::sha256_hex(b"pdf")
+                ))
+                .cloned(),
+            Some(b"pdf".to_vec())
+        );
     }
 
     // H5c-enforcement (§16.2): these two tests exercise the exact derivation the
