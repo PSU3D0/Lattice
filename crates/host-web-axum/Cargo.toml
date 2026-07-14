@@ -28,8 +28,10 @@ futures.workspace = true
 metrics.workspace = true
 async-stream.workspace = true
 serde_urlencoded = "0.7"
+multer = "3"
 
 [dev-dependencies]
+async-trait.workspace = true
 tower = { workspace = true, features = ["util"] }
 metrics-util.workspace = true
 proptest.workspace = true

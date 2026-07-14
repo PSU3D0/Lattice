@@ -14,9 +14,13 @@ use axum::response::{
 };
 use axum::routing::{MethodRouter, delete, get, patch, post, put};
 use capabilities::ResourceBag;
+use capabilities::workspace::WorkspaceFactory;
 use dag_core::NodeKind;
 use futures::StreamExt;
-use host_inproc::{EnvironmentPlugin, HostRuntime, Invocation, InvocationMetadata};
+use host_inproc::{
+    EnvironmentPlugin, HostRuntime, IngressAttachment, IngressAttachmentPolicy, Invocation,
+    InvocationMetadata,
+};
 use kernel_exec::{ExecutionError, ExecutionResult, FlowExecutor, StreamHandle};
 use kernel_plan::ValidatedIR;
 use serde_json::{Value as JsonValue, json};
@@ -24,6 +28,83 @@ use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tower::make::Shared;
 use tracing::{error, info, instrument, warn};
+
+/// Default maximum JSON request body accepted by the native web host.
+pub const DEFAULT_JSON_BODY_LIMIT_BYTES: usize = 1024 * 1024;
+
+/// Explicit opt-in contract for one bounded multipart upload route.
+#[derive(Clone, Debug)]
+pub struct MultipartIngressConfig {
+    file_field: String,
+    artifact_payload_field: String,
+    filename_metadata_field: Option<String>,
+    expected_content_type: String,
+    required_magic: Vec<u8>,
+    max_total_bytes: usize,
+    max_file_bytes: usize,
+    max_text_bytes: usize,
+}
+
+impl MultipartIngressConfig {
+    /// Build the canonical single-PDF ingress policy.
+    pub fn pdf(file_field: impl Into<String>, artifact_payload_field: impl Into<String>) -> Self {
+        Self {
+            file_field: file_field.into(),
+            artifact_payload_field: artifact_payload_field.into(),
+            filename_metadata_field: None,
+            expected_content_type: "application/pdf".to_string(),
+            required_magic: b"%PDF-".to_vec(),
+            max_total_bytes: 10 * 1024 * 1024,
+            max_file_bytes: 8 * 1024 * 1024,
+            max_text_bytes: 32 * 1024,
+        }
+    }
+
+    pub fn with_filename_metadata_field(mut self, field: impl Into<String>) -> Self {
+        self.filename_metadata_field = Some(field.into());
+        self
+    }
+
+    /// Override limits for a deployment policy or focused tests.
+    pub fn with_limits(
+        mut self,
+        max_total_bytes: usize,
+        max_file_bytes: usize,
+        max_text_bytes: usize,
+    ) -> Self {
+        self.max_total_bytes = max_total_bytes;
+        self.max_file_bytes = max_file_bytes;
+        self.max_text_bytes = max_text_bytes;
+        self
+    }
+
+    fn validate(&self) -> Result<(), ExecutionError> {
+        if self.file_field.is_empty()
+            || self.artifact_payload_field.is_empty()
+            || self.expected_content_type.is_empty()
+            || self.required_magic.is_empty()
+        {
+            return Err(ExecutionError::HostEnvironment(anyhow::anyhow!(
+                "multipart ingress fields, MIME type, and magic must be non-empty"
+            )));
+        }
+        if self.filename_metadata_field.as_deref() == Some(self.artifact_payload_field.as_str()) {
+            return Err(ExecutionError::HostEnvironment(anyhow::anyhow!(
+                "multipart artifact and filename payload fields must be distinct"
+            )));
+        }
+        if self.max_total_bytes == 0
+            || self.max_file_bytes == 0
+            || self.max_text_bytes == 0
+            || self.max_file_bytes > self.max_total_bytes
+        {
+            return Err(ExecutionError::HostEnvironment(anyhow::anyhow!(
+                "multipart ingress limits are invalid"
+            )));
+        }
+        Ok(())
+    }
+}
 
 /// Configuration describing a single Flow IR route exposed via Axum.
 #[derive(Clone)]
@@ -36,6 +117,9 @@ pub struct RouteConfig {
     pub resources: ResourceBag,
     pub environment_plugins: Vec<Arc<dyn EnvironmentPlugin>>,
     pub route_aliases: Vec<String>,
+    pub workspace_factory: Option<Arc<dyn WorkspaceFactory>>,
+    pub multipart_ingress: Option<MultipartIngressConfig>,
+    pub json_body_limit_bytes: usize,
 }
 
 impl RouteConfig {
@@ -49,6 +133,9 @@ impl RouteConfig {
             resources: ResourceBag::new(),
             environment_plugins: Vec::new(),
             route_aliases: Vec::new(),
+            workspace_factory: None,
+            multipart_ingress: None,
+            json_body_limit_bytes: DEFAULT_JSON_BODY_LIMIT_BYTES,
         }
     }
 
@@ -84,6 +171,21 @@ impl RouteConfig {
 
     pub fn with_route_aliases(mut self, aliases: Vec<String>) -> Self {
         self.route_aliases = aliases;
+        self
+    }
+
+    pub fn with_workspace_factory(mut self, factory: Arc<dyn WorkspaceFactory>) -> Self {
+        self.workspace_factory = Some(factory);
+        self
+    }
+
+    pub fn with_multipart_ingress(mut self, config: MultipartIngressConfig) -> Self {
+        self.multipart_ingress = Some(config);
+        self
+    }
+
+    pub fn with_json_body_limit(mut self, max_bytes: usize) -> Self {
+        self.json_body_limit_bytes = max_bytes;
         self
     }
 }
@@ -300,6 +402,8 @@ pub struct SharedState {
     capture_alias: String,
     deadline: Option<Duration>,
     metrics: Arc<HostMetrics>,
+    multipart_ingress: Option<MultipartIngressConfig>,
+    json_body_limit_bytes: usize,
 }
 
 /// Build an Axum router serving the supplied Flow IR using the given executor.
@@ -357,16 +461,35 @@ fn try_build_router(
         resources,
         environment_plugins,
         route_aliases,
+        workspace_factory,
+        multipart_ingress,
+        json_body_limit_bytes,
     } = config;
 
     validate_entrypoint(&ir, &trigger_alias, &capture_alias)?;
+    if json_body_limit_bytes == 0 {
+        return Err(ExecutionError::HostEnvironment(anyhow::anyhow!(
+            "JSON body limit must be non-zero"
+        )));
+    }
+    if let Some(multipart) = multipart_ingress.as_ref() {
+        multipart.validate()?;
+        if workspace_factory.is_none() {
+            return Err(ExecutionError::HostEnvironment(anyhow::anyhow!(
+                "multipart ingress requires a host-owned workspace factory"
+            )));
+        }
+    }
 
-    let runtime = if environment_plugins.is_empty() {
+    let mut runtime = if environment_plugins.is_empty() {
         HostRuntime::new(executor, Arc::clone(&ir))
     } else {
         HostRuntime::with_plugins(executor, Arc::clone(&ir), environment_plugins.clone())
     }
     .with_resource_bag(resources);
+    if let Some(factory) = workspace_factory {
+        runtime = runtime.with_workspace_factory(factory);
+    }
 
     let canonical_path = normalize_route_path(&path);
     let flow_name = ir.flow().name.clone();
@@ -381,6 +504,8 @@ fn try_build_router(
         capture_alias,
         deadline,
         metrics: metrics.clone(),
+        multipart_ingress,
+        json_body_limit_bytes,
     };
 
     let alias_paths = normalize_route_aliases(route_aliases, &canonical_path);
@@ -476,19 +601,279 @@ async fn dispatch_request(State(state): State<SharedState>, request: Request<Bod
     response
 }
 
+const MAX_MULTIPART_FIELDS: usize = 32;
+const MAX_MULTIPART_FIELD_NAME_BYTES: usize = 128;
+const MAX_MULTIPART_FILENAME_BYTES: usize = 1024;
+
+enum RequestPayloadError {
+    BadRequest(&'static str),
+    PayloadTooLarge(&'static str),
+    UnsupportedMediaType(&'static str),
+}
+
+impl RequestPayloadError {
+    fn into_response(self) -> Response {
+        let (status, message) = match self {
+            Self::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
+            Self::PayloadTooLarge(message) => (StatusCode::PAYLOAD_TOO_LARGE, message),
+            Self::UnsupportedMediaType(message) => (StatusCode::UNSUPPORTED_MEDIA_TYPE, message),
+        };
+        Response::builder()
+            .status(status)
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(json!({ "error": message }).to_string()))
+            .unwrap()
+    }
+}
+
+fn declared_content_length(
+    headers: &axum::http::HeaderMap,
+) -> Result<Option<usize>, RequestPayloadError> {
+    let mut values = headers.get_all(axum::http::header::CONTENT_LENGTH).iter();
+    let Some(value) = values.next() else {
+        return Ok(None);
+    };
+    if values.next().is_some() {
+        return Err(RequestPayloadError::BadRequest(
+            "multiple content-length headers are not allowed",
+        ));
+    }
+    let value = value
+        .to_str()
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .ok_or(RequestPayloadError::BadRequest(
+            "content-length header is malformed",
+        ))?;
+    Ok(Some(value))
+}
+
+fn safe_upload_filename(filename: &str) -> bool {
+    !filename.is_empty()
+        && filename.len() <= MAX_MULTIPART_FILENAME_BYTES
+        && filename != "."
+        && filename != ".."
+        && !filename.starts_with('.')
+        && !filename.contains(['/', '\\', ':'])
+        && !filename.chars().any(char::is_control)
+}
+
+fn accepts_event_stream(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get_all(axum::http::header::ACCEPT)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .any(|range| {
+            let mut parts = range.trim().split(';');
+            if parts.next().map(str::trim) != Some("text/event-stream") {
+                return false;
+            }
+            !parts.any(|parameter| {
+                let Some((name, value)) = parameter.trim().split_once('=') else {
+                    return false;
+                };
+                name.eq_ignore_ascii_case("q") && value.trim().parse::<f32>().unwrap_or(0.0) <= 0.0
+            })
+        })
+}
+
+async fn parse_multipart_ingress(
+    headers: &axum::http::HeaderMap,
+    body: Body,
+    config: &MultipartIngressConfig,
+) -> Result<(JsonValue, IngressAttachment), RequestPayloadError> {
+    if declared_content_length(headers)?.is_some_and(|length| length > config.max_total_bytes) {
+        return Err(RequestPayloadError::PayloadTooLarge(
+            "multipart request exceeds limit",
+        ));
+    }
+    let content_type = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .ok_or(RequestPayloadError::BadRequest(
+            "multipart content-type boundary is missing",
+        ))?;
+    let boundary = multer::parse_boundary(content_type).map_err(|_| {
+        RequestPayloadError::BadRequest("multipart content-type boundary is malformed")
+    })?;
+    let bytes = to_bytes(body, config.max_total_bytes)
+        .await
+        .map_err(|_| RequestPayloadError::PayloadTooLarge("multipart request exceeds limit"))?;
+    let input = futures::stream::once(async move { Ok::<_, Infallible>(bytes) });
+    let mut multipart = multer::Multipart::new(input, boundary);
+    let mut payload = serde_json::Map::new();
+    let mut attachment = None;
+    let mut text_bytes = 0usize;
+    let mut field_count = 0usize;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|_| RequestPayloadError::BadRequest("malformed multipart body"))?
+    {
+        field_count += 1;
+        if field_count > MAX_MULTIPART_FIELDS {
+            return Err(RequestPayloadError::PayloadTooLarge(
+                "multipart field count exceeds limit",
+            ));
+        }
+        let name = field
+            .name()
+            .map(str::to_string)
+            .ok_or(RequestPayloadError::BadRequest(
+                "multipart field name is missing",
+            ))?;
+        if name.is_empty() || name.len() > MAX_MULTIPART_FIELD_NAME_BYTES {
+            return Err(RequestPayloadError::PayloadTooLarge(
+                "multipart field name exceeds limit",
+            ));
+        }
+        let filename = field.file_name().map(str::to_string);
+        let field_content_type = field.content_type().map(ToString::to_string);
+
+        if name == config.file_field {
+            let filename = filename.ok_or(RequestPayloadError::BadRequest(
+                "multipart file field requires a filename",
+            ))?;
+            if !safe_upload_filename(&filename) {
+                return Err(RequestPayloadError::BadRequest(
+                    "multipart filename is unsafe",
+                ));
+            }
+            if attachment.is_some() {
+                return Err(RequestPayloadError::BadRequest(
+                    "multipart file field is duplicated",
+                ));
+            }
+            if field_content_type.as_deref() != Some(config.expected_content_type.as_str()) {
+                return Err(RequestPayloadError::UnsupportedMediaType(
+                    "multipart file has an unsupported media type",
+                ));
+            }
+            let bytes = field
+                .bytes()
+                .await
+                .map_err(|_| RequestPayloadError::BadRequest("malformed multipart file field"))?;
+            if bytes.len() > config.max_file_bytes {
+                return Err(RequestPayloadError::PayloadTooLarge(
+                    "multipart file exceeds limit",
+                ));
+            }
+            if !bytes.starts_with(&config.required_magic) {
+                return Err(RequestPayloadError::UnsupportedMediaType(
+                    "multipart file does not match required magic",
+                ));
+            }
+            if let Some(metadata_field) = config.filename_metadata_field.as_ref() {
+                if payload.contains_key(metadata_field) {
+                    return Err(RequestPayloadError::BadRequest(
+                        "multipart filename metadata field is duplicated",
+                    ));
+                }
+                payload.insert(metadata_field.clone(), JsonValue::String(filename));
+            }
+            attachment = Some(IngressAttachment::new(
+                config.artifact_payload_field.clone(),
+                config.expected_content_type.clone(),
+                bytes.to_vec(),
+            ));
+            continue;
+        }
+
+        if filename.is_some()
+            || field_content_type
+                .as_deref()
+                .is_some_and(|content_type| content_type != "text/plain")
+        {
+            return Err(RequestPayloadError::BadRequest(
+                "multipart contains an unknown file field",
+            ));
+        }
+        if name == config.artifact_payload_field
+            || config.filename_metadata_field.as_deref() == Some(name.as_str())
+            || payload.contains_key(&name)
+        {
+            return Err(RequestPayloadError::BadRequest(
+                "multipart text field is duplicated or reserved",
+            ));
+        }
+        let bytes = field
+            .bytes()
+            .await
+            .map_err(|_| RequestPayloadError::BadRequest("malformed multipart text field"))?;
+        text_bytes =
+            text_bytes
+                .checked_add(bytes.len())
+                .ok_or(RequestPayloadError::PayloadTooLarge(
+                    "multipart text fields exceed limit",
+                ))?;
+        if text_bytes > config.max_text_bytes {
+            return Err(RequestPayloadError::PayloadTooLarge(
+                "multipart text fields exceed limit",
+            ));
+        }
+        let text = std::str::from_utf8(&bytes)
+            .map_err(|_| RequestPayloadError::BadRequest("multipart text field is not UTF-8"))?;
+        payload.insert(name, JsonValue::String(text.to_string()));
+    }
+
+    let attachment = attachment.ok_or(RequestPayloadError::BadRequest(
+        "multipart required file field is missing",
+    ))?;
+    Ok((JsonValue::Object(payload), attachment))
+}
+
 async fn handle_request(state: SharedState, request: Request<Body>) -> HandlerResult {
     let (parts, body) = request.into_parts();
-    let bytes = match to_bytes(body, usize::MAX).await {
-        Ok(bytes) => bytes,
-        Err(err) => return HandlerResult::error(internal_error("body_read", err), false),
-    };
-    let payload: JsonValue = if bytes.is_empty() {
-        JsonValue::Null
-    } else {
-        match serde_json::from_slice(&bytes) {
-            Ok(value) => value,
-            Err(err) => return HandlerResult::error(bad_request(err.to_string()), false),
+    let wants_sse = accepts_event_stream(&parts.headers);
+
+    let (payload, attachment) = if let Some(config) = state.multipart_ingress.as_ref() {
+        if wants_sse {
+            let response = Response::builder()
+                .status(StatusCode::NOT_ACCEPTABLE)
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({ "error": "multipart ingress does not support SSE" }).to_string(),
+                ))
+                .unwrap();
+            return HandlerResult::error(response, false);
         }
+        match parse_multipart_ingress(&parts.headers, body, config).await {
+            Ok((payload, attachment)) => (payload, Some(attachment)),
+            Err(err) => return HandlerResult::error(err.into_response(), false),
+        }
+    } else {
+        match declared_content_length(&parts.headers) {
+            Ok(Some(length)) if length > state.json_body_limit_bytes => {
+                return HandlerResult::error(
+                    RequestPayloadError::PayloadTooLarge("JSON request exceeds limit")
+                        .into_response(),
+                    false,
+                );
+            }
+            Ok(_) => {}
+            Err(err) => return HandlerResult::error(err.into_response(), false),
+        }
+        let bytes = match to_bytes(body, state.json_body_limit_bytes).await {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                return HandlerResult::error(
+                    RequestPayloadError::PayloadTooLarge("JSON request exceeds limit")
+                        .into_response(),
+                    false,
+                );
+            }
+        };
+        let payload = if bytes.is_empty() {
+            JsonValue::Null
+        } else {
+            match serde_json::from_slice(&bytes) {
+                Ok(value) => value,
+                Err(err) => return HandlerResult::error(bad_request(err.to_string()), false),
+            }
+        };
+        (payload, None)
     };
 
     let mut invocation = Invocation::new(
@@ -497,16 +882,32 @@ async fn handle_request(state: SharedState, request: Request<Body>) -> HandlerRe
         payload,
     )
     .with_deadline(state.deadline);
-    let wants_sse = parts
-        .headers
-        .get(axum::http::header::ACCEPT)
-        .and_then(|value| value.to_str().ok())
-        .map(|value| value.contains("text/event-stream"))
-        .unwrap_or(false);
-
     populate_http_metadata(&parts, invocation.metadata_mut());
 
-    let exec_result = state.runtime.execute(invocation).await;
+    let exec_result = if let Some(attachment) = attachment {
+        state
+            .runtime
+            .execute_with_ingress_attachments(
+                invocation,
+                vec![attachment],
+                IngressAttachmentPolicy {
+                    max_attachments: 1,
+                    max_attachment_bytes: state
+                        .multipart_ingress
+                        .as_ref()
+                        .expect("multipart config present")
+                        .max_file_bytes as u64,
+                    max_total_bytes: state
+                        .multipart_ingress
+                        .as_ref()
+                        .expect("multipart config present")
+                        .max_total_bytes as u64,
+                },
+            )
+            .await
+    } else {
+        state.runtime.execute(invocation).await
+    };
 
     match exec_result {
         Ok(ExecutionResult::Value(value)) => {
@@ -804,19 +1205,10 @@ fn bad_request(message: String) -> Response {
         .unwrap()
 }
 
-fn internal_error(label: &str, err: impl std::fmt::Display) -> Response {
-    Response::builder()
-        .status(StatusCode::INTERNAL_SERVER_ERROR)
-        .header(axum::http::header::CONTENT_TYPE, "application/json")
-        .body(Body::from(
-            json!({ "error": format!("{label} failed: {err}") }).to_string(),
-        ))
-        .unwrap()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use axum::extract::State;
     use axum::http::Request;
     use dag_core::NodeError;
@@ -827,8 +1219,15 @@ mod tests {
     use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
     use proptest::prelude::*;
     use serde_json::json;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, HashMap};
     use std::sync::{Arc, Mutex, OnceLock};
+    use tower::ServiceExt;
+
+    use capabilities::workspace::{
+        Workspace, WorkspaceCompletionDisposition, WorkspaceDeleteResult, WorkspaceEntry,
+        WorkspaceError, WorkspaceFactory, WorkspaceListOptions, WorkspaceReadResult,
+        WorkspaceRunScope, WorkspaceWriteOptions, WorkspaceWriteResult,
+    };
     use tokio::runtime::Builder as RuntimeBuilder;
 
     fn build_flow() -> (FlowExecutor, Arc<ValidatedIR>) {
@@ -880,6 +1279,11 @@ mod tests {
         // preflight. These fixtures exercise success/capability/control behaviour,
         // not durability, so disable it (mirrors host-inproc test fixtures).
         flow.policies.durability.mode = DurabilityMode::Off;
+        flow.nodes
+            .iter_mut()
+            .find(|node| node.alias == "trigger")
+            .unwrap()
+            .kind = NodeKind::Trigger;
         let validated = validate(&flow).expect("flow should validate");
         (executor, Arc::new(validated))
     }
@@ -1016,14 +1420,20 @@ mod tests {
             resources,
             environment_plugins,
             route_aliases: _,
+            workspace_factory,
+            multipart_ingress,
+            json_body_limit_bytes,
         } = config;
 
-        let runtime = if environment_plugins.is_empty() {
+        let mut runtime = if environment_plugins.is_empty() {
             HostRuntime::new(executor, Arc::clone(&ir))
         } else {
             HostRuntime::with_plugins(executor, Arc::clone(&ir), environment_plugins)
         }
         .with_resource_bag(resources);
+        if let Some(factory) = workspace_factory {
+            runtime = runtime.with_workspace_factory(factory);
+        }
 
         let flow_name = ir.flow().name.clone();
         let metrics = Arc::new(HostMetrics::new("web_axum", path.clone(), flow_name));
@@ -1033,7 +1443,244 @@ mod tests {
             capture_alias,
             deadline,
             metrics,
+            multipart_ingress,
+            json_body_limit_bytes,
         }
+    }
+
+    #[derive(Default)]
+    struct MultipartWorkspace {
+        files: Mutex<HashMap<String, Vec<u8>>>,
+    }
+
+    impl capabilities::Capability for MultipartWorkspace {
+        fn name(&self) -> &'static str {
+            "workspace.multipart-test"
+        }
+    }
+
+    #[async_trait]
+    impl Workspace for MultipartWorkspace {
+        async fn read_normalized(
+            &self,
+            path: &str,
+        ) -> Result<Option<WorkspaceReadResult>, WorkspaceError> {
+            Ok(self
+                .files
+                .lock()
+                .unwrap()
+                .get(path)
+                .cloned()
+                .map(WorkspaceReadResult::Bytes))
+        }
+
+        async fn write_normalized(
+            &self,
+            path: &str,
+            data: &[u8],
+            _options: WorkspaceWriteOptions,
+        ) -> Result<WorkspaceWriteResult, WorkspaceError> {
+            self.files
+                .lock()
+                .unwrap()
+                .insert(path.to_string(), data.to_vec());
+            Ok(WorkspaceWriteResult {
+                path: path.to_string(),
+                size_bytes: data.len() as u64,
+                updated_at_ms: 0,
+            })
+        }
+
+        async fn list_normalized(
+            &self,
+            _options: WorkspaceListOptions,
+        ) -> Result<Vec<WorkspaceEntry>, WorkspaceError> {
+            Ok(Vec::new())
+        }
+
+        async fn delete_normalized(
+            &self,
+            path: &str,
+        ) -> Result<WorkspaceDeleteResult, WorkspaceError> {
+            Ok(WorkspaceDeleteResult {
+                deleted: self.files.lock().unwrap().remove(path).is_some(),
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct MultipartWorkspaceFactory {
+        workspace: Arc<MultipartWorkspace>,
+        opened: Mutex<Vec<WorkspaceRunScope>>,
+        completed: Mutex<Vec<(WorkspaceRunScope, WorkspaceCompletionDisposition)>>,
+    }
+
+    #[async_trait]
+    impl WorkspaceFactory for MultipartWorkspaceFactory {
+        async fn open(&self, scope: WorkspaceRunScope) -> anyhow::Result<Arc<dyn Workspace>> {
+            self.opened.lock().unwrap().push(scope);
+            Ok(self.workspace.clone())
+        }
+
+        async fn complete(
+            &self,
+            scope: WorkspaceRunScope,
+            disposition: WorkspaceCompletionDisposition,
+        ) -> anyhow::Result<()> {
+            self.workspace.files.lock().unwrap().clear();
+            self.completed.lock().unwrap().push((scope, disposition));
+            Ok(())
+        }
+    }
+
+    fn build_multipart_flow() -> (FlowExecutor, Arc<ValidatedIR>) {
+        let mut registry = NodeRegistry::new();
+        registry
+            .register_fn("tests::multipart_trigger", |value: JsonValue| async move {
+                Ok(value)
+            })
+            .unwrap();
+        registry
+            .register_fn("tests::multipart_sink", |value: JsonValue| async move {
+                let raw_payload = serde_json::to_string(&value).unwrap();
+                let artifact: capabilities::Artifact = serde_json::from_value(
+                    value
+                        .get("cv_artifact")
+                        .cloned()
+                        .ok_or_else(|| NodeError::new("missing cv artifact"))?,
+                )
+                .map_err(|err| NodeError::new(err.to_string()))?;
+                let path = artifact.handle.scope().path().to_string();
+                let bytes =
+                    capabilities::context::with_current_async(move |resources| async move {
+                        let reader = resources
+                            .workspace_read()
+                            .ok_or_else(|| NodeError::new("missing workspace read"))?;
+                        reader
+                            .read(&artifact.handle)
+                            .await
+                            .map_err(|err| NodeError::new(err.to_string()))
+                    })
+                    .await
+                    .ok_or_else(|| NodeError::new("missing resource context"))??;
+                Ok(json!({
+                    "full_name": value.get("full_name"),
+                    "cv_filename": value.get("cv_filename"),
+                    "artifact_path": path,
+                    "byte_len": bytes.len(),
+                    "raw_bytes_in_payload": raw_payload.contains("PRIVATE-CV-TEXT"),
+                }))
+            })
+            .unwrap();
+
+        let mut builder =
+            FlowBuilder::new("multipart_web_host", Version::new(1, 0, 0), Profile::Web);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline_with_hints(
+                    "tests::multipart_trigger",
+                    "MultipartTrigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Effectful,
+                    Determinism::BestEffort,
+                    None,
+                    &[],
+                    &[capabilities::workspace::HINT_WORKSPACE_WRITE],
+                ),
+            )
+            .unwrap();
+        let sink = builder
+            .add_node(
+                "respond",
+                &NodeSpec::inline_with_hints(
+                    "tests::multipart_sink",
+                    "MultipartSink",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::ReadOnly,
+                    Determinism::BestEffort,
+                    None,
+                    &[],
+                    &[capabilities::workspace::HINT_WORKSPACE_READ],
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &sink);
+        let mut flow = builder.build();
+        flow.policies.durability.mode = DurabilityMode::Off;
+        let trigger = flow
+            .nodes
+            .iter_mut()
+            .find(|node| node.alias == "trigger")
+            .unwrap();
+        trigger.kind = NodeKind::Trigger;
+        trigger.idempotency.key = Some("multipart-ingress".to_string());
+        let ir = Arc::new(validate(&flow).expect("multipart flow validates"));
+        (FlowExecutor::new(Arc::new(registry)), ir)
+    }
+
+    fn multipart_config() -> MultipartIngressConfig {
+        MultipartIngressConfig::pdf("cv", "cv_artifact").with_filename_metadata_field("cv_filename")
+    }
+
+    fn multipart_body(
+        boundary: &str,
+        text_parts: &[(&str, &str)],
+        file_parts: &[(&str, &str, &str, &[u8])],
+    ) -> Vec<u8> {
+        let mut out = Vec::new();
+        for (name, value) in text_parts {
+            out.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+            out.extend_from_slice(
+                format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
+            );
+            out.extend_from_slice(value.as_bytes());
+            out.extend_from_slice(b"\r\n");
+        }
+        for (name, filename, content_type, bytes) in file_parts {
+            out.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+            out.extend_from_slice(
+                format!(
+                    "Content-Disposition: form-data; name=\"{name}\"; filename=\"{filename}\"\r\nContent-Type: {content_type}\r\n\r\n"
+                )
+                .as_bytes(),
+            );
+            out.extend_from_slice(bytes);
+            out.extend_from_slice(b"\r\n");
+        }
+        out.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+        out
+    }
+
+    fn multipart_request(boundary: &str, body: Vec<u8>) -> Request<Body> {
+        Request::builder()
+            .method(Method::POST)
+            .uri("/upload")
+            .header(
+                axum::http::header::CONTENT_TYPE,
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(Body::from(body))
+            .unwrap()
+    }
+
+    fn multipart_router(
+        multipart: MultipartIngressConfig,
+    ) -> (Router<()>, Arc<MultipartWorkspaceFactory>) {
+        let (executor, ir) = build_multipart_flow();
+        let factory = Arc::new(MultipartWorkspaceFactory::default());
+        let config = RouteConfig::new("/upload")
+            .with_method(Method::POST)
+            .with_trigger_alias("trigger")
+            .with_capture_alias("respond")
+            .with_workspace_factory(factory.clone())
+            .with_multipart_ingress(multipart);
+        let router = HostHandle::try_new(executor, ir, config)
+            .expect("multipart router builds")
+            .router();
+        (router, factory)
     }
 
     fn metrics_snapshotter() -> &'static Snapshotter {
@@ -1049,6 +1696,237 @@ mod tests {
 
     fn reset_metrics() {
         let _ = metrics_snapshotter().snapshot();
+    }
+
+    #[tokio::test]
+    async fn multipart_pdf_stages_artifact_without_json_bytes_and_cleans_workspace() {
+        let (router, factory) = multipart_router(multipart_config());
+        let boundary = "lattice-valid-boundary";
+        let pdf = b"%PDF-1.4\nPRIVATE-CV-TEXT\n%%EOF";
+        let body = multipart_body(
+            boundary,
+            &[("full_name", "Ada Example")],
+            &[("cv", "ada-cv.pdf", "application/pdf", pdf)],
+        );
+        let split = body.len() / 3;
+        let chunks = vec![
+            Ok::<_, Infallible>(hyper::body::Bytes::copy_from_slice(&body[..split])),
+            Ok::<_, Infallible>(hyper::body::Bytes::copy_from_slice(&body[split..split * 2])),
+            Ok::<_, Infallible>(hyper::body::Bytes::copy_from_slice(&body[split * 2..])),
+        ];
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/upload")
+            .header(
+                axum::http::header::CONTENT_TYPE,
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(Body::from_stream(stream::iter(chunks)))
+            .unwrap();
+
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        let value: JsonValue = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["full_name"], "Ada Example");
+        assert_eq!(value["cv_filename"], "ada-cv.pdf");
+        assert_eq!(value["byte_len"], pdf.len());
+        assert_eq!(value["raw_bytes_in_payload"], false);
+        let expected_path = format!("ingress/0000-{}", capabilities::artifact::sha256_hex(pdf));
+        assert_eq!(value["artifact_path"], expected_path);
+        assert!(!String::from_utf8_lossy(&bytes).contains("PRIVATE-CV-TEXT"));
+        assert!(!value["artifact_path"].as_str().unwrap().contains("escape"));
+        assert_eq!(factory.opened.lock().unwrap().len(), 1);
+        assert_eq!(factory.completed.lock().unwrap().len(), 1);
+        assert_eq!(
+            factory.completed.lock().unwrap()[0].1,
+            WorkspaceCompletionDisposition::Succeeded
+        );
+        assert!(factory.workspace.files.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn multipart_route_requires_workspace_factory() {
+        let (executor, ir) = build_multipart_flow();
+        let config = RouteConfig::new("/upload")
+            .with_trigger_alias("trigger")
+            .with_capture_alias("respond")
+            .with_multipart_ingress(multipart_config());
+        let err = match HostHandle::try_new(executor, ir, config) {
+            Ok(_) => panic!("missing workspace factory must fail"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("workspace factory"));
+    }
+
+    #[tokio::test]
+    async fn multipart_rejects_malformed_duplicate_mime_magic_and_unknown_files() {
+        let boundary = "lattice-negative-boundary";
+        let pdf = b"%PDF-1.4\ntext\n%%EOF";
+        let cases = vec![
+            (
+                multipart_body(boundary, &[("full_name", "Ada")], &[]),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                multipart_body(
+                    boundary,
+                    &[],
+                    &[
+                        ("cv", "one.pdf", "application/pdf", pdf.as_slice()),
+                        ("cv", "two.pdf", "application/pdf", pdf.as_slice()),
+                    ],
+                ),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                multipart_body(
+                    boundary,
+                    &[],
+                    &[("other", "cv.pdf", "application/pdf", pdf.as_slice())],
+                ),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                multipart_body(
+                    boundary,
+                    &[("full_name", "Ada"), ("full_name", "Again")],
+                    &[("cv", "cv.pdf", "application/pdf", pdf.as_slice())],
+                ),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                multipart_body(
+                    boundary,
+                    &[],
+                    &[("cv", "../../escape.pdf", "application/pdf", pdf.as_slice())],
+                ),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                multipart_body(
+                    boundary,
+                    &[],
+                    &[("cv", "cv.pdf", "text/plain", pdf.as_slice())],
+                ),
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            ),
+            (
+                multipart_body(
+                    boundary,
+                    &[],
+                    &[("cv", "cv.pdf", "application/pdf", b"not-a-pdf")],
+                ),
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            ),
+        ];
+
+        for (body, expected) in cases {
+            let (router, factory) = multipart_router(multipart_config());
+            let response = router
+                .oneshot(multipart_request(boundary, body))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+            assert!(factory.opened.lock().unwrap().is_empty());
+        }
+
+        let (router, factory) = multipart_router(multipart_config());
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/upload")
+            .header(axum::http::header::CONTENT_TYPE, "multipart/form-data")
+            .body(Body::from(b"malformed".as_slice()))
+            .unwrap();
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(factory.opened.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn multipart_enforces_total_file_and_text_limits_and_rejects_sse() {
+        let boundary = "lattice-limit-boundary";
+        let pdf = b"%PDF-12345";
+
+        let (router, factory) = multipart_router(multipart_config().with_limits(1024, 6, 32));
+        let response = router
+            .oneshot(multipart_request(
+                boundary,
+                multipart_body(
+                    boundary,
+                    &[],
+                    &[("cv", "cv.pdf", "application/pdf", pdf.as_slice())],
+                ),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(factory.opened.lock().unwrap().is_empty());
+
+        let (router, factory) = multipart_router(multipart_config().with_limits(1024, 64, 3));
+        let response = router
+            .oneshot(multipart_request(
+                boundary,
+                multipart_body(
+                    boundary,
+                    &[("full_name", "long")],
+                    &[("cv", "cv.pdf", "application/pdf", pdf.as_slice())],
+                ),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(factory.opened.lock().unwrap().is_empty());
+
+        let (router, factory) = multipart_router(multipart_config().with_limits(64, 32, 16));
+        let response = router
+            .oneshot(multipart_request(
+                boundary,
+                multipart_body(
+                    boundary,
+                    &[],
+                    &[("cv", "cv.pdf", "application/pdf", pdf.as_slice())],
+                ),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(factory.opened.lock().unwrap().is_empty());
+
+        let (router, factory) = multipart_router(multipart_config());
+        let mut request = multipart_request(
+            boundary,
+            multipart_body(
+                boundary,
+                &[],
+                &[("cv", "cv.pdf", "application/pdf", pdf.as_slice())],
+            ),
+        );
+        request.headers_mut().insert(
+            axum::http::header::ACCEPT,
+            axum::http::HeaderValue::from_static("text/event-stream"),
+        );
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_ACCEPTABLE);
+        assert!(factory.opened.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn json_requests_are_bounded() {
+        let (executor, ir) = build_flow();
+        let config = RouteConfig::new("/echo")
+            .with_trigger_alias("trigger")
+            .with_capture_alias("respond")
+            .with_json_body_limit(8);
+        let router = HostHandle::try_new(executor, ir, config).unwrap().router();
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/echo")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(r#"{"value":"too large"}"#))
+            .unwrap();
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     #[test]
