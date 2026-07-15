@@ -1,0 +1,17 @@
+{
+  "name": "@lattice-flow/pdf-extract-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "audit": "node scripts/audit.mjs",
+    "test": "npm run build && node scripts/build-test-fixture.mjs && npm run audit && vitest run"
+  },
+  "devDependencies": {
+    "miniflare": "4.20260708.1",
+    "vitest": "^3.0.0",
+    "wabt": "^1.0.37",
+    "wrangler": "^4.0.0"
+  }
+}

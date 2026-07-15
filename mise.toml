@@ -76,12 +76,17 @@ run = "cd crates/host-workers/render-proof-tests && npm ci && npm test"
 description = "Run Miniflare/workerd cap-http-workers harness (includes the redirect-off proof, packet H2a)"
 run = "cd crates/cap-http-workers/workerd-tests && npm ci && npm test"
 
+[tasks.test-pdf-extract-worker]
+description = "Run the dedicated PDF extraction Worker containment and Miniflare suite"
+run = "cd crates/processing-context/workers/pdf-extract && npm ci && npm test && out=$(mktemp -d) && trap 'rm -rf \"$out\"' EXIT && npx wrangler deploy --dry-run --outdir \"$out\""
+
 [tasks.test-npm-suites]
-description = "Run every workerd npm suite (host-workers workerd-tests + render-proof-tests + cap-http-workers workerd-tests); the CI npm-suites job"
+description = "Run every workerd npm suite, including the dedicated PDF extraction Worker; the CI npm-suites job"
 depends = [
     "test-wasm-host-workers-harness",
     "test-wasm-render-proof-harness",
     "test-wasm-cap-http-workers-harness",
+    "test-pdf-extract-worker",
 ]
 run = "echo finished workerd npm suites"
 

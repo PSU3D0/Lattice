@@ -702,3 +702,11 @@ Acceptance gates:
 - Made successful outcomes and failures validate against their terminal records, kept backend-specific record fields private, and preserved the native processing-context policy and mapping one-for-one.
 - Acceptance gates: capabilities, processing-context, stdlib document, host-web, S21 real TCP, CLI metrics sanitization, wasm32 checks, package formatting, hint-literal, and diff checks.
 - Compatibility/contract notes: the neutral record remains transient and non-serializable; this packet adds no Workers runtime, service protocol, deployment config, checkpoint schema, durable receipt, or production containment claim.
+
+## 2026-07-15 — W2 dedicated Workers PDF extraction isolate
+
+- Added a standalone module Worker under `crates/processing-context/workers/pdf-extract/` with no public route, preview URL, network/service/storage/queue/secret/variable bindings, or ambient `fetch` use. It accepts only the pinned internal `POST /v1/transform` protocol.
+- The build gate verifies the exact W0 artifact hash, size, 64 MiB maximum, transform identity, and no-import ABI before copying it as a precompiled wasm binding. Runtime responses label the digest as build-time attestation rather than runtime measurement.
+- Added stream-counted 8 MiB input admission, `4 + 512 KiB` output admission, pointer/range and exact-export checks, isolate-local single flight with immediate `busy`, a fresh `WebAssembly.Instance` with `{}` imports per request, stable sanitized envelopes, and no diagnostic/request logging.
+- Added Miniflare proofs for the canonical checked PDF, hostile PDF class, protocol drift, input admission, generic guest/ABI/import/pointer/output classes, no error-envelope PII, no-queue saturation during blocked body I/O, and stateful-fixture detection of instance reuse. Wrangler dry-run reports a 920.70 KiB upload and no bindings.
+- Compatibility/contract notes: `limits.cpu_ms = 30000` is Workers platform policy, not fuel, epoch interruption, `StoreLimits`, observed guest CPU, or CPU-vs-memory attribution. Miniflare is local evidence only; production isolate termination remains a W4 evidence obligation.
