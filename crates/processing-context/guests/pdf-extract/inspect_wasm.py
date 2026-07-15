@@ -127,8 +127,8 @@ def inspect(path):
         raise ValueError(f"unapproved custom sections: {sorted(unknown_custom)}")
     if has_start:
         raise ValueError("start function is forbidden")
-    if len(memories) != 1 or memories[0][1] != 2048 or memories[0][0] > 2048:
-        raise ValueError(f"expected one bounded memory32 with max 2048 pages, found {memories}")
+    if len(memories) != 1 or memories[0][1] != 1024 or memories[0][0] > 1024:
+        raise ValueError(f"expected one bounded memory32 with max 1024 pages, found {memories}")
     if len(tables) > 1 or any(t[0] != 0x70 or t[2] is None or t[2] > 4096 for t in tables):
         raise ValueError(f"table profile exceeded: {tables}")
     if set(exports) != EXPECTED_EXPORTS:

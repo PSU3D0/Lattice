@@ -1,0 +1,243 @@
+{
+  "schema_version": 1,
+  "measured_backend": "native-wasmtime-16",
+  "module_sha256": "048f650aec8502659633289a4ace493c56a7bc6e95c8da3d4a34e293e96d4e96",
+  "module_max_memory_bytes": 67108864,
+  "native_pdf_memory_ceiling_bytes": 67108864,
+  "fuel_ceiling": 100000000,
+  "measurements": [
+    {
+      "fixture": "synthetic-canonical-text",
+      "input_sha256": "b4233fba36ea2000a291c9fd538a6d32f1eb620cfa7d03053cec008ceedf5f07",
+      "input_bytes": 823,
+      "outcome": "success",
+      "fuel_consumed": 2291177,
+      "peak_requested_memory_bytes": 1638400
+    },
+    {
+      "fixture": "synthetic-one-page",
+      "input_sha256": "69a3fb4b08be7826582145721667c1c063187e29fa626cce098a0d1abed00398",
+      "input_bytes": 615,
+      "outcome": "success",
+      "fuel_consumed": 1560811,
+      "peak_requested_memory_bytes": 1638400
+    },
+    {
+      "fixture": "synthetic-two-page",
+      "input_sha256": "f1292729e0985458bb7fc3a6102ae68662a09540a8fdd0e4e0ddbf57cd817dce",
+      "input_bytes": 881,
+      "outcome": "success",
+      "fuel_consumed": 2094180,
+      "peak_requested_memory_bytes": 1638400
+    },
+    {
+      "fixture": "flate-output-expansion.pdf",
+      "input_sha256": "ec7012d592fd5ff43186b3fb6d10c9edc038c609eec299f41028470361ecdcef",
+      "input_bytes": 1158,
+      "outcome": "fuel_exhausted",
+      "fuel_consumed": 100000000,
+      "peak_requested_memory_bytes": 3538944,
+      "suites": [
+        "P2",
+        "P3"
+      ]
+    },
+    {
+      "fixture": "synthetic-post-expansion-recovery",
+      "input_sha256": "8681563863f207d38471a4236e0ca1875bac2b3233db3cc812b788d42dd98724",
+      "input_bytes": 626,
+      "outcome": "success",
+      "fuel_consumed": 1614310,
+      "peak_requested_memory_bytes": 1638400
+    },
+    {
+      "fixture": "type0-missing-descendants.pdf",
+      "input_sha256": "24241aa9f57178df4e8f1cd18a57a6c998646aefb0469d0658b0caaa460806bd",
+      "input_bytes": 622,
+      "outcome": "guest_failed",
+      "fuel_consumed": 952056,
+      "peak_requested_memory_bytes": 1638400,
+      "suites": [
+        "P2",
+        "P3"
+      ]
+    },
+    {
+      "fixture": "synthetic-post-panic-recovery",
+      "input_sha256": "e9310555f8892b69427a2e900c59368f0f82c4a902ffae6b9312435ec77f86dc",
+      "input_bytes": 618,
+      "outcome": "success",
+      "fuel_consumed": 1574358,
+      "peak_requested_memory_bytes": 1638400
+    },
+    {
+      "fixture": "synthetic-fresh-store-stability",
+      "input_sha256": "728d335eadde5b0d7dfa1ff737863ba56d567f190ddfce7b566367dbd69c3278",
+      "input_bytes": 620,
+      "outcome": "success",
+      "fuel_consumed": 1585220,
+      "peak_requested_memory_bytes": 1638400,
+      "repetitions": 5
+    },
+    {
+      "fixture": "synthetic-201-page",
+      "input_sha256": "62f6f8eb308eaaa1323dcba9737bc365f4f81e90c03717be1ca617be897c737c",
+      "input_bytes": 54517,
+      "outcome": "unsupported_document",
+      "fuel_consumed": 78863507,
+      "peak_requested_memory_bytes": 2162688
+    },
+    {
+      "fixture": "qpdf-encrypted.pdf",
+      "input_sha256": "3a17f9dddbd2a237beea83794b01b0a2bfe16628467c26c300212727850732ee",
+      "input_bytes": 1378,
+      "outcome": "unsupported_document",
+      "fuel_consumed": 61432,
+      "peak_requested_memory_bytes": 1638400,
+      "suites": [
+        "P2",
+        "P3"
+      ]
+    },
+    {
+      "fixture": "malformed-not-pdf",
+      "input_sha256": "6d689ba9522127c0c759535f5adb7f2c8f182ac280d94eab93cb54e5ec598fa0",
+      "input_bytes": 9,
+      "outcome": "unsupported_document",
+      "fuel_consumed": 2981,
+      "peak_requested_memory_bytes": 1638400
+    },
+    {
+      "fixture": "synthetic-truncated",
+      "input_sha256": "da8ac5d3853148ee5d0e6abba0993b679b3214a9e46486497490b2aa09113dc6",
+      "input_bytes": 309,
+      "outcome": "unsupported_document",
+      "fuel_consumed": 44642,
+      "peak_requested_memory_bytes": 1638400
+    },
+    {
+      "fixture": "synthetic-encrypted",
+      "input_sha256": "9108de32dc6db51af9549edfa9137278f37ce9a33f0379d00cd0f0cbc1dc40f8",
+      "input_bytes": 918,
+      "outcome": "unsupported_document",
+      "fuel_consumed": 37703,
+      "peak_requested_memory_bytes": 1638400
+    },
+    {
+      "fixture": "synthetic-zero-page",
+      "input_sha256": "cd07ae6f173660ec3b6b93f0620d8a8048c86d41b962cefa0e6da59587b97422",
+      "input_bytes": 355,
+      "outcome": "unsupported_document",
+      "fuel_consumed": 432512,
+      "peak_requested_memory_bytes": 1638400
+    },
+    {
+      "fixture": "synthetic-no-text",
+      "input_sha256": "c86757138ca0e083771cb3db21c4a238e8279475dcd08801295dd3fd23850884",
+      "input_bytes": 607,
+      "outcome": "unsupported_document",
+      "fuel_consumed": 1519555,
+      "peak_requested_memory_bytes": 1638400
+    },
+    {
+      "fixture": "p3-synthetic-one-page",
+      "suite": "P3",
+      "input_sha256": "6a434608cf3a1245b6262c5605917473c6650e88b09a85a72fbd348a86e87e0d",
+      "input_bytes": 612,
+      "outcome": "success",
+      "fuel_consumed": 1559433,
+      "peak_requested_memory_bytes": 1638400
+    },
+    {
+      "fixture": "p3-synthetic-two-page",
+      "suite": "P3",
+      "input_sha256": "137676fde7a8522772d56cc8a6cce2ffb2fcced52aaa5895079a9f728c6caaa6",
+      "input_bytes": 868,
+      "outcome": "success",
+      "fuel_consumed": 2045898,
+      "peak_requested_memory_bytes": 1638400
+    },
+    {
+      "fixture": "p3-malformed-pdf",
+      "suite": "P3",
+      "input_sha256": "16c0df1ff464b4ea5c922be7fb5cfdd90139b8f0254dfdd6fb6cc1562babc748",
+      "input_bytes": 14,
+      "outcome": "unsupported_document",
+      "fuel_consumed": 4514,
+      "peak_requested_memory_bytes": 1638400
+    },
+    {
+      "fixture": "p3-synthetic-encrypted",
+      "suite": "P3",
+      "input_sha256": "35a307610cc7d251c06b8744031b5733e01c4a83bfe1876f46a97b9288443d69",
+      "input_bytes": 915,
+      "outcome": "unsupported_document",
+      "fuel_consumed": 37604,
+      "peak_requested_memory_bytes": 1638400
+    },
+    {
+      "fixture": "p3-synthetic-zero-page",
+      "suite": "P3",
+      "input_sha256": "026c52f4a38d78c10979ce1d4546c24eb77e470b16fb3b1be041351b518ef19f",
+      "input_bytes": 352,
+      "outcome": "unsupported_document",
+      "fuel_consumed": 431701,
+      "peak_requested_memory_bytes": 1638400
+    },
+    {
+      "fixture": "p3-synthetic-no-text",
+      "suite": "P3",
+      "input_sha256": "b53b0056c8d85308c9ca1bf40ed201e5c488eabe00953d54ac67a351624e1a09",
+      "input_bytes": 604,
+      "outcome": "unsupported_document",
+      "fuel_consumed": 1518839,
+      "peak_requested_memory_bytes": 1638400
+    },
+    {
+      "fixture": "p3-synthetic-201-page",
+      "suite": "P3",
+      "input_sha256": "d0ae7d6161d40668eff352cff7a0e8754334a5b03bfed1e1a5e06e34a5746212",
+      "input_bytes": 54514,
+      "outcome": "unsupported_document",
+      "fuel_consumed": 78852663,
+      "peak_requested_memory_bytes": 2162688
+    },
+    {
+      "fixture": "p3-post-hostile-recovery",
+      "suite": "P3",
+      "input_sha256": "a08c616b0b129e3bff82ba1b00a262b462dd31078e454df556055b22c089ddf7",
+      "input_bytes": 618,
+      "outcome": "success",
+      "fuel_consumed": 1589320,
+      "peak_requested_memory_bytes": 1638400
+    },
+    {
+      "fixture": "synthetic-near-input-limit",
+      "generator": "processing-context::tests::pdf_near_input_limit_memory_baseline_is_bounded_by_64_mib",
+      "input_sha256": "ee862afe371360eaaa565c20a8f88def2db32616b973bb4f24f3de661f77115b",
+      "input_bytes": 7340648,
+      "outcome": "fuel_exhausted",
+      "fuel_consumed": 100000000,
+      "peak_requested_memory_bytes": 8978432,
+      "measurement_wall_time_ms": 30000,
+      "measurement_qualification": "test-only relaxed wall/epoch deadline so the unchanged 100M native fuel backstop deterministically wins"
+    }
+  ],
+  "max_checked_fixture_peak_requested_memory_bytes": 3538944,
+  "max_near_input_limit_peak_requested_memory_bytes": 8978432,
+  "workers_isolate_arithmetic": {
+    "nominal_platform_memory_bytes": 134217728,
+    "wasm_heap_max_bytes": 67108864,
+    "bounded_service_input_copy_bytes": 8388608,
+    "bounded_service_output_copy_bytes": 528388,
+    "module_binary_bytes": 934621,
+    "remaining_unallocated_bytes": 57257247,
+    "remaining_covers": [
+      "compiled module and runtime representation",
+      "JavaScript shim and async stacks",
+      "service request/response bookkeeping",
+      "isolate platform overhead"
+    ],
+    "qualification": "planning arithmetic only; W2/W4 must measure local/Miniflare behavior and production Workers evidence remains required"
+  }
+}

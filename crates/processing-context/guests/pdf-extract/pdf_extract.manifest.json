@@ -9,25 +9,25 @@
       "-C link-arg=--no-entry",
       "-C link-arg=--export-memory",
       "-C link-arg=--compress-relocations",
-      "-C link-arg=--max-memory=134217728",
+      "-C link-arg=--max-memory=67108864",
       "-C strip=symbols",
       "--remap-path-prefix=/tmp/lattice-pdf-transform-v1.lock/staging=/build"
     ],
     "getrandom_backend": "unsupported",
-    "max_memory_bytes": 134217728,
+    "max_memory_bytes": 67108864,
     "panic": "abort",
     "rustc": "rustc 1.93.0 (254b59607 2026-01-19)",
     "target": "wasm32-unknown-unknown",
     "wasm_tools": "wasm-tools 1.245.1"
   },
   "inputs": {
-    "build_script_sha256": "297fc795f07e6e6617a11ba3493a974a481f4cbc25ed14f0a503f7566cdfd6f9",
+    "build_script_sha256": "a3bb288b7d4b635fd6f186f44d1c167e24018bd0480291aaf26015fea0d59073",
     "cargo_lock_sha256": "1271dd842a6f413bfba31d66a8a345ac151e20987655bcb2d57b8aeaeec78229",
     "guest_manifest_sha256": "c38018e930fce50e02a31d58d74044c55d29ce2f15e7339fbb2a5c1bf076761f",
     "guest_source_sha256": "6d3c5418606790376dd3cc2206ecbd955a2fe9626609ee7e5c64f37d96d8e775",
-    "inspector_sha256": "dca756e8652135dde6695c39b34fdc92155679a264bedc48ec4130e9d2782d4f",
+    "inspector_sha256": "03c6e69b3920b62545628f9a70b90f7745720ede5c8936c56ebf332fb0dba8a6",
     "patch_sha256": "9c8be0aeca10cee7e6ecddda899d4a4f639819143239e900f7ee24161c094d35",
-    "provenance_notice_sha256": "a05f8fd059630f779080c17bd091711ce28f968fd3531ce837759498c1900cb8",
+    "provenance_notice_sha256": "9efb59d40ed676f40f854d2adce217c33ed7047ff81d7f6a00d8fa3cbb5b455a",
     "rust_toolchain_sha256": "2eb836a2c9e8248c73d0fa5099481a017ac71bb3e4ca4f4bd741959fb5f30061"
   },
   "module": {
@@ -35,7 +35,7 @@
       "name",
       "producers"
     ],
-    "sha256": "788d788695c40da2325b556991af480159db6eb359fa32dd8722e4df0feff7b3",
+    "sha256": "048f650aec8502659633289a4ace493c56a7bc6e95c8da3d4a34e293e96d4e96",
     "size_bytes": 934621
   },
   "source": {

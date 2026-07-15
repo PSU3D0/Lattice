@@ -816,6 +816,10 @@ fn pdf_envelope(output: &[u8]) -> (u32, &str) {
 async fn checked_pdf_module_is_admitted_and_extracts_one_and_multiple_pages() {
     assert_eq!(ProcessingBudgets::default().fuel, 10_000_000);
     assert_eq!(pdf_extract_processing_budgets().fuel, 100_000_000);
+    assert_eq!(
+        pdf_extract_processing_budgets().memory_bytes,
+        64 * 1024 * 1024
+    );
     assert_eq!(PDF_EXTRACT_MODULE.transform_id(), PDF_EXTRACT_TRANSFORM_ID);
     assert_eq!(
         PDF_EXTRACT_MODULE.module_sha256(),
@@ -986,6 +990,45 @@ async fn pdf_module_output_is_stable_across_fresh_stores() {
         assert_eq!(repeated.output, first.output);
         assert_eq!(repeated.record.output_sha256, first.record.output_sha256);
     }
+}
+
+#[tokio::test]
+async fn pdf_near_input_limit_memory_baseline_is_bounded_by_64_mib() {
+    let pdf = synthetic_pdf(&[vec![b'A'; 7 * 1024 * 1024]], false);
+    assert_eq!(pdf.len(), 7_340_648);
+    let digest = sha256(&pdf)
+        .into_iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert_eq!(
+        digest,
+        "ee862afe371360eaaa565c20a8f88def2db32616b973bb4f24f3de661f77115b"
+    );
+
+    let mut measurement_policy = pdf_extract_processing_budgets();
+    measurement_policy.wall_time = Duration::from_secs(30);
+    let measurement_runtime =
+        ProcessingRuntime::new_with_ceiling(measurement_policy.clone(), &measurement_policy)
+            .expect("measurement runtime");
+    let measurement_context = measurement_runtime
+        .create_context(&PDF_EXTRACT_MODULE, measurement_policy)
+        .expect("measurement context");
+    let error = measurement_context
+        .try_begin(PDF_EXTRACT_TRANSFORM_ID)
+        .expect("measurement admission")
+        .run(pdf)
+        .await
+        .expect_err("fuel backstop");
+    assert_eq!(error.public_error, PublicError::FuelExhausted);
+    assert_eq!(error.record.observations.fuel_consumed, Some(100_000_000));
+    assert_eq!(
+        error.record.observations.peak_requested_memory_bytes,
+        Some(8_978_432)
+    );
+    assert_eq!(
+        error.record.effective_budgets.memory_bytes,
+        64 * 1024 * 1024
+    );
 }
 
 #[tokio::test]

@@ -1016,6 +1016,19 @@ async fn serve_s21_real_tcp_pdf_golden_redelivery_and_metrics() {
         hash_comparisons["value"], 2,
         "valid delivery plus sequential redelivery each compare the staged hash"
     );
+    let memory_ceiling = metric_entry(
+        &evidence,
+        "lattice.transform.memory_ceiling_bytes",
+        &[
+            ("backend", "native"),
+            ("transform", stdlib::document::PDF_EXTRACT_TRANSFORM_ID),
+        ],
+    )
+    .expect("native PDF memory ceiling gauge");
+    assert_eq!(
+        memory_ceiling["value"], 67_108_864.0,
+        "native listener evidence must report the W0 64 MiB ceiling"
+    );
 
     let node_invocations = |alias: &str| {
         metric_entry(
