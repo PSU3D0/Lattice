@@ -119,7 +119,8 @@ async fn extract_pdf_text_with_resources(
     }
 
     let outcome = lease.run(bytes).await.map_err(transform_execution_error)?;
-    validate_pdf_envelope(outcome.output, outcome.record)
+    let (output, record) = outcome.into_parts();
+    validate_pdf_envelope(output, record)
 }
 
 fn validate_pdf_envelope(
@@ -188,7 +189,7 @@ fn transform_begin_error(error: TransformBeginError) -> NodeError {
 }
 
 fn transform_execution_error(error: TransformFailure) -> NodeError {
-    document_error(ERR_DOCUMENT_TRANSFORM, error.class.as_str())
+    document_error(ERR_DOCUMENT_TRANSFORM, error.class().as_str())
 }
 
 fn map_workspace_error(error: ByteAccessError) -> NodeError {
@@ -226,8 +227,9 @@ mod tests {
     use async_trait::async_trait;
     use capabilities::artifact::{Handle, StoreRef, sha256_hex};
     use capabilities::transform::{
-        TransformBudgets, TransformErrorClass, TransformLease, TransformOutcome,
-        TransformTerminationClass,
+        MeteredTransformBudgets, MeteredTransformObservations, PlatformTransformBudgets,
+        PlatformTransformObservations, TransformErrorClass, TransformInstanceModel, TransformLease,
+        TransformOutcome, TransformTerminationClass,
     };
     use capabilities::workspace::{
         Workspace, WorkspaceDeleteResult, WorkspaceEntry, WorkspaceListOptions,
@@ -475,24 +477,37 @@ mod tests {
             match self.behavior {
                 RunBehavior::Output(output) => {
                     let output_hash = Sha256::digest(&output).into();
-                    Ok(TransformOutcome {
+                    Ok(TransformOutcome::new(
                         output,
-                        record: record(
+                        record(
                             Some(input_hash),
                             Some(output_hash),
                             TransformTerminationClass::Success,
                         ),
-                    })
+                    )
+                    .expect("test outcome record is successful"))
                 }
-                RunBehavior::Failure(class) => Err(TransformFailure::new(
-                    class,
-                    record(
-                        Some(input_hash),
-                        None,
-                        TransformTerminationClass::Failure(class),
-                    ),
-                    Some("private trap / parser diagnostic".to_string()),
-                )),
+                RunBehavior::Failure(class) => {
+                    let record = if class == TransformErrorClass::PlatformTerminated {
+                        platform_record(
+                            Some(input_hash),
+                            None,
+                            TransformTerminationClass::Failure(class),
+                        )
+                    } else {
+                        record(
+                            Some(input_hash),
+                            None,
+                            TransformTerminationClass::Failure(class),
+                        )
+                    };
+                    Err(TransformFailure::new(
+                        class,
+                        record,
+                        Some("private trap / parser diagnostic".to_string()),
+                    )
+                    .expect("test failure class matches record"))
+                }
             }
         }
     }
@@ -502,38 +517,71 @@ mod tests {
         output_sha256: Option<[u8; 32]>,
         termination_class: TransformTerminationClass,
     ) -> TransformExecutionRecord {
-        TransformExecutionRecord {
-            transform_id: PDF_EXTRACT_TRANSFORM_ID.to_string(),
-            module_sha256: [3; 32],
-            abi_version: "lattice.transform.v1".to_string(),
-            runtime_version: "test-runtime".to_string(),
-            effective_budgets: TransformBudgets {
-                module_bytes: 1,
-                input_bytes: 1024,
-                memory_bytes: 2048,
-                memories: 1,
-                table_elements: 1,
-                tables: 1,
-                instances: 1,
-                output_bytes: (4 + MAX_TEXT_BYTES) as u64,
-                wall_time: Duration::from_secs(2),
-                epoch_interval: Duration::from_millis(10),
-                stale_heartbeat: Duration::from_millis(250),
-                fuel: 100,
-                fuel_yield_interval: 10,
-                concurrency: 2,
-            },
+        TransformExecutionRecord::metered(
+            PDF_EXTRACT_TRANSFORM_ID,
+            [3; 32],
+            "lattice.transform.v1",
+            "test-runtime",
+            MeteredTransformBudgets::new(
+                1,
+                1024,
+                2048,
+                1,
+                1,
+                1,
+                1,
+                (4 + MAX_TEXT_BYTES) as u64,
+                Duration::from_secs(2),
+                Duration::from_millis(10),
+                Duration::from_millis(250),
+                100,
+                10,
+                2,
+            ),
             input_sha256,
             output_sha256,
             termination_class,
-            observations: capabilities::transform::TransformObservations {
-                duration: Duration::from_millis(1),
-                input_bytes: input_sha256.map_or(0, |_| 1),
-                output_bytes: output_sha256.map_or(0, |_| 1),
-                fuel_consumed: Some(1),
-                peak_requested_memory_bytes: Some(65_536),
-            },
-        }
+            MeteredTransformObservations::new(
+                Duration::from_millis(1),
+                input_sha256.map_or(0, |_| 1),
+                output_sha256.map_or(0, |_| 1),
+                Some(1),
+                Some(65_536),
+            ),
+        )
+        .expect("valid metered test record")
+    }
+
+    fn platform_record(
+        input_sha256: Option<[u8; 32]>,
+        output_sha256: Option<[u8; 32]>,
+        termination_class: TransformTerminationClass,
+    ) -> TransformExecutionRecord {
+        TransformExecutionRecord::platform(
+            PDF_EXTRACT_TRANSFORM_ID,
+            [3; 32],
+            "lattice.transform.v1",
+            "2026-07-15",
+            PlatformTransformBudgets::new(
+                50,
+                128 * 1024 * 1024,
+                64 * 1024 * 1024,
+                1024,
+                (4 + MAX_TEXT_BYTES) as u64,
+                1,
+                TransformInstanceModel::FreshPerInvocation,
+            )
+            .expect("valid platform test budgets"),
+            input_sha256,
+            output_sha256,
+            termination_class,
+            PlatformTransformObservations::new(
+                Duration::from_millis(1),
+                input_sha256.map_or(0, |_| 1),
+                output_sha256.map_or(0, |_| 1),
+            ),
+        )
+        .expect("valid platform test record")
     }
 
     fn envelope(page_count: u32, text: &[u8]) -> Vec<u8> {
@@ -611,7 +659,7 @@ mod tests {
         let expected_text_hash: [u8; 32] = Sha256::digest(b"first\nsecond").into();
         assert_eq!(execution.canonical_text_sha256, expected_text_hash);
         assert_eq!(
-            execution.transform_record.input_sha256,
+            execution.transform_record.input_sha256(),
             Some(Sha256::digest(&pdf).into())
         );
         assert_eq!(workspace.bounded_calls.load(Ordering::SeqCst), 1);
@@ -856,7 +904,7 @@ mod tests {
         for output in cases {
             let error = validate_pdf_envelope(
                 output,
-                record(None, None, TransformTerminationClass::Success),
+                record(None, Some([1; 32]), TransformTerminationClass::Success),
             )
             .expect_err("invalid envelope");
             assert!(error.to_string().contains(ERR_DOCUMENT_ENVELOPE));
@@ -874,6 +922,7 @@ mod tests {
             TransformErrorClass::FuelExhausted,
             TransformErrorClass::MemoryExhausted,
             TransformErrorClass::WallTimeExceeded,
+            TransformErrorClass::PlatformTerminated,
             TransformErrorClass::Cancelled,
             TransformErrorClass::OutputTooLarge,
             TransformErrorClass::GuestFailed,
@@ -1483,47 +1532,50 @@ mod tests {
     fn assert_exact_checked_provenance(execution: &CompositeExecution, input: &[u8]) {
         let record = &execution.transform_record;
         assert_eq!(
-            record.transform_id,
+            record.backend(),
+            capabilities::transform::TransformBackend::Wasmtime
+        );
+        assert_eq!(
+            record.transform_id(),
             processing_context::PDF_EXTRACT_TRANSFORM_ID
         );
         assert_eq!(
-            record.module_sha256,
-            processing_context::PDF_EXTRACT_MODULE.module_sha256()
+            record.module_identity(),
+            capabilities::transform::TransformModuleIdentity::RuntimeVerifiedSha256(
+                processing_context::PDF_EXTRACT_MODULE.module_sha256()
+            )
         );
-        assert_eq!(record.abi_version, processing_context::ABI_VERSION);
-        assert_eq!(record.runtime_version, processing_context::RUNTIME_VERSION);
-        assert_eq!(record.input_sha256, Some(Sha256::digest(input).into()));
+        assert_eq!(record.abi_version(), processing_context::ABI_VERSION);
+        assert_eq!(
+            record.runtime_version(),
+            Some(processing_context::RUNTIME_VERSION)
+        );
+        assert_eq!(record.input_sha256(), Some(Sha256::digest(input).into()));
         let output_envelope = envelope(
             execution.output.page_count,
             execution.output.text.as_bytes(),
         );
         assert_eq!(
-            record.output_sha256,
+            record.output_sha256(),
             Some(Sha256::digest(&output_envelope).into())
         );
-        assert_eq!(record.termination_class, TransformTerminationClass::Success);
+        assert_eq!(
+            record.termination_class(),
+            TransformTerminationClass::Success
+        );
         let canonical_text_sha256: [u8; 32] =
             Sha256::digest(execution.output.text.as_bytes()).into();
         assert_eq!(execution.canonical_text_sha256, canonical_text_sha256);
         let policy = processing_context::pdf_extract_processing_budgets();
-        assert_eq!(
-            record.effective_budgets.input_bytes,
-            policy.input_bytes as u64
-        );
-        assert_eq!(
-            record.effective_budgets.output_bytes,
-            policy.output_bytes as u64
-        );
-        assert_eq!(
-            record.effective_budgets.memory_bytes,
-            policy.memory_bytes as u64
-        );
-        assert_eq!(record.effective_budgets.wall_time, policy.wall_time);
-        assert_eq!(record.effective_budgets.fuel, policy.fuel);
-        assert_eq!(
-            record.effective_budgets.concurrency,
-            policy.concurrency as u64
-        );
+        let budgets = record
+            .metered_budgets()
+            .expect("native provenance has metered budgets");
+        assert_eq!(budgets.input_bytes(), policy.input_bytes as u64);
+        assert_eq!(budgets.output_bytes(), policy.output_bytes as u64);
+        assert_eq!(budgets.memory_bytes(), policy.memory_bytes as u64);
+        assert_eq!(budgets.wall_time(), policy.wall_time);
+        assert_eq!(budgets.fuel(), policy.fuel);
+        assert_eq!(budgets.concurrency(), policy.concurrency as u64);
     }
 
     #[cfg(not(target_arch = "wasm32"))]

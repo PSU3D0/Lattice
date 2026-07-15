@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use capabilities::transform::{
-    TransformBeginError, TransformBudgets, TransformErrorClass, TransformExecutionRecord,
-    TransformFailure, TransformLease, TransformObservations as NeutralTransformObservations,
+    MeteredTransformBudgets, MeteredTransformObservations, TransformBeginError,
+    TransformErrorClass, TransformExecutionRecord, TransformFailure, TransformLease,
     TransformOutcome, TransformRuntime, TransformTerminationClass,
 };
 use std::sync::Arc;
@@ -109,55 +109,55 @@ fn usize_to_u64(value: usize) -> u64 {
     u64::try_from(value).expect("supported native usize values fit transform provenance u64")
 }
 
-fn map_budgets(budgets: ProcessingBudgets) -> TransformBudgets {
-    TransformBudgets {
-        module_bytes: usize_to_u64(budgets.module_bytes),
-        input_bytes: usize_to_u64(budgets.input_bytes),
-        memory_bytes: usize_to_u64(budgets.memory_bytes),
-        memories: usize_to_u64(budgets.memories),
-        table_elements: budgets.table_elements,
-        tables: usize_to_u64(budgets.tables),
-        instances: usize_to_u64(budgets.instances),
-        output_bytes: usize_to_u64(budgets.output_bytes),
-        wall_time: budgets.wall_time,
-        epoch_interval: budgets.epoch_interval,
-        stale_heartbeat: budgets.stale_heartbeat,
-        fuel: budgets.fuel,
-        fuel_yield_interval: budgets.fuel_yield_interval,
-        concurrency: usize_to_u64(budgets.concurrency),
-    }
+fn map_budgets(budgets: ProcessingBudgets) -> MeteredTransformBudgets {
+    MeteredTransformBudgets::new(
+        usize_to_u64(budgets.module_bytes),
+        usize_to_u64(budgets.input_bytes),
+        usize_to_u64(budgets.memory_bytes),
+        usize_to_u64(budgets.memories),
+        budgets.table_elements,
+        usize_to_u64(budgets.tables),
+        usize_to_u64(budgets.instances),
+        usize_to_u64(budgets.output_bytes),
+        budgets.wall_time,
+        budgets.epoch_interval,
+        budgets.stale_heartbeat,
+        budgets.fuel,
+        budgets.fuel_yield_interval,
+        usize_to_u64(budgets.concurrency),
+    )
 }
 
 fn map_record(record: TransformRecord) -> TransformExecutionRecord {
-    TransformExecutionRecord {
-        transform_id: record.transform_id.to_string(),
-        module_sha256: record.module_sha256,
-        abi_version: record.abi_version.to_string(),
-        runtime_version: record.runtime_version.to_string(),
-        effective_budgets: map_budgets(record.effective_budgets),
-        input_sha256: record.input_sha256,
-        output_sha256: record.output_sha256,
-        termination_class: map_termination(record.termination_class),
-        observations: NeutralTransformObservations {
-            duration: record.observations.duration,
-            input_bytes: record.observations.input_bytes,
-            output_bytes: record.observations.output_bytes,
-            fuel_consumed: record.observations.fuel_consumed,
-            peak_requested_memory_bytes: record.observations.peak_requested_memory_bytes,
-        },
-    }
+    TransformExecutionRecord::metered(
+        record.transform_id,
+        record.module_sha256,
+        record.abi_version,
+        record.runtime_version,
+        map_budgets(record.effective_budgets),
+        record.input_sha256,
+        record.output_sha256,
+        map_termination(record.termination_class),
+        MeteredTransformObservations::new(
+            record.observations.duration,
+            record.observations.input_bytes,
+            record.observations.output_bytes,
+            record.observations.fuel_consumed,
+            record.observations.peak_requested_memory_bytes,
+        ),
+    )
+    .expect("native processing records satisfy neutral metered invariants")
 }
 
 fn map_outcome(outcome: ProcessingOutcome) -> TransformOutcome {
-    TransformOutcome {
-        output: outcome.output,
-        record: map_record(outcome.record),
-    }
+    TransformOutcome::new(outcome.output, map_record(outcome.record))
+        .expect("native successful outcome carries a successful terminal record")
 }
 
 fn map_failure(failure: ProcessingFailure) -> TransformFailure {
     let class = map_error(failure.public_error);
     TransformFailure::new(class, map_record(failure.record), failure.private_source)
+        .expect("native failure class matches its terminal record")
 }
 
 #[cfg(test)]
@@ -253,7 +253,7 @@ mod tests {
             runtime_version: crate::RUNTIME_VERSION,
             effective_budgets: budgets.clone(),
             input_sha256: Some([8; 32]),
-            output_sha256: Some([9; 32]),
+            output_sha256: None,
             termination_class: TerminationClass::Failure(PublicError::InvalidOutput),
             observations: crate::TransformObservations {
                 duration: std::time::Duration::from_millis(12),
@@ -264,16 +264,46 @@ mod tests {
             },
         };
         let mapped = map_record(source);
-        assert_eq!(mapped.transform_id, crate::PDF_EXTRACT_TRANSFORM_ID);
-        assert_eq!(mapped.module_sha256, [7; 32]);
-        assert_eq!(mapped.abi_version, crate::ABI_VERSION);
-        assert_eq!(mapped.runtime_version, crate::RUNTIME_VERSION);
-        assert_eq!(mapped.effective_budgets, map_budgets(budgets));
-        assert_eq!(mapped.input_sha256, Some([8; 32]));
-        assert_eq!(mapped.output_sha256, Some([9; 32]));
+        assert_eq!(mapped.transform_id(), crate::PDF_EXTRACT_TRANSFORM_ID);
+        assert_eq!(mapped.module_sha256(), [7; 32]);
+        assert_eq!(mapped.abi_version(), crate::ABI_VERSION);
+        assert_eq!(mapped.runtime_version(), Some(crate::RUNTIME_VERSION));
+        assert_eq!(mapped.metered_budgets(), Some(&map_budgets(budgets)));
+        assert_eq!(mapped.input_sha256(), Some([8; 32]));
+        assert_eq!(mapped.output_sha256(), None);
         assert_eq!(
-            mapped.termination_class,
+            mapped.termination_class(),
             TransformTerminationClass::Failure(TransformErrorClass::InvalidOutput)
         );
+        let observations = mapped
+            .metered_observations()
+            .expect("native observations are metered");
+        assert_eq!(observations.fuel_consumed(), Some(10));
+        assert_eq!(observations.peak_requested_memory_bytes(), Some(65_536));
+
+        let mapped_none = map_record(TransformRecord {
+            transform_id: crate::PDF_EXTRACT_TRANSFORM_ID,
+            module_sha256: [7; 32],
+            abi_version: crate::ABI_VERSION,
+            runtime_version: crate::RUNTIME_VERSION,
+            effective_budgets: crate::pdf_extract_processing_budgets(),
+            input_sha256: None,
+            output_sha256: None,
+            termination_class: TerminationClass::Failure(PublicError::InputTooLarge),
+            observations: crate::TransformObservations {
+                duration: std::time::Duration::ZERO,
+                input_bytes: 8 * 1024 * 1024 + 1,
+                output_bytes: 0,
+                fuel_consumed: None,
+                peak_requested_memory_bytes: None,
+            },
+        });
+        assert_eq!(mapped_none.input_sha256(), None);
+        assert_eq!(mapped_none.output_sha256(), None);
+        let observations = mapped_none
+            .metered_observations()
+            .expect("native observations are metered");
+        assert_eq!(observations.fuel_consumed(), None);
+        assert_eq!(observations.peak_requested_memory_bytes(), None);
     }
 }

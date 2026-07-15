@@ -1299,6 +1299,7 @@ impl MetricsExportPolicy {
                     | "fuel_exhausted"
                     | "memory_exhausted"
                     | "wall_time_exceeded"
+                    | "platform_terminated"
                     | "cancelled"
                     | "output_too_large"
                     | "guest_failed"
@@ -4412,6 +4413,9 @@ mod tests {
 
     #[test]
     fn sanitized_metrics_drop_request_and_diagnostic_labels() {
+        assert!(
+            MetricsExportPolicy::test_policy().allows_label("termination", "platform_terminated")
+        );
         let recorder = DebuggingRecorder::new();
         let snapshotter = recorder.snapshotter();
         metrics::with_local_recorder(&recorder, || {

@@ -687,3 +687,18 @@ Acceptance gates:
 - Added passive transform duration/input/output/fuel/peak-requested-memory observations, policy ceilings and termination metrics, staged ingress/cleanup metrics, and PII-filtered CLI `--metrics-out` evidence.
 - Acceptance gates: focused processing-context containment plus Wasmtime 16 async-yield fuel calibration, host-web multipart/N+1 polling proof, S21 unit contract tests, Workers render rejection, and the real TCP/FsWorkspace/multipart S21 mock-provider golden with hostile requests, exact downstream counts, cleanup, and redelivery.
 - Compatibility/contract notes: no checkpoint schema, durable receipt, Workers backend, or W0 transform-record re-charter changes are included.
+
+## 2026-07-15 — W0 PDF transform memory re-baseline
+
+- Rebuilt the one checked PDF transform artifact with an exact 64 MiB/1024-page declared maximum and aligned the native Wasmtime policy to the same 67,108,864-byte guest ceiling; the canonical module SHA-256 is `048f650aec8502659633289a4ace493c56a7bc6e95c8da3d4a34e293e96d4e96`.
+- Added `memory-baseline.json` with exact P2/P3 fixture identities and observations plus a deterministic 7,340,648-byte near-input-limit synthetic. The checked-fixture maximum of 3,538,944 bytes and synthetic maximum of 8,978,432 bytes are empirical terminal observations, not memory upper bounds or Workers RSS evidence.
+- Preserved the exact no-import ABI, 100M PDF fuel backstop, 8 MiB input ceiling, 512 KiB text ceiling, and dual-clean reproducible build/hash verification.
+- Compatibility/contract notes: this changes the checked module identity and native guest ceiling together; Workers containment and production isolate evidence remain separate W2/W4 obligations.
+
+## 2026-07-15 — W1 backend-truthful transform execution records
+
+- Replaced the flat Wasmtime-shaped neutral execution record with a closed `Metered`/`Platform` record enum. Metered records retain native fuel, epoch, wall-time, store-limit, and optional fuel/peak-memory observations; platform records expose only CPU, isolate/guest memory, bounded I/O, per-isolate single-flight, fresh-instance, compatibility-date, and adapter-observed duration/I/O fields.
+- Distinguished runtime-verified native module hashes from build-time-attested Workers module hashes and made backend-incompatible termination classes unrepresentable through checked constructors. Added the generic sanitized `platform_terminated` class without guessing CPU-versus-memory attribution.
+- Made successful outcomes and failures validate against their terminal records, kept backend-specific record fields private, and preserved the native processing-context policy and mapping one-for-one.
+- Acceptance gates: capabilities, processing-context, stdlib document, host-web, S21 real TCP, CLI metrics sanitization, wasm32 checks, package formatting, hint-literal, and diff checks.
+- Compatibility/contract notes: the neutral record remains transient and non-serializable; this packet adds no Workers runtime, service protocol, deployment config, checkpoint schema, durable receipt, or production containment claim.

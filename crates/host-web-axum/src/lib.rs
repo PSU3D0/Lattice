@@ -1245,6 +1245,7 @@ fn sanitized_document_failure(message: &str) -> Option<(&str, &str)> {
             | "fuel_exhausted"
             | "memory_exhausted"
             | "wall_time_exceeded"
+            | "platform_terminated"
             | "cancelled"
             | "output_too_large"
             | "guest_failed"
@@ -2785,6 +2786,12 @@ mod tests {
                 "STD-DOC-002: document operation failed [unsupported_document]"
             ),
             Some(("STD-DOC-002", "unsupported_document"))
+        );
+        assert_eq!(
+            sanitized_document_failure(
+                "STD-DOC-002: document operation failed [platform_terminated]"
+            ),
+            Some(("STD-DOC-002", "platform_terminated"))
         );
         assert_eq!(
             sanitized_document_failure("STD-DOC-002: document operation failed [parser_secret]"),
