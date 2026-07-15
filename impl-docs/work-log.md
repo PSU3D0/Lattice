@@ -667,3 +667,13 @@ Acceptance gates:
   - `CARGO_TARGET_DIR=.target cargo check -p example-s14-meeting-transcript-sync`
   - `CARGO_TARGET_DIR=.target cargo check -p example-s14-meeting-transcript-sync --target wasm32-unknown-unknown --no-default-features`
 - Compatibility/contract notes: no process-global installed runtime remains as the production seam for s14; the real scheduled helper is example-owned and thin, while live provider wiring stays an explicit deployment-layer follow-up.
+
+## 2026-07-15 — P4a native-only stdlib placement gate (S21 native closure)
+
+- Added `FlowRequirements.native_only_nodes`, derived only from `NodeIR.identifier` and carrying the sorted aliases that use each native-only implementation; the initial marker is `std.document.extract_pdf_text`.
+- Bumped the requirements manifest to `schema_version = 0.2`, regenerated `schemas/flow_requirements.schema.json`, and updated kernel-plan and CLI requirements fixtures together.
+- Made Workers rendering reject attributed native-only nodes with the named `LATTICE_EXTRACT_PDF` extraction Worker prerequisite while preserving the existing S27 native HTTP byte-operation rejection.
+- Added a must-fail-first S21 render acceptance using an in-memory future extractor node plus a benign `std.workspace.read` render control; the checked-in S21 graph remains unchanged for P4b.
+- Enabled stdlib `document` in the default feature set only after the static placement gate became available.
+- Acceptance gates: focused dag-core requirements, kernel-plan requirements goldens, CLI requirements/render suites, stdlib document/default tests, wasm32 checks, render-proof Miniflare controls, package formatting, hint-literal, and diff checks.
+- Compatibility/contract notes: this packet changes only static requirements and deployment admission; it does not add a Workers extraction backend, alter S21's graph, or change checkpoint schemas.

@@ -625,6 +625,8 @@ pub(crate) fn render_wrangler(
     requirements: &FlowRequirements,
     options: &RenderOptions,
 ) -> Result<Rendered> {
+    reject_pre_native_only_schema(requirements)?;
+    reject_native_only_nodes(requirements)?;
     reject_native_only_http_byte_operations(requirements)?;
 
     let worker = &options.worker_name;
@@ -1265,6 +1267,46 @@ pub(crate) fn render_wrangler(
         wrangler_toml: out,
         notes,
     })
+}
+
+fn reject_pre_native_only_schema(requirements: &FlowRequirements) -> Result<()> {
+    let minor = requirements
+        .schema_version
+        .strip_prefix("0.")
+        .and_then(|minor| minor.parse::<u64>().ok());
+    if minor.is_some_and(|minor| minor >= 2) {
+        return Ok(());
+    }
+    bail!(
+        "FlowRequirements schema_version `{}` predates the native-only placement surface (schema 0.2); regenerate requirements with this toolchain",
+        requirements.schema_version
+    )
+}
+
+fn reject_native_only_nodes(requirements: &FlowRequirements) -> Result<()> {
+    if requirements.native_only_nodes.is_empty() {
+        return Ok(());
+    }
+
+    let mut message = format!(
+        "flow `{}` cannot be rendered for Cloudflare Workers: these stdlib node implementations are native-only without an extraction Worker backend:\n",
+        requirements.flow.name
+    );
+    for requirement in &requirements.native_only_nodes {
+        let nodes = if requirement.nodes.is_empty() {
+            "<no per-node attribution recorded>".to_string()
+        } else {
+            requirement.nodes.join(", ")
+        };
+        message.push_str(&format!(
+            "\n  `{}` — required by node(s): {nodes}",
+            requirement.identifier
+        ));
+    }
+    message.push_str(
+        "\n\nWorkers deployment requires the named `LATTICE_EXTRACT_PDF` extraction Worker service binding, which is not available until the S21-C backend lands. Run this flow on a native host in the meantime.",
+    );
+    Err(anyhow!(message))
 }
 
 fn reject_native_only_http_byte_operations(requirements: &FlowRequirements) -> Result<()> {

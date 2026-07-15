@@ -23,7 +23,10 @@ pub use edge_transform::{
 pub use effect_hint::{EffectHint, UnknownEffectHint};
 pub use effects::{Determinism, Effects, NodeError, NodeResult};
 pub use ir::*;
-pub use requirements::{FLOW_REQUIREMENTS_SCHEMA_VERSION, FlowRequirements, RequirementsError};
+pub use requirements::{
+    FLOW_REQUIREMENTS_SCHEMA_VERSION, FlowRequirements, NativeOnlyNodeRequirement,
+    RequirementsError,
+};
 pub use serde_json;
 use std::marker::PhantomData;
 pub use trigger::ScheduledEvent;

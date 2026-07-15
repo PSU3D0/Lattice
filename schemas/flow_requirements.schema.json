@@ -357,6 +357,27 @@
       ],
       "type": "object"
     },
+    "NativeOnlyNodeRequirement": {
+      "description": "One native-only stdlib implementation used by a flow.",
+      "properties": {
+        "identifier": {
+          "description": "Fully-qualified node implementation identifier.",
+          "type": "string"
+        },
+        "nodes": {
+          "description": "Aliases of nodes using this implementation (sorted).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "identifier",
+        "nodes"
+      ],
+      "type": "object"
+    },
     "Profile": {
       "description": "Workflow execution profile.",
       "oneOf": [
@@ -408,7 +429,7 @@
           "type": "string"
         },
         {
-          "description": "Trigger is wired to a schedule (cron) entrypoint.\n\nTolerated additive value under `schema_version` 0.1: consumers encountering an unknown trigger `kind` must treat that flow as \"cannot place\" (fail closed per-flow) rather than reject the manifest. See `impl-docs/spec/flow-requirements.md`.",
+          "description": "Trigger is wired to a schedule (cron) entrypoint.\n\nTolerated additive value under `schema_version` 0.x (policy decided at 0.1): consumers encountering an unknown trigger `kind` must treat that flow as \"cannot place\" (fail closed per-flow) rather than reject the manifest. See `impl-docs/spec/flow-requirements.md`.",
           "enum": [
             "schedule"
           ],
@@ -458,7 +479,7 @@
       "type": "object"
     }
   },
-  "description": "Static requirements manifest for a flow: capability hints, connector contracts, durability services, trigger/entrypoint surface, and host constraints, derived entirely from validated Flow IR without executing anything.",
+  "description": "Static requirements manifest for a flow: capability hints, native-only node placement, connector contracts, durability services, trigger/entrypoint surface, and host constraints, derived entirely from validated Flow IR without executing anything.",
   "properties": {
     "connectors": {
       "description": "Connector operation requirements, grouped by connector family.",
@@ -512,6 +533,13 @@
         }
       ],
       "description": "Host constraints derivable from the IR today."
+    },
+    "native_only_nodes": {
+      "description": "Native-only stdlib node requirements, grouped by implementation identifier with the aliases that use each identifier.",
+      "items": {
+        "$ref": "#/definitions/NativeOnlyNodeRequirement"
+      },
+      "type": "array"
     },
     "profile": {
       "allOf": [

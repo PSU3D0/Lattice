@@ -32,7 +32,7 @@ use crate::ir::{
 ///
 /// Bump on any breaking change to the manifest structure; consumers must
 /// reject schema versions they do not understand.
-pub const FLOW_REQUIREMENTS_SCHEMA_VERSION: &str = "0.1";
+pub const FLOW_REQUIREMENTS_SCHEMA_VERSION: &str = "0.2";
 
 /// Prefix for policy markers that are allowed to appear in
 /// `NodeIR.effect_hints` but are lint annotations, not capability
@@ -47,6 +47,11 @@ const RESUME_SCHEDULER_IDENTIFIERS: &[&str] = &["std.timer.wait"];
 /// Stdlib node identifiers that require a resume signal source when halting.
 /// Mirrors host-inproc's `collect_missing_durability_services`.
 const RESUME_SIGNAL_IDENTIFIERS: &[&str] = &["std.callback.wait", "std.hitl.approval"];
+
+/// Stdlib node identifiers whose current implementation is available only on
+/// native hosts. Workers rendering must reject these nodes until their named
+/// backend is configured.
+const NATIVE_ONLY_NODE_IDENTIFIERS: &[&str] = &["std.document.extract_pdf_text"];
 
 /// Error produced when requirements cannot be derived statically.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -77,6 +82,10 @@ pub struct FlowRequirements {
     pub profile: Profile,
     /// Typed capability requirements (union + per-node attribution).
     pub effects: EffectRequirements,
+    /// Native-only stdlib node requirements, grouped by implementation
+    /// identifier with the aliases that use each identifier.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub native_only_nodes: Vec<NativeOnlyNodeRequirement>,
     /// Connector operation requirements, grouped by connector family.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub connectors: Vec<ConnectorRequirement>,
@@ -125,6 +134,15 @@ pub struct EffectRequirements {
     /// debugger inspects.
     #[serde(default)]
     pub per_node: BTreeMap<String, Vec<EffectHint>>,
+}
+
+/// One native-only stdlib implementation used by a flow.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct NativeOnlyNodeRequirement {
+    /// Fully-qualified node implementation identifier.
+    pub identifier: String,
+    /// Aliases of nodes using this implementation (sorted).
+    pub nodes: Vec<String>,
 }
 
 /// Requirements contributed by one connector family.
@@ -191,7 +209,7 @@ pub enum TriggerKind {
     Http,
     /// Trigger is wired to a schedule (cron) entrypoint.
     ///
-    /// Tolerated additive value under `schema_version` 0.1: consumers
+    /// Tolerated additive value under `schema_version` 0.x (policy decided at 0.1): consumers
     /// encountering an unknown trigger `kind` must treat that flow as
     /// "cannot place" (fail closed per-flow) rather than reject the
     /// manifest. See `impl-docs/spec/flow-requirements.md`.
@@ -277,6 +295,7 @@ impl FlowRequirements {
             },
             profile: flow.profile,
             effects: derive_effects(flow)?,
+            native_only_nodes: derive_native_only_nodes(flow),
             connectors: derive_connectors(flow),
             durability: derive_durability(flow),
             triggers: derive_triggers(flow),
@@ -330,6 +349,28 @@ fn sorted_hints(hints: &BTreeSet<EffectHint>) -> Vec<EffectHint> {
     let mut out: Vec<EffectHint> = hints.iter().copied().collect();
     out.sort_by_key(|hint| hint.as_str());
     out
+}
+
+fn derive_native_only_nodes(flow: &FlowIR) -> Vec<NativeOnlyNodeRequirement> {
+    let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
+
+    for node in &flow.nodes {
+        if NATIVE_ONLY_NODE_IDENTIFIERS.contains(&node.identifier.as_str()) {
+            grouped
+                .entry(node.identifier.clone())
+                .or_default()
+                .push(node.alias.clone());
+        }
+    }
+
+    grouped
+        .into_iter()
+        .map(|(identifier, mut nodes)| {
+            nodes.sort();
+            nodes.dedup();
+            NativeOnlyNodeRequirement { identifier, nodes }
+        })
+        .collect()
 }
 
 fn derive_connectors(flow: &FlowIR) -> Vec<ConnectorRequirement> {
@@ -556,6 +597,42 @@ mod tests {
         assert_eq!(
             reqs.effects.per_node.get("writer"),
             Some(&vec![EffectHint::HttpRead, EffectHint::KvWrite])
+        );
+    }
+
+    #[test]
+    fn native_only_nodes_are_derived_from_identifiers_with_alias_attribution() {
+        let mut flow = two_node_flow();
+        flow.nodes[0].identifier = "std.document.extract_pdf_text".to_string();
+        flow.nodes[1]
+            .effect_hints
+            .push(EffectHint::WorkspaceRead.as_str().to_string());
+        flow.nodes[1].summary = Some(
+            "Mentions std.document.extract_pdf_text without using that implementation".to_string(),
+        );
+
+        let reqs = FlowRequirements::derive(&flow).expect("derive");
+        assert_eq!(
+            reqs.native_only_nodes,
+            vec![NativeOnlyNodeRequirement {
+                identifier: "std.document.extract_pdf_text".to_string(),
+                nodes: vec!["reader".to_string()],
+            }]
+        );
+    }
+
+    #[test]
+    fn native_only_node_aliases_are_sorted_and_grouped_by_identifier() {
+        let mut flow = two_node_flow();
+        for node in &mut flow.nodes {
+            node.identifier = "std.document.extract_pdf_text".to_string();
+        }
+
+        let reqs = FlowRequirements::derive(&flow).expect("derive");
+        assert_eq!(reqs.native_only_nodes.len(), 1);
+        assert_eq!(
+            reqs.native_only_nodes[0].nodes,
+            vec!["reader".to_string(), "writer".to_string()]
         );
     }
 

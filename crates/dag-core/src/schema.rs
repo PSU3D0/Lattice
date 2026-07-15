@@ -12,8 +12,9 @@ const FLOW_REQUIREMENTS_SCHEMA_ID: &str =
     "https://lattice.dev/schemas/flow_requirements.schema.json";
 const FLOW_REQUIREMENTS_SCHEMA_TITLE: &str = "Lattice Flow Requirements";
 const FLOW_REQUIREMENTS_SCHEMA_DESCRIPTION: &str = "Static requirements manifest for a flow: \
-     capability hints, connector contracts, durability services, trigger/entrypoint surface, and \
-     host constraints, derived entirely from validated Flow IR without executing anything.";
+     capability hints, native-only node placement, connector contracts, durability services, \
+     trigger/entrypoint surface, and host constraints, derived entirely from validated Flow IR \
+     without executing anything.";
 
 pub fn flow_ir_schema() -> RootSchema {
     let mut schema = schemars::schema_for!(FlowIR);

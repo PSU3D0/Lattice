@@ -638,6 +638,129 @@ fn custom_name_overrides_derived_worker_name() {
 }
 
 // ---------------------------------------------------------------------------
+// P4a schema floor: a 0.1 manifest predates the security-relevant placement
+// surface and must be regenerated instead of defaulting native_only_nodes empty.
+// ---------------------------------------------------------------------------
+#[test]
+fn pre_native_only_schema_fails_workers_render_closed() {
+    let mut requirements =
+        dag_core::FlowRequirements::derive(&example_s1_echo::flow()).expect("derive requirements");
+    requirements.schema_version = "0.1".to_string();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let requirements_path = temp.path().join("schema-0.1.requirements.json");
+    fs::write(
+        &requirements_path,
+        serde_json::to_vec_pretty(&requirements).expect("serialize requirements"),
+    )
+    .expect("write requirements");
+    let out_dir = temp.path().join("deploy");
+    let output = run_render(&[
+        "--requirements",
+        requirements_path.to_str().expect("requirements path"),
+        "--out",
+        out_dir.to_str().expect("out path"),
+    ]);
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("predates the native-only placement surface"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("regenerate requirements"), "{stderr}");
+}
+
+// ---------------------------------------------------------------------------
+// P4a positive control: workspace reads alone remain Workers-mappable. The
+// placement gate keys off the statically-derived implementation identifier,
+// not the extractor's workspace-read effect floor.
+// ---------------------------------------------------------------------------
+#[test]
+fn benign_workspace_read_only_flow_still_renders() {
+    let mut flow = example_s1_echo::flow();
+    let reader = flow
+        .nodes
+        .iter_mut()
+        .find(|node| node.alias == "normalize")
+        .expect("normalize node");
+    reader.identifier = "std.workspace.read".to_string();
+    reader.effects = dag_core::Effects::ReadOnly;
+    reader.determinism = dag_core::Determinism::BestEffort;
+    reader.effect_hints = vec![dag_core::EffectHint::WorkspaceRead.as_str().to_string()];
+
+    let requirements = dag_core::FlowRequirements::derive(&flow).expect("derive requirements");
+    assert!(requirements.native_only_nodes.is_empty());
+    let temp = tempfile::tempdir().expect("tempdir");
+    let requirements_path = temp.path().join("workspace-read.requirements.json");
+    fs::write(
+        &requirements_path,
+        serde_json::to_vec_pretty(&requirements).expect("serialize requirements"),
+    )
+    .expect("write requirements");
+
+    let (rendered, notes) = render_ok(&[
+        "--requirements",
+        requirements_path.to_str().expect("requirements path"),
+    ]);
+    let parsed = parse_toml(&rendered, "benign workspace-read render");
+    assert!(parsed.get("r2_buckets").is_some());
+    assert!(!notes.contains("LATTICE_EXTRACT_PDF"));
+}
+
+// ---------------------------------------------------------------------------
+// S21/P4a: the future native-full graph adds the fixed PDF extractor between
+// ingress and rating. P4a does not retrofit that graph yet, so this acceptance
+// mutates only an in-memory copy of the current S21 IR and proves the renderer
+// rejects the statically-derived placement requirement before writing config.
+// ---------------------------------------------------------------------------
+#[test]
+fn s21_pdf_extraction_fails_workers_render_with_named_worker_prerequisite() {
+    let mut flow = example_s21_ai_cv_screening::validated_ir().flow().clone();
+    let extraction_node = flow
+        .nodes
+        .iter_mut()
+        .find(|node| node.alias == "rate_candidate")
+        .expect("S21 rating node");
+    extraction_node.identifier = "std.document.extract_pdf_text".to_string();
+
+    let requirements = dag_core::FlowRequirements::derive(&flow).expect("derive S21 requirements");
+    assert_eq!(requirements.native_only_nodes.len(), 1);
+    assert_eq!(
+        requirements.native_only_nodes[0].identifier,
+        "std.document.extract_pdf_text"
+    );
+    assert_eq!(
+        requirements.native_only_nodes[0].nodes,
+        vec!["rate_candidate".to_string()]
+    );
+    let temp = tempfile::tempdir().expect("tempdir");
+    let requirements_path = temp.path().join("s21-pdf.requirements.json");
+    fs::write(
+        &requirements_path,
+        serde_json::to_vec_pretty(&requirements).expect("serialize requirements"),
+    )
+    .expect("write requirements");
+    let out_dir = temp.path().join("deploy");
+    let output = run_render(&[
+        "--requirements",
+        requirements_path.to_str().expect("requirements path"),
+        "--out",
+        out_dir.to_str().expect("out path"),
+    ]);
+
+    assert!(
+        !output.status.success(),
+        "S21 PDF extraction must fail Workers render"
+    );
+    assert!(!out_dir.join("wrangler.toml").exists());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("std.document.extract_pdf_text"), "{stderr}");
+    assert!(stderr.contains("rate_candidate"), "{stderr}");
+    assert!(stderr.contains("LATTICE_EXTRACT_PDF"), "{stderr}");
+    assert!(stderr.contains("extraction Worker"), "{stderr}");
+}
+
+// ---------------------------------------------------------------------------
 // S27/H5d: its byte operations are native-only until H5c-ops-wasm exists.
 // Static generic requirements derivation still identifies the exact ops and
 // nodes, so Workers render must fail closed before writing a config.

@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.1",
+  "schema_version": "0.2",
   "flow": {
     "id": "00000000-0000-5000-8000-000000000002",
     "name": "db_native_demo_flow",

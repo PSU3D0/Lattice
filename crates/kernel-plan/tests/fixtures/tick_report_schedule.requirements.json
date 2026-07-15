@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.1",
+  "schema_version": "0.2",
   "flow": {
     "id": "62567e51-4e4b-542c-aa21-88c38b374d50",
     "name": "tick_report_schedule",
