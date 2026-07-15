@@ -520,6 +520,10 @@ impl ResourceAccess for InvocationResources {
         Some(self.workspace.as_ref())
     }
 
+    fn transform_runtime(&self) -> Option<Arc<dyn capabilities::transform::TransformRuntime>> {
+        self.base.transform_runtime()
+    }
+
     // H5c-enforcement: construct the handle-only views from this invocation's
     // workspace + the per-run derived root key. `_raw` returns the arbitrary-path
     // trait for path-by-contract consumers.
@@ -5602,6 +5606,43 @@ mod tests {
         bundle
             .validate_allowlist()
             .expect("allowlist should accept all identifiers");
+    }
+
+    struct StubTransformRuntime;
+
+    impl capabilities::transform::TransformRuntime for StubTransformRuntime {
+        fn try_begin(
+            &self,
+            _transform_id: &str,
+        ) -> Result<
+            Box<dyn capabilities::transform::TransformLease>,
+            capabilities::transform::TransformBeginError,
+        > {
+            Err(capabilities::transform::TransformBeginError::InvalidTransform)
+        }
+    }
+
+    #[tokio::test]
+    async fn invocation_resources_pass_transform_runtime_through() {
+        let dir = tempdir().expect("tempdir");
+        let factory = FsWorkspaceFactory::new(FsWorkspaceConfig {
+            root: dir.path().to_path_buf(),
+            policy: WorkspacePolicy::default(),
+        });
+        let workspace = factory
+            .open(WorkspaceRunScope::new("flow", "run"))
+            .await
+            .expect("workspace");
+        let base: Arc<dyn ResourceAccess> =
+            Arc::new(ResourceBag::new().with_transform_runtime(Arc::new(StubTransformRuntime)));
+        let resources = InvocationResources {
+            base,
+            workspace,
+            ws_root_key: Arc::from(b"root-key".to_vec()),
+            ws_root_key_id: "root-id".to_string(),
+        };
+
+        assert!(resources.transform_runtime().is_some());
     }
 
     #[test]

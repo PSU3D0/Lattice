@@ -20,6 +20,9 @@ thiserror.workspace = true
 uuid = { workspace = true, features = ["v5"] }
 walkdir.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "=1.1.2", default-features = false, features = ["fs", "std"] }
+
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

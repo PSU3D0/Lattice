@@ -14,6 +14,7 @@ pub mod durability;
 pub mod hints;
 pub mod scoped;
 pub mod sql;
+pub mod transform;
 pub mod workspace;
 
 pub use artifact::{
@@ -119,6 +120,10 @@ pub trait ResourceAccess: Send + Sync + 'static {
         None
     }
 
+    fn transform_runtime(&self) -> Option<Arc<dyn transform::TransformRuntime>> {
+        None
+    }
+
     /// Handle-only read view gated on the `resource::workspace::read` grant
     /// (H5c-enforcement, §16.4). Returns an OWNED [`artifact::WorkspaceRead`]
     /// (cheap `Arc` clones) whose only method is `read(handle)` — no
@@ -220,6 +225,7 @@ pub struct ResourceBag {
     resume_signal_source: Option<Arc<dyn durability::ResumeSignalSource>>,
     checkpoint_blob_store: Option<Arc<dyn durability::CheckpointBlobStore>>,
     workspace: Option<Arc<dyn workspace::Workspace>>,
+    transform_runtime: Option<Arc<dyn transform::TransformRuntime>>,
     // H5c-enforcement (§16.2): the per-run macaroon root key + key id used to
     // construct the handle-only `WorkspaceRead`/`WorkspaceWrite` views for
     // factory-less hosts/tests. Auto-generated (ephemeral) when a workspace is
@@ -253,6 +259,7 @@ impl Default for ResourceBag {
             resume_signal_source: None,
             checkpoint_blob_store: None,
             workspace: None,
+            transform_runtime: None,
             ws_root_key: None,
             ws_root_key_id: None,
             connector_runtime: None,
@@ -416,6 +423,15 @@ impl ResourceBag {
             self.ws_root_key = Some(ephemeral_root_key());
             self.ws_root_key_id = Some("ws:resource-bag:ephemeral".to_string());
         }
+        self
+    }
+
+    pub fn with_transform_runtime<T>(mut self, runtime: Arc<T>) -> Self
+    where
+        T: transform::TransformRuntime + 'static,
+    {
+        let runtime: Arc<dyn transform::TransformRuntime> = runtime;
+        self.transform_runtime = Some(runtime);
         self
     }
 
@@ -701,6 +717,10 @@ impl ResourceAccess for ResourceBag {
         self.workspace
             .as_ref()
             .map(|cap| cap.as_ref() as &dyn workspace::Workspace)
+    }
+
+    fn transform_runtime(&self) -> Option<Arc<dyn transform::TransformRuntime>> {
+        self.transform_runtime.as_ref().cloned()
     }
 
     // Construct the handle-only views from the bag's workspace + root key +

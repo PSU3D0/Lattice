@@ -8,6 +8,7 @@ pub const ERR_WORKSPACE_PATH_TRAVERSAL: &str = "CAP-WS-002";
 pub const ERR_WORKSPACE_NOT_FOUND: &str = "CAP-WS-003";
 pub const ERR_WORKSPACE_UNSUPPORTED: &str = "CAP-WS-004";
 pub const ERR_WORKSPACE_BACKEND: &str = "CAP-WS-005";
+pub const ERR_WORKSPACE_TOO_LARGE: &str = "CAP-WS-008";
 /// H5b: the requesting node holds no `resource::workspace::read` grant
 /// (structured CAP110-family denial emitted per-opcode across the wasm
 /// boundary, §16.4 gate 1).
@@ -158,6 +159,8 @@ pub enum WorkspaceError {
     Unsupported(String),
     #[error("workspace backend error: {0}")]
     Backend(String),
+    #[error("bounded workspace entry exceeds {max_bytes} bytes")]
+    TooLarge { max_bytes: u64 },
     /// H5b: node lacks the `resource::workspace::read` grant (§16.4 gate 1).
     /// The payload is the denied opcode label, e.g. `"workspace read"`.
     #[error("missing workspace read capability: {0}")]
@@ -175,6 +178,7 @@ impl WorkspaceError {
             WorkspaceError::NotFound(_) => ERR_WORKSPACE_NOT_FOUND,
             WorkspaceError::Unsupported(_) => ERR_WORKSPACE_UNSUPPORTED,
             WorkspaceError::Backend(_) => ERR_WORKSPACE_BACKEND,
+            WorkspaceError::TooLarge { .. } => ERR_WORKSPACE_TOO_LARGE,
             WorkspaceError::MissingWorkspaceRead(_) => ERR_WORKSPACE_MISSING_READ,
             WorkspaceError::MissingWorkspaceWrite(_) => ERR_WORKSPACE_MISSING_WRITE,
         }
@@ -251,6 +255,16 @@ pub trait Workspace: Capability {
         &self,
         normalized_path: &str,
     ) -> Result<Option<WorkspaceReadResult>, WorkspaceError>;
+
+    async fn read_bounded_normalized(
+        &self,
+        _normalized_path: &str,
+        _max_bytes: u64,
+    ) -> Result<Option<WorkspaceReadResult>, WorkspaceError> {
+        Err(WorkspaceError::Unsupported(
+            "bounded workspace reads are not supported by this backend".to_string(),
+        ))
+    }
 
     async fn write_normalized(
         &self,
@@ -419,6 +433,7 @@ pub enum WorkspaceErrorEnvelope {
     NotFound { message: String },
     Unsupported { message: String },
     Backend { message: String },
+    TooLarge { max_bytes: u64 },
     MissingWorkspaceRead { message: String },
     MissingWorkspaceWrite { message: String },
 }
@@ -441,6 +456,9 @@ impl WorkspaceErrorEnvelope {
             WorkspaceError::Backend(msg) => Self::Backend {
                 message: msg.clone(),
             },
+            WorkspaceError::TooLarge { max_bytes } => Self::TooLarge {
+                max_bytes: *max_bytes,
+            },
             WorkspaceError::MissingWorkspaceRead(msg) => Self::MissingWorkspaceRead {
                 message: msg.clone(),
             },
@@ -458,6 +476,7 @@ impl WorkspaceErrorEnvelope {
             Self::NotFound { message } => WorkspaceError::NotFound(message),
             Self::Unsupported { message } => WorkspaceError::Unsupported(message),
             Self::Backend { message } => WorkspaceError::Backend(message),
+            Self::TooLarge { max_bytes } => WorkspaceError::TooLarge { max_bytes },
             Self::MissingWorkspaceRead { message } => WorkspaceError::MissingWorkspaceRead(message),
             Self::MissingWorkspaceWrite { message } => {
                 WorkspaceError::MissingWorkspaceWrite(message)

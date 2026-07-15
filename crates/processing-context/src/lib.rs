@@ -11,6 +11,10 @@ use std::time::{Duration, Instant};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
 use tokio_util::sync::CancellationToken;
 use wasmparser::{Encoding, Parser, Payload};
+mod service;
+
+pub use service::PdfTransformRuntime;
+
 use wasmtime::{
     Config, Engine, ExternType, Instance, Linker, Memory, Module, Mutability, ResourceLimiter,
     Store, StoreLimits, StoreLimitsBuilder, Trap, UpdateDeadline, ValType,
@@ -749,6 +753,23 @@ pub struct ProcessingLease {
 }
 
 impl ProcessingLease {
+    /// Mark this lease active before a host adapter begins pre-run materialization.
+    /// Direct `ProcessingContext` callers intentionally do not use this seam, so
+    /// their unstarted leases retain the existing deadline-expiry behavior.
+    pub(crate) fn activate_for_adapter(&self) -> Result<(), BeginError> {
+        if self.timed_permit.start(Instant::now()) {
+            Ok(())
+        } else {
+            Err(BeginError::RuntimeUnavailable)
+        }
+    }
+
+    /// Effective input ceiling owned by this admitted lease.
+    pub fn max_input_bytes(&self) -> u64 {
+        u64::try_from(self.inner.budgets.input_bytes)
+            .expect("supported native usize values fit the bounded-read contract")
+    }
+
     /// Absolute admission deadline. It includes any time spent before `run`.
     pub fn deadline(&self) -> Instant {
         self.timed_permit.deadline

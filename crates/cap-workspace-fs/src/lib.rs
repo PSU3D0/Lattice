@@ -1,4 +1,6 @@
 use std::fs;
+#[cfg(target_os = "linux")]
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -196,6 +198,24 @@ impl Workspace for FsWorkspace {
         Ok(Some(WorkspaceReadResult::Bytes(bytes)))
     }
 
+    async fn read_bounded_normalized(
+        &self,
+        path: &str,
+        max_bytes: u64,
+    ) -> Result<Option<WorkspaceReadResult>, WorkspaceError> {
+        #[cfg(target_os = "linux")]
+        {
+            return self.read_bounded_linux(path, max_bytes);
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (path, max_bytes);
+            Err(WorkspaceError::Unsupported(
+                "bounded filesystem reads require Linux openat2 enforcement".to_string(),
+            ))
+        }
+    }
+
     async fn write_normalized(
         &self,
         path: &str,
@@ -315,6 +335,99 @@ impl Workspace for FsWorkspace {
 }
 
 impl FsWorkspace {
+    #[cfg(target_os = "linux")]
+    fn read_bounded_linux(
+        &self,
+        path: &str,
+        max_bytes: u64,
+    ) -> Result<Option<WorkspaceReadResult>, WorkspaceError> {
+        use rustix::fs::{FileType, Mode, OFlags, ResolveFlags, fstat, open, openat2};
+        use rustix::io::Errno;
+
+        const OPENAT2_ATTEMPTS: usize = 3;
+
+        let payload_limit = max_bytes.checked_add(1).ok_or_else(|| {
+            WorkspaceError::Unsupported(
+                "bounded workspace read ceiling is not representable".to_string(),
+            )
+        })?;
+        let payload_limit = usize::try_from(payload_limit).map_err(|_| {
+            WorkspaceError::Unsupported(
+                "bounded workspace read ceiling is not representable".to_string(),
+            )
+        })?;
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(payload_limit).map_err(|_| {
+            WorkspaceError::Backend("bounded workspace read allocation failed".to_string())
+        })?;
+
+        let root = open(
+            &self.run_root,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .map_err(|_| WorkspaceError::Backend("bounded workspace root open failed".to_string()))?;
+
+        let flags = OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW;
+        let resolve =
+            ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS;
+        let mut opened = None;
+        for attempt in 0..OPENAT2_ATTEMPTS {
+            match openat2(&root, path, flags, Mode::empty(), resolve) {
+                Ok(fd) => {
+                    opened = Some(fd);
+                    break;
+                }
+                Err(Errno::NOENT) => return Ok(None),
+                Err(Errno::NOSYS | Errno::INVAL) => {
+                    return Err(WorkspaceError::Unsupported(
+                        "required Linux openat2 enforcement is unavailable".to_string(),
+                    ));
+                }
+                Err(Errno::AGAIN) if attempt + 1 < OPENAT2_ATTEMPTS => continue,
+                Err(Errno::AGAIN) => {
+                    return Err(WorkspaceError::Backend(
+                        "bounded workspace open race retry limit exceeded".to_string(),
+                    ));
+                }
+                Err(_) => {
+                    return Err(WorkspaceError::Backend(
+                        "bounded workspace entry open failed".to_string(),
+                    ));
+                }
+            }
+        }
+        let opened = opened.ok_or_else(|| {
+            WorkspaceError::Backend("bounded workspace entry open failed".to_string())
+        })?;
+        let stat = fstat(&opened).map_err(|_| {
+            WorkspaceError::Backend("bounded workspace entry metadata failed".to_string())
+        })?;
+        if !FileType::from_raw_mode(stat.st_mode).is_file() {
+            return Err(WorkspaceError::Backend(
+                "bounded workspace entry is not a regular file".to_string(),
+            ));
+        }
+
+        let mut file = std::fs::File::from(opened);
+        let mut chunk = [0u8; 8192];
+        while bytes.len() < payload_limit {
+            let remaining = payload_limit - bytes.len();
+            let chunk_limit = remaining.min(chunk.len());
+            let read = file.read(&mut chunk[..chunk_limit]).map_err(|_| {
+                WorkspaceError::Backend("bounded workspace entry read failed".to_string())
+            })?;
+            if read == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&chunk[..read]);
+        }
+        if bytes.len() > usize::try_from(max_bytes).unwrap_or(usize::MAX) {
+            return Err(WorkspaceError::TooLarge { max_bytes });
+        }
+        Ok(Some(WorkspaceReadResult::Bytes(bytes)))
+    }
+
     fn resolve(&self, path: &str) -> Result<PathBuf, WorkspaceError> {
         resolve_relative_path(&self.run_root, path).map_err(|err| match err {
             FsWorkspaceError::InvalidPath { path } => WorkspaceError::InvalidPath(path),
@@ -542,6 +655,118 @@ mod tests {
             err,
             WorkspaceError::InvalidPath(_) | WorkspaceError::PathTraversal(_)
         ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn bounded_read_returns_exact_limit_and_rejects_one_extra_byte() {
+        let (_dir, factory) = test_factory(WorkspacePolicy::default());
+        let workspace = factory
+            .open(test_scope("bounded"))
+            .await
+            .expect("open workspace");
+        workspace
+            .write("exact.bin", b"12345", WorkspaceWriteOptions::default())
+            .await
+            .expect("write exact");
+        workspace
+            .write("large.bin", b"123456", WorkspaceWriteOptions::default())
+            .await
+            .expect("write large");
+
+        assert_eq!(
+            workspace
+                .read_bounded_normalized("exact.bin", 5)
+                .await
+                .expect("exact bounded read"),
+            Some(WorkspaceReadResult::Bytes(b"12345".to_vec()))
+        );
+        let error = workspace
+            .read_bounded_normalized("large.bin", 5)
+            .await
+            .expect_err("one extra byte must fail");
+        assert!(matches!(error, WorkspaceError::TooLarge { max_bytes: 5 }));
+        assert_eq!(
+            error.code(),
+            capabilities::workspace::ERR_WORKSPACE_TOO_LARGE
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn bounded_read_rejects_final_and_intermediate_symlinks_and_non_regular_files() {
+        use std::os::unix::fs::symlink;
+
+        let (dir, factory) = test_factory(WorkspacePolicy::default());
+        let scope = test_scope("symlinks");
+        let workspace = factory.open(scope.clone()).await.expect("open workspace");
+        let run_root = factory.run_root_path(&scope);
+        let outside = dir.path().join("outside");
+        fs::create_dir_all(&outside).expect("outside dir");
+        fs::write(outside.join("secret.pdf"), b"outside").expect("outside file");
+        symlink(outside.join("secret.pdf"), run_root.join("final.pdf")).expect("final symlink");
+        symlink(&outside, run_root.join("linked-dir")).expect("intermediate symlink");
+        fs::create_dir(run_root.join("directory")).expect("directory entry");
+
+        for path in ["final.pdf", "linked-dir/secret.pdf", "directory"] {
+            let error = workspace
+                .read_bounded_normalized(path, 32)
+                .await
+                .expect_err("unsafe entry must fail");
+            assert!(matches!(error, WorkspaceError::Backend(_)));
+            assert!(
+                !error
+                    .to_string()
+                    .contains(outside.to_string_lossy().as_ref())
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn unrepresentable_bounded_ceiling_fails_before_storage_access() {
+        let workspace = FsWorkspace {
+            run_root: PathBuf::from("/path/that/must/not/be/opened"),
+            policy: WorkspacePolicy::default(),
+            usage: Mutex::new(WorkspaceUsage::default()),
+        };
+        let error = workspace
+            .read_bounded_normalized("entry.pdf", u64::MAX)
+            .await
+            .expect_err("unrepresentable ceiling");
+        assert!(matches!(error, WorkspaceError::Unsupported(_)));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn bounded_read_preserves_not_found_without_fallback() {
+        let (_dir, factory) = test_factory(WorkspacePolicy::default());
+        let workspace = factory
+            .open(test_scope("missing"))
+            .await
+            .expect("open workspace");
+        assert_eq!(
+            workspace
+                .read_bounded_normalized("missing.pdf", 8)
+                .await
+                .expect("missing is soft"),
+            None
+        );
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[tokio::test]
+    async fn bounded_read_fails_closed_when_openat2_is_unavailable() {
+        let (_dir, factory) = test_factory(WorkspacePolicy::default());
+        let workspace = factory
+            .open(test_scope("unsupported"))
+            .await
+            .expect("open workspace");
+        let error = workspace
+            .read_bounded_normalized("entry.pdf", 8)
+            .await
+            .expect_err("non-Linux backend must fail closed");
+        assert!(matches!(error, WorkspaceError::Unsupported(_)));
     }
 
     #[tokio::test]

@@ -11,6 +11,8 @@ description = "Native metered sandbox for host-allowlisted Lattice transforms."
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
+capabilities = { path = "../capabilities" }
 sha2.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true

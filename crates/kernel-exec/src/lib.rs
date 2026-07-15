@@ -680,6 +680,10 @@ impl ResourceAccess for NodeScopedResources {
         self.base.workspace()
     }
 
+    fn transform_runtime(&self) -> Option<Arc<dyn capabilities::transform::TransformRuntime>> {
+        self.base.transform_runtime()
+    }
+
     // H5c-enforcement: after the accessor cutover the trait defaults for these
     // four are `None`/bare, so `NodeScopedResources` MUST explicitly delegate to
     // `self.base` or workspace access breaks (the base carries the per-run root
@@ -5914,5 +5918,30 @@ mod tests {
         tokio::time::timeout(Duration::from_millis(50), cancel_token.cancelled())
             .await
             .expect("cancellation should fire promptly");
+    }
+
+    struct StubTransformRuntime;
+
+    impl capabilities::transform::TransformRuntime for StubTransformRuntime {
+        fn try_begin(
+            &self,
+            _transform_id: &str,
+        ) -> Result<
+            Box<dyn capabilities::transform::TransformLease>,
+            capabilities::transform::TransformBeginError,
+        > {
+            Err(capabilities::transform::TransformBeginError::InvalidTransform)
+        }
+    }
+
+    #[test]
+    fn node_scoped_resources_pass_transform_runtime_through() {
+        let base: Arc<dyn ResourceAccess> =
+            Arc::new(ResourceBag::new().with_transform_runtime(Arc::new(StubTransformRuntime)));
+        let resources = NodeScopedResources::new(
+            base,
+            ConnectorBindingScope::new("flow", "node", "std.test", "std"),
+        );
+        assert!(resources.transform_runtime().is_some());
     }
 }

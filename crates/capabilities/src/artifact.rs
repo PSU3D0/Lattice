@@ -640,41 +640,68 @@ pub enum ByteAccessError {
     NotFound(String),
 }
 
-/// Shared read path for both views: enforce store binding + gate 2 (mint
-/// verify) + gate 3 (scope caveats) before touching the raw `Workspace`.
-async fn read_via_handle(
-    workspace: &dyn Workspace,
+/// Enforce store binding + gate 2 (mint verify) + gate 3 (scope caveats)
+/// before a provider method is selected or called.
+fn verified_handle_path(
     root_key: &[u8],
     store: &StoreRef,
     handle: &Handle<Exact>,
-) -> Result<Vec<u8>, ByteAccessError> {
+) -> Result<String, ByteAccessError> {
     if handle.store() != store {
         return Err(ByteAccessError::StoreMismatch {
             handle_store: handle.store().as_str().to_string(),
             view_store: store.as_str().to_string(),
         });
     }
-    // Gate 2 — macaroon tag verifies against the host root key.
     if !handle.mint().verify_tag(root_key) {
         return Err(ByteAccessError::MintVerification);
     }
-    // Resolve the concrete leaf; traversal is rejected here exactly as raw
-    // workspace paths are.
     let normalized = normalize_path(handle.scope().path())?;
     let target = HandleScope::Exact(normalized.clone());
-    // Gate 3 — the concrete path is contained by every caveat.
     if !handle.mint().caveats_permit(&target) {
         return Err(ByteAccessError::OutOfScope {
             requested: normalized,
         });
     }
-    match workspace.read_normalized(&normalized).await? {
+    Ok(normalized)
+}
+
+fn materialized_bytes(
+    value: Option<WorkspaceReadResult>,
+    normalized: String,
+) -> Result<Vec<u8>, ByteAccessError> {
+    match value {
         Some(WorkspaceReadResult::Bytes(bytes)) => Ok(bytes),
         Some(WorkspaceReadResult::BlobRef(_)) => Err(ByteAccessError::Workspace(
             WorkspaceError::Unsupported("workspace returned a blob reference, not bytes".into()),
         )),
         None => Err(ByteAccessError::NotFound(normalized)),
     }
+}
+
+async fn read_via_handle(
+    workspace: &dyn Workspace,
+    root_key: &[u8],
+    store: &StoreRef,
+    handle: &Handle<Exact>,
+) -> Result<Vec<u8>, ByteAccessError> {
+    let normalized = verified_handle_path(root_key, store, handle)?;
+    let value = workspace.read_normalized(&normalized).await?;
+    materialized_bytes(value, normalized)
+}
+
+async fn read_bounded_via_handle(
+    workspace: &dyn Workspace,
+    root_key: &[u8],
+    store: &StoreRef,
+    handle: &Handle<Exact>,
+    max_bytes: u64,
+) -> Result<Vec<u8>, ByteAccessError> {
+    let normalized = verified_handle_path(root_key, store, handle)?;
+    let value = workspace
+        .read_bounded_normalized(&normalized, max_bytes)
+        .await?;
+    materialized_bytes(value, normalized)
 }
 
 /// Read-only handle-scoped view (§16.4). Granted by `resource::workspace::read`.
@@ -706,6 +733,23 @@ impl WorkspaceRead {
     /// Deref a single-file handle to its bytes, enforcing all three gates.
     pub async fn read(&self, handle: &Handle<Exact>) -> Result<Vec<u8>, ByteAccessError> {
         read_via_handle(self.workspace.as_ref(), &self.root_key, &self.store, handle).await
+    }
+
+    /// Deref a single-file handle through the provider's bounded materializer.
+    /// There is deliberately no fallback to [`Workspace::read_normalized`].
+    pub async fn read_bounded(
+        &self,
+        handle: &Handle<Exact>,
+        max_bytes: u64,
+    ) -> Result<Vec<u8>, ByteAccessError> {
+        read_bounded_via_handle(
+            self.workspace.as_ref(),
+            &self.root_key,
+            &self.store,
+            handle,
+            max_bytes,
+        )
+        .await
     }
 }
 
@@ -1037,6 +1081,162 @@ mod tests {
             .await
             .expect_err("out-of-scope path must fail");
         assert!(matches!(err, ByteAccessError::OutOfScope { .. }));
+    }
+
+    #[derive(Default)]
+    struct RecordingBoundedWorkspace {
+        bounded_calls: Mutex<Vec<(String, u64)>>,
+        unbounded_calls: Mutex<usize>,
+        result: Mutex<Option<WorkspaceReadResult>>,
+    }
+
+    impl Capability for RecordingBoundedWorkspace {
+        fn name(&self) -> &'static str {
+            "workspace.recording-bounded"
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Workspace for RecordingBoundedWorkspace {
+        async fn read_normalized(
+            &self,
+            _normalized_path: &str,
+        ) -> Result<Option<WorkspaceReadResult>, WorkspaceError> {
+            *self.unbounded_calls.lock().expect("unbounded calls") += 1;
+            Ok(None)
+        }
+
+        async fn read_bounded_normalized(
+            &self,
+            normalized_path: &str,
+            max_bytes: u64,
+        ) -> Result<Option<WorkspaceReadResult>, WorkspaceError> {
+            self.bounded_calls
+                .lock()
+                .expect("bounded calls")
+                .push((normalized_path.to_string(), max_bytes));
+            Ok(self.result.lock().expect("result").clone())
+        }
+
+        async fn write_normalized(
+            &self,
+            normalized_path: &str,
+            data: &[u8],
+            _options: WorkspaceWriteOptions,
+        ) -> Result<WorkspaceWriteResult, WorkspaceError> {
+            Ok(WorkspaceWriteResult {
+                path: normalized_path.to_string(),
+                size_bytes: data.len() as u64,
+                updated_at_ms: 0,
+            })
+        }
+
+        async fn list_normalized(
+            &self,
+            _options: WorkspaceListOptions,
+        ) -> Result<Vec<WorkspaceEntry>, WorkspaceError> {
+            Ok(Vec::new())
+        }
+
+        async fn delete_normalized(
+            &self,
+            _normalized_path: &str,
+        ) -> Result<WorkspaceDeleteResult, WorkspaceError> {
+            Ok(WorkspaceDeleteResult { deleted: false })
+        }
+    }
+
+    #[tokio::test]
+    async fn bounded_view_uses_only_provider_bounded_method() {
+        let workspace = Arc::new(RecordingBoundedWorkspace::default());
+        *workspace.result.lock().expect("result") =
+            Some(WorkspaceReadResult::Bytes(b"bounded".to_vec()));
+        let reader = WorkspaceRead::new(workspace.clone(), ROOT_KEY.to_vec(), StoreRef::new("ws"));
+        let handle = root_handle().file("uploads/report.pdf").expect("file");
+
+        let bytes = reader
+            .read_bounded(&handle, 17)
+            .await
+            .expect("bounded read");
+        assert_eq!(bytes, b"bounded");
+        assert_eq!(
+            workspace
+                .bounded_calls
+                .lock()
+                .expect("bounded calls")
+                .as_slice(),
+            &[("uploads/report.pdf".to_string(), 17)]
+        );
+        assert_eq!(*workspace.unbounded_calls.lock().expect("calls"), 0);
+    }
+
+    #[tokio::test]
+    async fn bounded_view_preserves_all_gates_before_provider_dispatch() {
+        let workspace = Arc::new(RecordingBoundedWorkspace::default());
+        let reader = WorkspaceRead::new(workspace.clone(), ROOT_KEY.to_vec(), StoreRef::new("ws"));
+
+        let foreign_store =
+            Handle::<Prefix>::host_mint_prefix(StoreRef::new("other"), ROOT_KEY, "root-1", "")
+                .file("report.pdf")
+                .expect("file");
+        assert!(matches!(
+            reader.read_bounded(&foreign_store, 8).await,
+            Err(ByteAccessError::StoreMismatch { .. })
+        ));
+
+        let mut forged = root_handle().file("report.pdf").expect("file");
+        forged.mint.tag[0] ^= 0xff;
+        assert!(matches!(
+            reader.read_bounded(&forged, 8).await,
+            Err(ByteAccessError::MintVerification)
+        ));
+
+        let mut widened = root_handle().file("report.pdf").expect("file");
+        widened.scope = HandleScope::Exact("other.pdf".to_string());
+        assert!(matches!(
+            reader.read_bounded(&widened, 8).await,
+            Err(ByteAccessError::OutOfScope { .. })
+        ));
+
+        for invalid_path in ["../escape.pdf", "/absolute.pdf"] {
+            let invalid =
+                Handle::host_mint_exact(StoreRef::new("ws"), ROOT_KEY, "root-1", invalid_path);
+            assert!(matches!(
+                reader.read_bounded(&invalid, 8).await,
+                Err(ByteAccessError::Workspace(
+                    WorkspaceError::InvalidPath(_) | WorkspaceError::PathTraversal(_)
+                ))
+            ));
+        }
+
+        assert!(
+            workspace
+                .bounded_calls
+                .lock()
+                .expect("bounded calls")
+                .is_empty()
+        );
+        assert_eq!(*workspace.unbounded_calls.lock().expect("calls"), 0);
+    }
+
+    #[tokio::test]
+    async fn provider_without_bounded_support_never_falls_back() {
+        let workspace = ws_arc();
+        workspace
+            .files
+            .lock()
+            .expect("files")
+            .insert("report.pdf".to_string(), b"unbounded".to_vec());
+        let reader = WorkspaceRead::new(workspace, ROOT_KEY.to_vec(), StoreRef::new("ws"));
+        let handle = root_handle().file("report.pdf").expect("file");
+        let error = reader
+            .read_bounded(&handle, 8)
+            .await
+            .expect_err("default bounded method must fail closed");
+        assert!(matches!(
+            error,
+            ByteAccessError::Workspace(WorkspaceError::Unsupported(_))
+        ));
     }
 
     #[tokio::test]

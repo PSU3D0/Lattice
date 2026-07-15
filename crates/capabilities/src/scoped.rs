@@ -41,7 +41,7 @@ use std::sync::{Arc, Mutex};
 
 use dag_core::EffectHint;
 
-use crate::{ResourceAccess, connector, durability, workspace};
+use crate::{ResourceAccess, connector, durability, transform, workspace};
 
 /// Stable diagnostic code for an undeclared capability access denial.
 /// Registered in `dag_core::DIAGNOSTIC_CODES` and `impl-docs/error-codes.md`.
@@ -297,6 +297,10 @@ impl ResourceAccess for ScopedResources {
         self.inner.checkpoint_blob_store()
     }
 
+    fn transform_runtime(&self) -> Option<Arc<dyn transform::TransformRuntime>> {
+        self.inner.transform_runtime()
+    }
+
     fn workspace(&self) -> Option<&dyn workspace::Workspace> {
         // H5c-enforcement (F2 native fix): bare `workspace()` is gated on
         // `[EffectHint::Workspace]` ONLY, so a read-only node cannot climb to
@@ -428,14 +432,32 @@ mod tests {
         assert!(scoped.take_denials().is_empty());
     }
 
+    struct TestTransformRuntime;
+
+    impl transform::TransformRuntime for TestTransformRuntime {
+        fn try_begin(
+            &self,
+            _transform_id: &str,
+        ) -> Result<Box<dyn transform::TransformLease>, transform::TransformBeginError> {
+            Err(transform::TransformBeginError::InvalidTransform)
+        }
+    }
+
     #[test]
     fn ungated_surfaces_pass_through() {
-        let scoped = ScopedResources::new("pure_node", full_bag(), []);
-        // cache has no hint vocabulary; durability/connector surfaces are
-        // host-internal declaration surfaces.
+        let bag: Arc<dyn ResourceAccess> = Arc::new(
+            ResourceBag::new()
+                .with_clock(Arc::new(TestClock))
+                .with_cache(Arc::new(crate::cache::MemoryCache::new()))
+                .with_transform_runtime(Arc::new(TestTransformRuntime)),
+        );
+        let scoped = ScopedResources::new("pure_node", bag, []);
+        // Cache has no hint vocabulary; durability/connector/transform surfaces
+        // are host-internal declaration surfaces.
         assert!(scoped.cache().is_some());
         assert!(scoped.checkpoint_store().is_none()); // bag has none; no denial either way
         assert!(scoped.connector_runtime().is_none());
+        assert!(scoped.transform_runtime().is_some());
         assert!(scoped.take_denials().is_empty());
     }
 

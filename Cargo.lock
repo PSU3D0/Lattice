@@ -1138,6 +1138,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "capabilities",
+ "rustix 1.1.2",
  "serde",
  "serde_json",
  "tempfile",
@@ -6038,6 +6039,8 @@ name = "processing-context"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
+ "capabilities",
  "sha2",
  "tokio",
  "tokio-util",
@@ -7507,14 +7510,20 @@ name = "stdlib"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "cap-workspace-fs",
  "capabilities",
  "chrono",
  "dag-core",
  "dag-macros",
  "humantime-serde",
  "kernel-exec",
+ "kernel-plan",
+ "processing-context",
+ "semver",
  "serde",
  "serde_json",
+ "sha2",
+ "tempfile",
  "tokio",
 ]
 

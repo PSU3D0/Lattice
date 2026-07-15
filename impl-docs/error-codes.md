@@ -94,6 +94,12 @@ ensure the registry stays in sync with the implementation.
 | CAP-WS-003 | Capability    | Error   | Workspace entry not found. |
 | CAP-WS-004 | Capability    | Error   | Workspace operation unsupported by the active backend. |
 | CAP-WS-005 | Capability    | Error   | Workspace backend operation failed. |
+| CAP-WS-006 | Capability    | Error   | Workspace read was denied because the node lacks the required read grant. |
+| CAP-WS-007 | Capability    | Error   | Workspace write was denied because the node lacks the required write grant. |
+| CAP-WS-008 | Capability    | Error   | Bounded workspace entry exceeds the supplied materialization ceiling. |
+| STD-DOC-001 | Stdlib       | Error   | PDF artifact workspace or integrity validation failed. |
+| STD-DOC-002 | Stdlib       | Error   | PDF transform admission or execution failed with a stable transform class. |
+| STD-DOC-003 | Stdlib       | Error   | PDF transform output envelope is invalid or unsupported. |
 | TYPE001    | Validation     | Error   | Internal node uses unconstrained JSON in both input and output without boundary annotation. |
 | TRIG001   | Validation     | Error   | Schedule expression is not a valid Cloudflare-dialect cron (validated with saffron at macro expansion and kernel-plan time; see `impl-docs/spec/schedule-trigger.md`). |
 | TRIG002   | Macros         | Error   | `schedule` conflicts with `method`/`route_aliases` on one entrypoint (also enforced by kernel-plan on hand-built IR). |
