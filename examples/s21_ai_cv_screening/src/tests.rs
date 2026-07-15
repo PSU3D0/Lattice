@@ -1,160 +1,40 @@
 use super::*;
-use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::Arc;
 
-use async_trait::async_trait;
-use cap_http_reqwest::ReqwestHttpClient;
-use capabilities::durability::{
-    CheckpointError, CheckpointFilter, CheckpointHandle, CheckpointRecord, CheckpointStore, Lease,
-};
-use capabilities::kv::{KeyValue, MemoryKv};
+use capabilities::artifact::{Artifact, Handle, StoreRef};
+use capabilities::kv::MemoryKv;
 use capabilities::scoped::ScopedResources;
-use capabilities::{Capability, ResourceAccess, ResourceBag, context};
-use connector_google_gmail::runtime::transport::EnvConnectorRuntime;
+use capabilities::{ResourceAccess, ResourceBag, context};
 use dag_core::EffectHint;
 use dag_core::requirements::TriggerKind;
-use host_inproc::{HostExecutionResult, HostRuntime, Invocation};
-use httpmock::Method::{GET, POST};
-use httpmock::MockServer;
 use kernel_plan::derive_requirements;
-
-// ---- In-memory checkpoint store (same shape as s18's test double) ----------
-
-#[derive(Default)]
-struct MemoryCheckpointStore {
-    records: Mutex<BTreeMap<String, CheckpointRecord>>,
-}
-
-impl Capability for MemoryCheckpointStore {
-    fn name(&self) -> &'static str {
-        "checkpoint_store.memory"
-    }
-}
-
-#[async_trait]
-impl CheckpointStore for MemoryCheckpointStore {
-    async fn put(&self, record: CheckpointRecord) -> Result<CheckpointHandle, CheckpointError> {
-        let handle = CheckpointHandle {
-            checkpoint_id: record.checkpoint_id.clone(),
-            flow_id: record.flow_id.clone(),
-            run_id: record.run_id.clone(),
-        };
-        self.records
-            .lock()
-            .expect("records")
-            .insert(record.checkpoint_id.clone(), record);
-        Ok(handle)
-    }
-
-    async fn get(&self, handle: &CheckpointHandle) -> Result<CheckpointRecord, CheckpointError> {
-        self.records
-            .lock()
-            .expect("records")
-            .get(&handle.checkpoint_id)
-            .cloned()
-            .ok_or(CheckpointError::NotFound)
-    }
-
-    async fn ack(&self, handle: &CheckpointHandle) -> Result<(), CheckpointError> {
-        self.records
-            .lock()
-            .expect("records")
-            .remove(&handle.checkpoint_id);
-        Ok(())
-    }
-
-    async fn lease(
-        &self,
-        handle: &CheckpointHandle,
-        ttl: Duration,
-    ) -> Result<Lease, CheckpointError> {
-        Ok(Lease {
-            lease_id: format!("lease:{}", handle.checkpoint_id),
-            expires_at_ms: ttl.as_millis().try_into().unwrap_or(u64::MAX),
-        })
-    }
-
-    async fn release_lease(&self, _lease: Lease) -> Result<(), CheckpointError> {
-        Ok(())
-    }
-
-    async fn list(
-        &self,
-        _filter: CheckpointFilter,
-    ) -> Result<Vec<CheckpointHandle>, CheckpointError> {
-        Ok(Vec::new())
-    }
-}
-
-// ---- Env plumbing ----------------------------------------------------------
-
-const LLM_ENDPOINT_ENV: &str = "LATTICE_CONNECTOR_ENDPOINT_LLM_DEFAULT_BASE_URL";
-const SHEETS_ENDPOINT_ENV: &str = "LATTICE_CONNECTOR_ENDPOINT_GOOGLE_SHEETS_DEFAULT_BASE_URL";
-const GMAIL_ENDPOINT_ENV: &str = "LATTICE_CONNECTOR_ENDPOINT_GOOGLE_GMAIL_DEFAULT_BASE_URL";
-const LLM_AUTH_ENV: &str = "LATTICE_CONNECTOR_AUTH_LLM_API_KEY";
-const GOOGLE_AUTH_ENV: &str = "LATTICE_CONNECTOR_AUTH_GOOGLE_WORKSPACE_AUTH";
-
-static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-struct EnvGuard {
-    key: &'static str,
-    previous: Option<String>,
-}
-
-impl EnvGuard {
-    fn set(key: &'static str, value: &str) -> Self {
-        let previous = std::env::var(key).ok();
-        unsafe { std::env::set_var(key, value) };
-        Self { key, previous }
-    }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        match &self.previous {
-            Some(value) => unsafe { std::env::set_var(self.key, value) },
-            None => unsafe { std::env::remove_var(self.key) },
-        }
-    }
-}
 
 // ---- Fixtures --------------------------------------------------------------
 
 fn application() -> CvApplication {
+    let pdf = b"%PDF-1.4 test fixture";
     CvApplication {
         full_name: "Ada Lovelace".to_string(),
         email: "ada@applicant.test".to_string(),
         expectation: "5000-6000".to_string(),
         linkedin: "https://linkedin.test/in/ada".to_string(),
         cv_filename: "ada_lovelace_cv.pdf".to_string(),
-        resume_text: "10 years building analytical engines and Rust services.".to_string(),
+        cv: Artifact {
+            handle: Handle::host_mint_exact(
+                StoreRef::new("workspace"),
+                b"s21-test-root",
+                "s21-test-root-id",
+                "ingress/test.pdf",
+            ),
+            content_type: "application/pdf".to_string(),
+            len: pdf.len() as u64,
+            content_hash: Some(capabilities::artifact::sha256_hex(pdf)),
+        },
     }
 }
 
 fn application_json(app: &CvApplication) -> serde_json::Value {
     serde_json::to_value(app).expect("serialize application")
-}
-
-fn openai_completion_body(content: &str) -> serde_json::Value {
-    serde_json::json!({
-        "id": "chatcmpl-s21",
-        "object": "chat.completion",
-        "created": 1,
-        "model": "gemini-1.5-flash",
-        "choices": [{
-            "index": 0,
-            "message": { "role": "assistant", "content": content, "tool_calls": [] },
-            "logprobs": null,
-            "finish_reason": "stop"
-        }],
-        "usage": {
-            "prompt_tokens": 40,
-            "completion_tokens": 20,
-            "total_tokens": 60,
-            "prompt_tokens_details": { "cached_tokens": 0 }
-        }
-    })
 }
 
 const RATING_TEXT: &str = "Rating: 9/10. Strong match. Recommend an interview.";
@@ -171,7 +51,11 @@ fn screening_key_is_scoped_to_flow_trigger_and_email() {
 
 #[test]
 fn screening_prompt_embeds_role_and_resume_text() {
-    let prompt = screening_prompt(&application());
+    let prompt = screening_prompt(&ExtractedCvApplication {
+        application: application(),
+        resume_text: "10 years building analytical engines and Rust services.".to_string(),
+        page_count: 1,
+    });
     assert!(prompt.contains(JOB_TITLE), "role present: {prompt}");
     assert!(
         prompt.contains("analytical engines"),
@@ -234,6 +118,17 @@ fn flow_validates_and_derives_http_trigger_requirement() {
 }
 
 #[test]
+fn public_boundary_requires_exact_cv_artifact_and_has_no_resume_text() {
+    let value = application_json(&application());
+    assert!(value.get("cv").is_some());
+    assert!(value.get("resume_text").is_none());
+    let mut legacy = value;
+    legacy.as_object_mut().unwrap().remove("cv");
+    legacy["resume_text"] = serde_json::json!("legacy text");
+    assert!(serde_json::from_value::<CvApplication>(legacy).is_err());
+}
+
+#[test]
 fn flow_shape_declares_honest_effects_per_node() {
     let ir = flow();
 
@@ -245,6 +140,8 @@ fn flow_shape_declares_honest_effects_per_node() {
             .effect_hints
             .clone()
     };
+
+    assert!(hints("extract_cv_text").contains(&EffectHint::WorkspaceRead.as_str().to_string()));
 
     // LLM completion: http_write only (POST rides the write capability).
     assert!(hints("rate_candidate").contains(&EffectHint::HttpWrite.as_str().to_string()));
@@ -269,6 +166,20 @@ fn flow_shape_declares_honest_effects_per_node() {
             .map(|n| n.identifier.clone())
             .expect("node present")
     };
+    assert_ne!(
+        identifier("extract_cv_text"),
+        stdlib::document::EXTRACT_PDF_TEXT_IDENTIFIER,
+        "the typed composite must not spoof the fixed stdlib handler identity"
+    );
+    let extract = ir
+        .nodes
+        .iter()
+        .find(|node| node.alias == "extract_cv_text")
+        .expect("extract node present");
+    assert_eq!(
+        extract.implementation_dependencies,
+        vec![dag_core::ImplementationDependency::StdDocumentExtractPdfText]
+    );
     assert_eq!(identifier("rate_candidate"), "connector.llm.rate_candidate");
     assert_eq!(
         identifier("record_candidate"),
@@ -383,110 +294,4 @@ async fn record_screening_is_idempotent_on_email() {
     .await;
     assert!(other.stored, "a distinct applicant writes its own record");
     assert_ne!(first.key, other.key);
-}
-
-// ---- Compose: webhook -> llm -> sheets -> gmail x2 -> record ----------------
-
-#[allow(clippy::await_holding_lock)]
-#[tokio::test]
-async fn webhook_screens_candidate_appends_row_emails_both_and_records_idempotent() {
-    let _env_lock = ENV_LOCK.lock().expect("env lock");
-    let server = MockServer::start();
-    let _llm = EnvGuard::set(LLM_ENDPOINT_ENV, &server.base_url());
-    let _sheets = EnvGuard::set(SHEETS_ENDPOINT_ENV, &server.base_url());
-    let _gmail = EnvGuard::set(GMAIL_ENDPOINT_ENV, &server.base_url());
-    let _llm_auth = EnvGuard::set(LLM_AUTH_ENV, "s21-llm-key");
-    let _google_auth = EnvGuard::set(GOOGLE_AUTH_ENV, "s21-google-token");
-
-    // 1. LLM screening.
-    let llm_complete = server.mock(|when, then| {
-        when.method(POST)
-            .path_contains("/chat/completions")
-            .header("authorization", "Bearer s21-llm-key");
-        then.status(200)
-            .json_body(openai_completion_body(RATING_TEXT));
-    });
-    // 2. Sheets append reads the header row then appends the ordered row.
-    let values_read = server.mock(|when, then| {
-        when.method(GET).path_contains("/values/");
-        then.status(200).json_body_obj(&serde_json::json!({
-            "values": [[
-                "full_name", "email", "expectation", "linkedin", "cv_filename", "ai_rating"
-            ]]
-        }));
-    });
-    let values_append = server.mock(|when, then| {
-        when.method(POST).path_contains("append");
-        then.status(200).json_body_obj(&serde_json::json!({
-            "updates": { "updatedRange": "'Candidates'!A2:F2" }
-        }));
-    });
-    // 3. Both gmail sends hit the same endpoint.
-    let gmail_send = server.mock(|when, then| {
-        when.method(POST)
-            .path("/gmail/v1/users/me/messages/send")
-            .header("authorization", "Bearer s21-google-token");
-        then.status(200).json_body_obj(&serde_json::json!({
-            "id": "msg-sent", "threadId": "thread-sent", "labelIds": ["SENT"]
-        }));
-    });
-
-    let kv = Arc::new(MemoryKv::new());
-    let bag = ResourceBag::default()
-        .with_http_read(Arc::new(ReqwestHttpClient::default()))
-        .with_http_write(Arc::new(ReqwestHttpClient::default()))
-        .with_connector_runtime(Arc::new(EnvConnectorRuntime))
-        .with_checkpoint_store(Arc::new(MemoryCheckpointStore::default()))
-        .with_kv(kv.clone());
-
-    let bundle = bundle();
-    let runtime =
-        HostRuntime::new(bundle.executor(), Arc::new(bundle.validated_ir)).with_resource_bag(bag);
-
-    let fire = || Invocation::new(TRIGGER_ALIAS, "capture", application_json(&application()));
-
-    // First delivery.
-    let first = runtime.execute(fire()).await.expect("first delivery runs");
-    let first = match first {
-        HostExecutionResult::Value(value) => {
-            serde_json::from_value::<ScreeningRecord>(value).expect("decode record")
-        }
-        _ => panic!("expected a value result from the first delivery"),
-    };
-    assert!(first.stored);
-    assert_eq!(first.email, "ada@applicant.test");
-    assert_eq!(first.ai_rating, RATING_TEXT);
-    assert_eq!(first.appended_range, "'Candidates'!A2:F2");
-    assert_eq!(first.candidate_message_id, "msg-sent");
-    assert_eq!(first.hr_message_id, "msg-sent");
-    assert_eq!(first.key, screening_key("ada@applicant.test"));
-
-    llm_complete.assert_hits(1);
-    values_read.assert_hits(1);
-    values_append.assert_hits(1);
-    gmail_send.assert_hits(2);
-
-    // Redelivery of the SAME application: the writes replay byte-identical and
-    // the terminal KV record dedupes.
-    let second = runtime.execute(fire()).await.expect("redelivery runs");
-    let second = match second {
-        HostExecutionResult::Value(value) => {
-            serde_json::from_value::<ScreeningRecord>(value).expect("decode record")
-        }
-        _ => panic!("expected a value result from the redelivery"),
-    };
-    assert!(
-        !second.stored,
-        "redelivery must not write a duplicate record"
-    );
-    assert_eq!(second.key, first.key);
-
-    // Exactly one durable record for the application.
-    let raw = kv
-        .get(&screening_key("ada@applicant.test"))
-        .await
-        .expect("kv get")
-        .expect("record present");
-    let row: ScreeningRecord = serde_json::from_slice(&raw).expect("decode row");
-    assert_eq!(row.candidate_message_id, "msg-sent");
 }

@@ -101,10 +101,18 @@ async fn extract_pdf_text_with_resources(
     }
 
     let input_sha256: [u8; 32] = Sha256::digest(&bytes).into();
-    if let Some(expected) = artifact.content_hash.as_deref()
-        && !hash_matches_constant_shape(expected, input_sha256)
-    {
-        return Err(document_error(ERR_DOCUMENT_INTEGRITY, "hash_mismatch"));
+    if let Some(expected) = artifact.content_hash.as_deref() {
+        let matches = hash_matches_constant_shape(expected, input_sha256);
+        metrics::counter!(
+            "lattice.transform.input_hash_comparisons_total",
+            "backend" => "native",
+            "transform" => PDF_EXTRACT_TRANSFORM_ID,
+            "outcome" => if matches { "matched" } else { "mismatch" }
+        )
+        .increment(1);
+        if !matches {
+            return Err(document_error(ERR_DOCUMENT_INTEGRITY, "hash_mismatch"));
+        }
     }
     if !bytes.starts_with(PDF_MAGIC) {
         return Err(document_error(ERR_DOCUMENT_INTEGRITY, "magic_mismatch"));
@@ -518,6 +526,13 @@ mod tests {
             input_sha256,
             output_sha256,
             termination_class,
+            observations: capabilities::transform::TransformObservations {
+                duration: Duration::from_millis(1),
+                input_bytes: input_sha256.map_or(0, |_| 1),
+                output_bytes: output_sha256.map_or(0, |_| 1),
+                fuel_consumed: Some(1),
+                peak_requested_memory_bytes: Some(65_536),
+            },
         }
     }
 
@@ -929,7 +944,9 @@ mod tests {
                 |value: ExtractPdfTextInput| async move { Ok(value) },
             )
             .expect("register trigger");
-        extract_pdf_text_register(&mut registry).expect("register document node");
+        registry
+            .register_fn(EXTRACT_PDF_TEXT_IDENTIFIER, extract_pdf_text)
+            .expect("register document node");
         registry
     }
 

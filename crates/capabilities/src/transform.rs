@@ -97,6 +97,19 @@ pub enum TransformTerminationClass {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransformObservations {
+    /// Guest execution time from admitted task dispatch through terminal observation
+    /// construction. Failures rejected before guest dispatch report zero.
+    pub duration: Duration,
+    pub input_bytes: u64,
+    pub output_bytes: u64,
+    /// Native fuel consumed when the store remained observable.
+    pub fuel_consumed: Option<u64>,
+    /// Peak requested guest memory when the store remained observable.
+    pub peak_requested_memory_bytes: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TransformExecutionRecord {
     pub transform_id: String,
     pub module_sha256: [u8; 32],
@@ -106,6 +119,7 @@ pub struct TransformExecutionRecord {
     pub input_sha256: Option<[u8; 32]>,
     pub output_sha256: Option<[u8; 32]>,
     pub termination_class: TransformTerminationClass,
+    pub observations: TransformObservations,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -201,6 +215,13 @@ mod tests {
             input_sha256: Some([2; 32]),
             output_sha256: None,
             termination_class: TransformTerminationClass::Failure(TransformErrorClass::GuestFailed),
+            observations: TransformObservations {
+                duration: Duration::from_millis(3),
+                input_bytes: 2,
+                output_bytes: 0,
+                fuel_consumed: Some(4),
+                peak_requested_memory_bytes: Some(65_536),
+            },
         }
     }
 

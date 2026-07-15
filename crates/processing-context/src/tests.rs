@@ -254,6 +254,14 @@ async fn memory_growth_is_contained_and_a_new_store_survives() {
     let error = run(&runtime, &[1]).await.unwrap_err();
     assert_eq!(error.public_error, PublicError::MemoryExhausted);
     assert_eq!(error.to_string(), "memory_exhausted");
+    assert!(error.record.observations.fuel_consumed.is_some());
+    assert!(
+        error
+            .record
+            .observations
+            .peak_requested_memory_bytes
+            .is_some_and(|peak| peak > 0)
+    );
     assert_eq!(run(&runtime, &[0]).await.unwrap().output, vec![0]);
 }
 
@@ -294,6 +302,14 @@ async fn unreachable_is_sanitized_and_a_new_store_survives() {
     let error = run(&runtime, &[1]).await.unwrap_err();
     assert_eq!(error.public_error, PublicError::GuestFailed);
     assert_eq!(error.to_string(), "guest_failed");
+    assert!(error.record.observations.fuel_consumed.is_some());
+    assert!(
+        error
+            .record
+            .observations
+            .peak_requested_memory_bytes
+            .is_some()
+    );
     assert!(!format!("{error:?}").contains("unreachable"));
     assert!(error.private_source().unwrap().contains("unreachable"));
     assert_eq!(run(&runtime, &[0]).await.unwrap().output, vec![0]);
@@ -305,6 +321,8 @@ async fn input_ceiling_and_guest_status_failures_always_have_records() {
     let error = run(&normal_runtime, &[0; 1025]).await.unwrap_err();
     assert_eq!(error.public_error, PublicError::InputTooLarge);
     assert_eq!(error.record.input_sha256, None);
+    assert_eq!(error.record.observations.fuel_consumed, None);
+    assert_eq!(error.record.observations.peak_requested_memory_bytes, None);
     assert_eq!(
         error.record.termination_class,
         TerminationClass::Failure(PublicError::InputTooLarge)
@@ -529,6 +547,20 @@ async fn fuel_and_epoch_backstops_are_independently_classified() {
     let fuel_runtime = new_context(descriptor(&looping), fuel_policy).unwrap();
     let fuel_error = run(&fuel_runtime, &[1]).await.unwrap_err();
     assert_eq!(fuel_error.public_error, PublicError::FuelExhausted);
+    assert!(
+        fuel_error
+            .record
+            .observations
+            .fuel_consumed
+            .is_some_and(|consumed| consumed > 0)
+    );
+    assert!(
+        fuel_error
+            .record
+            .observations
+            .peak_requested_memory_bytes
+            .is_some()
+    );
 
     let mut epoch_policy = budgets();
     epoch_policy.wall_time = Duration::from_millis(10);
@@ -793,6 +825,27 @@ async fn checked_pdf_module_is_admitted_and_extracts_one_and_multiple_pages() {
     let one = run_pdf(synthetic_pdf(&[b"one page".to_vec()], false))
         .await
         .unwrap();
+    assert!(one.record.observations.duration > Duration::ZERO);
+    assert!(one.record.observations.input_bytes > 0);
+    assert!(one.record.observations.output_bytes > 4);
+    assert!(
+        one.record
+            .observations
+            .fuel_consumed
+            .is_some_and(|value| value > 0)
+    );
+    assert!(
+        one.record
+            .observations
+            .peak_requested_memory_bytes
+            .is_some_and(|value| value > 0)
+    );
+    assert!(
+        one.record
+            .observations
+            .peak_requested_memory_bytes
+            .is_some_and(|value| value <= one.record.effective_budgets.memory_bytes as u64)
+    );
     let (pages, text) = pdf_envelope(&one.output);
     assert_eq!(pages, 1);
     assert!(text.contains("one page"), "extracted text: {text:?}");
@@ -933,4 +986,71 @@ async fn pdf_module_output_is_stable_across_fresh_stores() {
         assert_eq!(repeated.output, first.output);
         assert_eq!(repeated.record.output_sha256, first.record.output_sha256);
     }
+}
+
+#[tokio::test]
+async fn wasmtime16_get_fuel_counts_across_async_yield_refills() {
+    let engine = configured_engine().expect("configured engine");
+    let module = Module::new(
+        &engine,
+        wat::parse_str(
+            r#"(module
+                (func (export "burn") (param $remaining i32) (result i32)
+                    (local $value i32)
+                    local.get $remaining
+                    local.set $value
+                    (block $done
+                        (loop $again
+                            local.get $value
+                            i32.eqz
+                            br_if $done
+                            local.get $value
+                            i32.const 1
+                            i32.sub
+                            local.set $value
+                            br $again
+                        )
+                    )
+                    local.get $value
+                )
+            )"#,
+        )
+        .expect("wat"),
+    )
+    .expect("module");
+
+    async fn remaining(engine: &Engine, module: &Module, yield_interval: Option<u64>) -> u64 {
+        let mut store = Store::new(
+            engine,
+            StoreState {
+                limits: TrackingLimits {
+                    limits: StoreLimitsBuilder::new().build(),
+                    denial: None,
+                    peak_requested_memory_bytes: 0,
+                },
+            },
+        );
+        store.set_fuel(1_000_000).expect("fuel");
+        store
+            .fuel_async_yield_interval(yield_interval)
+            .expect("yield interval");
+        store.set_epoch_deadline(u64::MAX);
+        let instance = Linker::new(engine)
+            .instantiate_async(&mut store, module)
+            .await
+            .expect("instance");
+        let burn = instance
+            .get_typed_func::<i32, i32>(&mut store, "burn")
+            .expect("burn export");
+        assert_eq!(burn.call_async(&mut store, 20_000).await.expect("burn"), 0);
+        store.get_fuel().expect("remaining fuel")
+    }
+
+    let without_yields = remaining(&engine, &module, None).await;
+    let with_yields = remaining(&engine, &module, Some(100)).await;
+    assert_eq!(with_yields, without_yields);
+    assert!(
+        1_000_000 - with_yields > 100,
+        "fixture must cross more than one async-yield refill boundary"
+    );
 }

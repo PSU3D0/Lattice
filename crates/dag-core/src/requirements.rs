@@ -11,7 +11,7 @@
 //!
 //! Static derivability rule: every field here MUST be computable from a
 //! validated Flow IR plus the connector operation metadata already serialized
-//! into it (`NodeIR.connector_ops`). Where bound-connection resolution happens
+//! into it (`NodeIR.connector_ops` and `NodeIR.implementation_dependencies`). Where bound-connection resolution happens
 //! today at runtime preflight (host-inproc), this manifest records only the
 //! DECLARED contract (supported resolution modes, role requirements);
 //! instance-binding satisfaction is a bindings.lock-time concern. See
@@ -361,6 +361,15 @@ fn derive_native_only_nodes(flow: &FlowIR) -> Vec<NativeOnlyNodeRequirement> {
                 .or_default()
                 .push(node.alias.clone());
         }
+        for dependency in &node.implementation_dependencies {
+            let identifier = dependency.identifier();
+            if NATIVE_ONLY_NODE_IDENTIFIERS.contains(&identifier) {
+                grouped
+                    .entry(identifier.to_string())
+                    .or_default()
+                    .push(node.alias.clone());
+            }
+        }
     }
 
     grouped
@@ -619,6 +628,58 @@ mod tests {
                 nodes: vec!["reader".to_string()],
             }]
         );
+    }
+
+    #[test]
+    fn unknown_implementation_dependency_json_is_rejected() {
+        let flow = two_node_flow();
+        let mut value = serde_json::to_value(flow).expect("serialize flow");
+        value["nodes"][0]["implementationDependencies"] =
+            serde_json::json!(["std.document.extract_pdf_tex_typo"]);
+        let error = serde_json::from_value::<FlowIR>(value).expect_err("unknown dependency");
+        assert!(
+            error.to_string().contains("unknown variant"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn omitted_composite_dependency_does_not_invent_a_requirement() {
+        let mut flow = two_node_flow();
+        flow.nodes[1].identifier = "example.s21.extract_cv_text".to_string();
+        flow.nodes[1].implementation_dependencies.clear();
+        let reqs = FlowRequirements::derive(&flow).expect("derive");
+        assert!(reqs.native_only_nodes.is_empty());
+    }
+
+    #[test]
+    fn native_only_dependencies_are_attributed_to_the_composite_alias() {
+        let mut flow = two_node_flow();
+        flow.nodes[1].identifier = "example.s21.extract_cv_text".to_string();
+        flow.nodes[1].implementation_dependencies = vec![
+            crate::ImplementationDependency::StdDocumentExtractPdfText,
+            crate::ImplementationDependency::StdDocumentExtractPdfText,
+        ];
+
+        let reqs = FlowRequirements::derive(&flow).expect("derive");
+        assert_eq!(
+            reqs.native_only_nodes,
+            vec![NativeOnlyNodeRequirement {
+                identifier: "std.document.extract_pdf_text".to_string(),
+                nodes: vec!["writer".to_string()],
+            }]
+        );
+    }
+
+    #[test]
+    fn identifier_dependency_collision_does_not_duplicate_attribution() {
+        let mut flow = two_node_flow();
+        flow.nodes[0].identifier = "std.document.extract_pdf_text".to_string();
+        flow.nodes[0].implementation_dependencies =
+            vec![crate::ImplementationDependency::StdDocumentExtractPdfText];
+
+        let reqs = FlowRequirements::derive(&flow).expect("derive");
+        assert_eq!(reqs.native_only_nodes[0].nodes, vec!["reader".to_string()]);
     }
 
     #[test]

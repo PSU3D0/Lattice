@@ -343,6 +343,19 @@ impl Parse for ConnectorOpList {
     }
 }
 
+struct ImplementationDependencyList {
+    entries: Vec<Path>,
+}
+
+impl Parse for ImplementationDependencyList {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let punctuated = Punctuated::<Path, Token![,]>::parse_terminated(input)?;
+        Ok(Self {
+            entries: punctuated.into_iter().collect(),
+        })
+    }
+}
+
 struct MetaList {
     entries: Vec<Meta>,
 }
@@ -369,6 +382,7 @@ struct NodeArgs {
     output_schema: Option<LitStr>,
     resources: Vec<ResourceSpec>,
     connector_ops: Vec<Path>,
+    implementation_dependencies: Vec<Path>,
     connector_resolution_mode: Option<TokenStream2>,
     checkpointable: Option<LitBool>,
     replayable: Option<LitBool>,
@@ -398,6 +412,7 @@ impl NodeArgs {
             output_schema: None,
             resources: Vec::new(),
             connector_ops: Vec::new(),
+            implementation_dependencies: Vec::new(),
             connector_resolution_mode: None,
             checkpointable: None,
             replayable: None,
@@ -546,6 +561,12 @@ impl NodeArgs {
                             let entries =
                                 syn::parse2::<ConnectorOpList>(list.tokens.clone())?.entries;
                             parsed.connector_ops.extend(entries.into_iter());
+                        }
+                        "implementation_dependencies" | "implementationDependencies" => {
+                            let entries =
+                                syn::parse2::<ImplementationDependencyList>(list.tokens.clone())?
+                                    .entries;
+                            parsed.implementation_dependencies.extend(entries);
                         }
                         "idempotency" => {
                             let args = syn::parse2::<MetaList>(list.tokens.clone())?.entries;
@@ -742,6 +763,12 @@ fn node_impl(
         let entries = config.connector_ops.iter().map(|path| quote!(&#path::META));
         quote!(&[#(#entries),*])
     };
+    let implementation_dependencies_expr = if config.implementation_dependencies.is_empty() {
+        quote!(&[])
+    } else {
+        let entries = &config.implementation_dependencies;
+        quote!(&[#(#entries),*])
+    };
     let connector_resolution_expr = if let Some(mode) = &config.connector_resolution_mode {
         quote!(Some(#mode))
     } else {
@@ -858,6 +885,7 @@ fn node_impl(
             determinism_hints: #determinism_hints_expr,
             effect_hints: #effect_hints_expr,
             connector_ops: #connector_ops_expr,
+            implementation_dependencies: #implementation_dependencies_expr,
             connector_resolution_mode: #connector_resolution_expr,
             effects_declared: #effects_declared_expr,
             determinism_declared: #determinism_declared_expr,
@@ -1817,6 +1845,7 @@ fn subflow_spec_from_path(path: &Path) -> Result<TokenStream2> {
                     determinism_hints: descriptor.determinism_hints,
                     effect_hints: descriptor.effect_hints,
                     connector_ops: &[],
+                    implementation_dependencies: &[],
                     connector_resolution_mode: None,
                     effects_declared: true,
                     determinism_declared: true,

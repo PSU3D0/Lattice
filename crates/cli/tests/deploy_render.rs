@@ -715,14 +715,7 @@ fn benign_workspace_read_only_flow_still_renders() {
 // ---------------------------------------------------------------------------
 #[test]
 fn s21_pdf_extraction_fails_workers_render_with_named_worker_prerequisite() {
-    let mut flow = example_s21_ai_cv_screening::validated_ir().flow().clone();
-    let extraction_node = flow
-        .nodes
-        .iter_mut()
-        .find(|node| node.alias == "rate_candidate")
-        .expect("S21 rating node");
-    extraction_node.identifier = "std.document.extract_pdf_text".to_string();
-
+    let flow = example_s21_ai_cv_screening::validated_ir().flow().clone();
     let requirements = dag_core::FlowRequirements::derive(&flow).expect("derive S21 requirements");
     assert_eq!(requirements.native_only_nodes.len(), 1);
     assert_eq!(
@@ -731,7 +724,7 @@ fn s21_pdf_extraction_fails_workers_render_with_named_worker_prerequisite() {
     );
     assert_eq!(
         requirements.native_only_nodes[0].nodes,
-        vec!["rate_candidate".to_string()]
+        vec!["extract_cv_text".to_string()]
     );
     let temp = tempfile::tempdir().expect("tempdir");
     let requirements_path = temp.path().join("s21-pdf.requirements.json");
@@ -755,7 +748,7 @@ fn s21_pdf_extraction_fails_workers_render_with_named_worker_prerequisite() {
     assert!(!out_dir.join("wrangler.toml").exists());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("std.document.extract_pdf_text"), "{stderr}");
-    assert!(stderr.contains("rate_candidate"), "{stderr}");
+    assert!(stderr.contains("extract_cv_text"), "{stderr}");
     assert!(stderr.contains("LATTICE_EXTRACT_PDF"), "{stderr}");
     assert!(stderr.contains("extraction Worker"), "{stderr}");
 }

@@ -282,6 +282,16 @@ pub struct TransformRecord {
     pub input_sha256: Option<[u8; 32]>,
     pub output_sha256: Option<[u8; 32]>,
     pub termination_class: TerminationClass,
+    pub observations: TransformObservations,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransformObservations {
+    pub duration: Duration,
+    pub input_bytes: u64,
+    pub output_bytes: u64,
+    pub fuel_consumed: Option<u64>,
+    pub peak_requested_memory_bytes: Option<u64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -393,6 +403,7 @@ enum LimitDenial {
 struct TrackingLimits {
     limits: StoreLimits,
     denial: Option<LimitDenial>,
+    peak_requested_memory_bytes: usize,
 }
 
 impl ResourceLimiter for TrackingLimits {
@@ -402,6 +413,7 @@ impl ResourceLimiter for TrackingLimits {
         desired: usize,
         maximum: Option<usize>,
     ) -> anyhow::Result<bool> {
+        self.peak_requested_memory_bytes = self.peak_requested_memory_bytes.max(desired);
         let result = self.limits.memory_growing(current, desired, maximum);
         if !matches!(result, Ok(true)) {
             self.denial = Some(LimitDenial::Memory);
@@ -697,6 +709,10 @@ impl fmt::Debug for ProcessingContext {
 }
 
 impl ProcessingContext {
+    pub fn concurrency_limit(&self) -> usize {
+        self.inner.budgets.concurrency
+    }
+
     pub fn try_begin(&self, transform_id: &str) -> Result<ProcessingLease, BeginError> {
         if transform_id != self.inner.descriptor.transform_id {
             return Err(BeginError::InvalidTransform);
@@ -793,12 +809,14 @@ impl ProcessingLease {
         input: Vec<u8>,
         cancellation: CancellationToken,
     ) -> Result<ProcessingOutcome, ProcessingFailure> {
+        let input_bytes = u64::try_from(input.len()).unwrap_or(u64::MAX);
         // The size check deliberately precedes both hashing and task creation.
         if input.len() > self.inner.budgets.input_bytes {
             return Err(self.failure(
                 PublicError::InputTooLarge,
                 None,
                 None,
+                self.pre_execution_observations(input_bytes),
                 "input exceeded configured ceiling",
             ));
         }
@@ -809,6 +827,7 @@ impl ProcessingLease {
                 PublicError::WallTimeExceeded,
                 Some(input_sha256),
                 None,
+                self.pre_execution_observations(input_bytes),
                 "lease deadline elapsed before execution",
             ));
         }
@@ -817,6 +836,7 @@ impl ProcessingLease {
                 PublicError::Cancelled,
                 Some(input_sha256),
                 None,
+                self.pre_execution_observations(input_bytes),
                 "processing invocation was cancelled before execution",
             ));
         }
@@ -825,6 +845,7 @@ impl ProcessingLease {
                 PublicError::WallTimeExceeded,
                 Some(input_sha256),
                 None,
+                self.pre_execution_observations(input_bytes),
                 "lease admission expired before execution",
             ));
         }
@@ -832,6 +853,8 @@ impl ProcessingLease {
         let mut guard = CancelOnDrop::new(lease_cancellation.clone());
         let failure_inner = Arc::clone(&self.inner);
         let deadline = self.deadline();
+        // Duration begins only when the admitted guest task is dispatched.
+        let execution_started = Instant::now();
         let task = tokio::spawn(async move {
             self.execute(
                 input,
@@ -839,6 +862,8 @@ impl ProcessingLease {
                 cancellation,
                 lease_cancellation,
                 deadline,
+                execution_started,
+                input_bytes,
             )
             .await
         });
@@ -848,6 +873,8 @@ impl ProcessingLease {
                 return Err(joined_task_failure(
                     &failure_inner,
                     Some(input_sha256),
+                    execution_started,
+                    input_bytes,
                     error.to_string(),
                 ));
             }
@@ -863,6 +890,8 @@ impl ProcessingLease {
         cancellation: CancellationToken,
         lease_cancellation: CancellationToken,
         deadline: Instant,
+        execution_started: Instant,
+        input_bytes: u64,
     ) -> Result<ProcessingOutcome, ProcessingFailure> {
         let post_cancellation = cancellation.clone();
         let post_lease_cancellation = lease_cancellation.clone();
@@ -875,33 +904,101 @@ impl ProcessingLease {
         )
         .await;
         match raw {
-            Ok(_) if Instant::now() >= deadline => Err(self.failure(
+            Ok(execution) if Instant::now() >= deadline => Err(self.failure(
                 PublicError::WallTimeExceeded,
                 Some(input_sha256),
                 None,
+                self.observations(
+                    execution_started,
+                    input_bytes,
+                    u64::try_from(execution.output.len()).unwrap_or(u64::MAX),
+                    execution.fuel_consumed,
+                    execution.peak_requested_memory_bytes,
+                ),
                 "processing invocation deadline elapsed before completion",
             )),
-            Ok(_) if post_cancellation.is_cancelled() || post_lease_cancellation.is_cancelled() => {
+            Ok(execution)
+                if post_cancellation.is_cancelled() || post_lease_cancellation.is_cancelled() =>
+            {
                 Err(self.failure(
                     PublicError::Cancelled,
                     Some(input_sha256),
                     None,
+                    self.observations(
+                        execution_started,
+                        input_bytes,
+                        u64::try_from(execution.output.len()).unwrap_or(u64::MAX),
+                        execution.fuel_consumed,
+                        execution.peak_requested_memory_bytes,
+                    ),
                     "processing invocation was cancelled before completion",
                 ))
             }
-            Ok(output) => {
+            Ok(execution) => {
+                let output_bytes = u64::try_from(execution.output.len()).unwrap_or(u64::MAX);
+                let output = execution.output;
+                let output_sha256 = sha256(&output);
+                let observations = self.observations(
+                    execution_started,
+                    input_bytes,
+                    output_bytes,
+                    execution.fuel_consumed,
+                    execution.peak_requested_memory_bytes,
+                );
                 let record = self.record(
                     Some(input_sha256),
-                    Some(sha256(&output)),
+                    Some(output_sha256),
                     TerminationClass::Success,
+                    observations,
                 );
                 self.observe(&record);
                 Ok(ProcessingOutcome { output, record })
             }
             Err(error) => {
-                let public_error = error.public_error;
-                Err(self.failure(public_error, Some(input_sha256), None, error.private_source))
+                let public_error = error.failure.public_error;
+                Err(self.failure(
+                    public_error,
+                    Some(input_sha256),
+                    None,
+                    self.observations(
+                        execution_started,
+                        input_bytes,
+                        0,
+                        error.fuel_consumed,
+                        error.peak_requested_memory_bytes,
+                    ),
+                    error.failure.private_source,
+                ))
             }
+        }
+    }
+
+    fn pre_execution_observations(&self, input_bytes: u64) -> TransformObservations {
+        TransformObservations {
+            duration: Duration::ZERO,
+            input_bytes,
+            output_bytes: 0,
+            fuel_consumed: None,
+            peak_requested_memory_bytes: None,
+        }
+    }
+
+    /// Guest execution duration from admitted task dispatch until terminal store/output
+    /// observations are sampled. Failures rejected before dispatch report zero duration.
+    fn observations(
+        &self,
+        started: Instant,
+        input_bytes: u64,
+        output_bytes: u64,
+        fuel_consumed: Option<u64>,
+        peak_requested_memory_bytes: Option<u64>,
+    ) -> TransformObservations {
+        TransformObservations {
+            duration: started.elapsed(),
+            input_bytes,
+            output_bytes,
+            fuel_consumed,
+            peak_requested_memory_bytes,
         }
     }
 
@@ -910,6 +1007,7 @@ impl ProcessingLease {
         input_sha256: Option<[u8; 32]>,
         output_sha256: Option<[u8; 32]>,
         termination_class: TerminationClass,
+        observations: TransformObservations,
     ) -> TransformRecord {
         TransformRecord {
             transform_id: self.inner.descriptor.transform_id,
@@ -920,6 +1018,7 @@ impl ProcessingLease {
             input_sha256,
             output_sha256,
             termination_class,
+            observations,
         }
     }
 
@@ -928,12 +1027,14 @@ impl ProcessingLease {
         public_error: PublicError,
         input_sha256: Option<[u8; 32]>,
         output_sha256: Option<[u8; 32]>,
+        observations: TransformObservations,
         private_source: impl Into<String>,
     ) -> ProcessingFailure {
         let record = self.record(
             input_sha256,
             output_sha256,
             TerminationClass::Failure(public_error),
+            observations,
         );
         self.observe(&record);
         ProcessingFailure {
@@ -944,9 +1045,77 @@ impl ProcessingLease {
     }
 
     fn observe(&self, record: &TransformRecord) {
-        if let Some(observer) = self.inner.observer.lock().expect("observer lock").clone() {
-            observer.push(record.clone());
-        }
+        observe_record(&self.inner, record);
+    }
+}
+
+fn observe_record(inner: &Inner, record: &TransformRecord) {
+    let termination = match record.termination_class {
+        TerminationClass::Success => "success",
+        TerminationClass::Failure(error) => error.as_str(),
+    };
+    let transform = record.transform_id;
+    metrics::histogram!(
+        "lattice.transform.duration_ms",
+        "backend" => "native",
+        "transform" => transform,
+        "termination" => termination
+    )
+    .record(record.observations.duration.as_secs_f64() * 1_000.0);
+    metrics::histogram!(
+        "lattice.transform.input_bytes",
+        "backend" => "native",
+        "transform" => transform,
+        "termination" => termination
+    )
+    .record(record.observations.input_bytes as f64);
+    metrics::histogram!(
+        "lattice.transform.output_bytes",
+        "backend" => "native",
+        "transform" => transform,
+        "termination" => termination
+    )
+    .record(record.observations.output_bytes as f64);
+    if let Some(fuel_consumed) = record.observations.fuel_consumed {
+        metrics::histogram!(
+            "lattice.transform.fuel_consumed",
+            "backend" => "native",
+            "transform" => transform,
+            "termination" => termination
+        )
+        .record(fuel_consumed as f64);
+    }
+    if let Some(peak_requested_memory_bytes) = record.observations.peak_requested_memory_bytes {
+        metrics::histogram!(
+            "lattice.transform.peak_requested_memory_bytes",
+            "backend" => "native",
+            "transform" => transform,
+            "termination" => termination
+        )
+        .record(peak_requested_memory_bytes as f64);
+    }
+    metrics::gauge!(
+        "lattice.transform.fuel_ceiling",
+        "backend" => "native",
+        "transform" => transform
+    )
+    .set(record.effective_budgets.fuel as f64);
+    metrics::gauge!(
+        "lattice.transform.memory_ceiling_bytes",
+        "backend" => "native",
+        "transform" => transform
+    )
+    .set(record.effective_budgets.memory_bytes as f64);
+    metrics::counter!(
+        "lattice.transform.terminations_total",
+        "backend" => "native",
+        "transform" => transform,
+        "termination" => termination
+    )
+    .increment(1);
+
+    if let Some(observer) = inner.observer.lock().expect("observer lock").clone() {
+        observer.push(record.clone());
     }
 }
 
@@ -981,13 +1150,25 @@ struct RawFailure {
     private_source: String,
 }
 
+struct GuestFailure {
+    failure: RawFailure,
+    fuel_consumed: Option<u64>,
+    peak_requested_memory_bytes: Option<u64>,
+}
+
+struct GuestExecution {
+    output: Vec<u8>,
+    fuel_consumed: Option<u64>,
+    peak_requested_memory_bytes: Option<u64>,
+}
+
 async fn execute_guest(
     inner: &Inner,
     input: &[u8],
     cancellation: CancellationToken,
     lease_cancellation: CancellationToken,
     deadline: Instant,
-) -> Result<Vec<u8>, RawFailure> {
+) -> Result<GuestExecution, GuestFailure> {
     let limits = StoreLimitsBuilder::new()
         .memory_size(inner.budgets.memory_bytes)
         .memories(inner.budgets.memories)
@@ -1002,16 +1183,25 @@ async fn execute_guest(
             limits: TrackingLimits {
                 limits,
                 denial: None,
+                peak_requested_memory_bytes: 0,
             },
         },
     );
     store.limiter(|state| &mut state.limits);
-    store
-        .set_fuel(inner.budgets.fuel)
-        .map_err(|error| raw(PublicError::GuestFailed, error))?;
-    store
-        .fuel_async_yield_interval(Some(inner.budgets.fuel_yield_interval))
-        .map_err(|error| raw(PublicError::GuestFailed, error))?;
+    if let Err(error) = store.set_fuel(inner.budgets.fuel) {
+        return Err(guest_failure(
+            inner,
+            &store,
+            raw(PublicError::GuestFailed, error),
+        ));
+    }
+    if let Err(error) = store.fuel_async_yield_interval(Some(inner.budgets.fuel_yield_interval)) {
+        return Err(guest_failure(
+            inner,
+            &store,
+            raw(PublicError::GuestFailed, error),
+        ));
+    }
     store.set_epoch_deadline(1);
     let callback_cancellation = cancellation.clone();
     let callback_lease_cancellation = lease_cancellation.clone();
@@ -1031,16 +1221,17 @@ async fn execute_guest(
     let instance = match linker.instantiate_async(&mut store, &inner.module).await {
         Ok(instance) => instance,
         Err(error) => {
-            return Err(classify_store_error(
-                error,
-                &store,
-                &cancellation,
-                &lease_cancellation,
-                deadline,
-            ));
+            let failure =
+                classify_store_error(error, &store, &cancellation, &lease_cancellation, deadline);
+            return Err(guest_failure(inner, &store, failure));
         }
     };
-    invoke_abi(
+    if let Some(memory) = instance.get_memory(&mut store, "memory") {
+        let current = memory.data_size(&store);
+        store.data_mut().limits.peak_requested_memory_bytes =
+            store.data().limits.peak_requested_memory_bytes.max(current);
+    }
+    let result = invoke_abi(
         inner,
         &mut store,
         instance,
@@ -1049,7 +1240,38 @@ async fn execute_guest(
         lease_cancellation,
         deadline,
     )
-    .await
+    .await;
+    let fuel_consumed = observed_fuel(inner, &store);
+    let peak_requested_memory_bytes =
+        u64::try_from(store.data().limits.peak_requested_memory_bytes).ok();
+    match result {
+        Ok(output) => Ok(GuestExecution {
+            output,
+            fuel_consumed,
+            peak_requested_memory_bytes,
+        }),
+        Err(failure) => Err(GuestFailure {
+            failure,
+            fuel_consumed,
+            peak_requested_memory_bytes,
+        }),
+    }
+}
+
+fn observed_fuel(inner: &Inner, store: &Store<StoreState>) -> Option<u64> {
+    store
+        .get_fuel()
+        .ok()
+        .map(|remaining| inner.budgets.fuel.saturating_sub(remaining))
+}
+
+fn guest_failure(inner: &Inner, store: &Store<StoreState>, failure: RawFailure) -> GuestFailure {
+    GuestFailure {
+        failure,
+        fuel_consumed: observed_fuel(inner, store),
+        peak_requested_memory_bytes: u64::try_from(store.data().limits.peak_requested_memory_bytes)
+            .ok(),
+    }
 }
 
 async fn invoke_abi(
@@ -1245,6 +1467,8 @@ fn raw(error: PublicError, source: impl fmt::Display) -> RawFailure {
 fn joined_task_failure(
     inner: &Inner,
     input_sha256: Option<[u8; 32]>,
+    started: Instant,
+    input_bytes: u64,
     source: String,
 ) -> ProcessingFailure {
     let record = TransformRecord {
@@ -1256,10 +1480,15 @@ fn joined_task_failure(
         input_sha256,
         output_sha256: None,
         termination_class: TerminationClass::Failure(PublicError::GuestFailed),
+        observations: TransformObservations {
+            duration: started.elapsed(),
+            input_bytes,
+            output_bytes: 0,
+            fuel_consumed: None,
+            peak_requested_memory_bytes: None,
+        },
     };
-    if let Some(observer) = inner.observer.lock().expect("observer lock").clone() {
-        observer.push(record.clone());
-    }
+    observe_record(inner, &record);
     ProcessingFailure {
         public_error: PublicError::GuestFailed,
         record,

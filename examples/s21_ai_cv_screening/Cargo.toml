@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "S21 clone (n8n template #2, AI CV Screening): a webhook application form that scores the resume via connector.llm.complete, appends the candidate to a Google Sheet, and emails both the candidate and HR; the delivery is keyed on the applicant email. Honest subset: the PDF-extraction step is moved to the webhook payload boundary (see the flow docs)."
+description = "S21 native-full clone: bounded multipart PDF staging, sandboxed text extraction, LLM screening, Sheets append, Gmail notifications, and terminal KV idempotency."
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -20,6 +20,7 @@ connector_llm = { path = "../../crates/connectors/llm/core", default-features = 
 dag-core = { path = "../../crates/dag-core" }
 dag-macros = { path = "../../crates/dag-macros" }
 kernel-plan = { path = "../../crates/kernel-plan" }
+stdlib = { path = "../../crates/stdlib", default-features = false, features = ["document"] }
 serde.workspace = true
 serde_json.workspace = true
 host-inproc = { path = "../../crates/host-inproc", optional = true }
@@ -39,6 +40,7 @@ host-bundle = [
     "connector_google_gmail/host-bundle",
     "connector_google_sheets/host-bundle",
     "connector_llm/host-bundle",
+    "stdlib/host-bundle",
 ]
 flow-registry = ["dag-core/flow-registry", "dag-macros/flow-registry"]
 

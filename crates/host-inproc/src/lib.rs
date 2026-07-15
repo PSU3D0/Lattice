@@ -184,19 +184,19 @@ pub struct InvocationParts {
 pub struct IngressAttachment {
     payload_field: String,
     content_type: String,
-    bytes: Vec<u8>,
+    bytes: bytes::Bytes,
 }
 
 impl IngressAttachment {
     pub fn new(
         payload_field: impl Into<String>,
         content_type: impl Into<String>,
-        bytes: Vec<u8>,
+        bytes: impl Into<bytes::Bytes>,
     ) -> Self {
         Self {
             payload_field: payload_field.into(),
             content_type: content_type.into(),
-            bytes,
+            bytes: bytes.into(),
         }
     }
 }
@@ -215,7 +215,7 @@ struct ValidatedIngressAttachment {
     payload_field: String,
     stage_path: String,
     content_type: String,
-    bytes: Vec<u8>,
+    bytes: bytes::Bytes,
 }
 
 /// Explicit bounds applied before host-ingress attachments are staged.
@@ -797,10 +797,27 @@ impl HostRuntime {
         let Some(factory) = self.workspace_factory.as_ref() else {
             return Ok(());
         };
-        factory
+        let disposition_label = match disposition {
+            WorkspaceCompletionDisposition::Succeeded => "succeeded",
+            WorkspaceCompletionDisposition::Failed => "failed",
+        };
+        let result = factory
             .complete(scope, disposition)
             .await
-            .map_err(ExecutionError::HostEnvironment)
+            .map_err(ExecutionError::HostEnvironment);
+        let outcome = if result.is_ok() {
+            disposition_label
+        } else {
+            "cleanup_error"
+        };
+        metrics::counter!(
+            "lattice.host.workspace_cleanup_total",
+            "host" => "inproc",
+            "flow" => self.ir.flow().name.clone(),
+            "outcome" => outcome
+        )
+        .increment(1);
+        result
     }
 
     async fn fail_ingress_workspace(
@@ -821,8 +838,13 @@ impl HostRuntime {
 
     /// Execute a single invocation, returning the captured result or error.
     pub async fn execute(&self, invocation: Invocation) -> Result<ExecutionResult, ExecutionError> {
-        self.execute_internal(invocation, Vec::new(), IngressAttachmentPolicy::default())
-            .await
+        self.execute_internal(
+            invocation,
+            Vec::new(),
+            IngressAttachmentPolicy::default(),
+            None,
+        )
+        .await
     }
 
     /// Stage host-ingress attachments into the invocation's run-scoped
@@ -839,7 +861,35 @@ impl HostRuntime {
                 "ingress attachment execution requires at least one attachment"
             )));
         }
-        self.execute_internal(invocation, attachments, policy).await
+        self.execute_internal(invocation, attachments, policy, None)
+            .await
+    }
+
+    /// Execute attachment ingress and invoke `after_staging` once staging and
+    /// artifact injection are complete, immediately before graph execution.
+    /// The callback receives no attachment bytes or capability authority.
+    pub async fn execute_with_ingress_attachments_after_staging<F>(
+        &self,
+        invocation: Invocation,
+        attachments: Vec<IngressAttachment>,
+        policy: IngressAttachmentPolicy,
+        after_staging: F,
+    ) -> Result<ExecutionResult, ExecutionError>
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        if attachments.is_empty() {
+            return Err(ExecutionError::HostEnvironment(anyhow::anyhow!(
+                "ingress attachment execution requires at least one attachment"
+            )));
+        }
+        self.execute_internal(
+            invocation,
+            attachments,
+            policy,
+            Some(Box::new(after_staging)),
+        )
+        .await
     }
 
     async fn execute_internal(
@@ -847,6 +897,7 @@ impl HostRuntime {
         invocation: Invocation,
         attachments: Vec<IngressAttachment>,
         policy: IngressAttachmentPolicy,
+        mut after_staging: Option<Box<dyn FnOnce() + Send>>,
     ) -> Result<ExecutionResult, ExecutionError> {
         let InvocationParts {
             trigger_alias,
@@ -943,6 +994,7 @@ impl HostRuntime {
             };
             let object = payload.as_object_mut().expect("validated object payload");
             for attachment in normalized_attachments {
+                let staged_bytes = attachment.bytes.len();
                 let artifact = match writer
                     .stage_artifact(
                         &attachment.stage_path,
@@ -959,6 +1011,18 @@ impl HostRuntime {
                         return Err(self.fail_ingress_workspace(workspace_scope, primary).await);
                     }
                 };
+                metrics::counter!(
+                    "lattice.host.ingress_staged_attachments_total",
+                    "host" => "inproc",
+                    "flow" => self.ir.flow().name.clone()
+                )
+                .increment(1);
+                metrics::histogram!(
+                    "lattice.host.ingress_staged_bytes",
+                    "host" => "inproc",
+                    "flow" => self.ir.flow().name.clone()
+                )
+                .record(staged_bytes as f64);
                 let value = match serde_json::to_value(artifact) {
                     Ok(value) => value,
                     Err(err) => {
@@ -970,6 +1034,10 @@ impl HostRuntime {
                 };
                 object.insert(attachment.payload_field, value);
             }
+        }
+
+        if has_ingress_attachments && let Some(after_staging) = after_staging.take() {
+            after_staging();
         }
 
         metadata.insert_label("lf.run_id", run_id.clone());

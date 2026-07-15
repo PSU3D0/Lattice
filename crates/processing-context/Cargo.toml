@@ -13,6 +13,7 @@ description = "Native metered sandbox for host-allowlisted Lattice transforms."
 anyhow.workspace = true
 async-trait.workspace = true
 capabilities = { path = "../capabilities" }
+metrics.workspace = true
 sha2.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true

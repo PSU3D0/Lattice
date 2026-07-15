@@ -677,3 +677,13 @@ Acceptance gates:
 - Enabled stdlib `document` in the default feature set only after the static placement gate became available.
 - Acceptance gates: focused dag-core requirements, kernel-plan requirements goldens, CLI requirements/render suites, stdlib document/default tests, wasm32 checks, render-proof Miniflare controls, package formatting, hint-literal, and diff checks.
 - Compatibility/contract notes: this packet changes only static requirements and deployment admission; it does not add a Workers extraction backend, alter S21's graph, or change checkpoint schemas.
+
+## 2026-07-15 — P4b S21 native-full PDF listener and observations
+
+- Replaced S21's public `resume_text` boundary with `cv: Artifact<Exact>`, explicitly enabled `stdlib/document`, and added the honestly identified typed `extract_cv_text` composite before the LLM -> Sheets -> Gmail x2 -> KV chain. The composite invokes the unchanged fixed `std.document.extract_pdf_text` implementation and declares that closed typed implementation dependency; it does not reuse the canonical handler identity with incompatible schemas.
+- Added sequential redelivery admission on the existing natural key so a second terminal response reports `stored: false` without repeating LLM, Sheets, Gmail, or KV effects.
+- Registered one fallibly-created `PdfTransformRuntime` only at the native CLI serve construction point. Transform registration follows the direct or typed-composite requirement, while S21's bounded `cv`/`cv_filename` multipart field mapping remains an explicit CLI transport configuration rather than being inferred for every PDF handler.
+- Added process-local no-queue multipart admission `N=4` before declared-length inspection or body polling and release immediately after attachment staging. With independently enforced transform admission `M=2`, the stated logical admission reservation is `4 * 10 MiB + 2 * 8 MiB = 56 MiB`; this is not measured RSS and explicitly excludes multipart/parser buffering details, allocator overhead, Wasmtime memory, module state, and runtime bookkeeping.
+- Added passive transform duration/input/output/fuel/peak-requested-memory observations, policy ceilings and termination metrics, staged ingress/cleanup metrics, and PII-filtered CLI `--metrics-out` evidence.
+- Acceptance gates: focused processing-context containment plus Wasmtime 16 async-yield fuel calibration, host-web multipart/N+1 polling proof, S21 unit contract tests, Workers render rejection, and the real TCP/FsWorkspace/multipart S21 mock-provider golden with hostile requests, exact downstream counts, cleanup, and redelivery.
+- Compatibility/contract notes: no checkpoint schema, durable receipt, Workers backend, or W0 transform-record re-charter changes are included.

@@ -19,10 +19,14 @@ use flow_bundle::Manifest;
 use futures::StreamExt;
 #[cfg(feature = "host-wasmtime")]
 use host_wasmtime::load_flow_bundle;
-use host_web_axum::{HostHandle, MultipartIngressConfig, RouteConfig};
+use host_web_axum::{
+    DEFAULT_MULTIPART_ADMISSION_LIMIT, DEFAULT_TRANSFORM_ADMISSION_LIMIT, HostHandle,
+    MultipartIngressConfig, RouteConfig,
+};
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use kernel_exec::{ExecutionResult, FlowExecutor};
 use kernel_plan::{ValidatedIR, validate};
+use processing_context::PdfTransformRuntime;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
 use sha2::{Digest, Sha256};
@@ -320,6 +324,9 @@ struct ServeArgs {
     /// Root directory for multipart ingress run workspaces.
     #[arg(long, default_value = ".flow/workspaces")]
     workspace_dir: PathBuf,
+    /// Write a sanitized metrics snapshot after graceful shutdown.
+    #[arg(long)]
+    metrics_out: Option<PathBuf>,
     /// Address to bind (host:port).
     #[arg(long, default_value = "127.0.0.1:8080")]
     addr: SocketAddr,
@@ -1193,6 +1200,176 @@ fn select_bundle_entrypoint<'a>(
         .context("bundle has no entrypoints")
 }
 
+const EXPORTED_METRIC_NAMES: &[&str] = &[
+    "lattice.executor.active_nodes",
+    "lattice.executor.cancellations_total",
+    "lattice.executor.capture_backpressure_ms",
+    "lattice.executor.node_errors_total",
+    "lattice.executor.node_latency_ms",
+    "lattice.executor.queue_depth",
+    "lattice.executor.stream_clients_total",
+    "lattice.host.deadline_exceeded_total",
+    "lattice.host.http_inflight_requests",
+    "lattice.host.http_request_latency_ms",
+    "lattice.host.http_requests_total",
+    "lattice.host.ingress_staged_attachments_total",
+    "lattice.host.ingress_staged_bytes",
+    "lattice.host.multipart_admission_total",
+    "lattice.host.multipart_file_bytes",
+    "lattice.host.multipart_rejected_total",
+    "lattice.host.multipart_request_bytes",
+    "lattice.host.sse_clients",
+    "lattice.host.workspace_cleanup_total",
+    "lattice.transform.duration_ms",
+    "lattice.transform.fuel_ceiling",
+    "lattice.transform.fuel_consumed",
+    "lattice.transform.input_bytes",
+    "lattice.transform.input_hash_comparisons_total",
+    "lattice.transform.memory_ceiling_bytes",
+    "lattice.transform.output_bytes",
+    "lattice.transform.peak_requested_memory_bytes",
+    "lattice.transform.terminations_total",
+];
+
+struct MetricsExportPolicy {
+    flows: BTreeSet<String>,
+    nodes: BTreeSet<String>,
+    routes: BTreeSet<String>,
+}
+
+impl MetricsExportPolicy {
+    fn from_ir(ir: &ValidatedIR, route: &str) -> Self {
+        Self {
+            flows: [ir.flow().name.clone(), ir.flow().id.as_str().to_string()]
+                .into_iter()
+                .collect(),
+            nodes: ir
+                .flow()
+                .nodes
+                .iter()
+                .map(|node| node.alias.clone())
+                .collect(),
+            routes: [route.to_string()].into_iter().collect(),
+        }
+    }
+
+    #[cfg(test)]
+    fn test_policy() -> Self {
+        Self {
+            flows: ["trusted_compiled_flow".to_string()].into_iter().collect(),
+            nodes: ["trusted_compiled_node".to_string()].into_iter().collect(),
+            routes: ["/trusted-compiled-route".to_string()]
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    fn allows_label(&self, key: &str, value: &str) -> bool {
+        match key {
+            "flow" => self.flows.contains(value),
+            "node" => self.nodes.contains(value),
+            "route" => self.routes.contains(value),
+            "backend" => value == "native",
+            "host" => matches!(value, "web_axum" | "inproc"),
+            "transform" => value == stdlib::document::PDF_EXTRACT_TRANSFORM_ID,
+            "status_class" => matches!(value, "1xx" | "2xx" | "3xx" | "4xx" | "5xx"),
+            "outcome" => matches!(
+                value,
+                "accepted"
+                    | "saturated"
+                    | "runtime_unavailable"
+                    | "not_acceptable"
+                    | "bad_request"
+                    | "payload_too_large"
+                    | "unsupported_media_type"
+                    | "matched"
+                    | "mismatch"
+                    | "succeeded"
+                    | "failed"
+                    | "cleanup_error"
+            ),
+            "termination" => matches!(
+                value,
+                "success"
+                    | "invalid_module"
+                    | "invalid_abi"
+                    | "input_too_large"
+                    | "busy"
+                    | "runtime_unavailable"
+                    | "fuel_exhausted"
+                    | "memory_exhausted"
+                    | "wall_time_exceeded"
+                    | "cancelled"
+                    | "output_too_large"
+                    | "guest_failed"
+                    | "invalid_output"
+                    | "unsupported_document"
+            ),
+            _ => false,
+        }
+    }
+}
+
+fn sanitized_metrics_snapshot(
+    snapshot: metrics_util::debugging::Snapshot,
+    policy: &MetricsExportPolicy,
+) -> JsonValue {
+    let mut entries = snapshot
+        .into_vec()
+        .into_iter()
+        .filter_map(|(key, _unit, _description, value)| {
+            let metric = key.key();
+            if !EXPORTED_METRIC_NAMES.contains(&metric.name()) {
+                return None;
+            }
+            let labels = metric
+                .labels()
+                .filter(|label| policy.allows_label(label.key(), label.value()))
+                .map(|label| {
+                    (
+                        label.key().to_string(),
+                        JsonValue::String(label.value().to_string()),
+                    )
+                })
+                .collect::<serde_json::Map<_, _>>();
+            let (kind, value) = match value {
+                DebugValue::Counter(value) => ("counter", json!(value)),
+                DebugValue::Gauge(value) => ("gauge", json!(value.into_inner())),
+                DebugValue::Histogram(values) => (
+                    "histogram",
+                    json!(
+                        values
+                            .into_iter()
+                            .map(|value| value.into_inner())
+                            .collect::<Vec<_>>()
+                    ),
+                ),
+            };
+            Some(json!({
+                "name": metric.name(),
+                "kind": kind,
+                "labels": labels,
+                "value": value,
+            }))
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.to_string().cmp(&right.to_string()));
+    json!({
+        "schema_version": 1,
+        "sanitized": true,
+        "metrics": entries,
+    })
+}
+
+fn flow_needs_pdf_transform(flow: &dag_core::FlowIR) -> bool {
+    flow.nodes.iter().any(|node| {
+        node.identifier == stdlib::document::EXTRACT_PDF_TEXT_IDENTIFIER
+            || node.implementation_dependencies.iter().any(|dependency| {
+                *dependency == dag_core::ImplementationDependency::StdDocumentExtractPdfText
+            })
+    })
+}
+
 fn run_serve(args: ServeArgs) -> Result<()> {
     if args.bindings_lock.is_some() && !args.bindings.is_empty() {
         return Err(anyhow!("--bindings-lock cannot be combined with --bind"));
@@ -1261,10 +1438,36 @@ fn run_serve(args: ServeArgs) -> Result<()> {
         ..
     } = handle;
 
+    let needs_pdf_transform = flow_needs_pdf_transform(ir.flow());
+    if needs_pdf_transform {
+        let transform = PdfTransformRuntime::new()
+            .map_err(|error| anyhow!("failed to initialize PDF transform runtime: {error}"))?;
+        if transform.concurrency_limit() != DEFAULT_TRANSFORM_ADMISSION_LIMIT {
+            return Err(anyhow!(
+                "PDF transform concurrency invariant is {}, expected {}",
+                transform.concurrency_limit(),
+                DEFAULT_TRANSFORM_ADMISSION_LIMIT
+            ));
+        }
+        resources = resources.with_transform_runtime(Arc::new(transform));
+    }
+
+    // Transform registration follows typed implementation requirements, while
+    // multipart field selection remains an explicit transport contract. A
+    // canonical extractor entrypoint uses `artifact`; S21 uses `cv`.
     let multipart_pdf_field = args.multipart_pdf_field;
     let multipart_filename_field = args.multipart_filename_field;
+    if multipart_pdf_field.is_none() && multipart_filename_field.is_some() {
+        return Err(anyhow!(
+            "--multipart-filename-field requires --multipart-pdf-field"
+        ));
+    }
     let workspace_dir = args.workspace_dir;
+    let metrics_out = args.metrics_out;
+    let metrics_policy = MetricsExportPolicy::from_ir(ir.as_ref(), route_path.as_str());
     let addr = args.addr;
+    let snapshotter = cli_metrics_snapshotter();
+    let _ = snapshotter.snapshot();
     let runtime = RuntimeBuilder::new_multi_thread()
         .enable_all()
         .build()
@@ -1297,7 +1500,8 @@ fn run_serve(args: ServeArgs) -> Result<()> {
             });
             config = config
                 .with_workspace_factory(Arc::new(workspace_factory))
-                .with_multipart_ingress(multipart);
+                .with_multipart_ingress(multipart)
+                .with_multipart_admission_limit(DEFAULT_MULTIPART_ADMISSION_LIMIT);
         }
 
         let host = HostHandle::try_new(executor, ir, config).map_err(anyhow::Error::new)?;
@@ -1318,6 +1522,12 @@ fn run_serve(args: ServeArgs) -> Result<()> {
         println!("Server stopped cleanly.");
         Ok::<(), anyhow::Error>(())
     })?;
+
+    if let Some(path) = metrics_out {
+        let evidence = sanitized_metrics_snapshot(snapshotter.snapshot(), &metrics_policy);
+        fs::write(&path, serde_json::to_vec_pretty(&evidence)?)
+            .with_context(|| format!("failed to write sanitized metrics to {}", path.display()))?;
+    }
 
     Ok(())
 }
@@ -4152,6 +4362,150 @@ mod tests {
         );
         assert!(formatted.contains("summary: Declared effects do not match bound capabilities"));
         assert!(formatted.contains("location: node:writer"));
+    }
+
+    #[test]
+    fn native_pdf_admission_reservation_combines_route_and_runtime_guards() {
+        let transform = PdfTransformRuntime::new().expect("checked PDF runtime");
+        assert_eq!(
+            transform.concurrency_limit(),
+            host_web_axum::DEFAULT_TRANSFORM_ADMISSION_LIMIT
+        );
+        assert_eq!(
+            host_web_axum::DEFAULT_MULTIPART_ADMISSION_LIMIT
+                * host_web_axum::DEFAULT_MULTIPART_REQUEST_LIMIT_BYTES
+                + transform.concurrency_limit()
+                    * host_web_axum::DEFAULT_TRANSFORM_INPUT_LIMIT_BYTES,
+            host_web_axum::DEFAULT_MULTIPART_TRANSFORM_INPUT_ENVELOPE_BYTES
+        );
+    }
+
+    #[cfg(feature = "example-s21")]
+    #[test]
+    fn pdf_transform_registration_detects_direct_and_typed_composite_identities() {
+        let mut composite = s21_ai_cv_screening::flow();
+        assert!(flow_needs_pdf_transform(&composite));
+        let extract_index = composite
+            .nodes
+            .iter()
+            .position(|node| node.alias == "extract_cv_text")
+            .expect("S21 extract composite");
+        assert_ne!(
+            composite.nodes[extract_index].identifier,
+            stdlib::document::EXTRACT_PDF_TEXT_IDENTIFIER
+        );
+        assert_eq!(
+            composite.nodes[extract_index].implementation_dependencies,
+            vec![dag_core::ImplementationDependency::StdDocumentExtractPdfText]
+        );
+
+        composite.nodes[extract_index].identifier =
+            stdlib::document::EXTRACT_PDF_TEXT_IDENTIFIER.to_string();
+        composite.nodes[extract_index]
+            .implementation_dependencies
+            .clear();
+        assert!(flow_needs_pdf_transform(&composite));
+
+        composite.nodes[extract_index].identifier = "example.no_transform".to_string();
+        assert!(!flow_needs_pdf_transform(&composite));
+    }
+
+    #[test]
+    fn sanitized_metrics_drop_request_and_diagnostic_labels() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        metrics::with_local_recorder(&recorder, || {
+            metrics::counter!(
+                "lattice.host.http_requests_total",
+                "flow" => "trusted_compiled_flow",
+                "node" => "trusted_compiled_node",
+                "route" => "/trusted-compiled-route",
+                "backend" => "native",
+                "host" => "web_axum",
+                "transform" => stdlib::document::PDF_EXTRACT_TRANSFORM_ID,
+                "status_class" => "2xx",
+                "outcome" => "accepted",
+                "termination" => "success",
+                "name" => "PII_NAME_SENTINEL",
+                "email" => "PII_EMAIL_SENTINEL",
+                "linkedin" => "PII_LINKEDIN_SENTINEL",
+                "salary" => "PII_SALARY_SENTINEL",
+                "filename" => "PII_FILENAME_SENTINEL",
+                "path" => "PII_PATH_SENTINEL",
+                "hash" => "PII_HASH_SENTINEL",
+                "key" => "PII_KEY_SENTINEL",
+                "parser_diagnostics" => "PARSER_DIAGNOSTIC_SENTINEL",
+                "secret" => "SECRET_SENTINEL"
+            )
+            .increment(1);
+            metrics::counter!(
+                "lattice.host.http_requests_total",
+                "flow" => "PII_FLOW_SENTINEL",
+                "node" => "PII_NODE_SENTINEL",
+                "route" => "PII_ROUTE_SENTINEL",
+                "backend" => "PII_BACKEND_SENTINEL",
+                "host" => "PII_HOST_SENTINEL",
+                "transform" => "PII_TRANSFORM_SENTINEL",
+                "outcome" => "PII_OUTCOME_SENTINEL",
+                "status_class" => "PII_STATUS_SENTINEL",
+                "termination" => "PARSER_TERMINATION_SENTINEL"
+            )
+            .increment(1);
+            metrics::counter!(
+                "lattice.unknown_pii_metric",
+                "flow" => "trusted_compiled_flow",
+                "secret" => "UNKNOWN_METRIC_SECRET_SENTINEL"
+            )
+            .increment(1);
+        });
+
+        let sanitized =
+            sanitized_metrics_snapshot(snapshotter.snapshot(), &MetricsExportPolicy::test_policy())
+                .to_string();
+        for trusted in [
+            "trusted_compiled_flow",
+            "trusted_compiled_node",
+            "/trusted-compiled-route",
+            "native",
+            "web_axum",
+            stdlib::document::PDF_EXTRACT_TRANSFORM_ID,
+            "2xx",
+            "accepted",
+            "success",
+        ] {
+            assert!(
+                sanitized.contains(trusted),
+                "missing trusted label {trusted}"
+            );
+        }
+        for forbidden in [
+            "PII_NAME_SENTINEL",
+            "PII_EMAIL_SENTINEL",
+            "PII_LINKEDIN_SENTINEL",
+            "PII_SALARY_SENTINEL",
+            "PII_FILENAME_SENTINEL",
+            "PII_PATH_SENTINEL",
+            "PII_HASH_SENTINEL",
+            "PII_KEY_SENTINEL",
+            "PARSER_DIAGNOSTIC_SENTINEL",
+            "SECRET_SENTINEL",
+            "PII_FLOW_SENTINEL",
+            "PII_NODE_SENTINEL",
+            "PII_ROUTE_SENTINEL",
+            "PII_BACKEND_SENTINEL",
+            "PII_HOST_SENTINEL",
+            "PII_TRANSFORM_SENTINEL",
+            "PII_OUTCOME_SENTINEL",
+            "PII_STATUS_SENTINEL",
+            "PARSER_TERMINATION_SENTINEL",
+            "UNKNOWN_METRIC_SECRET_SENTINEL",
+            "lattice.unknown_pii_metric",
+        ] {
+            assert!(
+                !sanitized.contains(forbidden),
+                "sanitized snapshot leaked {forbidden}"
+            );
+        }
     }
 
     #[test]

@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use capabilities::transform::{
     TransformBeginError, TransformBudgets, TransformErrorClass, TransformExecutionRecord,
-    TransformFailure, TransformLease, TransformOutcome, TransformRuntime,
-    TransformTerminationClass,
+    TransformFailure, TransformLease, TransformObservations as NeutralTransformObservations,
+    TransformOutcome, TransformRuntime, TransformTerminationClass,
 };
 use std::sync::Arc;
 
@@ -22,6 +22,10 @@ impl PdfTransformRuntime {
         let runtime = ProcessingRuntime::new_pdf_host()?;
         let context = runtime.create_pdf_extract_context()?;
         Ok(Self { context })
+    }
+
+    pub fn concurrency_limit(&self) -> usize {
+        self.context.concurrency_limit()
     }
 
     #[cfg(test)]
@@ -134,6 +138,13 @@ fn map_record(record: TransformRecord) -> TransformExecutionRecord {
         input_sha256: record.input_sha256,
         output_sha256: record.output_sha256,
         termination_class: map_termination(record.termination_class),
+        observations: NeutralTransformObservations {
+            duration: record.observations.duration,
+            input_bytes: record.observations.input_bytes,
+            output_bytes: record.observations.output_bytes,
+            fuel_consumed: record.observations.fuel_consumed,
+            peak_requested_memory_bytes: record.observations.peak_requested_memory_bytes,
+        },
     }
 }
 
@@ -244,6 +255,13 @@ mod tests {
             input_sha256: Some([8; 32]),
             output_sha256: Some([9; 32]),
             termination_class: TerminationClass::Failure(PublicError::InvalidOutput),
+            observations: crate::TransformObservations {
+                duration: std::time::Duration::from_millis(12),
+                input_bytes: 8,
+                output_bytes: 9,
+                fuel_consumed: Some(10),
+                peak_requested_memory_bytes: Some(65_536),
+            },
         };
         let mapped = map_record(source);
         assert_eq!(mapped.transform_id, crate::PDF_EXTRACT_TRANSFORM_ID);

@@ -12,6 +12,8 @@ description = "Shared in-process host runtime for executing validated flows."
 [dependencies]
 dag-core = { path = "../dag-core" }
 kernel-plan = { path = "../kernel-plan" }
+metrics.workspace = true
+bytes.workspace = true
 capabilities = { path = "../capabilities" }
 anyhow.workspace = true
 serde.workspace = true

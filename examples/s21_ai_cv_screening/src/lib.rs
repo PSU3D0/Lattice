@@ -5,7 +5,7 @@
 //!
 //! 1. A **webhook (application form) trigger** receives a candidate submission:
 //!    name, email, salary expectation, LinkedIn URL, the CV file name, and the
-//!    **already-extracted resume text** (see "Honest subset" below).
+//!    a host-staged `cv: Artifact<Exact>` produced by bounded multipart ingress.
 //! 2. `connector.llm.complete` scores the resume against a fixed job
 //!    description and returns a plain-text compatibility rating + hire
 //!    recommendation (the op this clone is the first flow to consume).
@@ -19,34 +19,23 @@
 //! 6. A terminal **KV upsert** records the delivery keyed
 //!    `<flow>:<trigger>:{email}` — the application's natural idempotency key.
 //!
-//! ## Honest subset (what was CUT, and why)
+//! ## Native PDF boundary
 //!
-//! The audited workflow's second node extracts text from an **uploaded PDF CV**
-//! (an `extractFromFile`/pdf step) before the LLM sees it. Lattice cannot
-//! express that honestly today: there is no multipart/binary webhook ingress
-//! primitive and no file-extraction op, and the binary-handoff decision
-//! (playbook §3 — return content via the workspace capability) is still
-//! unresolved; `connector.llm.complete` likewise lists binary/multimodal input
-//! as a deliberate gap (its README). Rather than fake a PDF parse, this clone
-//! moves the extraction boundary to the **webhook payload**: the submission
-//! carries `resume_text` already extracted upstream (an n8n form-node file
-//! field would deliver the binary; here the caller delivers the text). Every
-//! downstream step — LLM rating, sheet append, both emails — is cloned
-//! faithfully. Blocking primitive: binary/multipart webhook ingress + a
-//! file-extraction op (or the workspace-capability binary handoff).
+//! The public request boundary carries application text fields plus `cv: Artifact<Exact>`.
+//! The `extract_cv_text` composite declares and invokes the fixed
+//! `std.document.extract_pdf_text` implementation. That implementation bounded-reads and
+//! hash-compares the staged PDF before invoking the host-allowlisted, capability-less wasm
+//! transform. PDF bytes never enter invocation JSON, node output, checkpoints, or logs.
 //!
 //! ## Idempotency posture
 //!
-//! Every effectful payload is a pure function of the submission (the LLM
-//! prompt, the sheet row, both email bodies, the terminal KV key all derive
-//! from the application fields + the rating text). A webhook redelivery replays
-//! byte-identical requests and the terminal KV record dedupes to a single row.
-//! Provider-side duplicate suppression for the sheet/email writes remains the
-//! delivery gate's job (`Delivery::ExactlyOnce` composition is proven per-op in
-//! each connector's honesty tests) — the same posture as the s18 pilot. The LLM
-//! call is `Nondeterministic`; its output is captured into the row/HR email so
-//! a replay reuses the first delivery's KV record rather than re-sampling.
+//! Every effectful payload is a pure function of the submission. After successful
+//! extraction, a sequential webhook redelivery reads the terminal KV record and returns it
+//! without replaying LLM, Sheets, or Gmail effects. This is the established sequential
+//! redelivery posture; concurrent deliveries are not claimed to be atomically suppressed.
+//! The LLM call is `Nondeterministic`; its first result is retained in the terminal record.
 
+use capabilities::artifact::{Artifact, Exact};
 use capabilities::context;
 use connector_google_gmail::GoogleGmailSendMessageInput;
 use connector_google_gmail::ops::GoogleGmailSendMessage;
@@ -58,6 +47,7 @@ use dag_core::{NodeError, NodeResult};
 use dag_macros::{def_node, node};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use stdlib::document::{ExtractPdfTextInput, extract_pdf_text};
 
 pub const FLOW_NAME: &str = "s21_ai_cv_screening_flow";
 pub const TRIGGER_ALIAS: &str = "screening_trigger";
@@ -80,9 +70,9 @@ pub const LLM_MODEL: &str = "gemini-1.5-flash";
 // Flow data types
 // ---------------------------------------------------------------------------
 
-/// The inbound webhook application submission. `resume_text` is the honest
-/// boundary: the CV text extracted upstream (see the module docs).
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+/// The inbound webhook application submission. PDF bytes remain in the
+/// workspace byte plane; only this exact artifact handle enters graph JSON.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CvApplication {
     pub full_name: String,
     pub email: String,
@@ -92,11 +82,25 @@ pub struct CvApplication {
     pub linkedin: String,
     #[serde(default)]
     pub cv_filename: String,
+    pub cv: Artifact<Exact>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ExtractedCvApplication {
+    pub application: CvApplication,
     pub resume_text: String,
+    pub page_count: u32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ScreeningDispatch {
+    pub route: String,
+    pub application: Option<ExtractedCvApplication>,
+    pub existing: Option<ScreeningRecord>,
 }
 
 /// After the LLM screening: the application plus the rating text.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RatedCandidate {
     pub application: CvApplication,
     pub ai_rating: String,
@@ -104,7 +108,7 @@ pub struct RatedCandidate {
 }
 
 /// After the sheet append.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RecordedCandidate {
     pub application: CvApplication,
     pub ai_rating: String,
@@ -112,7 +116,7 @@ pub struct RecordedCandidate {
 }
 
 /// After the candidate confirmation email.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ConfirmedCandidate {
     pub application: CvApplication,
     pub ai_rating: String,
@@ -121,7 +125,7 @@ pub struct ConfirmedCandidate {
 }
 
 /// After the HR notification email.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NotifiedScreening {
     pub application: CvApplication,
     pub ai_rating: String,
@@ -131,7 +135,7 @@ pub struct NotifiedScreening {
 }
 
 /// Terminal record of the whole fire.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ScreeningRecord {
     /// `<flow>:<trigger>:{email}`.
     pub key: String,
@@ -163,7 +167,7 @@ pub fn analyst_system() -> String {
 }
 
 /// The screening prompt — a pure function of the role and the resume text.
-pub fn screening_prompt(application: &CvApplication) -> String {
+pub fn screening_prompt(application: &ExtractedCvApplication) -> String {
     format!(
         "Role under consideration: {JOB_TITLE}\n\nCandidate resume:\n{}\n\nAssess the candidate's fit for the role.",
         application.resume_text
@@ -221,12 +225,76 @@ fn node_error(err: impl std::fmt::Display) -> NodeError {
 #[def_node(
     trigger,
     name = "ScreeningTrigger",
-    summary = "Webhook ingress; receives the typed CV application submission",
-    effects = "ReadOnly",
-    determinism = "Strict"
+    summary = "Webhook ingress; receives application fields plus a host-staged PDF artifact",
+    effects = "Effectful",
+    determinism = "BestEffort",
+    resources(workspace_write(capabilities::workspace::Workspace))
 )]
 async fn screening_trigger(application: CvApplication) -> NodeResult<CvApplication> {
     Ok(application)
+}
+
+/// Extract embedded PDF text through the fixed, capability-less checked transform.
+#[def_node(
+    name = "ExtractCvText",
+    summary = "Bounded PDF artifact dereference and sandboxed embedded-text extraction",
+    effects = "ReadOnly",
+    determinism = "BestEffort",
+    resources(workspace_read(capabilities::workspace::Workspace)),
+    implementation_dependencies(dag_core::ImplementationDependency::StdDocumentExtractPdfText)
+)]
+async fn extract_cv_text(application: CvApplication) -> NodeResult<ExtractedCvApplication> {
+    let extracted = extract_pdf_text(ExtractPdfTextInput {
+        artifact: application.cv.clone(),
+    })
+    .await?;
+    Ok(ExtractedCvApplication {
+        application,
+        resume_text: extracted.text,
+        page_count: extracted.page_count,
+    })
+}
+
+/// Check the natural terminal key only after the PDF passes checked extraction.
+#[def_node(
+    name = "CheckRedelivery",
+    summary = "Return an existing terminal record for sequential redelivery",
+    effects = "ReadOnly",
+    determinism = "BestEffort",
+    resources(kv_read(capabilities::kv::KeyValue))
+)]
+async fn check_redelivery(application: ExtractedCvApplication) -> NodeResult<ScreeningDispatch> {
+    let key = screening_key(&application.application.email);
+    let existing = context::with_current_async(move |resources| async move {
+        let kv = resources
+            .kv()
+            .ok_or_else(|| NodeError::new("check_redelivery requires KV"))?;
+        let value = kv
+            .get(&key)
+            .await
+            .map_err(|err| node_error(format!("kv get failed: {err}")))?;
+        value
+            .map(|bytes| serde_json::from_slice::<ScreeningRecord>(&bytes))
+            .transpose()
+            .map_err(|err| node_error(format!("decode screening record: {err}")))
+    })
+    .await
+    .ok_or_else(|| NodeError::new("check_redelivery missing ResourceAccess context"))??;
+
+    if let Some(mut record) = existing {
+        record.stored = false;
+        Ok(ScreeningDispatch {
+            route: "existing".to_string(),
+            application: None,
+            existing: Some(record),
+        })
+    } else {
+        Ok(ScreeningDispatch {
+            route: "new".to_string(),
+            application: Some(application),
+            existing: None,
+        })
+    }
 }
 
 /// Score the resume via `connector.llm.complete`.
@@ -236,11 +304,14 @@ async fn screening_trigger(application: CvApplication) -> NodeResult<CvApplicati
     summary = "Screen the resume against the job description via connector.llm.complete",
     connector_ops(LlmComplete)
 )]
-async fn rate_candidate(application: CvApplication) -> NodeResult<RatedCandidate> {
+async fn rate_candidate(dispatch: ScreeningDispatch) -> NodeResult<RatedCandidate> {
+    let extracted = dispatch
+        .application
+        .ok_or_else(|| NodeError::new("new screening dispatch is missing application"))?;
     let completion = LlmComplete::invoke(&LlmCompleteInput {
         provider: LlmProvider::OpenaiCompat,
         model: LLM_MODEL.to_string(),
-        prompt: screening_prompt(&application),
+        prompt: screening_prompt(&extracted),
         system: Some(analyst_system()),
         temperature: Some(0.2),
         max_tokens: Some(256),
@@ -250,7 +321,7 @@ async fn rate_candidate(application: CvApplication) -> NodeResult<RatedCandidate
     .map_err(|err| node_error(format!("connector.llm.complete failed: {err}")))?;
 
     Ok(RatedCandidate {
-        application,
+        application: extracted.application,
         ai_rating: completion.text,
         model: completion.model,
     })
@@ -396,6 +467,18 @@ async fn record_screening(notified: NotifiedScreening) -> NodeResult<ScreeningRe
     })
 }
 
+#[def_node(
+    name = "CaptureRedelivery",
+    summary = "Return the existing terminal record without replaying provider effects",
+    effects = "Pure",
+    determinism = "Strict"
+)]
+async fn capture_redelivery(dispatch: ScreeningDispatch) -> NodeResult<ScreeningRecord> {
+    dispatch
+        .existing
+        .ok_or_else(|| NodeError::new("existing screening dispatch is missing record"))
+}
+
 /// Terminal capture: the durable effects are the sheet row, the two emails, and
 /// the KV record.
 #[def_node(
@@ -415,6 +498,9 @@ dag_macros::flow! {
     summary: "Clone of n8n template #2 (AI CV Screening): a webhook application form that scores the resume via an LLM, appends the candidate to a Google Sheet, emails the candidate a receipt, and emails HR the candidate details + rating; keyed on the applicant email";
 
     let screening_trigger = node!(screening_trigger);
+    let extract_cv_text = node!(extract_cv_text);
+    let check_redelivery = node!(check_redelivery);
+    let capture_redelivery = node!(capture_redelivery);
     let rate_candidate = node!(rate_candidate);
     let record_candidate = node!(record_candidate);
     let confirm_candidate = node!(confirm_candidate);
@@ -422,12 +508,21 @@ dag_macros::flow! {
     let record_screening = node!(record_screening);
     let capture = node!(capture);
 
-    connect!(screening_trigger -> rate_candidate);
+    connect!(screening_trigger -> extract_cv_text);
+    connect!(extract_cv_text -> check_redelivery);
+    connect!(check_redelivery -> rate_candidate);
+    connect!(check_redelivery -> capture_redelivery);
+    switch!(
+        source = check_redelivery,
+        selector_pointer = "/route",
+        cases = { "new" => rate_candidate, "existing" => capture_redelivery }
+    );
     connect!(rate_candidate -> record_candidate);
     connect!(record_candidate -> confirm_candidate);
     connect!(confirm_candidate -> notify_hr);
     connect!(notify_hr -> record_screening);
     connect!(record_screening -> capture);
+    connect!(capture_redelivery -> capture);
 
     entrypoint!({
         trigger: "screening_trigger",

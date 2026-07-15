@@ -908,6 +908,8 @@ mod tests {
             determinism_hints: &[],
             effect_hints: &[],
             connector_ops: &[],
+            implementation_dependencies: &[],
+            connector_resolution_mode: None,
             effects_declared: true,
             determinism_declared: true,
             durability: DurabilityProfile::default(),

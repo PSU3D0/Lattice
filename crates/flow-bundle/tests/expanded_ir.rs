@@ -24,6 +24,7 @@ fn subflow_node(alias: &str, subflow_id: &str) -> NodeIR {
         determinism_hints: Vec::new(),
         effect_hints: Vec::new(),
         connector_ops: Vec::new(),
+        implementation_dependencies: Vec::new(),
         subflow_ir: None,
     }
 }

@@ -119,6 +119,7 @@ impl FlowBuilder {
                 .map(|hint| hint.to_string())
                 .collect(),
             connector_ops: spec.connector_op_refs(),
+            implementation_dependencies: spec.implementation_dependencies.to_vec(),
             subflow_ir: None,
         };
         self.flow.nodes.push(node_ir);

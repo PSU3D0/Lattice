@@ -230,6 +230,24 @@ pub struct ConnectorOpRefIR {
     pub supported_resolution_modes: Vec<ConnectorResolutionModeDecl>,
 }
 
+/// Closed set of fixed implementations that a typed composite may invoke.
+///
+/// This is requirements metadata, not a runtime registration alias. The
+/// composite node's own `identifier` remains its only handler lookup key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+pub enum ImplementationDependency {
+    #[serde(rename = "std.document.extract_pdf_text")]
+    StdDocumentExtractPdfText,
+}
+
+impl ImplementationDependency {
+    pub const fn identifier(self) -> &'static str {
+        match self {
+            Self::StdDocumentExtractPdfText => "std.document.extract_pdf_text",
+        }
+    }
+}
+
 /// Compile-time node specification produced by macros.
 #[derive(Debug, Clone)]
 pub struct NodeSpec {
@@ -255,6 +273,8 @@ pub struct NodeSpec {
     pub effect_hints: &'static [&'static str],
     /// Reusable connector operations this node may invoke internally.
     pub connector_ops: &'static [&'static ConnectorOpMetadata],
+    /// Fixed implementations invoked by this typed composite handler.
+    pub implementation_dependencies: &'static [ImplementationDependency],
     /// Optional node-level override for the connector resolution mode used by declared ops.
     pub connector_resolution_mode: Option<ConnectorResolutionModeDecl>,
     /// Whether effects were explicitly declared by the author.
@@ -316,6 +336,7 @@ impl NodeSpec {
             determinism_hints,
             effect_hints,
             connector_ops: &[],
+            implementation_dependencies: &[],
             connector_resolution_mode: None,
             effects_declared: true,
             determinism_declared: true,
@@ -455,6 +476,7 @@ impl NodeSpec {
             determinism_hints,
             effect_hints,
             connector_ops: self.connector_ops,
+            implementation_dependencies: self.implementation_dependencies,
             connector_resolution_mode: self.connector_resolution_mode,
             effects_declared: true,
             determinism_declared: true,
@@ -549,6 +571,13 @@ pub struct NodeIR {
     /// Structured connector operations declared for the node.
     #[serde(rename = "connectorOps", default)]
     pub connector_ops: Vec<ConnectorOpRefIR>,
+    /// Fixed implementations invoked internally by this typed composite node.
+    #[serde(
+        rename = "implementationDependencies",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub implementation_dependencies: Vec<ImplementationDependency>,
     /// Optional expanded subflow IR for analysis-only views.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subflow_ir: Option<Box<FlowIR>>,

@@ -2,7 +2,8 @@
 
 use dag_core::{
     ConnectorOpMetadata, ConnectorResolutionContract, ConnectorResolutionModeDecl,
-    ConnectorRoleKindDecl, ConnectorRoleRequirement, Determinism, Effects, NodeResult,
+    ConnectorRoleKindDecl, ConnectorRoleRequirement, Determinism, Effects,
+    ImplementationDependency, NodeResult,
 };
 use dag_macros::{def_node, node};
 
@@ -45,6 +46,34 @@ impl DemoAppendRow {
 )]
 async fn maybe_append_row(_: ()) -> NodeResult<()> {
     Ok(())
+}
+
+#[def_node(
+    name = "Composite",
+    summary = "Invoke fixed implementations without spoofing their lookup identifiers",
+    effects = "Pure",
+    determinism = "Strict",
+    implementation_dependencies(
+        ImplementationDependency::StdDocumentExtractPdfText,
+        ImplementationDependency::StdDocumentExtractPdfText
+    )
+)]
+async fn composite(_: ()) -> NodeResult<()> {
+    Ok(())
+}
+
+#[test]
+fn def_node_preserves_implementation_dependencies_without_changing_identity() {
+    let spec = node!(composite);
+    assert!(spec.identifier.ends_with("::composite"));
+    assert_ne!(spec.identifier, "std.document.extract_pdf_text");
+    assert_eq!(
+        spec.implementation_dependencies,
+        &[
+            ImplementationDependency::StdDocumentExtractPdfText,
+            ImplementationDependency::StdDocumentExtractPdfText
+        ]
+    );
 }
 
 #[test]

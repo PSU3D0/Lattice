@@ -839,6 +839,13 @@
       },
       "type": "object"
     },
+    "ImplementationDependency": {
+      "description": "Closed set of fixed implementations that a typed composite may invoke.\n\nThis is requirements metadata, not a runtime registration alias. The composite node's own `identifier` remains its only handler lookup key.",
+      "enum": [
+        "std.document.extract_pdf_text"
+      ],
+      "type": "string"
+    },
     "NodeIR": {
       "description": "Node entry within the Flow IR.",
       "properties": {
@@ -910,6 +917,13 @@
         "identifier": {
           "description": "Fully-qualified implementation identifier used for runtime lookup.",
           "type": "string"
+        },
+        "implementationDependencies": {
+          "description": "Fixed implementations invoked internally by this typed composite node.",
+          "items": {
+            "$ref": "#/definitions/ImplementationDependency"
+          },
+          "type": "array"
         },
         "in_schema": {
           "allOf": [
