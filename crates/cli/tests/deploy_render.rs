@@ -638,11 +638,11 @@ fn custom_name_overrides_derived_worker_name() {
 }
 
 // ---------------------------------------------------------------------------
-// P4a schema floor: a 0.1 manifest predates the security-relevant placement
-// surface and must be regenerated instead of defaulting native_only_nodes empty.
+// Typed-dependency schema floor: an older manifest must be regenerated rather
+// than defaulting implementation dependencies empty.
 // ---------------------------------------------------------------------------
 #[test]
-fn pre_native_only_schema_fails_workers_render_closed() {
+fn pre_implementation_dependency_schema_fails_workers_render_closed() {
     let mut requirements =
         dag_core::FlowRequirements::derive(&example_s1_echo::flow()).expect("derive requirements");
     requirements.schema_version = "0.1".to_string();
@@ -664,7 +664,7 @@ fn pre_native_only_schema_fails_workers_render_closed() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("predates the native-only placement surface"),
+        stderr.contains("predates the typed implementation-dependency placement surface"),
         "{stderr}"
     );
     assert!(stderr.contains("regenerate requirements"), "{stderr}");
@@ -689,7 +689,7 @@ fn benign_workspace_read_only_flow_still_renders() {
     reader.effect_hints = vec![dag_core::EffectHint::WorkspaceRead.as_str().to_string()];
 
     let requirements = dag_core::FlowRequirements::derive(&flow).expect("derive requirements");
-    assert!(requirements.native_only_nodes.is_empty());
+    assert!(requirements.implementation_dependencies.is_empty());
     let temp = tempfile::tempdir().expect("tempdir");
     let requirements_path = temp.path().join("workspace-read.requirements.json");
     fs::write(
@@ -708,22 +708,25 @@ fn benign_workspace_read_only_flow_still_renders() {
 }
 
 // ---------------------------------------------------------------------------
-// S21/P4a: the future native-full graph adds the fixed PDF extractor between
-// ingress and rating. P4a does not retrofit that graph yet, so this acceptance
-// mutates only an in-memory copy of the current S21 IR and proves the renderer
-// rejects the statically-derived placement requirement before writing config.
+// S21: its application-local extraction node declares a typed sandboxed
+// transform contract. Until W4 explicitly configures that Workers backend,
+// rendering must fail closed from metadata rather than handler identity.
 // ---------------------------------------------------------------------------
 #[test]
-fn s21_pdf_extraction_fails_workers_render_with_named_worker_prerequisite() {
+fn s21_pdf_extraction_fails_workers_render_from_typed_dependency() {
     let flow = example_s21_ai_cv_screening::validated_ir().flow().clone();
     let requirements = dag_core::FlowRequirements::derive(&flow).expect("derive S21 requirements");
-    assert_eq!(requirements.native_only_nodes.len(), 1);
+    assert_eq!(requirements.implementation_dependencies.len(), 1);
     assert_eq!(
-        requirements.native_only_nodes[0].identifier,
-        "std.document.extract_pdf_text"
+        requirements.implementation_dependencies[0].kind,
+        dag_core::ImplementationDependencyKind::SandboxedTransform
     );
     assert_eq!(
-        requirements.native_only_nodes[0].nodes,
+        requirements.implementation_dependencies[0].key,
+        example_s21_ai_cv_screening::pdf_extraction::PDF_EXTRACT_TRANSFORM_ID
+    );
+    assert_eq!(
+        requirements.implementation_dependencies[0].nodes,
         vec!["extract_cv_text".to_string()]
     );
     let temp = tempfile::tempdir().expect("tempdir");
@@ -747,10 +750,11 @@ fn s21_pdf_extraction_fails_workers_render_with_named_worker_prerequisite() {
     );
     assert!(!out_dir.join("wrangler.toml").exists());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("std.document.extract_pdf_text"), "{stderr}");
+    assert!(stderr.contains("lattice.pdf.extract_text.v1"), "{stderr}");
     assert!(stderr.contains("extract_cv_text"), "{stderr}");
-    assert!(stderr.contains("LATTICE_EXTRACT_PDF"), "{stderr}");
-    assert!(stderr.contains("extraction Worker"), "{stderr}");
+    assert!(stderr.contains("no configured Workers backend"), "{stderr}");
+    assert!(!stderr.contains("LATTICE_EXTRACT_PDF"), "{stderr}");
+    assert!(!stderr.contains("S21 PDF"), "{stderr}");
 }
 
 // ---------------------------------------------------------------------------

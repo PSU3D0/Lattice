@@ -230,22 +230,73 @@ pub struct ConnectorOpRefIR {
     pub supported_resolution_modes: Vec<ConnectorResolutionModeDecl>,
 }
 
-/// Closed set of fixed implementations that a typed composite may invoke.
+/// Generic class of fixed implementation invoked by a composite node.
 ///
-/// This is requirements metadata, not a runtime registration alias. The
-/// composite node's own `identifier` remains its only handler lookup key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-pub enum ImplementationDependency {
-    #[serde(rename = "std.document.extract_pdf_text")]
-    StdDocumentExtractPdfText,
+/// Dag-core deliberately knows only the execution class, never product- or
+/// sample-specific implementations. The stable key is owned by the declaring
+/// node's crate and is requirements metadata, not a handler lookup alias.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ImplementationDependencyKind {
+    SandboxedTransform,
 }
 
-impl ImplementationDependency {
-    pub const fn identifier(self) -> &'static str {
-        match self {
-            Self::StdDocumentExtractPdfText => "std.document.extract_pdf_text",
+/// Compile-time implementation dependency metadata used by [`NodeSpec`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ImplementationDependencySpec {
+    pub kind: ImplementationDependencyKind,
+    pub key: &'static str,
+}
+
+impl ImplementationDependencySpec {
+    pub const fn sandboxed_transform(key: &'static str) -> Self {
+        let bytes = key.as_bytes();
+        assert!(
+            !bytes.is_empty() && bytes.len() <= 128,
+            "implementation dependency key length is invalid"
+        );
+        let first = bytes[0];
+        assert!(
+            (first >= b'a' && first <= b'z')
+                || (first >= b'A' && first <= b'Z')
+                || (first >= b'0' && first <= b'9'),
+            "implementation dependency key must start with an ASCII alphanumeric"
+        );
+        let mut index = 0;
+        while index < bytes.len() {
+            let byte = bytes[index];
+            assert!(
+                (byte >= b'a' && byte <= b'z')
+                    || (byte >= b'A' && byte <= b'Z')
+                    || (byte >= b'0' && byte <= b'9')
+                    || byte == b'.'
+                    || byte == b'_'
+                    || byte == b'-',
+                "implementation dependency key contains an invalid byte"
+            );
+            index += 1;
+        }
+        Self {
+            kind: ImplementationDependencyKind::SandboxedTransform,
+            key,
         }
     }
+
+    pub fn into_ir(self) -> ImplementationDependency {
+        ImplementationDependency {
+            kind: self.kind,
+            key: self.key.to_string(),
+        }
+    }
+}
+
+/// Serializable implementation dependency emitted into Flow IR.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+pub struct ImplementationDependency {
+    pub kind: ImplementationDependencyKind,
+    pub key: String,
 }
 
 /// Compile-time node specification produced by macros.
@@ -274,7 +325,7 @@ pub struct NodeSpec {
     /// Reusable connector operations this node may invoke internally.
     pub connector_ops: &'static [&'static ConnectorOpMetadata],
     /// Fixed implementations invoked by this typed composite handler.
-    pub implementation_dependencies: &'static [ImplementationDependency],
+    pub implementation_dependencies: &'static [ImplementationDependencySpec],
     /// Optional node-level override for the connector resolution mode used by declared ops.
     pub connector_resolution_mode: Option<ConnectorResolutionModeDecl>,
     /// Whether effects were explicitly declared by the author.

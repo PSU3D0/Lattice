@@ -119,7 +119,12 @@ impl FlowBuilder {
                 .map(|hint| hint.to_string())
                 .collect(),
             connector_ops: spec.connector_op_refs(),
-            implementation_dependencies: spec.implementation_dependencies.to_vec(),
+            implementation_dependencies: spec
+                .implementation_dependencies
+                .iter()
+                .copied()
+                .map(crate::ImplementationDependencySpec::into_ir)
+                .collect(),
             subflow_ir: None,
         };
         self.flow.nodes.push(node_ir);

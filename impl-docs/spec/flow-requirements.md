@@ -1,9 +1,9 @@
 Status: Draft
 Purpose: spec
 Owner: Core
-Last reviewed: 2026-07-15
+Last reviewed: 2026-07-16
 
-# Flow Requirements Manifest (0.2)
+# Flow Requirements Manifest (0.3)
 
 This document specifies `FlowRequirements`: a static, machine-readable
 manifest that answers "what does this flow need to run?" entirely from the
@@ -58,7 +58,7 @@ reading the environment, or consulting a deployment. `derive_requirements`
 is a pure function; the C2 regression test (preflight performs zero
 `ConnectorRuntime` calls) extends the same guarantee to preflight.
 
-## Manifest shape (schema_version 0.2)
+## Manifest shape (schema_version 0.3)
 
 Top-level type: `dag_core::requirements::FlowRequirements`
 (serde + schemars; JSON schema generated at
@@ -73,7 +73,7 @@ is identical minus the two bundle-assembly enrichments, `deadline_ms` and
 
 ```json
 {
-  "schema_version": "0.2",
+  "schema_version": "0.3",
   "flow": {
     "id": "bac0586b-907c-5d76-8f31-029beefc2977",
     "name": "s12_sheetport_quote_flow",
@@ -134,13 +134,13 @@ is identical minus the two bundle-assembly enrichments, `deadline_ms` and
 
 | Field | Derived from | Rule |
 | --- | --- | --- |
-| `schema_version` | constant | `FLOW_REQUIREMENTS_SCHEMA_VERSION` (`"0.2"`). |
+| `schema_version` | constant | `FLOW_REQUIREMENTS_SCHEMA_VERSION` (`"0.3"`). |
 | `flow.{id,name,version}` | `FlowIR` | Copied verbatim; `id` is the UUIDv5 of `name:version`. |
 | `profile` | `FlowIR.profile` | Copied verbatim. |
 | `effects.union` | `NodeIR.effect_hints` | Union of all hints that parse as `dag_core::EffectHint`, sorted by canonical string. `policy::*` markers (e.g. the TYPE001 `policy::json_boundary` annotation) are lint metadata, not capability requirements, and are skipped. Any other unparseable hint fails derivation closed (same condition kernel-plan rejects as EFFECT202). Connector-op effect hints are already included because macro expansion hoists `ConnectorOpMetadata.effect_hints` into `NodeIR.effect_hints`. |
 | `effects.families` | `effects.union` | `EffectHint::family()` of each union member, deduplicated, sorted. A planner provisioning capability providers works at this granularity. |
 | `effects.per_node` | `NodeIR.effect_hints` | Node alias → sorted hints; only nodes declaring at least one capability hint appear. |
-| `native_only_nodes` | `NodeIR.identifier` | Known native-only stdlib identifiers are grouped by identifier with sorted node aliases in `nodes`. The initial identifier is `std.document.extract_pdf_text`; derivation does not inspect connector operations, effect hints, summaries, or source text. Empty lists are omitted. |
+| `implementation_dependencies` | `NodeIR.implementation_dependencies` | Generic typed implementation contracts are grouped by `(kind, key)` with sorted node aliases in `nodes`. Keys are non-empty, at most 128 ASCII bytes, start alphanumeric, and contain only alphanumeric, `.`, `_`, or `-`; invalid metadata fails derivation closed. Dag-core never infers dependencies from handler identifiers, summaries, source text, or effect hints, and contains no product-specific keys. Empty lists are omitted. |
 | `connectors` | `NodeIR.connector_ops` | Grouped by `connector_id`, then `operation_id`. Per operation: declared `roles` (`ConnectorOpMetadata.roles` as serialized in `ConnectorOpRefIR`), `supported_resolution_modes` and `default_resolution_mode` verbatim, `selected_resolution_modes` = sorted set of the modes nodes actually selected, `requires_bound_connection` = any selection is `bound_connection`, `nodes` = sorted aliases declaring the op. |
 | `durability` | `FlowIR.policies.durability` + `NodeIR.durability` + node identifiers | Mirrors host-inproc `collect_missing_durability_services` exactly: `needs_checkpoint_store` ⇔ mode ≠ `off`; `needs_resume_scheduler` ⇔ halting nodes present AND a `std.timer.wait` node exists; `needs_resume_signal_source` ⇔ halting nodes present AND a `std.callback.wait`/`std.hitl.approval` node exists; `needs_checkpoint_blob_store` ⇔ mode ≠ `off` AND `blob_threshold_bytes` configured. |
 | `triggers` | `NodeIR.kind == Trigger` + `FlowMetadata.entrypoints` | One entry per trigger node. `kind` is `schedule` when the alias is wired to an entrypoint carrying `schedule`, `http` when wired to one without, else `unspecified` (extend the enum when polling/webhook trigger runtimes land). TRIG003 validation guarantees the schedule/http cases are disjoint. `crons` lists the schedule expressions of the entrypoints wired to that alias (skip-when-empty; the wrangler renderer's `[triggers].crons` union reads this). |
@@ -198,11 +198,13 @@ time.
 ## Versioning policy
 
 - `schema_version` versions the manifest *shape*. `0.1` was the initial shape;
-  `0.2` adds the security-relevant `native_only_nodes` placement surface.
-  Additive optional fields normally do not bump it, but this field is versioned
-  explicitly so mapped fixtures and deployment tooling move together. Renames,
-  removals, or semantic changes to existing fields also require a bump.
-  Consumers MUST reject unknown major shapes. Workers deployment rendering additionally rejects manifests older than `0.2`, because defaulting an absent `native_only_nodes` field would bypass the static placement gate; regenerate those manifests with the current toolchain.
+  `0.2` briefly added an identifier-derived native-only surface; `0.3` replaces
+  it with generic typed `implementation_dependencies` derived exclusively from
+  node metadata. Dag-core owns only generic dependency kinds; declaring crates
+  own stable keys and target renderers decide support. Workers deployment
+  rendering rejects manifests older than `0.3`, because defaulting an absent
+  dependency list would bypass the static placement gate. Regenerate older
+  manifests with the current toolchain.
 - New trigger `kind` values are *tolerated additive values* under `0.x`
   (policy decided at `0.1` in `impl-docs/spec/schedule-trigger.md` §6, first exercised by
   `"schedule"`): a consumer encountering an unknown trigger `kind` MUST treat
@@ -246,9 +248,10 @@ per flow entry:
   (KV namespace, R2 bucket, D1 database, outbound fetch).
 - `connectors[].operations[].roles` + `requires_bound_connection` → which
   secrets/connection instances the deploy must bind before activation.
-- `native_only_nodes` → fail Workers placement closed with node attribution;
-  `std.document.extract_pdf_text` requires the named `LATTICE_EXTRACT_PDF`
-  extraction Worker service binding before Workers rendering can proceed.
+- `implementation_dependencies` → apply target-specific support policy with
+  node attribution. Unknown or unconfigured contracts fail placement closed;
+  S21's crate-owned PDF transform key requires the named `LATTICE_EXTRACT_PDF`
+  service binding before Workers rendering can proceed.
 - `durability` → whether a checkpoint store (e.g. KV/D1/DO-backed) and
   resume scheduler (e.g. Workers alarms) must exist.
 - `entrypoints` → routes/methods to wire (worker routes), `deadline_ms` →

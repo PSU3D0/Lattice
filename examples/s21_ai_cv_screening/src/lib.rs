@@ -19,13 +19,13 @@
 //! 6. A terminal **KV upsert** records the delivery keyed
 //!    `<flow>:<trigger>:{email}` — the application's natural idempotency key.
 //!
-//! ## Native PDF boundary
+//! ## Checked PDF boundary
 //!
 //! The public request boundary carries application text fields plus `cv: Artifact<Exact>`.
-//! The `extract_cv_text` composite declares and invokes the fixed
-//! `std.document.extract_pdf_text` implementation. That implementation bounded-reads and
-//! hash-compares the staged PDF before invoking the host-allowlisted, capability-less wasm
-//! transform. PDF bytes never enter invocation JSON, node output, checkpoints, or logs.
+//! S21's inline `extract_cv_text` node bounded-reads and hash-compares the staged PDF before
+//! invoking the host-provided, capability-less sandboxed transform. PDF bytes never enter
+//! invocation JSON, node output, checkpoints, or logs. The node remains application-local;
+//! only the byte plane and transform runtimes are reusable infrastructure.
 //!
 //! ## Idempotency posture
 //!
@@ -47,7 +47,13 @@ use dag_core::{NodeError, NodeResult};
 use dag_macros::{def_node, node};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use stdlib::document::{ExtractPdfTextInput, extract_pdf_text};
+
+pub mod pdf_extraction;
+#[cfg(feature = "host-bundle")]
+pub use pdf_extraction::extract_cv_text_register;
+pub use pdf_extraction::{
+    extract_cv_text, extract_cv_text_Input, extract_cv_text_Output, extract_cv_text_node_spec,
+};
 
 pub const FLOW_NAME: &str = "s21_ai_cv_screening_flow";
 pub const TRIGGER_ALIAS: &str = "screening_trigger";
@@ -232,27 +238,6 @@ fn node_error(err: impl std::fmt::Display) -> NodeError {
 )]
 async fn screening_trigger(application: CvApplication) -> NodeResult<CvApplication> {
     Ok(application)
-}
-
-/// Extract embedded PDF text through the fixed, capability-less checked transform.
-#[def_node(
-    name = "ExtractCvText",
-    summary = "Bounded PDF artifact dereference and sandboxed embedded-text extraction",
-    effects = "ReadOnly",
-    determinism = "BestEffort",
-    resources(workspace_read(capabilities::workspace::Workspace)),
-    implementation_dependencies(dag_core::ImplementationDependency::StdDocumentExtractPdfText)
-)]
-async fn extract_cv_text(application: CvApplication) -> NodeResult<ExtractedCvApplication> {
-    let extracted = extract_pdf_text(ExtractPdfTextInput {
-        artifact: application.cv.clone(),
-    })
-    .await?;
-    Ok(ExtractedCvApplication {
-        application,
-        resume_text: extracted.text,
-        page_count: extracted.page_count,
-    })
 }
 
 /// Check the natural terminal key only after the PDF passes checked extraction.

@@ -3,4 +3,5 @@ dist/
 .wrangler/
 build/
 target/
+extraction-worker/
 *.log

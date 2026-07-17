@@ -192,7 +192,7 @@ Derivation rule update (flow-requirements.md table): trigger `kind` is
 `http` when wired to one without, `unspecified` otherwise. TRIG003
 guarantees the cases are disjoint.
 
-**At T1, `schema_version` stayed `0.1` (P4a later bumps the manifest to `0.2`).** Policy reads "additive optional fields do
+**At T1, `schema_version` stayed `0.1` (typed implementation dependencies later move the manifest to `0.3`).** Policy reads "additive optional fields do
 not bump it"; the one judgment call is the new `TriggerKind` value, which
 this packet resolves as a *tolerated additive value*: flow-requirements.md
 must document that consumers encountering an unknown trigger `kind` treat

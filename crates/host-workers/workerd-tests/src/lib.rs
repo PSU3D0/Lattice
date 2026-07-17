@@ -17,6 +17,7 @@
 //! - POST /workspace-stdlib-read - stdlib read via host-workers runtime path
 //! - POST /workspace-stdlib-list - stdlib list via host-workers runtime path
 //! - POST /workspace-stdlib-delete - stdlib delete via host-workers runtime path
+//! - POST /pdf-extract - multipart -> R2 -> bounded service-bound PDF extraction
 //! - POST /github/issues - s13 GitHub issue investigator halt/resume proof
 
 #[cfg(target_arch = "wasm32")]
@@ -43,6 +44,7 @@ use capabilities::workspace::{
 };
 use dag_core::{DurabilityMode, NodeError, NodeResult};
 use dag_macros::{def_node, node};
+use example_s21_ai_cv_screening::CvApplication;
 use futures::Stream;
 use host_inproc::{FlowBundle, FlowEntrypoint, NodeContract, NodeSource};
 #[cfg(target_arch = "wasm32")]
@@ -125,6 +127,12 @@ async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     if req.path() == "/__test/workspace/delete-object" {
         return handle_test_workspace_delete_object(req, &env).await;
     }
+    if req.path() == "/__test/workspace/bounded-read" {
+        return handle_test_workspace_bounded_read(&env).await;
+    }
+    if req.path() == "/__test/transform/policy-drift" {
+        return handle_test_transform_policy_drift(&env);
+    }
     if req.path() == "/leads" {
         return handle_s11_lead_intake(req, &env).await;
     }
@@ -157,10 +165,15 @@ fn durability_capability(env: &Env) -> Result<Arc<WorkersDurableObject>> {
 #[cfg(target_arch = "wasm32")]
 fn configure_resources(env: &Env) -> Result<()> {
     let durability = durability_capability(env)?;
+    let transform = Arc::new(host_workers::WorkersTransformRuntime::from_env(
+        env,
+        host_workers::WorkersTransformPolicy::default(),
+    )?);
     let resources = ResourceBag::new()
         .with_checkpoint_store(Arc::clone(&durability))
         .with_resume_scheduler(Arc::clone(&durability))
         .with_resume_signal_source(Arc::clone(&durability))
+        .with_transform_runtime(transform)
         .with_max_durability_mode(DurabilityMode::Partial);
     host_workers::set_resource_bag(resources);
     Ok(())
@@ -319,6 +332,10 @@ fn workspace_config_for_path(path: &str) -> WorkersWorkspaceConfig {
             config.max_path_depth = Some(6);
             config.max_path_length = Some(96);
         }
+        "/pdf-extract" => {
+            config.policy.max_total_bytes = Some(10 * 1024 * 1024);
+            config.policy.max_single_file_bytes = Some(8 * 1024 * 1024);
+        }
         _ => {}
     }
 
@@ -395,7 +412,7 @@ async fn handle_test_workspace_objects(req: Request, env: &Env) -> Result<Respon
         .unwrap_or_else(|| "workspace/".to_string());
 
     let bucket = env.bucket("WORKSPACE_BUCKET")?;
-    let mut keys = Vec::new();
+    let mut entries = Vec::new();
     let mut cursor: Option<String> = None;
     loop {
         let mut list = bucket.list().prefix(prefix.clone());
@@ -403,7 +420,12 @@ async fn handle_test_workspace_objects(req: Request, env: &Env) -> Result<Respon
             list = list.cursor(existing.to_string());
         }
         let listed = list.execute().await?;
-        keys.extend(listed.objects().into_iter().map(|object| object.key()));
+        entries.extend(
+            listed
+                .objects()
+                .into_iter()
+                .map(|object| json!({ "key": object.key(), "size": object.size() })),
+        );
         if !listed.truncated() {
             break;
         }
@@ -415,8 +437,12 @@ async fn handle_test_workspace_objects(req: Request, env: &Env) -> Result<Respon
 
     Response::from_json(&json!({
         "prefix": prefix,
-        "count": keys.len(),
-        "keys": keys,
+        "count": entries.len(),
+        "keys": entries
+            .iter()
+            .filter_map(|entry| entry.get("key"))
+            .collect::<Vec<_>>(),
+        "entries": entries,
     }))
 }
 
@@ -540,6 +566,45 @@ async fn handle_test_workspace_delete_object(mut req: Request, env: &Env) -> Res
     let bucket = env.bucket("WORKSPACE_BUCKET")?;
     bucket.delete(payload.object_key).await?;
     Response::from_json(&json!({ "ok": true }))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn handle_test_transform_policy_drift(env: &Env) -> Result<Response> {
+    let mut policy = host_workers::WorkersTransformPolicy::default();
+    policy.cpu_ms_limit -= 1;
+    let rejected = host_workers::WorkersTransformRuntime::from_env(env, policy).is_err();
+    Response::from_json(&json!({ "rejected": rejected }))
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn handle_test_workspace_bounded_read(env: &Env) -> Result<Response> {
+    let factory =
+        WorkersWorkspaceFactory::new(env.clone(), workspace_config_for_path("/pdf-extract"));
+    let scope = WorkspaceRunScope::new(
+        "bounded_read_probe".to_string(),
+        format!("bounded-read-{}", js_sys::Date::now() as u64),
+    );
+    let workspace = factory
+        .open(scope.clone())
+        .await
+        .map_err(|err| worker::Error::RustError(err.to_string()))?;
+    workspace
+        .write(
+            "probe.bin",
+            &[0x5a; 128],
+            capabilities::workspace::WorkspaceWriteOptions::default(),
+        )
+        .await
+        .map_err(|err| worker::Error::RustError(err.to_string()))?;
+    let error = workspace
+        .read_bounded_normalized("probe.bin", 64)
+        .await
+        .expect_err("128-byte R2 object must exceed a 64-byte bounded read");
+    factory
+        .complete(scope, WorkspaceCompletionDisposition::Succeeded)
+        .await
+        .map_err(|err| worker::Error::RustError(err.to_string()))?;
+    Response::from_json(&json!({ "code": error.code(), "message": error.to_string() }))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1965,6 +2030,38 @@ async fn workspace_stdlib_delete_trigger(payload: JsonValue) -> NodeResult<Works
     }
 }
 
+#[def_node(
+    trigger,
+    name = "PdfIngressTrigger",
+    summary = "Accept one host-staged PDF artifact for service-bound extraction",
+    effects = "Effectful",
+    determinism = "BestEffort",
+    resources(workspace_write(capabilities::workspace::Workspace))
+)]
+async fn pdf_ingress_trigger(payload: JsonValue) -> NodeResult<CvApplication> {
+    #[derive(Deserialize)]
+    struct PdfIngressPayload {
+        artifact: capabilities::artifact::Artifact<capabilities::artifact::Exact>,
+        #[serde(default = "default_proof_name")]
+        full_name: String,
+    }
+
+    fn default_proof_name() -> String {
+        "Workers proof candidate".to_string()
+    }
+
+    let input: PdfIngressPayload = serde_json::from_value(payload)
+        .map_err(|_| NodeError::new("invalid PDF ingress artifact payload"))?;
+    Ok(CvApplication {
+        full_name: input.full_name,
+        email: "workers-proof@lattice.invalid".to_string(),
+        expectation: String::new(),
+        linkedin: String::new(),
+        cv_filename: "redacted.pdf".to_string(),
+        cv: input.artifact,
+    })
+}
+
 dag_macros::flow! {
     name: host_workers_test_flow,
     version: "0.1.0",
@@ -2040,6 +2137,11 @@ dag_macros::flow! {
     let workspace_stdlib_delete = node!(workspace_stdlib_delete_trigger);
     let workspace_stdlib_delete_stage = stdlib::workspace::workspace_delete_node_spec();
     connect!(workspace_stdlib_delete -> workspace_stdlib_delete_stage);
+
+    let pdf_extract = node!(pdf_ingress_trigger);
+    let pdf_extract_stage =
+        example_s21_ai_cv_screening::pdf_extraction::extract_cv_text_node_spec();
+    connect!(pdf_extract -> pdf_extract_stage);
 
     entrypoint!({
         trigger: "health",
@@ -2167,6 +2269,14 @@ dag_macros::flow! {
         route_aliases: ["/workspace-stdlib-delete"],
         method: "POST",
         deadline_ms: 5000,
+    });
+
+    entrypoint!({
+        trigger: "pdf_extract",
+        capture: "pdf_extract_stage",
+        route_aliases: ["/pdf-extract"],
+        method: "POST",
+        deadline_ms: 30000,
     });
 }
 
@@ -2327,6 +2437,15 @@ fn bundle_with_policies() -> FlowBundle {
             route_aliases: vec!["/workspace-stdlib-delete".to_string()],
             schedule: None,
         },
+        FlowEntrypoint {
+            trigger_alias: "pdf_extract".to_string(),
+            capture_alias: "pdf_extract_stage".to_string(),
+            route_path: Some("/pdf-extract".to_string()),
+            method: Some("POST".to_string()),
+            deadline: Some(Duration::from_millis(30000)),
+            route_aliases: vec!["/pdf-extract".to_string()],
+            schedule: None,
+        },
     ];
     let node_contracts = vec![
         node!(health_trigger),
@@ -2363,6 +2482,8 @@ fn bundle_with_policies() -> FlowBundle {
         stdlib::workspace::workspace_list_node_spec(),
         node!(workspace_stdlib_delete_trigger),
         stdlib::workspace::workspace_delete_node_spec(),
+        node!(pdf_ingress_trigger),
+        example_s21_ai_cv_screening::pdf_extraction::extract_cv_text_node_spec(),
     ]
     .into_iter()
     .map(|spec| NodeContract {
@@ -2419,7 +2540,10 @@ fn register_nodes(registry: &mut NodeRegistry) {
         .expect("register workspace_stdlib_list_trigger");
     workspace_stdlib_delete_trigger_register(registry)
         .expect("register workspace_stdlib_delete_trigger");
+    pdf_ingress_trigger_register(registry).expect("register pdf_ingress_trigger");
     stdlib::workspace::register_all(registry).expect("register stdlib workspace nodes");
+    example_s21_ai_cv_screening::pdf_extraction::extract_cv_text_register(registry)
+        .expect("register S21 inline PDF extraction node");
 }
 
 #[unsafe(no_mangle)]

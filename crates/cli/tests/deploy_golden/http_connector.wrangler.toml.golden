@@ -1,7 +1,7 @@
 # wrangler.toml — rendered by `flows deploy render` (infra-from-code v0).
 #
 # flow: http_longtail_demo_flow v1.0.0 (id 00000000-0000-5000-8000-0000000000f0)
-# requirements schema: 0.2
+# requirements schema: 0.3
 #
 # Review every REPLACE_WITH_* placeholder before `wrangler deploy`; each carries
 # a comment with the exact `wrangler` command that creates the resource.

@@ -7,6 +7,17 @@ Last reviewed: 2025-12-12
 
 > Detailed record of repository setup and implementation progress. Use this to orient new contributors and agents; each entry references the relevant design documents for context.
 
+## 2026-07-16 — W3 Workers flow integration
+
+- Added bounded Workers R2 reads using only a `max_bytes + 1` prefix range; oversize objects fail with `CAP-WS-008` and never fall back to a whole-object read.
+- Added the flow-Worker `WorkersTransformRuntime` over the exact `LATTICE_EXTRACT_PDF` service binding. Success and admitted failure responses require the pinned transform ID, ABI, build-time module attestation, canonical status/content type, bounded bodies, and a closed error-class mapping. Transport/isolate loss remains the generic `platform_terminated` class.
+- Kept the Platform record distinct from native deterministic metering: the pinned Workers compatibility date, provisional CPU policy, isolate/guest memory ceilings, bounded I/O, single-flight admission, and fresh-instance contract are platform policy, not Wasmtime fuel, epoch interruption, `StoreLimits`, or production CPU observation.
+- Added streaming multipart admission with fail-closed isolate-safe limits, fixed MIME/magic checks, static sanitized errors, no waiter queue, run-scoped R2 artifact staging, and graph payloads containing only `Artifact<Exact>` handles. Multipart executions remain alive through terminal cleanup after client abort; a separate transform lease is acquired before bounded R2 materialization.
+- Extended the checked extraction Worker protocol so admitted failures carry the same build-time identity attestation as successes. This remains build-time attestation, not a runtime hash measurement.
+- Kept the extraction graph handler inline and owned by S21. Dag-core carries only generic `(kind, key)` implementation dependency metadata, never PDF/sample identities or identifier-derived placement rules; the reusable pieces are the artifact byte plane and host transform runtimes. The S21-owned regression matrix covers CAP110 ordering, forged/foreign/store/scope authority, bounded materialization, native openat2 symlink rejection, transform classes, backend-record separation, and sanitized envelopes.
+- Removed S21-specific handling from the reusable Axum host: classified node failures now expose only a strictly shaped stable code plus a closed public class. Workers spill/setup failures likewise collapse to stable public classes rather than interpolating provider diagnostics.
+- Added a two-Worker Miniflare/workerd proof covering observable ingress staging and cleanup, abort cleanup, bounded R2 reads, valid/hostile PDFs, protocol drift, generic platform termination, file/text/stream-wide multipart ceilings, malformed configuration, and parser/transform no-queue behavior. These are local mock results only; production transform bootstrap, renderer acceptance, and deployed Cloudflare calibration remain W4.
+
 ## 2026-04-16 — Meeting transcript provider groundwork (pre-s14)
 
 - Added narrow reusable Google provider groundwork in `crates/connectors/google/platform/` for Calendar event DTOs/query builders and Drive/Docs file lookup/export DTOs/path helpers.
@@ -668,19 +679,16 @@ Acceptance gates:
   - `CARGO_TARGET_DIR=.target cargo check -p example-s14-meeting-transcript-sync --target wasm32-unknown-unknown --no-default-features`
 - Compatibility/contract notes: no process-global installed runtime remains as the production seam for s14; the real scheduled helper is example-owned and thin, while live provider wiring stays an explicit deployment-layer follow-up.
 
-## 2026-07-15 — P4a native-only stdlib placement gate (S21 native closure)
+## 2026-07-15 — P4a typed implementation placement gate (superseded shape)
 
-- Added `FlowRequirements.native_only_nodes`, derived only from `NodeIR.identifier` and carrying the sorted aliases that use each native-only implementation; the initial marker is `std.document.extract_pdf_text`.
-- Bumped the requirements manifest to `schema_version = 0.2`, regenerated `schemas/flow_requirements.schema.json`, and updated kernel-plan and CLI requirements fixtures together.
-- Made Workers rendering reject attributed native-only nodes with the named `LATTICE_EXTRACT_PDF` extraction Worker prerequisite while preserving the existing S27 native HTTP byte-operation rejection.
-- Added a must-fail-first S21 render acceptance using an in-memory future extractor node plus a benign `std.workspace.read` render control; the checked-in S21 graph remains unchanged for P4b.
-- Enabled stdlib `document` in the default feature set only after the static placement gate became available.
-- Acceptance gates: focused dag-core requirements, kernel-plan requirements goldens, CLI requirements/render suites, stdlib document/default tests, wasm32 checks, render-proof Miniflare controls, package formatting, hint-literal, and diff checks.
-- Compatibility/contract notes: this packet changes only static requirements and deployment admission; it does not add a Workers extraction backend, alter S21's graph, or change checkpoint schemas.
+- Introduced static placement metadata and fail-closed Workers rendering before portable PDF extraction was available.
+- The original identifier-derived/native-only shape was replaced before W3 landed: requirements schema `0.3` now derives generic `implementation_dependencies` exclusively from typed node metadata. Dag-core contains no PDF/sample key and never infers placement from handler identifiers.
+- Workers rendering still rejects unconfigured implementation contracts with node attribution and the named `LATTICE_EXTRACT_PDF` prerequisite while preserving the separate S27 HTTP byte-operation rejection.
+- Compatibility/contract notes: older requirements manifests must be regenerated; checkpoint schemas are unchanged.
 
-## 2026-07-15 — P4b S21 native-full PDF listener and observations
+## 2026-07-15 — P4b S21 checked PDF listener and native observations
 
-- Replaced S21's public `resume_text` boundary with `cv: Artifact<Exact>`, explicitly enabled `stdlib/document`, and added the honestly identified typed `extract_cv_text` composite before the LLM -> Sheets -> Gmail x2 -> KV chain. The composite invokes the unchanged fixed `std.document.extract_pdf_text` implementation and declares that closed typed implementation dependency; it does not reuse the canonical handler identity with incompatible schemas.
+- Replaced S21's public `resume_text` boundary with `cv: Artifact<Exact>` and added S21's application-local `extract_cv_text` node before the LLM -> Sheets -> Gmail x2 -> KV chain. The node owns artifact verification and output shaping inline while declaring a generic sandboxed-transform dependency; no PDF node or key lives in stdlib or dag-core.
 - Added sequential redelivery admission on the existing natural key so a second terminal response reports `stored: false` without repeating LLM, Sheets, Gmail, or KV effects.
 - Registered one fallibly-created `PdfTransformRuntime` only at the native CLI serve construction point. Transform registration follows the direct or typed-composite requirement, while S21's bounded `cv`/`cv_filename` multipart field mapping remains an explicit CLI transport configuration rather than being inferred for every PDF handler.
 - Added process-local no-queue multipart admission `N=4` before declared-length inspection or body polling and release immediately after attachment staging. With independently enforced transform admission `M=2`, the stated logical admission reservation is `4 * 10 MiB + 2 * 8 MiB = 56 MiB`; this is not measured RSS and explicitly excludes multipart/parser buffering details, allocator overhead, Wasmtime memory, module state, and runtime bookkeeping.
@@ -700,7 +708,7 @@ Acceptance gates:
 - Replaced the flat Wasmtime-shaped neutral execution record with a closed `Metered`/`Platform` record enum. Metered records retain native fuel, epoch, wall-time, store-limit, and optional fuel/peak-memory observations; platform records expose only CPU, isolate/guest memory, bounded I/O, per-isolate single-flight, fresh-instance, compatibility-date, and adapter-observed duration/I/O fields.
 - Distinguished runtime-verified native module hashes from build-time-attested Workers module hashes and made backend-incompatible termination classes unrepresentable through checked constructors. Added the generic sanitized `platform_terminated` class without guessing CPU-versus-memory attribution.
 - Made successful outcomes and failures validate against their terminal records, kept backend-specific record fields private, and preserved the native processing-context policy and mapping one-for-one.
-- Acceptance gates: capabilities, processing-context, stdlib document, host-web, S21 real TCP, CLI metrics sanitization, wasm32 checks, package formatting, hint-literal, and diff checks.
+- Acceptance gates: capabilities, processing-context, S21 inline extraction, host-web, S21 real TCP, CLI metrics sanitization, wasm32 checks, package formatting, hint-literal, and diff checks.
 - Compatibility/contract notes: the neutral record remains transient and non-serializable; this packet adds no Workers runtime, service protocol, deployment config, checkpoint schema, durable receipt, or production containment claim.
 
 ## 2026-07-15 — W2 dedicated Workers PDF extraction isolate

@@ -740,24 +740,24 @@ async fn serve_s21_real_tcp_pdf_golden_redelivery_and_metrics() {
     assert_document_error(
         malformed,
         &[
-            ("STD-DOC-002", "unsupported_document"),
-            ("STD-DOC-002", "guest_failed"),
+            ("S21-PDF-002", "unsupported_document"),
+            ("S21-PDF-002", "guest_failed"),
         ],
     )
     .await;
 
     let hostile_cases: &[(&[u8], &[(&str, &str)])] = &[
-        (ENCRYPTED_PDF, &[("STD-DOC-002", "unsupported_document")]),
+        (ENCRYPTED_PDF, &[("S21-PDF-002", "unsupported_document")]),
         (
             EXPANSION_PDF,
             &[
-                ("STD-DOC-002", "unsupported_document"),
-                ("STD-DOC-002", "fuel_exhausted"),
-                ("STD-DOC-002", "wall_time_exceeded"),
-                ("STD-DOC-002", "memory_exhausted"),
+                ("S21-PDF-002", "unsupported_document"),
+                ("S21-PDF-002", "fuel_exhausted"),
+                ("S21-PDF-002", "wall_time_exceeded"),
+                ("S21-PDF-002", "memory_exhausted"),
             ],
         ),
-        (PANIC_PDF, &[("STD-DOC-002", "guest_failed")]),
+        (PANIC_PDF, &[("S21-PDF-002", "guest_failed")]),
     ];
     for (hostile_pdf, expected) in hostile_cases {
         let (hostile_type, hostile_body) = multipart_body(hostile_pdf);
@@ -779,7 +779,7 @@ async fn serve_s21_real_tcp_pdf_golden_redelivery_and_metrics() {
         .send()
         .await
         .unwrap();
-    assert_document_error(empty, &[("STD-DOC-002", "unsupported_document")]).await;
+    assert_document_error(empty, &[("S21-PDF-002", "unsupported_document")]).await;
 
     let (zero_page_type, zero_page_body) = multipart_body(&synthetic_pdf_pages(&[]));
     let zero_page = client
@@ -789,7 +789,7 @@ async fn serve_s21_real_tcp_pdf_golden_redelivery_and_metrics() {
         .send()
         .await
         .unwrap();
-    assert_document_error(zero_page, &[("STD-DOC-002", "unsupported_document")]).await;
+    assert_document_error(zero_page, &[("S21-PDF-002", "unsupported_document")]).await;
 
     let pages = (0..201)
         .map(|index| format!("page {index}"))
@@ -802,7 +802,7 @@ async fn serve_s21_real_tcp_pdf_golden_redelivery_and_metrics() {
         .send()
         .await
         .unwrap();
-    assert_document_error(page_limit, &[("STD-DOC-002", "unsupported_document")]).await;
+    assert_document_error(page_limit, &[("S21-PDF-002", "unsupported_document")]).await;
 
     let oversized = vec![b'X'; 8 * 1024 * 1024 + 1];
     let (oversized_type, oversized_body) =
@@ -1007,7 +1007,10 @@ async fn serve_s21_real_tcp_pdf_golden_redelivery_and_metrics() {
         "lattice.transform.input_hash_comparisons_total",
         &[
             ("backend", "native"),
-            ("transform", stdlib::document::PDF_EXTRACT_TRANSFORM_ID),
+            (
+                "transform",
+                example_s21_ai_cv_screening::pdf_extraction::PDF_EXTRACT_TRANSFORM_ID,
+            ),
             ("outcome", "matched"),
         ],
     )
@@ -1021,7 +1024,10 @@ async fn serve_s21_real_tcp_pdf_golden_redelivery_and_metrics() {
         "lattice.transform.memory_ceiling_bytes",
         &[
             ("backend", "native"),
-            ("transform", stdlib::document::PDF_EXTRACT_TRANSFORM_ID),
+            (
+                "transform",
+                example_s21_ai_cv_screening::pdf_extraction::PDF_EXTRACT_TRANSFORM_ID,
+            ),
         ],
     )
     .expect("native PDF memory ceiling gauge");

@@ -185,6 +185,11 @@ describe("bounded checked transform protocol", () => {
     );
     const response = await invoke(canonical, canonicalUrl, fixture);
     expect(response.status).toBe(422);
+    expect(response.headers.get("x-lattice-transform-id")).toBe("lattice.pdf.extract_text.v1");
+    expect(response.headers.get("x-lattice-transform-abi")).toBe("lattice.transform.v1");
+    expect(response.headers.get("x-lattice-module-sha256-attestation")).toBe(
+      "048f650aec8502659633289a4ace493c56a7bc6e95c8da3d4a34e293e96d4e96",
+    );
     expect(await response.json()).toEqual({ error: "unsupported_document" });
   });
 

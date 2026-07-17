@@ -28,6 +28,11 @@ serde_json.workspace = true
 futures.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
+async-trait.workspace = true
+sha2.workspace = true
+http = "1"
+bytes.workspace = true
+multer = "3"
 
 [dev-dependencies]
 wasm-bindgen-test.workspace = true

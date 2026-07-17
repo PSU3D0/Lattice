@@ -187,6 +187,64 @@ dependencies = [
 ]
 
 [[package]]
+name = "connector_google_gmail"
+version = "0.1.0"
+dependencies = [
+ "capabilities",
+ "connector_google_platform",
+ "connectors-std",
+ "dag-core",
+ "dag-macros",
+ "kernel-exec",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "connector_google_platform"
+version = "0.1.0"
+dependencies = [
+ "percent-encoding",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "connector_google_sheets"
+version = "0.1.0"
+dependencies = [
+ "capabilities",
+ "connector_google_platform",
+ "connectors-std",
+ "dag-core",
+ "dag-macros",
+ "kernel-exec",
+ "percent-encoding",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "connector_llm"
+version = "0.1.0"
+dependencies = [
+ "capabilities",
+ "connectors-std",
+ "dag-core",
+ "dag-macros",
+ "kernel-exec",
+ "llm-agent",
+ "llm-lattice",
+ "llm-provider-anthropic",
+ "llm-provider-openai",
+ "llm-types",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "connectors-std"
 version = "0.1.0"
 dependencies = [
@@ -298,6 +356,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
+name = "encoding_rs"
+version = "0.8.35"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75030f3c4f45dafd7586dd6780965a8c7e8e285a5ecb86713e63a79c5b2766f3"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -342,6 +409,25 @@ dependencies = [
  "schemars 1.2.1",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "example-s21-ai-cv-screening"
+version = "0.1.0"
+dependencies = [
+ "capabilities",
+ "connector_google_gmail",
+ "connector_google_sheets",
+ "connector_llm",
+ "dag-core",
+ "dag-macros",
+ "host-inproc",
+ "kernel-exec",
+ "kernel-plan",
+ "metrics",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -543,12 +629,14 @@ name = "host-inproc"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "capabilities",
  "chrono",
  "dag-core",
  "js-sys",
  "kernel-exec",
  "kernel-plan",
+ "metrics",
  "saffron",
  "serde",
  "serde_json",
@@ -562,15 +650,20 @@ name = "host-workers"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
+ "bytes",
  "cap-workspace-workers",
  "capabilities",
  "dag-core",
  "futures",
  "host-inproc",
+ "http",
  "kernel-exec",
  "kernel-plan",
+ "multer",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 1.0.69",
  "tokio",
  "worker",
@@ -588,6 +681,7 @@ dependencies = [
  "dag-core",
  "dag-macros",
  "example-s13-github-issue-investigator",
+ "example-s21-ai-cv-screening",
  "futures",
  "host-inproc",
  "host-workers",
@@ -620,6 +714,12 @@ dependencies = [
  "bytes",
  "http",
 ]
+
+[[package]]
+name = "httparse"
+version = "1.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
 name = "humantime"
@@ -891,6 +991,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "llm-provider-anthropic"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "bytes",
+ "futures",
+ "http",
+ "llm-agent",
+ "llm-types",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+ "tracing-futures",
+]
+
+[[package]]
 name = "llm-provider-openai"
 version = "0.1.0"
 dependencies = [
@@ -987,6 +1104,23 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "multer"
+version = "3.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "83e87776546dc87511aa5ee218730c92b666d7264ab6ed41f9d215af9cd5224b"
+dependencies = [
+ "bytes",
+ "encoding_rs",
+ "futures-util",
+ "http",
+ "httparse",
+ "memchr",
+ "mime",
+ "spin",
+ "version_check",
 ]
 
 [[package]]
@@ -1393,6 +1527,12 @@ dependencies = [
  "libc",
  "windows-sys 0.60.2",
 ]
+
+[[package]]
+name = "spin"
+version = "0.9.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
 
 [[package]]
 name = "stable_deref_trait"

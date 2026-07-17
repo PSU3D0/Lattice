@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.2",
+  "schema_version": "0.3",
   "flow": {
     "id": "bac0586b-907c-5d76-8f31-029beefc2977",
     "name": "s12_sheetport_quote_flow",

@@ -166,19 +166,23 @@ fn flow_shape_declares_honest_effects_per_node() {
             .map(|n| n.identifier.clone())
             .expect("node present")
     };
-    assert_ne!(
-        identifier("extract_cv_text"),
-        stdlib::document::EXTRACT_PDF_TEXT_IDENTIFIER,
-        "the typed composite must not spoof the fixed stdlib handler identity"
+    assert!(
+        identifier("extract_cv_text").contains("pdf_extraction"),
+        "the extraction handler must remain owned by the S21 example"
     );
     let extract = ir
         .nodes
         .iter()
         .find(|node| node.alias == "extract_cv_text")
         .expect("extract node present");
+    assert_eq!(extract.implementation_dependencies.len(), 1);
     assert_eq!(
-        extract.implementation_dependencies,
-        vec![dag_core::ImplementationDependency::StdDocumentExtractPdfText]
+        extract.implementation_dependencies[0].kind,
+        dag_core::ImplementationDependencyKind::SandboxedTransform
+    );
+    assert_eq!(
+        extract.implementation_dependencies[0].key,
+        crate::pdf_extraction::PDF_EXTRACT_TRANSFORM_ID
     );
     assert_eq!(identifier("rate_candidate"), "connector.llm.rate_candidate");
     assert_eq!(

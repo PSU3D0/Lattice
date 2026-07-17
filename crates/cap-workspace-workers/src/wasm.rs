@@ -6,7 +6,7 @@ use js_sys::JsString;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use worker::durable_object;
-use worker::{Bucket, Env, Method, Request, RequestInit, Response, SqlStorageValue, State};
+use worker::{Bucket, Env, Method, Range, Request, RequestInit, Response, SqlStorageValue, State};
 
 use crate::{
     WorkersWorkspaceConfig, WorkersWorkspaceError, WorkspaceEntryMeta, WorkspaceWriteReservation,
@@ -349,6 +349,47 @@ impl Workspace for WorkersWorkspace {
             .bytes()
             .await
             .map_err(|err| WorkspaceError::Backend(err.to_string()))?;
+        Ok(Some(WorkspaceReadResult::Bytes(bytes)))
+    }
+
+    async fn read_bounded_normalized(
+        &self,
+        normalized_path: &str,
+        max_bytes: u64,
+    ) -> Result<Option<WorkspaceReadResult>, WorkspaceError> {
+        self.index.validate_path(normalized_path)?;
+        let Some(entry) = self.index.stat(normalized_path).await? else {
+            return Ok(None);
+        };
+        let range_bytes = max_bytes.checked_add(1).ok_or_else(|| {
+            WorkspaceError::Unsupported("bounded workspace read limit is too large".to_string())
+        })?;
+        let Some(object) = self
+            .bucket
+            .0
+            .get(entry.object_key.clone())
+            .range(Range::Prefix {
+                length: range_bytes,
+            })
+            .execute()
+            .await
+            .map_err(|err| WorkspaceError::Backend(err.to_string()))?
+        else {
+            return Ok(None);
+        };
+        let body = object.body().ok_or_else(|| {
+            WorkspaceError::Backend(format!(
+                "bounded workspace object {} has no readable body",
+                entry.object_key
+            ))
+        })?;
+        let bytes = body
+            .bytes()
+            .await
+            .map_err(|err| WorkspaceError::Backend(err.to_string()))?;
+        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > max_bytes {
+            return Err(WorkspaceError::TooLarge { max_bytes });
+        }
         Ok(Some(WorkspaceReadResult::Bytes(bytes)))
     }
 

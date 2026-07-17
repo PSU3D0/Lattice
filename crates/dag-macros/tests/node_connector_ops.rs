@@ -3,7 +3,7 @@
 use dag_core::{
     ConnectorOpMetadata, ConnectorResolutionContract, ConnectorResolutionModeDecl,
     ConnectorRoleKindDecl, ConnectorRoleRequirement, Determinism, Effects,
-    ImplementationDependency, NodeResult,
+    ImplementationDependencySpec, NodeResult,
 };
 use dag_macros::{def_node, node};
 
@@ -48,15 +48,15 @@ async fn maybe_append_row(_: ()) -> NodeResult<()> {
     Ok(())
 }
 
+const TEST_TRANSFORM: ImplementationDependencySpec =
+    ImplementationDependencySpec::sandboxed_transform("test.transform.v1");
+
 #[def_node(
     name = "Composite",
     summary = "Invoke fixed implementations without spoofing their lookup identifiers",
     effects = "Pure",
     determinism = "Strict",
-    implementation_dependencies(
-        ImplementationDependency::StdDocumentExtractPdfText,
-        ImplementationDependency::StdDocumentExtractPdfText
-    )
+    implementation_dependencies(TEST_TRANSFORM, TEST_TRANSFORM)
 )]
 async fn composite(_: ()) -> NodeResult<()> {
     Ok(())
@@ -66,13 +66,9 @@ async fn composite(_: ()) -> NodeResult<()> {
 fn def_node_preserves_implementation_dependencies_without_changing_identity() {
     let spec = node!(composite);
     assert!(spec.identifier.ends_with("::composite"));
-    assert_ne!(spec.identifier, "std.document.extract_pdf_text");
     assert_eq!(
         spec.implementation_dependencies,
-        &[
-            ImplementationDependency::StdDocumentExtractPdfText,
-            ImplementationDependency::StdDocumentExtractPdfText
-        ]
+        &[TEST_TRANSFORM, TEST_TRANSFORM]
     );
 }
 

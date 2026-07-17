@@ -19,14 +19,17 @@ class PublicFailure extends Error {
   }
 }
 
-function errorResponse(status, errorClass) {
-  return new Response(JSON.stringify({ error: errorClass }), {
-    status,
-    headers: {
-      "content-type": "application/json; charset=utf-8",
-      "cache-control": "no-store",
-    },
-  });
+function errorResponse(status, errorClass, attestation) {
+  const headers = {
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": "no-store",
+  };
+  if (attestation !== undefined) {
+    headers["x-lattice-transform-id"] = attestation.transformId;
+    headers["x-lattice-transform-abi"] = attestation.abiVersion;
+    headers["x-lattice-module-sha256-attestation"] = attestation.moduleSha256;
+  }
+  return new Response(JSON.stringify({ error: errorClass }), { status, headers });
 }
 
 function checkedContentLength(request) {
@@ -207,14 +210,9 @@ export function createExtractionWorker({ module, attestation }) {
         return errorResponse(400, "invalid_abi");
       }
       if (active) {
-        return new Response(JSON.stringify({ error: "busy" }), {
-          status: 503,
-          headers: {
-            "content-type": "application/json; charset=utf-8",
-            "cache-control": "no-store",
-            "retry-after": "0",
-          },
-        });
+        const response = errorResponse(503, "busy", attestation);
+        response.headers.set("retry-after", "0");
+        return response;
       }
 
       active = true;
@@ -233,9 +231,9 @@ export function createExtractionWorker({ module, attestation }) {
         });
       } catch (error) {
         if (error instanceof PublicFailure) {
-          return errorResponse(error.status, error.errorClass);
+          return errorResponse(error.status, error.errorClass, attestation);
         }
-        return errorResponse(503, "runtime_unavailable");
+        return errorResponse(503, "runtime_unavailable", attestation);
       } finally {
         active = false;
       }

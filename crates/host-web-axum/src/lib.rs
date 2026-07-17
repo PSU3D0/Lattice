@@ -1215,9 +1215,18 @@ fn streaming_response(stream: StreamHandle, metrics: Arc<HostMetrics>) -> Respon
     Sse::new(guarded).keep_alive(keep_alive).into_response()
 }
 
-fn sanitized_document_failure(message: &str) -> Option<(&str, &str)> {
+fn sanitized_classified_node_failure(message: &str) -> Option<(&str, &str)> {
     let (code, rest) = message.split_once(':')?;
-    if !matches!(code, "STD-DOC-001" | "STD-DOC-002" | "STD-DOC-003") {
+    let bytes = code.as_bytes();
+    if bytes.len() < 3
+        || bytes.len() > 32
+        || !bytes[0].is_ascii_uppercase()
+        || !bytes.last().is_some_and(u8::is_ascii_alphanumeric)
+        || !bytes.contains(&b'-')
+        || !bytes
+            .iter()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || *byte == b'-')
+    {
         return None;
     }
     let class = rest.strip_suffix(']')?.rsplit_once('[')?.1;
@@ -1265,11 +1274,11 @@ fn map_execution_error(err: ExecutionError) -> (StatusCode, JsonValue) {
         ),
         ExecutionError::NodeFailed { alias, source } => {
             let message = source.to_string();
-            if let Some((code, class)) = sanitized_document_failure(&message) {
+            if let Some((code, class)) = sanitized_classified_node_failure(&message) {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     json!({
-                        "error": "document operation failed",
+                        "error": "node operation failed",
                         "node": alias,
                         "code": code,
                         "class": class,
@@ -2780,25 +2789,29 @@ mod tests {
     }
 
     #[test]
-    fn document_failure_sanitizer_accepts_only_closed_codes_and_classes() {
+    fn classified_node_failure_sanitizer_accepts_only_closed_codes_and_classes() {
         assert_eq!(
-            sanitized_document_failure(
-                "STD-DOC-002: document operation failed [unsupported_document]"
+            sanitized_classified_node_failure(
+                "APP-PDF-002: application operation failed [unsupported_document]"
             ),
-            Some(("STD-DOC-002", "unsupported_document"))
+            Some(("APP-PDF-002", "unsupported_document"))
         );
         assert_eq!(
-            sanitized_document_failure(
-                "STD-DOC-002: document operation failed [platform_terminated]"
+            sanitized_classified_node_failure(
+                "FLOW-ERR-7: application operation failed [platform_terminated]"
             ),
-            Some(("STD-DOC-002", "platform_terminated"))
+            Some(("FLOW-ERR-7", "platform_terminated"))
         );
         assert_eq!(
-            sanitized_document_failure("STD-DOC-002: document operation failed [parser_secret]"),
+            sanitized_classified_node_failure(
+                "APP-PDF-002: application operation failed [parser_secret]"
+            ),
             None
         );
         assert_eq!(
-            sanitized_document_failure("OTHER: document operation failed [guest_failed]"),
+            sanitized_classified_node_failure(
+                "product.error: application operation failed [guest_failed]"
+            ),
             None
         );
     }

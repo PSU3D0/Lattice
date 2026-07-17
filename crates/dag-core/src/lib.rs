@@ -24,7 +24,7 @@ pub use effect_hint::{EffectHint, UnknownEffectHint};
 pub use effects::{Determinism, Effects, NodeError, NodeResult};
 pub use ir::*;
 pub use requirements::{
-    FLOW_REQUIREMENTS_SCHEMA_VERSION, FlowRequirements, NativeOnlyNodeRequirement,
+    FLOW_REQUIREMENTS_SCHEMA_VERSION, FlowRequirements, ImplementationDependencyRequirement,
     RequirementsError,
 };
 pub use serde_json;

@@ -1269,9 +1269,9 @@ impl MetricsExportPolicy {
             "flow" => self.flows.contains(value),
             "node" => self.nodes.contains(value),
             "route" => self.routes.contains(value),
-            "backend" => value == "native",
+            "backend" => matches!(value, "native" | "workers"),
             "host" => matches!(value, "web_axum" | "inproc"),
-            "transform" => value == stdlib::document::PDF_EXTRACT_TRANSFORM_ID,
+            "transform" => value == processing_context::PDF_EXTRACT_TRANSFORM_ID,
             "status_class" => matches!(value, "1xx" | "2xx" | "3xx" | "4xx" | "5xx"),
             "outcome" => matches!(
                 value,
@@ -1364,10 +1364,10 @@ fn sanitized_metrics_snapshot(
 
 fn flow_needs_pdf_transform(flow: &dag_core::FlowIR) -> bool {
     flow.nodes.iter().any(|node| {
-        node.identifier == stdlib::document::EXTRACT_PDF_TEXT_IDENTIFIER
-            || node.implementation_dependencies.iter().any(|dependency| {
-                *dependency == dag_core::ImplementationDependency::StdDocumentExtractPdfText
-            })
+        node.implementation_dependencies.iter().any(|dependency| {
+            dependency.kind == dag_core::ImplementationDependencyKind::SandboxedTransform
+                && dependency.key == processing_context::PDF_EXTRACT_TRANSFORM_ID
+        })
     })
 }
 
@@ -4383,32 +4383,31 @@ mod tests {
 
     #[cfg(feature = "example-s21")]
     #[test]
-    fn pdf_transform_registration_detects_direct_and_typed_composite_identities() {
-        let mut composite = s21_ai_cv_screening::flow();
-        assert!(flow_needs_pdf_transform(&composite));
-        let extract_index = composite
+    fn pdf_transform_registration_uses_only_typed_dependency_metadata() {
+        let mut flow = s21_ai_cv_screening::flow();
+        assert!(flow_needs_pdf_transform(&flow));
+        let extract = flow
             .nodes
-            .iter()
-            .position(|node| node.alias == "extract_cv_text")
-            .expect("S21 extract composite");
-        assert_ne!(
-            composite.nodes[extract_index].identifier,
-            stdlib::document::EXTRACT_PDF_TEXT_IDENTIFIER
-        );
+            .iter_mut()
+            .find(|node| node.alias == "extract_cv_text")
+            .expect("S21 inline extraction node");
+        assert!(extract.identifier.contains("pdf_extraction"));
+        assert_eq!(extract.implementation_dependencies.len(), 1);
         assert_eq!(
-            composite.nodes[extract_index].implementation_dependencies,
-            vec![dag_core::ImplementationDependency::StdDocumentExtractPdfText]
+            extract.implementation_dependencies[0].key,
+            processing_context::PDF_EXTRACT_TRANSFORM_ID
         );
 
-        composite.nodes[extract_index].identifier =
-            stdlib::document::EXTRACT_PDF_TEXT_IDENTIFIER.to_string();
-        composite.nodes[extract_index]
+        extract.identifier = "arbitrary.identifier.cannot_enable_a_transform".to_string();
+        assert!(flow_needs_pdf_transform(&flow));
+
+        flow.nodes
+            .iter_mut()
+            .find(|node| node.alias == "extract_cv_text")
+            .expect("S21 inline extraction node")
             .implementation_dependencies
             .clear();
-        assert!(flow_needs_pdf_transform(&composite));
-
-        composite.nodes[extract_index].identifier = "example.no_transform".to_string();
-        assert!(!flow_needs_pdf_transform(&composite));
+        assert!(!flow_needs_pdf_transform(&flow));
     }
 
     #[test]
@@ -4426,7 +4425,7 @@ mod tests {
                 "route" => "/trusted-compiled-route",
                 "backend" => "native",
                 "host" => "web_axum",
-                "transform" => stdlib::document::PDF_EXTRACT_TRANSFORM_ID,
+                "transform" => processing_context::PDF_EXTRACT_TRANSFORM_ID,
                 "status_class" => "2xx",
                 "outcome" => "accepted",
                 "termination" => "success",
@@ -4472,7 +4471,7 @@ mod tests {
             "/trusted-compiled-route",
             "native",
             "web_axum",
-            stdlib::document::PDF_EXTRACT_TRANSFORM_ID,
+            processing_context::PDF_EXTRACT_TRANSFORM_ID,
             "2xx",
             "accepted",
             "success",

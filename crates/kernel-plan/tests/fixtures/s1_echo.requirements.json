@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.2",
+  "schema_version": "0.3",
   "flow": {
     "id": "17d960d7-647c-5e8a-9317-3b821bfdafe1",
     "name": "s1_echo_flow",

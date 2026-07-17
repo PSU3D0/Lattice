@@ -40,6 +40,10 @@ impl PdfTransformRuntime {
 }
 
 impl TransformRuntime for PdfTransformRuntime {
+    fn backend(&self) -> capabilities::transform::TransformBackend {
+        capabilities::transform::TransformBackend::Wasmtime
+    }
+
     fn try_begin(
         &self,
         transform_id: &str,

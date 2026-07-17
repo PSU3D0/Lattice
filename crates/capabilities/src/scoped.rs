@@ -435,6 +435,10 @@ mod tests {
     struct TestTransformRuntime;
 
     impl transform::TransformRuntime for TestTransformRuntime {
+        fn backend(&self) -> transform::TransformBackend {
+            transform::TransformBackend::Wasmtime
+        }
+
         fn try_begin(
             &self,
             _transform_id: &str,

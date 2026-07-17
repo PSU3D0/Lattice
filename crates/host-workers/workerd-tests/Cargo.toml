@@ -25,6 +25,7 @@ capabilities = { path = "../../capabilities" }
 dag-core = { path = "../../dag-core" }
 dag-macros = { path = "../../dag-macros" }
 example-s13-github-issue-investigator = { path = "../../../examples/s13_github_issue_investigator" }
+example-s21-ai-cv-screening = { path = "../../../examples/s21_ai_cv_screening" }
 futures = "0.3"
 host-inproc = { path = "../../host-inproc" }
 host-workers = { path = "..", default-features = false }

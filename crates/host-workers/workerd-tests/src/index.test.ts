@@ -1,10 +1,13 @@
+import { File } from "node:buffer";
 import { describe, it, expect, afterAll } from "vitest";
+import { FormData } from "undici";
 import { Miniflare, kCurrentWorker } from "miniflare";
 
 // Initialize Miniflare with our test worker
 const mf = new Miniflare({
   workers: [
     {
+      name: "host-workers-test",
       scriptPath: "./build/index.js",
       compatibilityDate: "2024-09-23",
       modules: true,
@@ -24,6 +27,7 @@ const mf = new Miniflare({
       r2Buckets: ["WORKSPACE_BUCKET"],
       serviceBindings: {
         LATTICE_RESUME_SERVICE: kCurrentWorker,
+        LATTICE_EXTRACT_PDF: "lattice-pdf-extract-test",
       },
       bindings: {
         LATTICE_RESUME_SERVICE_BINDING: "LATTICE_RESUME_SERVICE",
@@ -31,12 +35,113 @@ const mf = new Miniflare({
         LATTICE_WORKSPACE_MAX_TOTAL_BYTES: "64",
         LATTICE_WORKSPACE_MAX_FILE_COUNT: "4",
         LATTICE_WORKSPACE_MAX_SINGLE_FILE_BYTES: "32",
+        LATTICE_MULTIPART_FILE_FIELD: "cv",
+        LATTICE_MULTIPART_ARTIFACT_FIELD: "artifact",
+        LATTICE_MULTIPART_FILENAME_METADATA_FIELD: "cv_filename",
+        LATTICE_MULTIPART_EXPECTED_CONTENT_TYPE: "application/pdf",
+        LATTICE_MULTIPART_REQUIRED_MAGIC: "%PDF-",
+        LATTICE_MULTIPART_MAX_TOTAL_BYTES: String(10 * 1024 * 1024),
+        LATTICE_MULTIPART_MAX_FILE_BYTES: String(8 * 1024 * 1024),
+        LATTICE_MULTIPART_MAX_TEXT_BYTES: String(64 * 1024),
       },
+    },
+    {
+      name: "lattice-pdf-extract-test",
+      scriptPath: "./src/extraction-fixture.mjs",
+      compatibilityDate: "2026-07-15",
+      modules: true,
+      modulesRules: [
+        { type: "CompiledWasm", include: ["**/*.wasm"], fallthrough: true },
+        { type: "ESModule", include: ["**/*.mjs"], fallthrough: true },
+      ],
     },
   ],
 });
 
 const mfUrl = await mf.ready;
+const extractionFetcher = await mf.getWorker("lattice-pdf-extract-test");
+
+function syntheticPdf(text: string): Uint8Array {
+  const encoder = new TextEncoder();
+  const escaped = text.replaceAll("\\", "\\\\").replaceAll("(", "\\(").replaceAll(")", "\\)");
+  const stream = `BT /F1 12 Tf 72 720 Td (${escaped}) Tj ET`;
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+    `<< /Length ${encoder.encode(stream).length} >>\nstream\n${stream}\nendstream`,
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+  ];
+  let pdf = "%PDF-1.4\n% independent host-workers fixture\n";
+  const offsets = [0];
+  for (let index = 0; index < objects.length; index += 1) {
+    offsets.push(encoder.encode(pdf).length);
+    pdf += `${index + 1} 0 obj\n${objects[index]}\nendobj\n`;
+  }
+  const xref = encoder.encode(pdf).length;
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const offset of offsets.slice(1)) {
+    pdf += `${String(offset).padStart(10, "0")} 00000 n \n`;
+  }
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return encoder.encode(pdf);
+}
+
+function pdfForm(pdf: Uint8Array): FormData {
+  const form = new FormData();
+  form.set("full_name", "Ada Lovelace");
+  form.set("cv", new File([pdf], "resume.pdf", { type: "application/pdf" }));
+  return form;
+}
+
+async function invalidMultipartLimitResponse(
+  value: string,
+): Promise<{ status: number; body: unknown }> {
+  const isolated = new Miniflare({
+    workers: [
+      {
+        name: "host-workers-invalid-config",
+        scriptPath: "./build/index.js",
+        compatibilityDate: "2024-09-23",
+        modules: true,
+        modulesRules: [{ type: "CompiledWasm", include: ["**/*.wasm"], fallthrough: true }],
+        durableObjects: {
+          FLOW_DO: { className: "FlowDurableObject", useSQLite: true },
+          WORKSPACE_DO: { className: "WorkspaceDurableObject", useSQLite: true },
+        },
+        r2Buckets: ["WORKSPACE_BUCKET"],
+        serviceBindings: {
+          LATTICE_RESUME_SERVICE: kCurrentWorker,
+          LATTICE_EXTRACT_PDF: "lattice-pdf-extract-invalid-config",
+        },
+        bindings: {
+          LATTICE_MULTIPART_FILE_FIELD: "cv",
+          LATTICE_MULTIPART_MAX_TOTAL_BYTES: value,
+        },
+      },
+      {
+        name: "lattice-pdf-extract-invalid-config",
+        scriptPath: "./src/extraction-fixture.mjs",
+        compatibilityDate: "2026-07-15",
+        modules: true,
+        modulesRules: [
+          { type: "CompiledWasm", include: ["**/*.wasm"], fallthrough: true },
+          { type: "ESModule", include: ["**/*.mjs"], fallthrough: true },
+        ],
+      },
+    ],
+  });
+  try {
+    const url = await isolated.ready;
+    const response = await isolated.dispatchFetch(`${url}pdf-extract`, {
+      method: "POST",
+      body: pdfForm(syntheticPdf("invalid config must fail closed")),
+    });
+    return { status: response.status, body: await response.json() };
+  } finally {
+    await isolated.dispose();
+  }
+}
 
 afterAll(async () => {
   await mf.dispose();
@@ -669,6 +774,294 @@ describe("host-workers E2E", () => {
     });
   });
 
+  describe("service-bound PDF extraction", () => {
+    it("fails closed on malformed, overflowing, or above-cap multipart limits", async () => {
+      for (const value of ["not-a-number", "999999999999999999999999", "10485761"]) {
+        const response = await invalidMultipartLimitResponse(value);
+        expect(response).toEqual({
+          status: 500,
+          body: { error: "multipart configuration is invalid" },
+        });
+      }
+    });
+
+    it("rejects transform policy drift from the pinned deployment contract", async () => {
+      const response = await mf.dispatchFetch(`${mfUrl}__test/transform/policy-drift`, {
+        method: "POST",
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ rejected: true });
+    });
+
+    it("rejects an oversized R2 read from the bounded prefix without fallback", async () => {
+      const response = await mf.dispatchFetch(`${mfUrl}__test/workspace/bounded-read`, {
+        method: "POST",
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        code: "CAP-WS-008",
+        message: "bounded workspace entry exceeds 64 bytes",
+      });
+      expect(await listWorkspaceObjects()).toEqual([]);
+    });
+
+    it("exposes exactly one run-scoped ingress object while the bound transform is blocked", async () => {
+      const block = await extractionFetcher.fetch("http://extract/__test/block", {
+        method: "POST",
+      });
+      expect(block.status).toBe(200);
+      const pdf = syntheticPdf("observable R2 staging");
+      const firstPromise = mf.dispatchFetch(`${mfUrl}pdf-extract`, {
+        method: "POST",
+        body: pdfForm(pdf),
+      });
+
+      await waitFor(async () => (await workspaceSnapshot()).entries.length === 1, {
+        timeoutMs: 2_000,
+        intervalMs: 10,
+      });
+      const staged = await workspaceSnapshot();
+      expect(staged.entries).toHaveLength(1);
+      expect(staged.entries[0].key).toContain("/ingress/0000-");
+      expect(staged.entries[0].size).toBe(pdf.byteLength);
+
+      const second = await mf.dispatchFetch(`${mfUrl}pdf-extract`, {
+        method: "POST",
+        body: pdfForm(syntheticPdf("must fail before bounded R2 read")),
+      });
+      expect(second.status).toBe(500);
+      expect(await second.text()).toContain("[busy]");
+      expect((await workspaceSnapshot()).entries).toEqual(staged.entries);
+
+      const release = await extractionFetcher.fetch("http://extract/__test/release", {
+        method: "POST",
+      });
+      expect(release.status).toBe(200);
+      const first = await firstPromise;
+      expect(first.status).toBe(200);
+      expect(await listWorkspaceObjects()).toEqual([]);
+    });
+
+    it("finishes run-scoped cleanup after a client abort observed post-staging", async () => {
+      await extractionFetcher.fetch("http://extract/__test/block", { method: "POST" });
+      const controller = new AbortController();
+      const pending = mf
+        .dispatchFetch(`${mfUrl}pdf-extract`, {
+          method: "POST",
+          body: pdfForm(syntheticPdf("abort cleanup sentinel")),
+          signal: controller.signal,
+        })
+        .catch(() => undefined);
+      await waitFor(async () => (await workspaceSnapshot()).entries.length === 1, {
+        timeoutMs: 2_000,
+        intervalMs: 10,
+      });
+      controller.abort();
+      await extractionFetcher.fetch("http://extract/__test/release", { method: "POST" });
+      await pending.catch(() => undefined);
+      await waitFor(async () => (await workspaceSnapshot()).entries.length === 0, {
+        timeoutMs: 2_000,
+        intervalMs: 10,
+      });
+    });
+
+    it("stages multipart bytes in R2, bounded-reads them, and returns checked text", async () => {
+      const response = await mf.dispatchFetch(`${mfUrl}pdf-extract`, {
+        method: "POST",
+        body: pdfForm(syntheticPdf("Workers multipart extraction")),
+      });
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.page_count).toBe(1);
+      expect(body.resume_text).toContain("Workers multipart extraction");
+      expect(await listWorkspaceObjects()).toEqual([]);
+    });
+
+    it("rejects oversized files before workspace staging", async () => {
+      const oversized = new Uint8Array(8 * 1024 * 1024 + 1);
+      oversized.set(new TextEncoder().encode("%PDF-"));
+      const response = await mf.dispatchFetch(`${mfUrl}pdf-extract`, {
+        method: "POST",
+        body: pdfForm(oversized),
+      });
+      expect(response.status).toBe(413);
+      expect(await response.json()).toEqual({
+        error: "multipart file exceeds limit",
+        class: "payload_too_large",
+      });
+      expect(await listWorkspaceObjects()).toEqual([]);
+    });
+
+    it("stream-counts the total multipart ceiling without trusting Content-Length", async () => {
+      const boundary = "lattice-total-over-limit";
+      const prefix = new TextEncoder().encode(
+        `--${boundary}\r\nContent-Disposition: form-data; name="cv"; filename="oversized.pdf"\r\nContent-Type: application/pdf\r\n\r\n%PDF-`,
+      );
+      let emitted = 0;
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (emitted === 0) controller.enqueue(prefix);
+          if (emitted < 11) {
+            controller.enqueue(new Uint8Array(1024 * 1024));
+            emitted += 1;
+          } else {
+            controller.close();
+          }
+        },
+      });
+      const response = await mf.dispatchFetch(`${mfUrl}pdf-extract`, {
+        method: "POST",
+        headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+        body,
+        duplex: "half",
+      });
+      expect(response.status).toBe(413);
+      expect(await response.json()).toEqual({
+        error: "multipart request exceeds limit",
+        class: "payload_too_large",
+      });
+      expect(await listWorkspaceObjects()).toEqual([]);
+
+      const recovery = await mf.dispatchFetch(`${mfUrl}pdf-extract`, {
+        method: "POST",
+        body: pdfForm(syntheticPdf("recovered after total limit")),
+      });
+      expect(recovery.status).toBe(200);
+    });
+
+    it("bounds aggregate text and rejects duplicate file fields", async () => {
+      const textHeavy = pdfForm(syntheticPdf("text ceiling"));
+      textHeavy.set("notes", "x".repeat(64 * 1024 + 1));
+      const textResponse = await mf.dispatchFetch(`${mfUrl}pdf-extract`, {
+        method: "POST",
+        body: textHeavy,
+      });
+      expect(textResponse.status).toBe(413);
+      expect(await textResponse.json()).toEqual({
+        error: "multipart text fields exceed limit",
+        class: "payload_too_large",
+      });
+
+      const duplicate = new FormData();
+      duplicate.append(
+        "cv",
+        new File([syntheticPdf("first")], "first.pdf", { type: "application/pdf" }),
+      );
+      duplicate.append(
+        "cv",
+        new File([syntheticPdf("second")], "second.pdf", { type: "application/pdf" }),
+      );
+      const duplicateResponse = await mf.dispatchFetch(`${mfUrl}pdf-extract`, {
+        method: "POST",
+        body: duplicate,
+      });
+      expect(duplicateResponse.status).toBe(400);
+      expect(await duplicateResponse.json()).toEqual({
+        error: "multipart field is duplicated or invalid",
+        class: "bad_request",
+      });
+      expect(await listWorkspaceObjects()).toEqual([]);
+    });
+
+    it("rejects MIME and magic mismatches before workspace staging", async () => {
+      const wrongMime = new FormData();
+      wrongMime.set(
+        "cv",
+        new File([syntheticPdf("wrong MIME")], "resume.pdf", { type: "text/plain" }),
+      );
+      const mimeResponse = await mf.dispatchFetch(`${mfUrl}pdf-extract`, {
+        method: "POST",
+        body: wrongMime,
+      });
+      expect(mimeResponse.status).toBe(415);
+      expect(await mimeResponse.json()).toEqual({
+        error: "multipart file has unsupported media type",
+        class: "unsupported_media_type",
+      });
+
+      const magicResponse = await mf.dispatchFetch(`${mfUrl}pdf-extract`, {
+        method: "POST",
+        body: pdfForm(new TextEncoder().encode("not a PDF")),
+      });
+      expect(magicResponse.status).toBe(415);
+      expect(await magicResponse.json()).toEqual({
+        error: "multipart file does not match required magic",
+        class: "unsupported_media_type",
+      });
+      expect(await listWorkspaceObjects()).toEqual([]);
+    });
+
+    it("rejects unattested failures and preserves generic platform termination", async () => {
+      await extractionFetcher.fetch("http://extract/__test/mode?value=wrong-attestation", {
+        method: "POST",
+      });
+      const unattested = await mf.dispatchFetch(`${mfUrl}pdf-extract`, {
+        method: "POST",
+        body: pdfForm(syntheticPdf("unattested response")),
+      });
+      expect(unattested.status).toBe(500);
+      expect(await unattested.text()).toContain("[invalid_output]");
+
+      await extractionFetcher.fetch("http://extract/__test/mode?value=platform-terminated", {
+        method: "POST",
+      });
+      const terminated = await mf.dispatchFetch(`${mfUrl}pdf-extract`, {
+        method: "POST",
+        body: pdfForm(syntheticPdf("generic termination")),
+      });
+      expect(terminated.status).toBe(500);
+      expect(await terminated.text()).toContain("[platform_terminated]");
+      expect(await listWorkspaceObjects()).toEqual([]);
+    });
+
+    it("sanitizes hostile PDFs and cleans the run-scoped artifact", async () => {
+      const response = await mf.dispatchFetch(`${mfUrl}pdf-extract`, {
+        method: "POST",
+        body: pdfForm(new TextEncoder().encode("%PDF-hostile private parser sentinel")),
+      });
+      expect(response.status).toBe(500);
+      const text = await response.text();
+      expect(text).toContain("unsupported_document");
+      expect(text).not.toContain("private parser sentinel");
+      expect(await listWorkspaceObjects()).toEqual([]);
+    });
+
+    it("enforces one isolate-local multipart request with no waiter queue", async () => {
+      const boundary = "lattice-workers-pending";
+      let controller!: ReadableStreamDefaultController<Uint8Array>;
+      const body = new ReadableStream<Uint8Array>({
+        start(value) {
+          controller = value;
+          value.enqueue(
+            new TextEncoder().encode(
+              `--${boundary}\r\nContent-Disposition: form-data; name="cv"; filename="pending.pdf"\r\nContent-Type: application/pdf\r\n\r\n%PDF-`,
+            ),
+          );
+        },
+      });
+      const firstPromise = mf.dispatchFetch(`${mfUrl}pdf-extract`, {
+        method: "POST",
+        headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+        body,
+        duplex: "half",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+
+      const second = await mf.dispatchFetch(`${mfUrl}pdf-extract`, {
+        method: "POST",
+        body: pdfForm(syntheticPdf("must not queue")),
+      });
+      expect(second.status).toBe(503);
+      expect(await second.json()).toEqual({ error: "busy" });
+
+      controller.enqueue(new TextEncoder().encode(`\r\n--${boundary}--\r\n`));
+      controller.close();
+      const first = await firstPromise;
+      expect(first.status).toBe(500);
+      expect(await listWorkspaceObjects()).toEqual([]);
+    });
+  });
+
   describe("error handling", () => {
     it("should return 404 for unknown routes", async () => {
       const response = await mf.dispatchFetch(`${mfUrl}unknown`);
@@ -740,13 +1133,22 @@ function parseSSE(text: string): unknown[] {
   return events;
 }
 
-async function listWorkspaceObjects(prefix = "workspace/"): Promise<string[]> {
+async function workspaceSnapshot(prefix = "workspace/"): Promise<{
+  keys: string[];
+  entries: Array<{ key: string; size: number }>;
+}> {
   const response = await mf.dispatchFetch(
     `${mfUrl}__test/workspace/objects?prefix=${encodeURIComponent(prefix)}`
   );
   expect(response.status).toBe(200);
-  const body = (await response.json()) as { keys: string[] };
-  return body.keys;
+  return (await response.json()) as {
+    keys: string[];
+    entries: Array<{ key: string; size: number }>;
+  };
+}
+
+async function listWorkspaceObjects(prefix = "workspace/"): Promise<string[]> {
+  return (await workspaceSnapshot(prefix)).keys;
 }
 
 async function runWorkspaceRetainedCleanup(

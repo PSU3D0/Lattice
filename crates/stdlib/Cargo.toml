@@ -10,32 +10,24 @@ homepage.workspace = true
 description = "Standard library nodes for Lattice flows."
 
 [features]
-default = ["timer", "callback", "workspace", "document"]
+default = ["timer", "callback", "workspace"]
 host-bundle = ["dag-macros/host-bundle"]
 timer = []
 callback = []
 workspace = []
-document = []
 
 [dependencies]
 capabilities = { path = "../capabilities" }
 dag-core = { path = "../dag-core" }
 dag-macros = { path = "../dag-macros" }
 kernel-exec = { path = "../kernel-exec" }
-metrics.workspace = true
 chrono = { version = "0.4", features = ["serde", "clock"] }
 humantime-serde = "1.1"
 serde.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
 tokio = { workspace = true, features = ["full"] }
 kernel-plan = { path = "../kernel-plan" }
 semver.workspace = true
-
-[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-cap-workspace-fs = { path = "../cap-workspace-fs" }
-processing-context = { path = "../processing-context" }
-tempfile.workspace = true

@@ -4,9 +4,6 @@ pub mod callback;
 #[cfg(feature = "timer")]
 pub mod timer;
 
-#[cfg(feature = "document")]
-pub mod document;
-
 #[cfg(feature = "workspace")]
 pub mod workspace;
 
@@ -23,9 +20,6 @@ pub fn register_all(registry: &mut NodeRegistry) -> Result<(), RegistryError> {
 
     #[cfg(all(feature = "workspace", feature = "host-bundle"))]
     workspace::register_all(registry)?;
-
-    #[cfg(all(feature = "document", feature = "host-bundle"))]
-    document::extract_pdf_text_register(registry)?;
 
     Ok(())
 }

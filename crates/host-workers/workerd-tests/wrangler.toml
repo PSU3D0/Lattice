@@ -12,6 +12,14 @@ command = "bash \"$(git rev-parse --show-toplevel)/scripts/ensure-worker-build.s
 # - set LATTICE_INTERNAL_RESUME_TOKEN as a Wrangler secret (do not commit secrets)
 [vars]
 LATTICE_RESUME_SERVICE_BINDING = "LATTICE_RESUME_SERVICE"
+LATTICE_MULTIPART_FILE_FIELD = "cv"
+LATTICE_MULTIPART_ARTIFACT_FIELD = "artifact"
+LATTICE_MULTIPART_FILENAME_METADATA_FIELD = "cv_filename"
+LATTICE_MULTIPART_EXPECTED_CONTENT_TYPE = "application/pdf"
+LATTICE_MULTIPART_REQUIRED_MAGIC = "%PDF-"
+LATTICE_MULTIPART_MAX_TOTAL_BYTES = "10485760"
+LATTICE_MULTIPART_MAX_FILE_BYTES = "8388608"
+LATTICE_MULTIPART_MAX_TEXT_BYTES = "65536"
 
 [[durable_objects.bindings]]
 name = "FLOW_DO"
@@ -32,4 +40,8 @@ new_sqlite_classes = ["FlowDurableObject", "WorkspaceDurableObject"]
 [[services]]
 binding = "LATTICE_RESUME_SERVICE"
 service = "host-workers-test"
+
+[[services]]
+binding = "LATTICE_EXTRACT_PDF"
+service = "lattice-pdf-extract-test"
 

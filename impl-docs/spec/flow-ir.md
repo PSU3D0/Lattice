@@ -90,6 +90,7 @@ Key fields:
 - `determinism`: declared determinism lattice (`strict|stable|best_effort|nondeterministic`).
 - `idempotency`: optional idempotency spec (`key`, `scope`, `ttlMs`).
 - `effectHints[]` / `determinismHints[]`: canonical resource hints inferred at compile-time.
+- `implementationDependencies[]`: generic typed contracts (`kind`, declaring-crate-owned `key`) invoked internally by this handler. These are placement requirements, never registry aliases.
 - `durability`: optional durability profile (`checkpointable`, `replayable`, `halts`).
 - `subflow_ir`: optional embedded `FlowIR` for analysis-only expansion (only valid on `kind = subflow`).
 
@@ -97,6 +98,7 @@ Notes:
 - In 0.1, schemas are primarily for validation/UX and are not enforced as structural JSON schema compatibility.
 - Effect/determinism are enforced against hints by `kernel-plan`.
 - Durability profile is registry metadata captured in the generated IR for tooling and validation.
+- Dag-core defines only generic implementation dependency kinds. It never carries product/sample keys and never infers dependencies from `identifier`; node crates declare keys and hosts/renderers decide whether a target supports them.
 
 ## Triggers & Entrypoints (0.1.x)
 

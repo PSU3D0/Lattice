@@ -25,14 +25,14 @@ use serde::{Deserialize, Serialize};
 use crate::effect_hint::EffectHint;
 use crate::ir::{
     ConnectorResolutionModeDecl, ConnectorRoleRequirementIR, DurabilityMode, FlowIR, FlowId,
-    NodeKind, Profile,
+    ImplementationDependencyKind, NodeKind, Profile,
 };
 
 /// Version of the FlowRequirements manifest shape itself (not the flow).
 ///
 /// Bump on any breaking change to the manifest structure; consumers must
 /// reject schema versions they do not understand.
-pub const FLOW_REQUIREMENTS_SCHEMA_VERSION: &str = "0.2";
+pub const FLOW_REQUIREMENTS_SCHEMA_VERSION: &str = "0.3";
 
 /// Prefix for policy markers that are allowed to appear in
 /// `NodeIR.effect_hints` but are lint annotations, not capability
@@ -47,11 +47,6 @@ const RESUME_SCHEDULER_IDENTIFIERS: &[&str] = &["std.timer.wait"];
 /// Stdlib node identifiers that require a resume signal source when halting.
 /// Mirrors host-inproc's `collect_missing_durability_services`.
 const RESUME_SIGNAL_IDENTIFIERS: &[&str] = &["std.callback.wait", "std.hitl.approval"];
-
-/// Stdlib node identifiers whose current implementation is available only on
-/// native hosts. Workers rendering must reject these nodes until their named
-/// backend is configured.
-const NATIVE_ONLY_NODE_IDENTIFIERS: &[&str] = &["std.document.extract_pdf_text"];
 
 /// Error produced when requirements cannot be derived statically.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -69,6 +64,8 @@ pub enum RequirementsError {
         /// The offending hint string.
         hint: String,
     },
+    #[error("node `{node}` declares invalid implementation dependency key `{key}`")]
+    InvalidImplementationDependency { node: String, key: String },
 }
 
 /// Static requirements manifest for a single flow.
@@ -82,10 +79,10 @@ pub struct FlowRequirements {
     pub profile: Profile,
     /// Typed capability requirements (union + per-node attribution).
     pub effects: EffectRequirements,
-    /// Native-only stdlib node requirements, grouped by implementation
-    /// identifier with the aliases that use each identifier.
+    /// Fixed implementation contracts, grouped by generic kind and declaring
+    /// crate-owned key with the aliases that use each contract.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub native_only_nodes: Vec<NativeOnlyNodeRequirement>,
+    pub implementation_dependencies: Vec<ImplementationDependencyRequirement>,
     /// Connector operation requirements, grouped by connector family.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub connectors: Vec<ConnectorRequirement>,
@@ -136,12 +133,14 @@ pub struct EffectRequirements {
     pub per_node: BTreeMap<String, Vec<EffectHint>>,
 }
 
-/// One native-only stdlib implementation used by a flow.
+/// One fixed implementation contract used by a flow.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct NativeOnlyNodeRequirement {
-    /// Fully-qualified node implementation identifier.
-    pub identifier: String,
-    /// Aliases of nodes using this implementation (sorted).
+pub struct ImplementationDependencyRequirement {
+    /// Generic execution class understood by host placement policy.
+    pub kind: ImplementationDependencyKind,
+    /// Stable contract key owned by the declaring node crate.
+    pub key: String,
+    /// Aliases of nodes using this contract (sorted).
     pub nodes: Vec<String>,
 }
 
@@ -295,7 +294,7 @@ impl FlowRequirements {
             },
             profile: flow.profile,
             effects: derive_effects(flow)?,
-            native_only_nodes: derive_native_only_nodes(flow),
+            implementation_dependencies: derive_implementation_dependencies(flow)?,
             connectors: derive_connectors(flow),
             durability: derive_durability(flow),
             triggers: derive_triggers(flow),
@@ -351,35 +350,47 @@ fn sorted_hints(hints: &BTreeSet<EffectHint>) -> Vec<EffectHint> {
     out
 }
 
-fn derive_native_only_nodes(flow: &FlowIR) -> Vec<NativeOnlyNodeRequirement> {
-    let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
+fn derive_implementation_dependencies(
+    flow: &FlowIR,
+) -> Result<Vec<ImplementationDependencyRequirement>, RequirementsError> {
+    let mut grouped: BTreeMap<(ImplementationDependencyKind, String), Vec<String>> =
+        BTreeMap::new();
 
     for node in &flow.nodes {
-        if NATIVE_ONLY_NODE_IDENTIFIERS.contains(&node.identifier.as_str()) {
+        for dependency in &node.implementation_dependencies {
+            if !valid_implementation_key(&dependency.key) {
+                return Err(RequirementsError::InvalidImplementationDependency {
+                    node: node.alias.clone(),
+                    key: dependency.key.clone(),
+                });
+            }
             grouped
-                .entry(node.identifier.clone())
+                .entry((dependency.kind, dependency.key.clone()))
                 .or_default()
                 .push(node.alias.clone());
         }
-        for dependency in &node.implementation_dependencies {
-            let identifier = dependency.identifier();
-            if NATIVE_ONLY_NODE_IDENTIFIERS.contains(&identifier) {
-                grouped
-                    .entry(identifier.to_string())
-                    .or_default()
-                    .push(node.alias.clone());
-            }
-        }
     }
 
-    grouped
+    Ok(grouped
         .into_iter()
-        .map(|(identifier, mut nodes)| {
+        .map(|((kind, key), mut nodes)| {
             nodes.sort();
             nodes.dedup();
-            NativeOnlyNodeRequirement { identifier, nodes }
+            ImplementationDependencyRequirement { kind, key, nodes }
         })
-        .collect()
+        .collect())
+}
+
+fn valid_implementation_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.len() <= 128
+        && key
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric)
+        && key
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
 fn derive_connectors(flow: &FlowIR) -> Vec<ConnectorRequirement> {
@@ -609,34 +620,32 @@ mod tests {
         );
     }
 
-    #[test]
-    fn native_only_nodes_are_derived_from_identifiers_with_alias_attribution() {
-        let mut flow = two_node_flow();
-        flow.nodes[0].identifier = "std.document.extract_pdf_text".to_string();
-        flow.nodes[1]
-            .effect_hints
-            .push(EffectHint::WorkspaceRead.as_str().to_string());
-        flow.nodes[1].summary = Some(
-            "Mentions std.document.extract_pdf_text without using that implementation".to_string(),
-        );
-
-        let reqs = FlowRequirements::derive(&flow).expect("derive");
-        assert_eq!(
-            reqs.native_only_nodes,
-            vec![NativeOnlyNodeRequirement {
-                identifier: "std.document.extract_pdf_text".to_string(),
-                nodes: vec!["reader".to_string()],
-            }]
-        );
+    fn transform_dependency(key: &str) -> crate::ImplementationDependency {
+        crate::ImplementationDependency {
+            kind: crate::ImplementationDependencyKind::SandboxedTransform,
+            key: key.to_string(),
+        }
     }
 
     #[test]
-    fn unknown_implementation_dependency_json_is_rejected() {
+    fn node_identifiers_never_invent_implementation_requirements() {
+        let mut flow = two_node_flow();
+        flow.nodes[0].identifier = "any.product.specific.identifier".to_string();
+        flow.nodes[0].summary = Some("mentions a transform key only as prose".to_string());
+
+        let reqs = FlowRequirements::derive(&flow).expect("derive");
+        assert!(reqs.implementation_dependencies.is_empty());
+    }
+
+    #[test]
+    fn unknown_implementation_dependency_kind_is_rejected() {
         let flow = two_node_flow();
         let mut value = serde_json::to_value(flow).expect("serialize flow");
-        value["nodes"][0]["implementationDependencies"] =
-            serde_json::json!(["std.document.extract_pdf_tex_typo"]);
-        let error = serde_json::from_value::<FlowIR>(value).expect_err("unknown dependency");
+        value["nodes"][0]["implementationDependencies"] = serde_json::json!([{
+            "kind": "sandboxed_transform_typo",
+            "key": "example.transform.v1"
+        }]);
+        let error = serde_json::from_value::<FlowIR>(value).expect_err("unknown dependency kind");
         assert!(
             error.to_string().contains("unknown variant"),
             "unexpected error: {error}"
@@ -644,55 +653,46 @@ mod tests {
     }
 
     #[test]
-    fn omitted_composite_dependency_does_not_invent_a_requirement() {
+    fn malformed_dependency_keys_fail_closed() {
         let mut flow = two_node_flow();
-        flow.nodes[1].identifier = "example.s21.extract_cv_text".to_string();
-        flow.nodes[1].implementation_dependencies.clear();
-        let reqs = FlowRequirements::derive(&flow).expect("derive");
-        assert!(reqs.native_only_nodes.is_empty());
+        flow.nodes[0].implementation_dependencies = vec![transform_dependency("bad key")];
+        assert!(matches!(
+            FlowRequirements::derive(&flow),
+            Err(RequirementsError::InvalidImplementationDependency { .. })
+        ));
     }
 
     #[test]
-    fn native_only_dependencies_are_attributed_to_the_composite_alias() {
+    fn dependencies_are_derived_only_from_typed_metadata() {
         let mut flow = two_node_flow();
-        flow.nodes[1].identifier = "example.s21.extract_cv_text".to_string();
+        flow.nodes[1].identifier = "example.inline_node".to_string();
         flow.nodes[1].implementation_dependencies = vec![
-            crate::ImplementationDependency::StdDocumentExtractPdfText,
-            crate::ImplementationDependency::StdDocumentExtractPdfText,
+            transform_dependency("example.transform.v1"),
+            transform_dependency("example.transform.v1"),
         ];
 
         let reqs = FlowRequirements::derive(&flow).expect("derive");
         assert_eq!(
-            reqs.native_only_nodes,
-            vec![NativeOnlyNodeRequirement {
-                identifier: "std.document.extract_pdf_text".to_string(),
+            reqs.implementation_dependencies,
+            vec![ImplementationDependencyRequirement {
+                kind: ImplementationDependencyKind::SandboxedTransform,
+                key: "example.transform.v1".to_string(),
                 nodes: vec!["writer".to_string()],
             }]
         );
     }
 
     #[test]
-    fn identifier_dependency_collision_does_not_duplicate_attribution() {
-        let mut flow = two_node_flow();
-        flow.nodes[0].identifier = "std.document.extract_pdf_text".to_string();
-        flow.nodes[0].implementation_dependencies =
-            vec![crate::ImplementationDependency::StdDocumentExtractPdfText];
-
-        let reqs = FlowRequirements::derive(&flow).expect("derive");
-        assert_eq!(reqs.native_only_nodes[0].nodes, vec!["reader".to_string()]);
-    }
-
-    #[test]
-    fn native_only_node_aliases_are_sorted_and_grouped_by_identifier() {
+    fn dependency_aliases_are_sorted_and_grouped_by_kind_and_key() {
         let mut flow = two_node_flow();
         for node in &mut flow.nodes {
-            node.identifier = "std.document.extract_pdf_text".to_string();
+            node.implementation_dependencies = vec![transform_dependency("example.transform.v1")];
         }
 
         let reqs = FlowRequirements::derive(&flow).expect("derive");
-        assert_eq!(reqs.native_only_nodes.len(), 1);
+        assert_eq!(reqs.implementation_dependencies.len(), 1);
         assert_eq!(
-            reqs.native_only_nodes[0].nodes,
+            reqs.implementation_dependencies[0].nodes,
             vec!["reader".to_string(), "writer".to_string()]
         );
     }

@@ -5679,6 +5679,10 @@ mod tests {
     struct StubTransformRuntime;
 
     impl capabilities::transform::TransformRuntime for StubTransformRuntime {
+        fn backend(&self) -> capabilities::transform::TransformBackend {
+            capabilities::transform::TransformBackend::Wasmtime
+        }
+
         fn try_begin(
             &self,
             _transform_id: &str,

@@ -80,6 +80,15 @@ pub enum TransformBackend {
     CloudflareWorkers,
 }
 
+impl TransformBackend {
+    pub const fn metric_label(self) -> &'static str {
+        match self {
+            Self::Wasmtime => "native",
+            Self::CloudflareWorkers => "workers",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TransformModuleIdentity {
     /// Digest measured from module bytes admitted by the native runtime.
@@ -735,6 +744,8 @@ impl fmt::Debug for TransformFailure {
 impl std::error::Error for TransformFailure {}
 
 pub trait TransformRuntime: Send + Sync + 'static {
+    fn backend(&self) -> TransformBackend;
+
     fn try_begin(&self, transform_id: &str)
     -> Result<Box<dyn TransformLease>, TransformBeginError>;
 }

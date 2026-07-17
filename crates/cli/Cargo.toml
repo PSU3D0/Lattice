@@ -23,7 +23,6 @@ capabilities = { path = "../capabilities" }
 cap-http-reqwest = { path = "../cap-http-reqwest" }
 cap-workspace-fs = { path = "../cap-workspace-fs" }
 processing-context = { path = "../processing-context" }
-stdlib = { path = "../stdlib", default-features = false, features = ["document"] }
 host-web-axum = { path = "../host-web-axum" }
 host-wasmtime = { path = "../host-wasmtime", optional = true }
 registry-client = { path = "../registry-client" }

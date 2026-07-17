@@ -1,6 +1,23 @@
 //! Host workers adapter.
 
 #[cfg(target_arch = "wasm32")]
+mod multipart;
+#[cfg(target_arch = "wasm32")]
+mod transform;
+#[cfg(target_arch = "wasm32")]
+pub use multipart::{
+    DEFAULT_MULTIPART_MAX_FILE_BYTES, DEFAULT_MULTIPART_MAX_TEXT_BYTES,
+    DEFAULT_MULTIPART_MAX_TOTAL_BYTES, WorkersMultipartIngressConfig,
+};
+#[cfg(target_arch = "wasm32")]
+pub use transform::{
+    PDF_EXTRACT_ABI_VERSION, PDF_EXTRACT_COMPATIBILITY_DATE, PDF_EXTRACT_CPU_MS_LIMIT,
+    PDF_EXTRACT_GUEST_MEMORY_BYTES, PDF_EXTRACT_MAX_INPUT_BYTES, PDF_EXTRACT_MAX_OUTPUT_BYTES,
+    PDF_EXTRACT_MODULE_SHA256_HEX, PDF_EXTRACT_SERVICE_BINDING, PDF_EXTRACT_TRANSFORM_ID,
+    WORKERS_ISOLATE_MEMORY_BYTES, WorkersTransformPolicy, WorkersTransformRuntime, runtime_handle,
+};
+
+#[cfg(target_arch = "wasm32")]
 use std::cell::RefCell;
 #[cfg(target_arch = "wasm32")]
 use std::collections::BTreeMap;
@@ -32,7 +49,10 @@ use futures::pin_mut;
 #[cfg(target_arch = "wasm32")]
 use futures::stream::{self, StreamExt};
 #[cfg(target_arch = "wasm32")]
-use host_inproc::{FlowBundle, FlowEntrypoint, HostRuntime, Invocation, InvocationMetadata};
+use host_inproc::{
+    FlowBundle, FlowEntrypoint, HostRuntime, IngressAttachmentPolicy, Invocation,
+    InvocationMetadata,
+};
 #[cfg(target_arch = "wasm32")]
 use kernel_exec::{ExecutionError, ExecutionResult, StreamHandle};
 #[cfg(target_arch = "wasm32")]
@@ -124,9 +144,47 @@ async fn handle_fetch_inner(mut req: Request, env: Env) -> Result<Response> {
             None => return Response::error("route not found", 404),
         };
 
-    let payload = match read_payload(&mut req).await {
-        Ok(value) => value,
-        Err(response) => return Ok(response),
+    let multipart_config = match multipart::WorkersMultipartIngressConfig::from_env(&env) {
+        Some(Ok(config)) => Some(config),
+        Some(Err(_)) => {
+            return json_response(
+                500,
+                json!({ "error": "multipart configuration is invalid" }),
+            );
+        }
+        None => None,
+    };
+    let mut multipart_guard = None;
+    let mut ingress_attachment = None;
+    let payload = if multipart::is_multipart(&req) {
+        let Some(config) = multipart_config.as_ref() else {
+            return json_response(
+                415,
+                json!({ "error": "multipart ingress is not configured" }),
+            );
+        };
+        if wants_sse(&req) {
+            return json_response(
+                406,
+                json!({ "error": "multipart ingress does not support SSE" }),
+            );
+        }
+        let Some(guard) = multipart::MultipartAdmissionGuard::try_acquire() else {
+            return json_response(503, json!({ "error": "busy" }));
+        };
+        multipart_guard = Some(guard);
+        match multipart::parse_multipart(&mut req, config).await {
+            Ok(parsed) => {
+                ingress_attachment = Some(parsed.attachment);
+                parsed.payload
+            }
+            Err(error) => return multipart_error_response(error),
+        }
+    } else {
+        match read_payload(&mut req).await {
+            Ok(value) => value,
+            Err(response) => return Ok(response),
+        }
     };
 
     let abort_bridge = AbortBridge::new(&req);
@@ -139,13 +197,45 @@ async fn handle_fetch_inner(mut req: Request, env: Env) -> Result<Response> {
     populate_http_metadata(&req, invocation.metadata_mut());
     populate_lattice_metadata(&req, invocation.metadata_mut());
 
-    let exec_future = runtime.execute(invocation).fuse();
-    let abort_future = abort_bridge.abort_future.clone().fuse();
-    pin_mut!(exec_future);
-    pin_mut!(abort_future);
-    let exec_result = futures::select! {
-        result = exec_future => result,
-        _ = abort_future => Err(ExecutionError::Cancelled),
+    let has_ingress_attachment = ingress_attachment.is_some();
+    let exec_future: LocalBoxFuture<'static, Result<ExecutionResult, ExecutionError>> =
+        if let Some(attachment) = ingress_attachment {
+            let config = multipart_config.expect("multipart attachment has validated config");
+            let guard = multipart_guard
+                .take()
+                .expect("multipart attachment holds isolate admission");
+            async move {
+                runtime
+                    .execute_with_ingress_attachments_after_staging(
+                        invocation,
+                        vec![attachment],
+                        IngressAttachmentPolicy {
+                            max_attachments: 1,
+                            max_attachment_bytes: config.max_file_bytes as u64,
+                            max_total_bytes: config.max_total_bytes as u64,
+                        },
+                        move || drop(guard),
+                    )
+                    .await
+            }
+            .boxed_local()
+        } else {
+            async move { runtime.execute(invocation).await }.boxed_local()
+        };
+    let exec_result = if has_ingress_attachment {
+        // Once private bytes can reach run-scoped R2, keep the execution future alive through
+        // terminal workspace finalization. Racing and dropping it on client disconnect would make
+        // cleanup cancellation-unsafe and could strand uploaded PII.
+        exec_future.await
+    } else {
+        let exec_future = exec_future.fuse();
+        let abort_future = abort_bridge.abort_future.clone().fuse();
+        pin_mut!(exec_future);
+        pin_mut!(abort_future);
+        futures::select! {
+            result = exec_future => result,
+            _ = abort_future => Err(ExecutionError::Cancelled),
+        }
     };
 
     match exec_result {
@@ -622,6 +712,23 @@ async fn read_payload(req: &mut Request) -> std::result::Result<JsonValue, Respo
 }
 
 #[cfg(target_arch = "wasm32")]
+fn multipart_error_response(error: multipart::MultipartError) -> Result<Response> {
+    let (status, class) = match error.class {
+        multipart::MultipartErrorClass::BadRequest => (400, "bad_request"),
+        multipart::MultipartErrorClass::PayloadTooLarge => (413, "payload_too_large"),
+        multipart::MultipartErrorClass::UnsupportedMediaType => (415, "unsupported_media_type"),
+        multipart::MultipartErrorClass::BodyRead => (400, "body_read"),
+    };
+    json_response(
+        status,
+        json!({
+            "error": error.message,
+            "class": class,
+        }),
+    )
+}
+
+#[cfg(target_arch = "wasm32")]
 fn wants_sse(req: &Request) -> bool {
     req.headers()
         .get("accept")
@@ -869,19 +976,12 @@ fn map_execution_error(err: ExecutionError) -> (u16, JsonValue) {
                 }
             }),
         ),
-        ExecutionError::UnsupportedSpill { message } => (
-            400,
-            json!({ "error": "unsupported_spill", "message": message }),
-        ),
-        ExecutionError::SpillSetup(err) => (
-            500,
-            json!({ "error": format!("failed to configure spill storage: {err}") }),
-        ),
-        ExecutionError::HostEnvironment(err) => (
+        ExecutionError::UnsupportedSpill { .. } => (400, json!({ "error": "unsupported_spill" })),
+        ExecutionError::SpillSetup(_) => (500, json!({ "error": "spill_setup_failure" })),
+        ExecutionError::HostEnvironment(_) => (
             500,
             json!({
-                "error": "host environment failure",
-                "message": err.to_string(),
+                "error": "host_environment_failure",
             }),
         ),
     }

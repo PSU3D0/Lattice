@@ -357,15 +357,30 @@
       ],
       "type": "object"
     },
-    "NativeOnlyNodeRequirement": {
-      "description": "One native-only stdlib implementation used by a flow.",
+    "ImplementationDependencyKind": {
+      "description": "Generic class of fixed implementation invoked by a composite node.\n\nDag-core deliberately knows only the execution class, never product- or sample-specific implementations. The stable key is owned by the declaring node's crate and is requirements metadata, not a handler lookup alias.",
+      "enum": [
+        "sandboxed_transform"
+      ],
+      "type": "string"
+    },
+    "ImplementationDependencyRequirement": {
+      "description": "One fixed implementation contract used by a flow.",
       "properties": {
-        "identifier": {
-          "description": "Fully-qualified node implementation identifier.",
+        "key": {
+          "description": "Stable contract key owned by the declaring node crate.",
           "type": "string"
         },
+        "kind": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ImplementationDependencyKind"
+            }
+          ],
+          "description": "Generic execution class understood by host placement policy."
+        },
         "nodes": {
-          "description": "Aliases of nodes using this implementation (sorted).",
+          "description": "Aliases of nodes using this contract (sorted).",
           "items": {
             "type": "string"
           },
@@ -373,7 +388,8 @@
         }
       },
       "required": [
-        "identifier",
+        "key",
+        "kind",
         "nodes"
       ],
       "type": "object"
@@ -534,10 +550,10 @@
       ],
       "description": "Host constraints derivable from the IR today."
     },
-    "native_only_nodes": {
-      "description": "Native-only stdlib node requirements, grouped by implementation identifier with the aliases that use each identifier.",
+    "implementation_dependencies": {
+      "description": "Fixed implementation contracts, grouped by generic kind and declaring crate-owned key with the aliases that use each contract.",
       "items": {
-        "$ref": "#/definitions/NativeOnlyNodeRequirement"
+        "$ref": "#/definitions/ImplementationDependencyRequirement"
       },
       "type": "array"
     },

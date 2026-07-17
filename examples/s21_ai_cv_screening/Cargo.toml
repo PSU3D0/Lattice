@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "S21 native-full clone: bounded multipart PDF staging, sandboxed text extraction, LLM screening, Sheets append, Gmail notifications, and terminal KV idempotency."
+description = "S21 clone: bounded multipart PDF staging, sandboxed text extraction, LLM screening, Sheets append, Gmail notifications, and terminal KV idempotency."
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -20,16 +20,20 @@ connector_llm = { path = "../../crates/connectors/llm/core", default-features = 
 dag-core = { path = "../../crates/dag-core" }
 dag-macros = { path = "../../crates/dag-macros" }
 kernel-plan = { path = "../../crates/kernel-plan" }
-stdlib = { path = "../../crates/stdlib", default-features = false, features = ["document"] }
+metrics.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 host-inproc = { path = "../../crates/host-inproc", optional = true }
 kernel-exec = { path = "../../crates/kernel-exec", optional = true }
 
 [dev-dependencies]
 async-trait.workspace = true
 cap-http-reqwest = { path = "../../crates/cap-http-reqwest" }
+cap-workspace-fs = { path = "../../crates/cap-workspace-fs" }
 httpmock = "0.7"
+semver.workspace = true
+tempfile.workspace = true
 tokio = { workspace = true, features = ["full"] }
 
 [features]
@@ -40,7 +44,6 @@ host-bundle = [
     "connector_google_gmail/host-bundle",
     "connector_google_sheets/host-bundle",
     "connector_llm/host-bundle",
-    "stdlib/host-bundle",
 ]
 flow-registry = ["dag-core/flow-registry", "dag-macros/flow-registry"]
 

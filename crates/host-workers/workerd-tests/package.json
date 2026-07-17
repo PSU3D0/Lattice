@@ -5,13 +5,14 @@
   "type": "module",
   "scripts": {
     "build": "cargo install worker-build 2>/dev/null || true && worker-build --release",
-    "test": "npm run build && vitest run"
+    "test": "npm --prefix ../../processing-context/workers/pdf-extract run build && rm -rf extraction-worker && cp -R ../../processing-context/workers/pdf-extract/dist extraction-worker && npm run build && vitest run"
   },
   "dependencies": {
     "lattice": "file:./lattice"
   },
   "devDependencies": {
-    "miniflare": "^3.20241205.0",
+    "miniflare": "4.20260708.1",
+    "undici": "7.28.0",
     "vitest": "^3.0.0",
     "wrangler": "^4.0.0"
   }
