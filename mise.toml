@@ -80,6 +80,10 @@ run = "cd crates/cap-http-workers/workerd-tests && npm ci && npm test"
 description = "Run the dedicated PDF extraction Worker containment and Miniflare suite"
 run = "cd crates/processing-context/workers/pdf-extract && npm ci && npm test && out=$(mktemp -d) && trap 'rm -rf \"$out\"' EXIT && npx wrangler deploy --dry-run --outdir \"$out\""
 
+[tasks.qualify-s21-workers-package]
+description = "Build, verify, test, audit, and dry-run the render-derived S21 Workers package"
+run = "cd examples/s21_ai_cv_screening/workers/flow-worker && bash scripts/qualify.sh"
+
 [tasks.test-npm-suites]
 description = "Run every workerd npm suite, including the dedicated PDF extraction Worker; the CI npm-suites job"
 depends = [

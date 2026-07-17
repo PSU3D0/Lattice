@@ -30,6 +30,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use assert_cmd::prelude::*;
+use sha2::Digest;
 use toml::Table;
 
 fn fixture_root() -> PathBuf {
@@ -97,6 +98,77 @@ fn fixture_arg(name: &str) -> String {
         .to_str()
         .expect("fixture path")
         .to_string()
+}
+
+fn pdf_backend_package() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../processing-context/workers/pdf-extract")
+        .canonicalize()
+        .expect("PDF backend package")
+}
+
+fn write_pdf_backend_config(path: &Path, package: &Path, key: &str, service_name: &str) {
+    let value = serde_json::json!({
+        "schema_version": "0.1",
+        "backends": [{
+            "kind": "sandboxed_transform",
+            "key": key,
+            "backend": "cloudflare_service",
+            "service_name": service_name,
+            "package": package,
+            "multipart": {
+                "file_field": "cv",
+                "artifact_field": "cv",
+                "filename_metadata_field": "cv_filename"
+            }
+        }],
+    });
+    fs::write(
+        path,
+        serde_json::to_vec_pretty(&value).expect("backend config"),
+    )
+    .expect("write backend config");
+}
+
+fn write_test_worker_build(root: &Path) -> PathBuf {
+    let build = root.join("worker-build");
+    fs::create_dir_all(build.join("worker")).expect("worker build directory");
+    fs::write(build.join("index.js"), "export default {};\n").expect("worker index");
+    fs::write(build.join("index_bg.wasm"), b"\0asm\x01\0\0\0").expect("worker wasm");
+    fs::write(build.join("package.json"), "{\"type\":\"module\"}\n").expect("worker package");
+    fs::write(
+        build.join("worker/shim.mjs"),
+        "export * from '../index.js';\nexport { default } from '../index.js';\n",
+    )
+    .expect("worker shim");
+    build
+}
+
+fn collect_package(root: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    fn visit(root: &Path, current: &Path, out: &mut std::collections::BTreeMap<String, Vec<u8>>) {
+        let mut entries = fs::read_dir(current)
+            .expect("read package directory")
+            .map(|entry| entry.expect("package entry"))
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            if path.is_dir() {
+                visit(root, &path, out);
+            } else {
+                let logical = path
+                    .strip_prefix(root)
+                    .expect("package prefix")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                out.insert(logical, fs::read(path).expect("package file"));
+            }
+        }
+    }
+
+    let mut out = std::collections::BTreeMap::new();
+    visit(root, root, &mut out);
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -755,6 +827,304 @@ fn s21_pdf_extraction_fails_workers_render_from_typed_dependency() {
     assert!(stderr.contains("no configured Workers backend"), "{stderr}");
     assert!(!stderr.contains("LATTICE_EXTRACT_PDF"), "{stderr}");
     assert!(!stderr.contains("S21 PDF"), "{stderr}");
+}
+
+#[test]
+fn s21_pdf_backend_renders_a_pinned_deterministic_two_worker_package() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let backend_path = temp.path().join("backends.json");
+    write_pdf_backend_config(
+        &backend_path,
+        &pdf_backend_package(),
+        "lattice.pdf.extract_text.v1",
+        "s21-w4-pdf-extract",
+    );
+
+    let worker_build = write_test_worker_build(temp.path());
+    let render = |out: &Path| {
+        run_render(&[
+            "--example",
+            "s21_ai_cv_screening",
+            "--backend-config",
+            backend_path.to_str().expect("backend path"),
+            "--name",
+            "s21-w4-flow",
+            "--worker-build-dir",
+            worker_build.to_str().expect("worker build path"),
+            "--out",
+            out.to_str().expect("out path"),
+        ])
+    };
+    let out_a = temp.path().join("deploy-a");
+    let output = render(&out_a);
+    assert!(
+        output.status.success(),
+        "render failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let flow_toml = fs::read_to_string(out_a.join("wrangler.toml")).expect("flow config");
+    let flow_config = parse_toml(&flow_toml, "S21 flow config");
+    assert_eq!(
+        flow_config["main"].as_str(),
+        Some("flow-worker/build/worker/shim.mjs")
+    );
+    assert!(flow_config.get("build").is_none());
+    assert_eq!(
+        fs::read(out_a.join("flow-worker/build/index_bg.wasm")).expect("flow module"),
+        b"\0asm\x01\0\0\0"
+    );
+    let services = flow_config["services"]
+        .as_array()
+        .expect("service bindings");
+    assert!(services.iter().any(|service| {
+        service["binding"].as_str() == Some("LATTICE_EXTRACT_PDF")
+            && service["service"].as_str() == Some("s21-w4-pdf-extract")
+    }));
+
+    let extraction_toml = fs::read_to_string(out_a.join("extraction-worker/wrangler.toml"))
+        .expect("extraction config");
+    let extraction = parse_toml(&extraction_toml, "extraction config");
+    assert_eq!(extraction["name"].as_str(), Some("s21-w4-pdf-extract"));
+    assert_eq!(extraction["workers_dev"].as_bool(), Some(false));
+    assert_eq!(extraction["preview_urls"].as_bool(), Some(false));
+    assert_eq!(
+        extraction["compatibility_date"].as_str(),
+        Some("2026-07-15")
+    );
+    assert_eq!(extraction["limits"]["cpu_ms"].as_integer(), Some(30_000));
+    for forbidden in [
+        "vars",
+        "routes",
+        "services",
+        "kv_namespaces",
+        "r2_buckets",
+        "d1_databases",
+        "durable_objects",
+    ] {
+        assert!(
+            extraction.get(forbidden).is_none(),
+            "unexpected extraction authority `{forbidden}`: {extraction_toml}"
+        );
+    }
+
+    let module =
+        fs::read(out_a.join("extraction-worker/dist/pdf_extract.wasm")).expect("staged module");
+    assert_eq!(module.len(), 934_621);
+    let module_hash = sha2::Sha256::digest(&module);
+    assert_eq!(
+        format!("{module_hash:x}"),
+        "048f650aec8502659633289a4ace493c56a7bc6e95c8da3d4a34e293e96d4e96"
+    );
+
+    let manifest_bytes = fs::read(out_a.join("deploy-manifest.json")).expect("deploy manifest");
+    let expected_manifest = fs::read(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/deploy_golden/s21_w4.deploy-manifest.json"),
+    )
+    .expect("S21 W4 deploy manifest golden");
+    assert_eq!(
+        manifest_bytes, expected_manifest,
+        "S21 W4 deploy manifest drifted"
+    );
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&manifest_bytes).expect("manifest JSON");
+    assert_eq!(manifest["schema_version"], "0.1");
+    assert_eq!(manifest["flow_worker"], "s21-w4-flow");
+    assert_eq!(
+        manifest["implementation_backends"][0]["module_identity"],
+        "build_time_attested_sha256"
+    );
+    assert_eq!(manifest["implementation_backends"][0]["concurrency"], 1);
+    assert_eq!(
+        manifest["implementation_backends"][0]["instance_model"],
+        "fresh_per_invocation"
+    );
+    let manifest_text = serde_json::to_string(&manifest).expect("manifest text");
+    assert!(!manifest_text.contains(pdf_backend_package().to_string_lossy().as_ref()));
+
+    let out_b = temp.path().join("deploy-b");
+    let second = render(&out_b);
+    assert!(second.status.success(), "second render failed");
+    assert_eq!(collect_package(&out_a), collect_package(&out_b));
+}
+
+#[test]
+fn s21_pdf_backend_selection_rejects_unpinned_or_ambiguous_config() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let worker_build = write_test_worker_build(temp.path());
+    let package = pdf_backend_package();
+    let base = serde_json::json!({
+        "schema_version": "0.1",
+        "backends": [{
+            "kind": "sandboxed_transform",
+            "key": "lattice.pdf.extract_text.v1",
+            "backend": "cloudflare_service",
+            "service_name": "s21-w4-pdf-extract",
+            "package": package,
+            "multipart": {
+                "file_field": "cv",
+                "artifact_field": "cv",
+                "filename_metadata_field": "cv_filename"
+            }
+        }]
+    });
+    let cases: Vec<(&str, serde_json::Value, &str)> = vec![
+        (
+            "schema",
+            {
+                let mut value = base.clone();
+                value["schema_version"] = serde_json::json!("0.2");
+                value
+            },
+            "unsupported backend config",
+        ),
+        (
+            "missing",
+            {
+                let mut value = base.clone();
+                value["backends"] = serde_json::json!([]);
+                value
+            },
+            "missing implementation contract",
+        ),
+        (
+            "duplicate",
+            {
+                let mut value = base.clone();
+                let item = value["backends"][0].clone();
+                value["backends"] = serde_json::json!([item.clone(), item]);
+                value
+            },
+            "duplicates",
+        ),
+        (
+            "unused",
+            {
+                let mut value = base.clone();
+                value["backends"][0]["key"] = serde_json::json!("other.transform.v1");
+                value
+            },
+            "unused implementation contract",
+        ),
+        (
+            "collision",
+            {
+                let mut value = base.clone();
+                value["backends"][0]["service_name"] = serde_json::json!("s21-w4-flow");
+                value
+            },
+            "distinct names",
+        ),
+        (
+            "invalid-service",
+            {
+                let mut value = base.clone();
+                value["backends"][0]["service_name"] = serde_json::json!("INVALID");
+                value
+            },
+            "must be 1-63",
+        ),
+        (
+            "invalid-field",
+            {
+                let mut value = base.clone();
+                value["backends"][0]["multipart"]["file_field"] = serde_json::json!("cv/path");
+                value
+            },
+            "multipart file field",
+        ),
+        (
+            "reserved-filename",
+            {
+                let mut value = base.clone();
+                value["backends"][0]["multipart"]["filename_metadata_field"] =
+                    serde_json::json!("cv");
+                value
+            },
+            "reserved by the artifact payload",
+        ),
+    ];
+
+    for (label, config, expected) in cases {
+        let config_path = temp.path().join(format!("{label}.json"));
+        fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+        let out = temp.path().join(format!("out-{label}"));
+        let output = run_render(&[
+            "--example",
+            "s21_ai_cv_screening",
+            "--backend-config",
+            config_path.to_str().unwrap(),
+            "--worker-build-dir",
+            worker_build.to_str().unwrap(),
+            "--name",
+            "s21-w4-flow",
+            "--out",
+            out.to_str().unwrap(),
+        ]);
+        assert!(!output.status.success(), "{label} unexpectedly rendered");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(expected), "{label}: {stderr}");
+        assert!(!out.exists(), "{label} left partial output");
+    }
+}
+
+#[test]
+fn s21_pdf_backend_rejects_tampered_sources_without_partial_output() {
+    let flow = example_s21_ai_cv_screening::validated_ir().flow().clone();
+    let requirements = dag_core::FlowRequirements::derive(&flow).expect("derive S21 requirements");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let requirements_path = temp.path().join("requirements.json");
+    fs::write(
+        &requirements_path,
+        serde_json::to_vec_pretty(&requirements).expect("requirements"),
+    )
+    .expect("write requirements");
+
+    let package = temp.path().join("workers/pdf-extract");
+    fs::create_dir_all(package.join("src")).expect("package src");
+    fs::create_dir_all(temp.path().join("guests/pdf-extract")).expect("guest dir");
+    let canonical = pdf_backend_package();
+    fs::copy(
+        canonical.join("src/index.mjs"),
+        package.join("src/index.mjs"),
+    )
+    .expect("copy index");
+    let mut runtime = fs::read(canonical.join("src/runtime.mjs")).expect("runtime");
+    runtime.push(b' ');
+    fs::write(package.join("src/runtime.mjs"), runtime).expect("tampered runtime");
+    let guest = canonical.join("../../guests/pdf-extract");
+    fs::copy(
+        guest.join("pdf_extract.wasm"),
+        temp.path().join("guests/pdf-extract/pdf_extract.wasm"),
+    )
+    .expect("copy module");
+    fs::copy(
+        guest.join("pdf_extract.manifest.json"),
+        temp.path()
+            .join("guests/pdf-extract/pdf_extract.manifest.json"),
+    )
+    .expect("copy guest manifest");
+
+    let backend_path = temp.path().join("backends.json");
+    write_pdf_backend_config(
+        &backend_path,
+        &package,
+        "lattice.pdf.extract_text.v1",
+        "s21-w4-pdf-extract",
+    );
+    let out = temp.path().join("deploy");
+    let output = run_render(&[
+        "--requirements",
+        requirements_path.to_str().expect("requirements path"),
+        "--backend-config",
+        backend_path.to_str().expect("backend path"),
+        "--out",
+        out.to_str().expect("out path"),
+    ]);
+    assert!(!output.status.success());
+    assert!(!out.exists(), "failed render left a partial package");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("pinned W4 deployment contract"));
 }
 
 // ---------------------------------------------------------------------------

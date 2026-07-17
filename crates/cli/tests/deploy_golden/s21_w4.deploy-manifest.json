@@ -1,0 +1,78 @@
+{
+  "schema_version": "0.1",
+  "flow_worker": "s21-w4-flow",
+  "files": [
+    {
+      "path": "extraction-worker/dist/attestation.mjs",
+      "sha256": "e57fe3136f62ae136de4746195697b8d4b974622b218654a2d2151324516ebb7",
+      "size_bytes": 219
+    },
+    {
+      "path": "extraction-worker/dist/index.mjs",
+      "sha256": "34c95a76930f9332f967d0d35d43e8d27d62593d100de89125d9f7e2f82fad81",
+      "size_bytes": 423
+    },
+    {
+      "path": "extraction-worker/dist/pdf_extract.wasm",
+      "sha256": "048f650aec8502659633289a4ace493c56a7bc6e95c8da3d4a34e293e96d4e96",
+      "size_bytes": 934621
+    },
+    {
+      "path": "extraction-worker/dist/runtime.mjs",
+      "sha256": "57b2430073b3eca5c8d2b40a092de63ab7cafe21b409fd546cb94f6474e62152",
+      "size_bytes": 7381
+    },
+    {
+      "path": "extraction-worker/wrangler.toml",
+      "sha256": "16c3aa7fe003ed7dbc2226db731561d8ecab1e4bd816045f1e20ac5a5539ba48",
+      "size_bytes": 226
+    },
+    {
+      "path": "flow-worker/build/index.js",
+      "sha256": "450f0af4f4c1ecc4c7180f2e364c8a59bfed69dd350fb6b47bce8641c2a37786",
+      "size_bytes": 19
+    },
+    {
+      "path": "flow-worker/build/index_bg.wasm",
+      "sha256": "93a44bbb96c751218e4c00d479e4c14358122a389acca16205b1e4d0dc5f9476",
+      "size_bytes": 8
+    },
+    {
+      "path": "flow-worker/build/package.json",
+      "sha256": "1239d4d885dcad42201a27ed9324f8f0f760b78700d8db9ced39a511cffe7eae",
+      "size_bytes": 18
+    },
+    {
+      "path": "flow-worker/build/worker/shim.mjs",
+      "sha256": "82c7d0e1e7fa8e2858070a41fde45f08bde29fed852225d39045aec7abe4732d",
+      "size_bytes": 68
+    },
+    {
+      "path": "wrangler.toml",
+      "sha256": "f34ae9f2ee26907a718da3a38e9204c304aed70324d13fcfa86b8a82e7ebf5eb",
+      "size_bytes": 3237
+    }
+  ],
+  "implementation_backends": [
+    {
+      "kind": "sandboxed_transform",
+      "key": "lattice.pdf.extract_text.v1",
+      "binding": "LATTICE_EXTRACT_PDF",
+      "service_name": "s21-w4-pdf-extract",
+      "module_identity": "build_time_attested_sha256",
+      "module_sha256": "048f650aec8502659633289a4ace493c56a7bc6e95c8da3d4a34e293e96d4e96",
+      "abi_version": "lattice.transform.v1",
+      "compatibility_date": "2026-07-15",
+      "cpu_ms": 30000,
+      "isolate_memory_bytes": 134217728,
+      "guest_memory_bytes": 67108864,
+      "input_bytes": 8388608,
+      "output_bytes": 524292,
+      "concurrency": 1,
+      "instance_model": "fresh_per_invocation",
+      "multipart_file_field": "cv",
+      "multipart_artifact_field": "cv",
+      "multipart_filename_metadata_field": "cv_filename"
+    }
+  ]
+}

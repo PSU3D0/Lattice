@@ -7,6 +7,15 @@ Last reviewed: 2025-12-12
 
 > Detailed record of repository setup and implementation progress. Use this to orient new contributors and agents; each entry references the relevant design documents for context.
 
+## 2026-07-16 — W4 render-derived S21 Workers package
+
+- Added explicit `--backend-config` and `--worker-build-dir` deployment inputs. The renderer accepts S21 only when the typed `sandboxed_transform:lattice.pdf.extract_text.v1` contract is matched exactly; duplicate, missing, unused, malformed, or unsupported selections fail before output publication.
+- Independently verifies the pinned extraction index/runtime sources, checked guest manifest, exact 934,621-byte module and SHA-256 `048f650aec8502659633289a4ace493c56a7bc6e95c8da3d4a34e293e96d4e96`, ABI, compatibility date, 64 MiB guest maximum, bounded I/O, single flight, and fresh-instance model. Local package reads are regular-file and size bounded.
+- Emits an atomic deterministic package containing the flow Worker build, private extraction Worker, generated service binding and multipart policy, and a hash/size-attested `deploy-manifest.json`. A checked golden and two-render byte comparison pin the output; renderer negatives prove no partial package remains.
+- Added the application-owned S21 flow Worker and a render-derived Miniflare golden that executes the generated shim, real checked extraction Worker, private mock-provider service, exact LLM/Sheets/Gmail counts, sequential redelivery suppression, hostile-input recovery, R2 cleanup, provider-reflection sanitization, and fail-closed HTTP routing modes. Ambient provider overrides require explicit `ambient_https`; proof routing requires the exact service binding.
+- Added local qualification for npm audit, six Miniflare/cloud-safety tests, package attestation verification, and Wrangler dry-runs of the base package plus exact private/public disposable-cloud configs. The guarded cloud automation rejects account/name collisions, paginates management lists, starts public endpoints privately, installs random proof secrets before exposure, records only sanitized evidence, derives Durable Object ownership from exact live script/class pairs, and supports independently verified partial-run cleanup.
+- Compatibility/contract notes: the extraction Worker remains private and contains no ambient authority. The 30,000 ms CPU value remains a conservative platform policy; no live Cloudflare termination was observed, no native metering parity is claimed, and no credentialed deployment occurred in this packet because an approved disposable account/token was not supplied.
+
 ## 2026-07-16 — W3 Workers flow integration
 
 - Added bounded Workers R2 reads using only a `max_bytes + 1` prefix range; oversize objects fail with `CAP-WS-008` and never fall back to a whole-object read.

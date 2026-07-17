@@ -1,0 +1,17 @@
+{
+  "schema_version": "0.1",
+  "backends": [
+    {
+      "kind": "sandboxed_transform",
+      "key": "lattice.pdf.extract_text.v1",
+      "backend": "cloudflare_service",
+      "service_name": "s21-w4-pdf-extract",
+      "package": "../../../../crates/processing-context/workers/pdf-extract",
+      "multipart": {
+        "file_field": "cv",
+        "artifact_field": "cv",
+        "filename_metadata_field": "cv_filename"
+      }
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+[package]
+name = "s21-flow-worker"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+async-trait = "0.1"
+cap-do-workers = { path = "../../../../crates/cap-do-workers" }
+cap-http-workers = { path = "../../../../crates/cap-http-workers" }
+cap-kv-workers = { path = "../../../../crates/cap-kv-workers" }
+cap-workspace-workers = { path = "../../../../crates/cap-workspace-workers" }
+capabilities = { path = "../../../../crates/capabilities" }
+dag-core = { path = "../../../../crates/dag-core" }
+example-s21-ai-cv-screening = { path = "../.." }
+futures = "0.3"
+host-inproc = { path = "../../../../crates/host-inproc" }
+host-workers = { path = "../../../../crates/host-workers", default-features = false }
+serde_json = "1"
+worker = { version = "=0.8.1", default-features = false, features = ["http"] }
