@@ -5,6 +5,7 @@ exclude = [
   "crates/processing-context/guests/pdf-extract",
 ]
 members = [
+  "crates/broker-core",
   "crates/cap-blob-fs",
   "crates/cap-opendal",
   "crates/cap-sql-sqlx-sqlite",
