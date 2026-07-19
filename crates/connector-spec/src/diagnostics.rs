@@ -2,14 +2,22 @@ use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValidationCode {
+    DuplicateContractId,
     DuplicateGeneratedModuleName,
     DuplicateSurfaceIdentifier,
+    InvalidBrokerAbiVersion,
+    InvalidBrokerRequestOrigin,
+    InvalidBrokerRequestPlan,
+    InvalidContractId,
+    InvalidContractSemantics,
     InvalidInputFieldReference,
     InvalidJsonEscapeHatch,
     InvalidPathTemplate,
     InvalidResourceContract,
+    InvalidSemanticEffectSlots,
     InvalidTypeReference,
     UnknownEndpointProfile,
+    UnknownPlaceholderKind,
     UnknownOutboundAuthProfile,
     UnsupportedActionImplementation,
     UnsupportedOutboundAuthKind,
@@ -20,18 +28,30 @@ pub enum ValidationCode {
 impl ValidationCode {
     pub const fn as_str(self) -> &'static str {
         match self {
+            ValidationCode::DuplicateContractId => "connector::duplicate_contract_id",
             ValidationCode::DuplicateGeneratedModuleName => {
                 "connector::duplicate_generated_module_name"
             }
             ValidationCode::DuplicateSurfaceIdentifier => "connector::duplicate_surface_identifier",
+            ValidationCode::InvalidBrokerAbiVersion => "connector::invalid_broker_abi_version",
+            ValidationCode::InvalidBrokerRequestOrigin => {
+                "connector::invalid_broker_request_origin"
+            }
+            ValidationCode::InvalidBrokerRequestPlan => "connector::invalid_broker_request_plan",
+            ValidationCode::InvalidContractId => "connector::invalid_contract_id",
+            ValidationCode::InvalidContractSemantics => "connector::invalid_contract_semantics",
             ValidationCode::InvalidInputFieldReference => {
                 "connector::invalid_input_field_reference"
             }
             ValidationCode::InvalidJsonEscapeHatch => "connector::invalid_json_escape_hatch",
             ValidationCode::InvalidPathTemplate => "connector::invalid_path_template",
             ValidationCode::InvalidResourceContract => "connector::invalid_resource_contract",
+            ValidationCode::InvalidSemanticEffectSlots => {
+                "connector::invalid_semantic_effect_slots"
+            }
             ValidationCode::InvalidTypeReference => "connector::invalid_type_reference",
             ValidationCode::UnknownEndpointProfile => "connector::unknown_endpoint_profile",
+            ValidationCode::UnknownPlaceholderKind => "connector::unknown_placeholder_kind",
             ValidationCode::UnknownOutboundAuthProfile => {
                 "connector::unknown_outbound_auth_profile"
             }

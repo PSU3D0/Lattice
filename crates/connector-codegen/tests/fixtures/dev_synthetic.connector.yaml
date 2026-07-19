@@ -1,0 +1,73 @@
+connector:
+  id: dev.synthetic
+  vendor: dev
+  family: synthetic
+  version: 0.1.0
+  crate: connector_dev_synthetic
+  summary: Synthetic Broker V1 connector
+profiles:
+  outbound_auth:
+    synthetic_auth:
+      kind: bearer
+      handle_kind: http.bearer
+  endpoint_profiles:
+    synthetic:
+      base_url: https://synthetic.example
+  provisioning_auth: {}
+  inbound_verifiers: {}
+types:
+  EchoInput:
+    kind: object
+    fields:
+      message:
+        type: string
+  EchoOutput:
+    kind: object
+    fields:
+      echoed:
+        type: string
+      request_id:
+        type: string
+surfaces:
+  - kind: action
+    identifier: dev.synthetic.echo_effect
+    name: SyntheticEchoEffect
+    summary: Echo one brokered semantic effect
+    input: EchoInput
+    output: EchoOutput
+    auth: synthetic_auth
+    endpoint: synthetic
+    effects: Effectful
+    determinism: BestEffort
+    resources:
+      - http_write(capabilities::http::HttpWrite)
+    request:
+      method: POST
+      path_template: /v1/echo
+      body:
+        message: message
+    contract:
+      contract_id: dev.synthetic.echo_effect@1
+      effect_class: Effectful
+      auth_role: outbound_auth.synthetic_auth
+      minimum_scopes: [echo.write]
+      response_data_policy:
+        fields: [echoed, request_id]
+        kind: json_projection
+        max_bytes: 4096
+      broker_abi_version: "0.1"
+      semantic_effect_slots: [echo_effect]
+    broker_request:
+      method: POST
+      origin: https://synthetic.example
+      path_template: /v1/effects/{effect_key}
+      placeholders:
+        effect_key:
+          kind: idempotency_key
+      static_headers:
+        Accept: application/json
+      body:
+        message: message
+    response:
+      kind: json_body
+      root_path: body

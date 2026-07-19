@@ -119,6 +119,7 @@ impl FlowBuilder {
                 .map(|hint| hint.to_string())
                 .collect(),
             connector_ops: spec.connector_op_refs(),
+            broker_authority: None,
             implementation_dependencies: spec
                 .implementation_dependencies
                 .iter()

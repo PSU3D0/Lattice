@@ -4,7 +4,8 @@ use std::path::Path;
 use anyhow::{Context, Result, anyhow};
 use connector_spec::{
     ActionSurface, ConnectorManifest, DefaultValue, FieldDecl, FieldKind, OutboundAuthProfile,
-    ResourceRequirement, SurfaceDecl, TypeDecl, generated_module_name, paginated_collection_field,
+    ResourceRequirement, SurfaceDecl, TypeDecl, contract_hash, generated_module_name,
+    paginated_collection_field,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +86,15 @@ pub fn generate_files(
         contents: emit_generated_actions_mod_rs(&actions),
     });
     for action in &actions {
+        if action.contract.is_some() {
+            files.push(GeneratedFile {
+                relative_path: format!(
+                    "broker/operations/{}.json",
+                    generated_module_name(&action.identifier)
+                ),
+                contents: emit_broker_dispatch_descriptor(action)?,
+            });
+        }
         files.push(GeneratedFile {
             relative_path: format!(
                 "src/generated/ops/{}.rs",
@@ -124,6 +134,29 @@ pub fn write_generated_files(root: impl AsRef<Path>, files: &[GeneratedFile]) ->
             .with_context(|| format!("write generated file {}", path.display()))?;
     }
     Ok(())
+}
+
+fn emit_broker_dispatch_descriptor(action: &ActionSurface) -> Result<String> {
+    let contract = action
+        .contract
+        .as_ref()
+        .ok_or_else(|| anyhow!("broker descriptor requires a validated contract"))?;
+    let request_plan = action
+        .broker_request
+        .as_ref()
+        .ok_or_else(|| anyhow!("broker descriptor requires a validated request plan"))?;
+    let mut descriptor = std::collections::BTreeMap::new();
+    descriptor.insert("contract", serde_json::to_value(contract.descriptor())?);
+    descriptor.insert(
+        "contract_hash",
+        serde_json::Value::String(contract_hash(contract)?),
+    );
+    descriptor.insert("request_plan", serde_json::to_value(request_plan)?);
+    descriptor.insert(
+        "response_data_policy",
+        serde_json::to_value(&contract.response_data_policy)?,
+    );
+    Ok(serde_json::to_string(&descriptor)? + "\n")
 }
 
 fn sorted_actions(manifest: &ConnectorManifest) -> Vec<&ActionSurface> {
@@ -544,6 +577,19 @@ fn emit_op_file(manifest: &ConnectorManifest, action: &ActionSurface) -> String 
 
     out.push_str(&format!("pub struct {};\n\n", op_struct));
     out.push_str(&format!("impl {} {{\n", op_struct));
+    if let Some(contract) = &action.contract {
+        let hash = contract_hash(contract).expect("validated contract descriptor");
+        out.push_str("    pub const BROKER_CONTRACT: Option<::dag_core::BrokerContractMetadata> = Some(::dag_core::BrokerContractMetadata {\n");
+        out.push_str(&format!(
+            "        contract_id: \"{}\",\n",
+            escape_rust_string(&contract.contract_id)
+        ));
+        out.push_str(&format!(
+            "        contract_hash: \"{}\",\n",
+            escape_rust_string(&hash)
+        ));
+        out.push_str("    });\n\n");
+    }
     out.push_str(
         "    pub const META: ::dag_core::ConnectorOpMetadata = ::dag_core::ConnectorOpMetadata {\n",
     );
@@ -1023,6 +1069,12 @@ mod tests {
         fs::read_to_string(manifest_path).expect("fixture text")
     }
 
+    fn synthetic_fixture_text() -> String {
+        let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/dev_synthetic.connector.yaml");
+        fs::read_to_string(manifest_path).expect("synthetic fixture text")
+    }
+
     #[test]
     fn generation_is_deterministic() {
         let text = fixture_text();
@@ -1030,6 +1082,33 @@ mod tests {
         let left = generate_files(&manifest, &text).expect("left generation");
         let right = generate_files(&manifest, &text).expect("right generation");
         assert_eq!(left, right);
+    }
+
+    #[test]
+    fn synthetic_contract_dual_emission_is_golden_and_reproducible() {
+        let text = synthetic_fixture_text();
+        let manifest = ConnectorManifest::from_yaml_str(&text).expect("manifest parses");
+        let left = generate_files(&manifest, &text).expect("left generation");
+        let right = generate_files(&manifest, &text).expect("right generation");
+        assert_eq!(left, right, "double generation must be byte-identical");
+
+        let descriptor = left
+            .iter()
+            .find(|file| file.relative_path == "broker/operations/echo_effect.json")
+            .expect("broker dispatch descriptor");
+        let golden = fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/dev_synthetic.echo_effect.dispatch.json"),
+        )
+        .expect("golden descriptor");
+        assert_eq!(descriptor.contents, golden);
+
+        let operation = left
+            .iter()
+            .find(|file| file.relative_path == "src/generated/ops/echo_effect.rs")
+            .expect("flow operation surface");
+        assert!(operation.contents.contains("dev.synthetic.echo_effect@1"));
+        assert!(operation.contents.contains("sha256:"));
     }
 
     #[test]

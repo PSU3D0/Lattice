@@ -1,3 +1,5 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use schemars::JsonSchema;
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -190,6 +192,14 @@ pub struct ConnectorOpMetadata {
     pub effect_hints: &'static [&'static str],
     pub roles: &'static [ConnectorRoleRequirement],
     pub resolution: ConnectorResolutionContract,
+}
+
+/// Additive Broker V1 capsule identity emitted alongside legacy operation
+/// metadata. Keeping this parallel avoids changing existing static literals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BrokerContractMetadata {
+    pub contract_id: &'static str,
+    pub contract_hash: &'static str,
 }
 
 /// Serializable connector role requirement emitted into Flow IR.
@@ -581,6 +591,244 @@ impl FlowIR {
     pub fn node(&self, alias: &str) -> Option<&NodeIR> {
         self.nodes.iter().find(|n| n.alias == alias)
     }
+
+    /// Validate all Broker V1 authority metadata before derivation or use.
+    pub fn validate_broker_authority(&self) -> Result<(), Vec<BrokerAuthorityValidationError>> {
+        let mut errors = Vec::new();
+        for node in &self.nodes {
+            let Some(authority) = &node.broker_authority else {
+                continue;
+            };
+            if let Err(error) = authority.validate_for_node(node) {
+                errors.push(error);
+            }
+
+            // Broker protocol section 6.2 requires repeated activation to be
+            // author-bounded. Today's control-surface IR has no normative
+            // author-declared fan-out bound, so every brokered repeated target
+            // fails closed. B3 can teach this hook a typed bound once one is
+            // added; timeouts or opaque config must not be inferred as bounds.
+            for surface in &self.control_surfaces {
+                let repeats = matches!(
+                    surface.kind,
+                    ControlSurfaceKind::Loop
+                        | ControlSurfaceKind::ForEach
+                        | ControlSurfaceKind::Window
+                );
+                if repeats && surface.targets.iter().any(|target| target == &node.alias) {
+                    errors.push(BrokerAuthorityValidationError::UnboundedFanout);
+                }
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+}
+
+pub const BROKER_MAX_EXACT_INTEGER: u64 = 9_007_199_254_740_991;
+
+/// Broker V1 operation budget scoped per run and node.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BrokerOperationBudget {
+    pub contract_id: String,
+    pub semantic_effect_slots: Vec<String>,
+    pub max_logical_calls: u64,
+    pub max_dispatch_attempts_per_call: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_aggregate_key: Option<String>,
+}
+
+/// Hash-covered Broker V1 authority authoring carried by a node.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BrokerAuthority {
+    operation_budgets: Vec<BrokerOperationBudget>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    flow_aggregate_max_logical_calls: Option<u64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    connection_aggregate_max_logical_calls: BTreeMap<String, u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BrokerAuthorityUnchecked {
+    operation_budgets: Vec<BrokerOperationBudget>,
+    #[serde(default)]
+    flow_aggregate_max_logical_calls: Option<u64>,
+    #[serde(default)]
+    connection_aggregate_max_logical_calls: BTreeMap<String, u64>,
+}
+
+impl<'de> Deserialize<'de> for BrokerAuthority {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let unchecked = BrokerAuthorityUnchecked::deserialize(deserializer)?;
+        Self::new(
+            unchecked.operation_budgets,
+            unchecked.flow_aggregate_max_logical_calls,
+            unchecked.connection_aggregate_max_logical_calls,
+        )
+        .map_err(serde::de::Error::custom)
+    }
+}
+
+impl BrokerAuthority {
+    pub fn new(
+        operation_budgets: Vec<BrokerOperationBudget>,
+        flow_aggregate_max_logical_calls: Option<u64>,
+        connection_aggregate_max_logical_calls: BTreeMap<String, u64>,
+    ) -> Result<Self, BrokerAuthorityValidationError> {
+        let authority = Self {
+            operation_budgets,
+            flow_aggregate_max_logical_calls,
+            connection_aggregate_max_logical_calls,
+        };
+        authority.validate()?;
+        Ok(authority)
+    }
+
+    pub fn operation_budgets(&self) -> &[BrokerOperationBudget] {
+        &self.operation_budgets
+    }
+
+    pub fn flow_aggregate_max_logical_calls(&self) -> Option<u64> {
+        self.flow_aggregate_max_logical_calls
+    }
+
+    pub fn connection_aggregate_max_logical_calls(&self) -> &BTreeMap<String, u64> {
+        &self.connection_aggregate_max_logical_calls
+    }
+
+    pub fn validate(&self) -> Result<(), BrokerAuthorityValidationError> {
+        if self.operation_budgets.is_empty() {
+            return Err(BrokerAuthorityValidationError::EmptyOperationBudgets);
+        }
+        let mut contract_ids = BTreeSet::new();
+        for budget in &self.operation_budgets {
+            if !valid_broker_contract_id(&budget.contract_id) {
+                return Err(BrokerAuthorityValidationError::InvalidContractId);
+            }
+            if !contract_ids.insert(&budget.contract_id) {
+                return Err(BrokerAuthorityValidationError::DuplicateContractId);
+            }
+            if !valid_semantic_effect_slots(&budget.semantic_effect_slots) {
+                return Err(BrokerAuthorityValidationError::InvalidSemanticEffectSlots);
+            }
+            validate_broker_maximum(budget.max_logical_calls)?;
+            validate_broker_maximum(budget.max_dispatch_attempts_per_call)?;
+            if budget
+                .connection_aggregate_key
+                .as_deref()
+                .is_some_and(|key| !valid_broker_ascii_id(key, 256))
+            {
+                return Err(BrokerAuthorityValidationError::InvalidAggregateKey);
+            }
+        }
+        if let Some(maximum) = self.flow_aggregate_max_logical_calls {
+            validate_broker_maximum(maximum)?;
+        }
+        for (key, maximum) in &self.connection_aggregate_max_logical_calls {
+            if !valid_broker_ascii_id(key, 256) {
+                return Err(BrokerAuthorityValidationError::InvalidAggregateKey);
+            }
+            validate_broker_maximum(*maximum)?;
+        }
+        Ok(())
+    }
+
+    fn validate_for_node(&self, node: &NodeIR) -> Result<(), BrokerAuthorityValidationError> {
+        self.validate()?;
+        for budget in &self.operation_budgets {
+            let operation_id = budget
+                .contract_id
+                .rsplit_once('@')
+                .map(|(operation, _)| operation)
+                .ok_or(BrokerAuthorityValidationError::InvalidContractId)?;
+            if !node
+                .connector_ops
+                .iter()
+                .any(|operation| operation.operation_id == operation_id)
+            {
+                return Err(BrokerAuthorityValidationError::ContractNotDeclaredByNode);
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum BrokerAuthorityValidationError {
+    #[error("broker authority must contain at least one operation budget")]
+    EmptyOperationBudgets,
+    #[error("broker authority contains a malformed contract id")]
+    InvalidContractId,
+    #[error("broker authority repeats an operation contract")]
+    DuplicateContractId,
+    #[error("broker authority contains invalid semantic effect slots")]
+    InvalidSemanticEffectSlots,
+    #[error("broker authority maximum must be positive and exactly representable in JCS")]
+    InvalidMaximum,
+    #[error("broker authority contains an invalid aggregate key")]
+    InvalidAggregateKey,
+    #[error("broker authority contract is absent from node connector operation metadata")]
+    ContractNotDeclaredByNode,
+    #[error("brokered node is targeted by an unbounded repeated-activation control surface")]
+    UnboundedFanout,
+}
+
+fn validate_broker_maximum(value: u64) -> Result<(), BrokerAuthorityValidationError> {
+    if value == 0 || value > BROKER_MAX_EXACT_INTEGER {
+        Err(BrokerAuthorityValidationError::InvalidMaximum)
+    } else {
+        Ok(())
+    }
+}
+
+fn valid_broker_contract_id(value: &str) -> bool {
+    let Some((name, major)) = value.rsplit_once('@') else {
+        return false;
+    };
+    if major.is_empty()
+        || major.starts_with('0')
+        || !major.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return false;
+    }
+    let segments = name.split('.').collect::<Vec<_>>();
+    segments.len() >= 2
+        && segments.iter().all(|segment| {
+            segment
+                .as_bytes()
+                .first()
+                .is_some_and(|byte| byte.is_ascii_lowercase())
+                && segment
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+        })
+}
+
+fn valid_semantic_effect_slots(slots: &[String]) -> bool {
+    !slots.is_empty()
+        && slots.iter().all(|slot| {
+            valid_broker_ascii_id(slot, 128)
+                && slot
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        })
+        && slots.windows(2).all(|pair| pair[0] < pair[1])
+}
+
+fn valid_broker_ascii_id(value: &str, max_len: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= max_len
+        && value.is_ascii()
+        && value.bytes().all(|byte| !byte.is_ascii_control())
 }
 
 /// Node entry within the Flow IR.
@@ -622,6 +870,9 @@ pub struct NodeIR {
     /// Structured connector operations declared for the node.
     #[serde(rename = "connectorOps", default)]
     pub connector_ops: Vec<ConnectorOpRefIR>,
+    /// Optional Broker V1 budgets. Snake case is intentional and normative.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub broker_authority: Option<BrokerAuthority>,
     /// Fixed implementations invoked internally by this typed composite node.
     #[serde(
         rename = "implementationDependencies",
@@ -1008,5 +1259,157 @@ impl IdempotencySpecStatic {
             scope: self.scope,
             ttl_ms: self.ttl_ms,
         }
+    }
+}
+
+#[cfg(test)]
+mod broker_authority_tests {
+    use super::*;
+    use crate::builder::FlowBuilder;
+
+    fn budget() -> BrokerOperationBudget {
+        BrokerOperationBudget {
+            contract_id: "dev.synthetic.echo_effect@1".to_string(),
+            semantic_effect_slots: vec!["echo_effect".to_string()],
+            max_logical_calls: 2,
+            max_dispatch_attempts_per_call: 1,
+            connection_aggregate_key: Some("synthetic-primary".to_string()),
+        }
+    }
+
+    fn budgeted_flow() -> FlowIR {
+        let spec = NodeSpec::inline(
+            "dev.synthetic.echo_effect",
+            "Synthetic echo",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Effectful,
+            Determinism::BestEffort,
+            None,
+        );
+        let mut builder = FlowBuilder::new("budgeted", Version::new(1, 0, 0), Profile::Dev);
+        builder.add_node("echo", &spec).expect("node");
+        let mut flow = builder.build();
+        flow.nodes[0].connector_ops.push(ConnectorOpRefIR {
+            operation_id: "dev.synthetic.echo_effect".to_string(),
+            connector_id: "dev.synthetic".to_string(),
+            roles: Vec::new(),
+            default_resolution_mode: ConnectorResolutionModeDecl::BoundConnection,
+            selected_resolution_mode: ConnectorResolutionModeDecl::BoundConnection,
+            supported_resolution_modes: vec![ConnectorResolutionModeDecl::BoundConnection],
+        });
+        flow.nodes[0].broker_authority = Some(
+            BrokerAuthority::new(
+                vec![budget()],
+                Some(4),
+                BTreeMap::from([("synthetic-primary".to_string(), 3)]),
+            )
+            .expect("valid authority"),
+        );
+        flow
+    }
+
+    #[test]
+    fn budgeted_node_survives_flow_ir_round_trip() {
+        let flow = budgeted_flow();
+        flow.validate_broker_authority().expect("valid authority");
+        let bytes = serde_json::to_vec(&flow).expect("serialize");
+        let decoded: FlowIR = serde_json::from_slice(&bytes).expect("deserialize");
+        assert_eq!(
+            decoded.nodes[0].broker_authority,
+            flow.nodes[0].broker_authority
+        );
+        let authority = decoded.nodes[0]
+            .broker_authority
+            .as_ref()
+            .expect("authority");
+        assert_eq!(authority.operation_budgets()[0].max_logical_calls, 2);
+        assert_eq!(authority.flow_aggregate_max_logical_calls(), Some(4));
+    }
+
+    #[test]
+    fn broker_authority_is_hash_covered_by_flow_ir_bytes() {
+        let left = budgeted_flow();
+        let mut right = left.clone();
+        let authority = right.nodes[0].broker_authority.as_ref().expect("authority");
+        right.nodes[0].broker_authority = Some(
+            BrokerAuthority::new(
+                authority.operation_budgets().to_vec(),
+                Some(5),
+                authority.connection_aggregate_max_logical_calls().clone(),
+            )
+            .expect("updated authority"),
+        );
+        let left_bytes = serde_json::to_vec(&left).expect("left bytes");
+        let right_bytes = serde_json::to_vec(&right).expect("right bytes");
+        assert_ne!(left_bytes, right_bytes);
+        assert!(
+            String::from_utf8(left_bytes)
+                .expect("json utf8")
+                .contains("\"broker_authority\"")
+        );
+    }
+
+    #[test]
+    fn invalid_authority_is_rejected_during_deserialization() {
+        let flow = budgeted_flow();
+        let mut value = serde_json::to_value(flow).expect("value");
+        value["nodes"][0]["broker_authority"]["operation_budgets"][0]["max_logical_calls"] =
+            serde_json::json!(0);
+        assert!(serde_json::from_value::<FlowIR>(value).is_err());
+
+        let flow = budgeted_flow();
+        let mut value = serde_json::to_value(flow).expect("value");
+        value["nodes"][0]["broker_authority"]["operation_budgets"][0]["max_logical_calls"] =
+            serde_json::json!(BROKER_MAX_EXACT_INTEGER + 1);
+        assert!(serde_json::from_value::<FlowIR>(value).is_err());
+
+        let flow = budgeted_flow();
+        let mut value = serde_json::to_value(flow).expect("value");
+        value["nodes"][0]["broker_authority"]["operation_budgets"][0]["semantic_effect_slots"] =
+            serde_json::json!(["z", "a"]);
+        assert!(serde_json::from_value::<FlowIR>(value).is_err());
+
+        let flow = budgeted_flow();
+        let mut value = serde_json::to_value(flow).expect("value");
+        let duplicate = value["nodes"][0]["broker_authority"]["operation_budgets"][0].clone();
+        value["nodes"][0]["broker_authority"]["operation_budgets"] =
+            serde_json::json!([duplicate.clone(), duplicate]);
+        assert!(serde_json::from_value::<FlowIR>(value).is_err());
+
+        let flow = budgeted_flow();
+        let mut value = serde_json::to_value(flow).expect("value");
+        value["nodes"][0]["broker_authority"]["unknown_security_field"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<FlowIR>(value).is_err());
+    }
+
+    #[test]
+    fn undeclared_contract_and_unbounded_fanout_fail_validation() {
+        let mut undeclared = budgeted_flow();
+        undeclared.nodes[0].connector_ops.clear();
+        assert!(matches!(
+            undeclared.validate_broker_authority(),
+            Err(errors) if errors.contains(&BrokerAuthorityValidationError::ContractNotDeclaredByNode)
+        ));
+
+        let mut unbounded = budgeted_flow();
+        unbounded.control_surfaces.push(ControlSurfaceIR {
+            id: "repeat".to_string(),
+            kind: ControlSurfaceKind::ForEach,
+            targets: vec!["echo".to_string()],
+            config: serde_json::json!({"v": 1}),
+        });
+        assert!(matches!(
+            unbounded.validate_broker_authority(),
+            Err(errors) if errors.contains(&BrokerAuthorityValidationError::UnboundedFanout)
+        ));
+    }
+
+    #[test]
+    fn emitted_schema_contains_broker_authority() {
+        let schema = crate::schema::flow_ir_schema();
+        let json = serde_json::to_string(&schema).expect("schema json");
+        assert!(json.contains("broker_authority"));
+        assert!(json.contains("operation_budgets"));
     }
 }

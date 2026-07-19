@@ -2,8 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::diagnostics::{ValidationCode, ValidationError, ValidationErrors};
 use crate::model::{
-    ActionImplementation, ActionSurface, ConnectorManifest, DefaultValue, FieldDecl, FieldKind,
-    PaginationDecl, RequestMapping, ResourceRequirement, SurfaceDecl, TypeDecl,
+    ActionImplementation, ActionSurface, BrokerRequestPlan, ConnectorManifest, DefaultValue,
+    FieldDecl, FieldKind, OperationContract, PaginationDecl, RequestMapping, ResourceRequirement,
+    SurfaceDecl, TypeDecl,
 };
 
 pub fn validate_manifest(manifest: &ConnectorManifest) -> Result<(), ValidationErrors> {
@@ -31,6 +32,7 @@ pub fn validate_manifest(manifest: &ConnectorManifest) -> Result<(), ValidationE
 
     let mut seen_identifiers = BTreeSet::new();
     let mut seen_modules = BTreeSet::new();
+    let mut seen_contract_ids = BTreeSet::new();
     for (index, surface) in manifest.surfaces.iter().enumerate() {
         let surface_path = format!("surfaces[{index}]");
         if !seen_identifiers.insert(surface.identifier().to_string()) {
@@ -55,6 +57,15 @@ pub fn validate_manifest(manifest: &ConnectorManifest) -> Result<(), ValidationE
 
         if let SurfaceDecl::Action(action) = surface {
             validate_action_surface(action, &surface_path, manifest, &mut errors);
+            if let Some(contract) = &action.contract {
+                if !seen_contract_ids.insert(contract.contract_id.clone()) {
+                    errors.push(ValidationError::new(
+                        ValidationCode::DuplicateContractId,
+                        Some(format!("{surface_path}.contract.contract_id")),
+                        format!("duplicate contract id `{}`", contract.contract_id),
+                    ));
+                }
+            }
         }
     }
 
@@ -373,6 +384,24 @@ fn validate_action_surface(
         }
     }
 
+    match (&action.contract, &action.broker_request) {
+        (Some(contract), Some(request)) => {
+            validate_operation_contract(contract, action, manifest, surface_path, errors);
+            validate_broker_request_plan(request, input_fields, surface_path, errors);
+        }
+        (Some(_), None) => errors.push(ValidationError::new(
+            ValidationCode::InvalidBrokerRequestPlan,
+            Some(format!("{surface_path}.broker_request")),
+            "contracted actions must declare a broker_request plan",
+        )),
+        (None, Some(_)) => errors.push(ValidationError::new(
+            ValidationCode::InvalidBrokerRequestPlan,
+            Some(format!("{surface_path}.broker_request")),
+            "broker_request requires an operation contract",
+        )),
+        (None, None) => {}
+    }
+
     match action.implementation {
         ActionImplementation::RequestMapped => {
             let request = match action.request() {
@@ -444,6 +473,263 @@ fn validate_action_surface(
             )),
         }
     }
+}
+
+fn validate_operation_contract(
+    contract: &OperationContract,
+    action: &ActionSurface,
+    manifest: &ConnectorManifest,
+    surface_path: &str,
+    errors: &mut ValidationErrors,
+) {
+    let path = format!("{surface_path}.contract");
+    if !valid_contract_id(&contract.contract_id)
+        || contract.contract_id.split('@').next() != Some(action.identifier.as_str())
+    {
+        errors.push(ValidationError::new(
+            ValidationCode::InvalidContractId,
+            Some(format!("{path}.contract_id")),
+            "contract id must be `<operation_identifier>@<positive-major>` using lowercase ASCII segments",
+        ));
+    }
+    if contract.broker_abi_version != "0.1" {
+        errors.push(ValidationError::new(
+            ValidationCode::InvalidBrokerAbiVersion,
+            Some(format!("{path}.broker_abi_version")),
+            "Broker V1 ABI version must be exactly `0.1`",
+        ));
+    }
+    if contract.effect_class != action.effects {
+        errors.push(ValidationError::new(
+            ValidationCode::InvalidContractSemantics,
+            Some(format!("{path}.effect_class")),
+            "contract effect class must equal the action effect class",
+        ));
+    }
+
+    let role_name = contract.auth_role.strip_prefix("outbound_auth.");
+    if role_name.is_none()
+        || role_name != action.auth.as_deref()
+        || role_name.is_some_and(|name| !manifest.profiles.outbound_auth.contains_key(name))
+    {
+        errors.push(ValidationError::new(
+            ValidationCode::InvalidContractSemantics,
+            Some(format!("{path}.auth_role")),
+            "auth_role must name the action's declared `outbound_auth.<profile>` role",
+        ));
+    }
+
+    if !is_sorted_unique_ascii(&contract.minimum_scopes, false, 1024) {
+        errors.push(ValidationError::new(
+            ValidationCode::InvalidContractSemantics,
+            Some(format!("{path}.minimum_scopes")),
+            "minimum scopes must be sorted, unique, non-empty ASCII strings",
+        ));
+    }
+    if !is_sorted_unique_ascii(&contract.semantic_effect_slots, true, 128)
+        || !contract.semantic_effect_slots.iter().all(|slot| {
+            slot.bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        })
+    {
+        errors.push(ValidationError::new(
+            ValidationCode::InvalidSemanticEffectSlots,
+            Some(format!("{path}.semantic_effect_slots")),
+            "semantic effect slots must be a non-empty sorted unique array of 1-128 byte ASCII identifiers",
+        ));
+    }
+
+    let policy = &contract.response_data_policy;
+    let fields_exist = manifest
+        .type_decl(&action.output)
+        .and_then(TypeDecl::as_object_fields)
+        .is_some_and(|output_fields| {
+            policy
+                .fields
+                .iter()
+                .all(|field| output_fields.contains_key(field))
+        });
+    if policy.max_bytes == 0
+        || policy.max_bytes > 256 * 1024
+        || !is_sorted_unique_ascii(&policy.fields, true, 256)
+        || !fields_exist
+    {
+        errors.push(ValidationError::new(
+            ValidationCode::InvalidContractSemantics,
+            Some(format!("{path}.response_data_policy")),
+            "response projection fields must be sorted unique declared output fields and max_bytes must be 1..=262144",
+        ));
+    }
+}
+
+fn validate_broker_request_plan(
+    request: &BrokerRequestPlan,
+    input_fields: &BTreeMap<String, FieldDecl>,
+    surface_path: &str,
+    errors: &mut ValidationErrors,
+) {
+    let path = format!("{surface_path}.broker_request");
+    if !valid_https_origin(&request.origin) {
+        errors.push(ValidationError::new(
+            ValidationCode::InvalidBrokerRequestOrigin,
+            Some(format!("{path}.origin")),
+            "origin must be an HTTPS origin without path, query, fragment, userinfo, or wildcard",
+        ));
+    }
+    if !request.path_template.starts_with('/')
+        || request.path_template.contains('?')
+        || request.path_template.contains('#')
+    {
+        errors.push(ValidationError::new(
+            ValidationCode::InvalidBrokerRequestPlan,
+            Some(format!("{path}.path_template")),
+            "broker path template must start with `/` and contain no query or fragment",
+        ));
+    }
+
+    let placeholders = match extract_placeholders(&request.path_template) {
+        Ok(placeholders) => placeholders,
+        Err(message) => {
+            errors.push(ValidationError::new(
+                ValidationCode::InvalidBrokerRequestPlan,
+                Some(format!("{path}.path_template")),
+                message,
+            ));
+            Vec::new()
+        }
+    };
+    for name in &placeholders {
+        if !request.placeholders.contains_key(name) {
+            errors.push(ValidationError::new(
+                ValidationCode::InvalidBrokerRequestPlan,
+                Some(format!("{path}.placeholders")),
+                format!("path placeholder `{{{name}}}` has no typed declaration"),
+            ));
+        }
+    }
+    for (name, placeholder) in &request.placeholders {
+        if !placeholders.contains(name) {
+            errors.push(ValidationError::new(
+                ValidationCode::InvalidBrokerRequestPlan,
+                Some(format!("{path}.placeholders.{name}")),
+                "placeholder declaration is not used by the path template",
+            ));
+        }
+        match placeholder.kind.as_str() {
+            "input" => match placeholder.input_field.as_deref() {
+                Some(field) => ensure_input_field_exists(
+                    input_fields,
+                    field,
+                    format!("{path}.placeholders.{name}.input_field"),
+                    errors,
+                ),
+                None => errors.push(ValidationError::new(
+                    ValidationCode::InvalidInputFieldReference,
+                    Some(format!("{path}.placeholders.{name}.input_field")),
+                    "input placeholder must declare input_field",
+                )),
+            },
+            "idempotency_key" | "timestamp" | "boundary" => {
+                if placeholder.input_field.is_some() {
+                    errors.push(ValidationError::new(
+                        ValidationCode::InvalidBrokerRequestPlan,
+                        Some(format!("{path}.placeholders.{name}.input_field")),
+                        "broker-filled placeholders must not declare input_field",
+                    ));
+                }
+            }
+            _ => errors.push(ValidationError::new(
+                ValidationCode::UnknownPlaceholderKind,
+                Some(format!("{path}.placeholders.{name}.kind")),
+                "placeholder kind is not in the closed Broker V1 vocabulary",
+            )),
+        }
+    }
+    validate_field_mapping(input_fields, &request.body, format!("{path}.body"), errors);
+}
+
+fn valid_contract_id(value: &str) -> bool {
+    let Some((name, major)) = value.rsplit_once('@') else {
+        return false;
+    };
+    if major.is_empty()
+        || major.starts_with('0')
+        || !major.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return false;
+    }
+    let segments = name.split('.').collect::<Vec<_>>();
+    segments.len() >= 2
+        && segments.iter().all(|segment| {
+            segment
+                .as_bytes()
+                .first()
+                .is_some_and(|byte| byte.is_ascii_lowercase())
+                && segment
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+        })
+}
+
+fn is_sorted_unique_ascii(values: &[String], require_non_empty: bool, max_len: usize) -> bool {
+    if require_non_empty && values.is_empty() {
+        return false;
+    }
+    values
+        .iter()
+        .all(|value| !value.is_empty() && value.len() <= max_len && value.is_ascii())
+        && values.windows(2).all(|pair| pair[0] < pair[1])
+}
+
+fn valid_https_origin(origin: &str) -> bool {
+    let Some(authority) = origin.strip_prefix("https://") else {
+        return false;
+    };
+    if authority.is_empty()
+        || !authority.is_ascii()
+        || authority.bytes().any(|byte| byte.is_ascii_whitespace())
+        || authority.contains('/')
+        || authority.contains('?')
+        || authority.contains('#')
+        || authority.contains('@')
+        || authority.contains('*')
+        || authority.contains('\\')
+    {
+        return false;
+    }
+
+    let (host, port) = if authority.starts_with('[') {
+        let Some(close) = authority.find(']') else {
+            return false;
+        };
+        let host = &authority[..=close];
+        let suffix = &authority[close + 1..];
+        let port = if suffix.is_empty() {
+            None
+        } else {
+            suffix.strip_prefix(':')
+        };
+        if !suffix.is_empty() && port.is_none() {
+            return false;
+        }
+        (host, port)
+    } else if let Some((host, port)) = authority.rsplit_once(':') {
+        (host, Some(port))
+    } else {
+        (authority, None)
+    };
+
+    !host.is_empty()
+        && !host.starts_with('.')
+        && !host.ends_with('.')
+        && host.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'[' | b']' | b':')
+        })
+        && port.is_none_or(|port| {
+            !port.is_empty()
+                && port.bytes().all(|byte| byte.is_ascii_digit())
+                && port.parse::<u16>().is_ok_and(|port| port != 0)
+        })
 }
 
 fn validate_field_mapping(

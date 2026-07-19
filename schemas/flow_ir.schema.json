@@ -27,6 +27,76 @@
       ],
       "type": "object"
     },
+    "BrokerAuthority": {
+      "additionalProperties": false,
+      "description": "Hash-covered Broker V1 authority authoring carried by a node.",
+      "properties": {
+        "connection_aggregate_max_logical_calls": {
+          "additionalProperties": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "type": "object"
+        },
+        "flow_aggregate_max_logical_calls": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "operation_budgets": {
+          "items": {
+            "$ref": "#/definitions/BrokerOperationBudget"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "operation_budgets"
+      ],
+      "type": "object"
+    },
+    "BrokerOperationBudget": {
+      "additionalProperties": false,
+      "description": "Broker V1 operation budget scoped per run and node.",
+      "properties": {
+        "connection_aggregate_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "contract_id": {
+          "type": "string"
+        },
+        "max_dispatch_attempts_per_call": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "max_logical_calls": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "semantic_effect_slots": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "contract_id",
+        "max_dispatch_attempts_per_call",
+        "max_logical_calls",
+        "semantic_effect_slots"
+      ],
+      "type": "object"
+    },
     "BufferPolicy": {
       "description": "Buffering behaviour metadata.",
       "properties": {
@@ -868,6 +938,17 @@
         "alias": {
           "description": "Alias used within the workflow definition.",
           "type": "string"
+        },
+        "broker_authority": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BrokerAuthority"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional Broker V1 budgets. Snake case is intentional and normative."
         },
         "connectorOps": {
           "default": [],

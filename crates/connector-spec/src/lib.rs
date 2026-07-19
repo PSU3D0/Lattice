@@ -1,3 +1,4 @@
+mod contract;
 mod diagnostics;
 mod model;
 mod validate;
@@ -5,13 +6,15 @@ mod validate;
 use std::fs;
 use std::path::Path;
 
+pub use contract::{ContractCanonicalizationError, canonical_contract_json, contract_hash};
 pub use diagnostics::{ValidationCode, ValidationError, ValidationErrors};
 pub use model::{
-    ActionImplementation, ActionSurface, ConnectorManifest, ConnectorMetadata, ConnectorProfiles,
-    DefaultValue, DeterminismLevel, EffectLevel, EndpointProfile, FieldDecl, FieldKind,
-    OutboundAuthProfile, PaginationDecl, PaginationKind, RequestMapping, RequestMethod,
-    ReservedProfile, ReservedTriggerConfig, ResourceRequirement, ResponseDecl, ResponseKind,
-    StaticHeaderDecl, SurfaceDecl, TypeDecl, WebhookTriggerSurface,
+    ActionImplementation, ActionSurface, BrokerRequestPlan, ConnectorManifest, ConnectorMetadata,
+    ConnectorProfiles, DefaultValue, DeterminismLevel, EffectLevel, EndpointProfile, FieldDecl,
+    FieldKind, OperationContract, OperationContractDescriptor, OutboundAuthProfile, PaginationDecl,
+    PaginationKind, RequestMapping, RequestMethod, RequestPlaceholderDecl, ReservedProfile,
+    ReservedTriggerConfig, ResourceRequirement, ResponseDataPolicy, ResponseDataPolicyKind,
+    ResponseDecl, ResponseKind, StaticHeaderDecl, SurfaceDecl, TypeDecl, WebhookTriggerSurface,
 };
 pub use validate::{
     generated_module_name, paginated_collection_field, validate_manifest,
