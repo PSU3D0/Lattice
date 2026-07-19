@@ -931,6 +931,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "broker-host"
+version = "0.1.0"
+dependencies = [
+ "broker-core",
+ "dag-core",
+ "kernel-plan",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "bstr"
 version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

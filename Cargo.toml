@@ -6,6 +6,7 @@ exclude = [
 ]
 members = [
   "crates/broker-core",
+  "crates/broker-host",
   "crates/cap-blob-fs",
   "crates/cap-opendal",
   "crates/cap-sql-sqlx-sqlite",
