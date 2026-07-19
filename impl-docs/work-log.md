@@ -7,6 +7,12 @@ Last reviewed: 2025-12-12
 
 > Detailed record of repository setup and implementation progress. Use this to orient new contributors and agents; each entry references the relevant design documents for context.
 
+## 2026-07-19 — Broker V1 normative protocol (B0)
+
+- Added the `0.1` broker protocol specification for canonical JCS encoding, authority/binding/grant/receipt artifacts, deterministic logical-effect identity, budget carriage, ledger transitions, assurance, privacy commitments, and sanitized broker errors.
+- Recorded the tagged `flow_node_run` grant subject, trusted-host-only identity rule, opaque channel-bound grants, pre-dispatch single-release semantics, and fail-closed handling for altered retries and ambiguous non-idempotent effects.
+- Captured Broker V1 decisions D1-D16 as accepted ADRs and kept runtime/schema implementation for later packets. No runtime code, dependency, or workspace configuration changed.
+
 ## 2026-07-16 — W4 disposable Cloudflare mock proof
 
 - Deployed the render-derived S21 flow Worker, private checked extraction Worker, and proof-only mock-provider Worker to approved account `4597ed26ea326a831e21b9898376ef59` under disposable prefix `lattice-w4-20260716a`. The extraction Worker remained private; provider/flow `workers.dev` routes were enabled only after random proof secrets were installed.
