@@ -166,10 +166,16 @@ impl S21ConnectorRuntime {
             "LATTICE_CONNECTOR_AUTH_LLM_API_KEY",
             "LATTICE_CONNECTOR_AUTH_GOOGLE_WORKSPACE_AUTH",
         ] {
-            let value = env.var(name).map_err(|_| {
-                worker::Error::RustError(format!("required connector secret `{name}` is absent"))
-            })?;
-            secrets.insert(name.to_string(), value.to_string());
+            let value = env
+                .secret(name)
+                .map(|value| value.to_string())
+                .or_else(|_| env.var(name).map(|value| value.to_string()))
+                .map_err(|_| {
+                    worker::Error::RustError(format!(
+                        "required connector secret `{name}` is absent"
+                    ))
+                })?;
+            secrets.insert(name.to_string(), value);
         }
 
         let mut endpoints = BTreeMap::new();

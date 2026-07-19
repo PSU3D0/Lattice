@@ -10,4 +10,4 @@ class_name = "MockProviderState"
 
 [[migrations]]
 tag = "v1"
-new_classes = ["MockProviderState"]
+new_sqlite_classes = ["MockProviderState"]

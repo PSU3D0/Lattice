@@ -28,17 +28,26 @@ export async function materializeCloudConfigs({ root, output, names, kvNamespace
     "KV placeholder",
   );
   flow = flow.replace(/bucket_name = "[^"]+"/, `bucket_name = "${bucketName}"`);
-  flow = replaceRequired(flow, "workers_dev = true", "workers_dev = false", "flow workers_dev policy");
+  if (!/^workers_dev = true$/m.test(flow)) {
+    throw new Error("rendered config is missing flow workers_dev policy");
+  }
+  flow = flow.replace(
+    /^workers_dev = true$/m,
+    "workers_dev = false\npreview_urls = false",
+  );
   flow += `\n[[services]]\nbinding = "LATTICE_S21_PROVIDER"\nservice = "${names.provider}"\n`;
   flow = flow.replace("[vars]", '[vars]\nLATTICE_S21_HTTP_MODE = "service_binding"');
-  const publicFlow = replaceRequired(flow, "workers_dev = false", "workers_dev = true", "private flow policy");
+  const publicFlow = flow.replace(/^workers_dev = false$/m, "workers_dev = true");
 
   let extraction = await readFile(join(root, "deploy/extraction-worker/wrangler.toml"), "utf8");
   extraction = replaceRequired(extraction, "s21-w4-pdf-extract", names.extraction, "extraction Worker name");
   let provider = await readFile(join(root, "mock-provider/wrangler.toml"), "utf8");
   provider = replaceRequired(provider, "s21-w4-mock-provider", names.provider, "provider Worker name");
   const privateProvider = provider;
-  const publicProvider = replaceRequired(provider, "workers_dev = false", "workers_dev = true", "provider workers_dev policy");
+  if (!/^workers_dev = false$/m.test(provider)) {
+    throw new Error("rendered config is missing provider workers_dev policy");
+  }
+  const publicProvider = provider.replace(/^workers_dev = false$/m, "workers_dev = true");
 
   for (const [label, text] of Object.entries({ flow, publicFlow, extraction, provider, privateProvider })) {
     if (/=\s*"(?:REPLACE_WITH_|TODO)/.test(text)) {

@@ -2,6 +2,7 @@ export function createCloudflareApi(token, fetchImpl = fetch) {
   const envelope = async (path, init = {}) => {
     const response = await fetchImpl(`https://api.cloudflare.com/client/v4${path}`, {
       ...init,
+      signal: init.signal ?? AbortSignal.timeout(30_000),
       headers: {
         authorization: `Bearer ${token}`,
         "content-type": "application/json",

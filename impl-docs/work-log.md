@@ -7,6 +7,14 @@ Last reviewed: 2025-12-12
 
 > Detailed record of repository setup and implementation progress. Use this to orient new contributors and agents; each entry references the relevant design documents for context.
 
+## 2026-07-16 — W4 disposable Cloudflare mock proof
+
+- Deployed the render-derived S21 flow Worker, private checked extraction Worker, and proof-only mock-provider Worker to approved account `4597ed26ea326a831e21b9898376ef59` under disposable prefix `lattice-w4-20260716a`. The extraction Worker remained private; provider/flow `workers.dev` routes were enabled only after random proof secrets were installed.
+- Production qualification exposed and fixed three cloud-only integration gaps: new Durable Objects require a SQLite migration, Cloudflare Worker secrets must be read through `Env::secret` rather than variable-only lookup, and newly enabled `workers.dev` routes need a bounded sanitized readiness gate before proof traffic.
+- The controlled proof returned `stored: true` for the first multipart PDF request, exact mocked effects `{llm:1, sheetsRead:1, sheetsAppend:1, gmail:2}`, `stored: false` with unchanged effects for sequential redelivery, and a sanitized hostile-document failure with no provider effects.
+- Private evidence lives outside the repository at `/home/psu3d0/private-evidence/lattice-w4-20260716a/`. `sanitized-proof.json` records only identities/policy/outcomes/counts; `sanitized-cleanup-proof.json` and the guarded inventory check confirm all Workers, KV, R2, and owned Durable Object namespaces are absent.
+- Compatibility/contract notes: this is Workers platform-containment evidence, not native deterministic metering parity. The deployed 30,000 ms CPU value is policy only; no platform termination was induced or attributed to CPU versus memory. No real LLM/Sheets/Gmail provider effect was made.
+
 ## 2026-07-16 — W4 render-derived S21 Workers package
 
 - Added explicit `--backend-config` and `--worker-build-dir` deployment inputs. The renderer accepts S21 only when the typed `sandboxed_transform:lattice.pdf.extract_text.v1` contract is matched exactly; duplicate, missing, unused, malformed, or unsupported selections fail before output publication.

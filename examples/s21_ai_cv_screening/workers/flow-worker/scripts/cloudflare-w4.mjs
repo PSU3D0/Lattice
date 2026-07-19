@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { createCloudflareApi } from "./cloudflare-api.mjs";
@@ -40,6 +40,10 @@ if (evidence === repository || evidence.startsWith(`${repository}/`)) {
   fail("--evidence-dir must be outside the source repository");
 }
 const generated = join(evidence, "generated-config");
+await rm(generated, { recursive: true, force: true });
+await rm(join(evidence, "sanitized-proof.json"), { force: true });
+await rm(join(evidence, "sanitized-attempt-failure.json"), { force: true });
+await rm(join(evidence, "sanitized-cleanup-proof.json"), { force: true });
 await mkdir(generated, { recursive: true, mode: 0o700 });
 const state = { schema_version: "0.1", account_id: accountId, prefix, names, kv_namespace_id: null, scripts: [] };
 await writeFile(join(evidence, "resource-state.json"), `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
@@ -57,6 +61,11 @@ const secret = (config, name, value) => {
   });
   if (result.status !== 0) fail(`failed to install ${name}`);
 };
+
+const proofFetch = (url, init = {}) => fetch(url, {
+  ...init,
+  signal: AbortSignal.timeout(30_000),
+});
 
 run("bash", ["scripts/qualify.sh"]);
 
@@ -142,7 +151,27 @@ try {
   const flowUrl = `https://${names.flow}.${subdomain}.workers.dev`;
   const providerUrl = `https://${names.provider}.${subdomain}.workers.dev`;
   const adminHeaders = { authorization: `Bearer ${adminBearer}` };
-  await fetch(`${providerUrl}/__reset`, { method: "POST", headers: adminHeaders });
+  await new Promise((resolve) => setTimeout(resolve, 3_000));
+  let reset;
+  for (let attempt = 1; attempt <= 15; attempt += 1) {
+    reset = await proofFetch(`${providerUrl}/__reset`, { method: "POST", headers: adminHeaders });
+    if (reset.ok) break;
+    if ((reset.status < 500 && reset.status !== 404) || attempt === 15) {
+      fail(`mock-provider reset failed with status ${reset.status}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+  let flowReady = false;
+  for (let attempt = 1; attempt <= 15; attempt += 1) {
+    const response = await proofFetch(`${flowUrl}/__w4_readiness`);
+    const body = await response.json().catch(() => ({}));
+    if (response.status === 404 && body.error === "not_found") {
+      flowReady = true;
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+  if (!flowReady) fail("flow Worker did not reach the sanitized readiness boundary");
   const makePdf = (text) => {
     const encoder = new TextEncoder();
     const stream = `BT /F1 12 Tf 72 720 Td (${text}) Tj ET`;
@@ -171,12 +200,30 @@ try {
     form.set("full_name", "W4 Fixture"); form.set("email", email);
     form.set("expectation", "bounded proof"); form.set("linkedin", "https://example.invalid/w4");
     form.set("cv", new Blob([pdf], { type: "application/pdf" }), "fixture.pdf");
-    const response = await fetch(`${flowUrl}/cv-screening`, { method: "POST", body: form });
+    const response = await proofFetch(`${flowUrl}/cv-screening`, { method: "POST", body: form });
     return { status: response.status, body: await response.json().catch(() => ({})) };
   };
-  const counts = async () => (await fetch(`${providerUrl}/__counts`, { headers: adminHeaders })).json();
+  const counts = async () => (await proofFetch(`${providerUrl}/__counts`, { headers: adminHeaders })).json();
   const first = await invoke(syntheticPdf, "w4-fixture-1@example.invalid");
-  if (first.status !== 200 || first.body.stored !== true) fail("first cloud invocation failed");
+  if (first.status !== 200 || first.body.stored !== true) {
+    const allowedErrors = new Set([
+      "bad_request", "not_found", "method_not_allowed", "payload_too_large",
+      "unavailable", "execution_failed",
+    ]);
+    const failure = {
+      schema_version: "0.1",
+      phase: "first_invocation",
+      status: first.status,
+      error: allowedErrors.has(first.body?.error) ? first.body.error : "unrecognized",
+      provider_counts: await counts().catch(() => null),
+    };
+    await writeFile(
+      join(evidence, "sanitized-attempt-failure.json"),
+      `${JSON.stringify(failure, null, 2)}\n`,
+      { mode: 0o600 },
+    );
+    fail(`first cloud invocation failed (${failure.status}/${failure.error})`);
+  }
   const afterFirst = await counts();
   if (JSON.stringify(afterFirst) !== JSON.stringify({ llm: 1, sheetsRead: 1, sheetsAppend: 1, gmail: 2 })) fail("unexpected first-call provider counts");
   const second = await invoke(syntheticPdf, "w4-fixture-1@example.invalid");
@@ -213,7 +260,6 @@ try {
     let existingDurable = [];
     try { existingDurable = await listPaged(`/accounts/${accountId}/workers/durable_objects/namespaces`); }
     catch { cleanupErrors.push("durable-object:list-before-delete"); }
-    const existingDurableIds = new Set(existingDurable.map((namespace) => namespace.id));
     state.durable_object_namespace_ids = ownedDurableNamespaces(names, existingDurable)
       .map((namespace) => namespace.id);
     let existingScripts = [];
@@ -225,8 +271,17 @@ try {
       try { run("npx", ["wrangler", "delete", script, "--force"]); }
       catch { cleanupErrors.push(`worker:${script}`); }
     }
+    let durableAfterWorkerDelete = [];
+    try {
+      durableAfterWorkerDelete = await listPaged(
+        `/accounts/${accountId}/workers/durable_objects/namespaces`,
+      );
+    } catch { cleanupErrors.push("durable-object:list-after-worker-delete"); }
+    const durableAfterWorkerDeleteIds = new Set(
+      durableAfterWorkerDelete.map((namespace) => namespace.id),
+    );
     for (const namespaceId of state.durable_object_namespace_ids) {
-      if (!existingDurableIds.has(namespaceId)) continue;
+      if (!durableAfterWorkerDeleteIds.has(namespaceId)) continue;
       try { await api(`/accounts/${accountId}/workers/durable_objects/namespaces/${namespaceId}`, { method: "DELETE" }); }
       catch { cleanupErrors.push(`durable-object:${namespaceId}`); }
     }
@@ -259,5 +314,17 @@ try {
     state.cleanup_errors = cleanupErrors;
     await writeFile(join(evidence, "resource-state.json"), `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
     if (cleanupErrors.length > 0) fail(`cleanup incomplete: ${cleanupErrors.join(", ")}`);
+    await writeFile(
+      join(evidence, "sanitized-cleanup-proof.json"),
+      `${JSON.stringify({
+        schema_version: "0.1",
+        prefix,
+        workers_absent: true,
+        kv_absent: true,
+        r2_absent: true,
+        durable_object_namespaces_absent: true,
+      }, null, 2)}\n`,
+      { mode: 0o600 },
+    );
   }
 }
