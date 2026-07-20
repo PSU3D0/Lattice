@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use connector_codegen::{generate_files, write_generated_files};
+use connector_codegen::{generate_broker_descriptor_files, generate_files, write_generated_files};
 use connector_spec::ConnectorManifest;
 
 #[derive(Debug, Parser)]
@@ -21,6 +21,12 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
+    BrokerDescriptors {
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -30,6 +36,11 @@ fn main() -> Result<()> {
             let text = std::fs::read_to_string(&manifest)?;
             let manifest_model = ConnectorManifest::from_yaml_str(&text)?;
             let files = generate_files(&manifest_model, &text)?;
+            write_generated_files(out, &files)?;
+        }
+        Command::BrokerDescriptors { manifest, out } => {
+            let manifest_model = ConnectorManifest::from_yaml_file(&manifest)?;
+            let files = generate_broker_descriptor_files(&manifest_model)?;
             write_generated_files(out, &files)?;
         }
     }

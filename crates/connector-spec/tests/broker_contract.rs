@@ -1,7 +1,10 @@
 use std::fs;
 use std::path::PathBuf;
 
-use connector_spec::{ConnectorManifest, SurfaceDecl, ValidationCode, contract_hash};
+use connector_spec::{
+    ConnectorManifest, QueryValueDecl, SurfaceDecl, TrustedAdapterPin, ValidationCode,
+    contract_hash, request_plan_hash,
+};
 
 fn synthetic() -> ConnectorManifest {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -206,6 +209,65 @@ fn unknown_broker_placeholder_kind_fails_closed() {
         .expect("placeholder")
         .kind = "random".to_string();
     assert!(has_code(&manifest, ValidationCode::UnknownPlaceholderKind));
+}
+
+#[test]
+fn typed_query_mappings_are_hashed_and_invalid_shapes_fail_closed() {
+    let mut manifest = synthetic();
+    let request = action_mut(&mut manifest).broker_request.as_mut().unwrap();
+    let before = request_plan_hash(request).unwrap();
+    request.query.extend([
+        (
+            "mode".into(),
+            QueryValueDecl {
+                kind: "static".into(),
+                input_field: None,
+                value: Some("strict".into()),
+            },
+        ),
+        (
+            "message".into(),
+            QueryValueDecl {
+                kind: "input".into(),
+                input_field: Some("message".into()),
+                value: None,
+            },
+        ),
+        (
+            "effect".into(),
+            QueryValueDecl {
+                kind: "idempotency_key".into(),
+                input_field: None,
+                value: None,
+            },
+        ),
+    ]);
+    manifest.validate().unwrap();
+    let request = action_mut(&mut manifest).broker_request.as_mut().unwrap();
+    assert_ne!(request_plan_hash(request).unwrap(), before);
+    request.query.get_mut("mode").unwrap().input_field = Some("message".into());
+    assert!(has_code(
+        &manifest,
+        ValidationCode::InvalidBrokerRequestPlan
+    ));
+}
+
+#[test]
+fn unknown_or_unpinned_trusted_adapter_fails_closed() {
+    let mut manifest = synthetic();
+    action_mut(&mut manifest)
+        .broker_request
+        .as_mut()
+        .unwrap()
+        .trusted_adapter = Some(TrustedAdapterPin {
+        trusted_adapter_id: "google.unknown.v1".into(),
+        implementation_version: "1".into(),
+        implementation_hash: format!("sha256:{}", "0".repeat(64)),
+    });
+    assert!(has_code(
+        &manifest,
+        ValidationCode::InvalidBrokerRequestPlan
+    ));
 }
 
 #[test]

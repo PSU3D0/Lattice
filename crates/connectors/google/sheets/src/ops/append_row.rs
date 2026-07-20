@@ -5,6 +5,13 @@ use crate::runtime::sheets_api::SheetsApi;
 pub struct GoogleSheetsAppendRow;
 
 impl GoogleSheetsAppendRow {
+    pub const BROKER_CONTRACT: Option<::dag_core::BrokerContractMetadata> = Some(
+        ::dag_core::BrokerContractMetadata {
+            contract_id: "connector.google.sheets.append_row@1",
+            contract_hash: "sha256:d02ed39536d396d66895f97672551a9eb443e701900112613865170bf157e999",
+        },
+    );
+
     pub const META: ::dag_core::ConnectorOpMetadata = ::dag_core::ConnectorOpMetadata {
         operation_id: "connector.google.sheets.append_row",
         connector_id: "connector.google.sheets",

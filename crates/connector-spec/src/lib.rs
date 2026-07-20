@@ -9,6 +9,7 @@ use std::path::Path;
 pub use contract::{
     ContractCanonicalizationError, MAX_CONTRACT_DESCRIPTOR_BYTES, MAX_SCHEMA_DECLARATIONS,
     canonical_contract_json, contract_hash, descriptor_hash, operation_contract_descriptor,
+    request_plan_hash,
 };
 pub use diagnostics::{ValidationCode, ValidationError, ValidationErrors};
 pub use model::{
@@ -16,9 +17,10 @@ pub use model::{
     ConnectorManifest, ConnectorMetadata, ConnectorProfiles, DefaultValue, DeterminismLevel,
     EffectLevel, EndpointProfile, FieldDecl, FieldKind, OperationContract,
     OperationContractDescriptor, OutboundAuthProfile, PaginationDecl, PaginationKind,
-    RequestMapping, RequestMethod, RequestPlaceholderDecl, ReservedProfile, ReservedTriggerConfig,
-    ResourceRequirement, ResponseDataPolicy, ResponseDataPolicyKind, ResponseDecl, ResponseKind,
-    StaticHeaderDecl, SurfaceDecl, TypeDecl, WebhookTriggerSurface,
+    QueryValueDecl, RequestMapping, RequestMethod, RequestPlaceholderDecl, ReservedProfile,
+    ReservedTriggerConfig, ResourceRequirement, ResponseDataPolicy, ResponseDataPolicyKind,
+    ResponseDecl, ResponseKind, StaticHeaderDecl, SurfaceDecl, TrustedAdapterPin, TypeDecl,
+    WebhookTriggerSurface,
 };
 pub use validate::{
     generated_module_name, paginated_collection_field, validate_broker_dispatch_descriptor,

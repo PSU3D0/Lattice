@@ -11,7 +11,9 @@ broker-core = { path = "../broker-core" }
 dag-core = { path = "../dag-core" }
 kernel-plan = { path = "../kernel-plan" }
 connector-spec = { path = "../connector-spec" }
+connector_google_platform = { path = "../connectors/google/platform" }
 hex.workspace = true
+percent-encoding = "2.3"
 sha2.workspace = true
 serde.workspace = true
 serde_json.workspace = true

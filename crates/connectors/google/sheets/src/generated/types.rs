@@ -61,6 +61,9 @@ pub struct GoogleSheetsAppendRowOutput {
     pub spreadsheet_id: String,
     pub sheet: String,
     pub updated_range: String,
+    pub updated_rows: Option<u32>,
+    pub updated_columns: Option<u32>,
+    pub updated_cells: Option<u32>,
     pub row_index: Option<u32>,
 }
 

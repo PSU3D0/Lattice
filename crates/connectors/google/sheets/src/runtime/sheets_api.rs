@@ -31,6 +31,13 @@ pub struct SheetsApi {
     endpoint: ResolvedEndpointProfile,
 }
 
+struct AppendValuesResult {
+    updated_range: String,
+    updated_rows: Option<u32>,
+    updated_columns: Option<u32>,
+    updated_cells: Option<u32>,
+}
+
 impl SheetsApi {
     pub async fn for_action(action_id: &'static str) -> Result<Self, ConnectorRuntimeError> {
         let context = current_connector_context(action_id).await?;
@@ -149,7 +156,7 @@ impl SheetsApi {
             .await?;
         let ordered =
             ordered_row_values(&headers, row).map_err(ConnectorRuntimeError::invalid_response)?;
-        let updated_range = self
+        let update = self
             .append_values(
                 &input.spreadsheet_id,
                 &input.sheet,
@@ -163,8 +170,11 @@ impl SheetsApi {
         Ok(GoogleSheetsAppendRowOutput {
             spreadsheet_id: input.spreadsheet_id.clone(),
             sheet: input.sheet.clone(),
-            row_index: last_row_from_a1_range(&updated_range),
-            updated_range,
+            row_index: last_row_from_a1_range(&update.updated_range),
+            updated_range: update.updated_range,
+            updated_rows: update.updated_rows,
+            updated_columns: update.updated_columns,
+            updated_cells: update.updated_cells,
         })
     }
 
@@ -253,7 +263,7 @@ impl SheetsApi {
 
         let ordered =
             ordered_row_values(&headers, row).map_err(ConnectorRuntimeError::invalid_response)?;
-        let updated_range = self
+        let update = self
             .append_values(
                 &input.spreadsheet_id,
                 &input.sheet,
@@ -268,8 +278,8 @@ impl SheetsApi {
             action: GoogleSheetsUpsertAction::Inserted,
             spreadsheet_id: input.spreadsheet_id.clone(),
             sheet: input.sheet.clone(),
-            row_index: last_row_from_a1_range(&updated_range),
-            updated_range,
+            row_index: last_row_from_a1_range(&update.updated_range),
+            updated_range: update.updated_range,
         })
     }
 
@@ -293,7 +303,7 @@ impl SheetsApi {
         column_count: usize,
         value_input_option: GoogleSheetsValueInputOption,
         ordered_values: Vec<JsonValue>,
-    ) -> Result<String, ConnectorRuntimeError> {
+    ) -> Result<AppendValuesResult, ConnectorRuntimeError> {
         let range = append_table_range(sheet, header_row, column_count);
         let path = format!("{}:append", values_path(spreadsheet_id, &range));
         let query = vec![
@@ -310,7 +320,12 @@ impl SheetsApi {
         let response = self
             .request_json(HttpMethod::Post, &path, &query, Some(body))
             .await?;
-        extract_updated_range(&response)
+        Ok(AppendValuesResult {
+            updated_range: extract_updated_range(&response)?,
+            updated_rows: optional_u32(&response, "/updates/updatedRows")?,
+            updated_columns: optional_u32(&response, "/updates/updatedColumns")?,
+            updated_cells: optional_u32(&response, "/updates/updatedCells")?,
+        })
     }
 
     async fn update_values(
@@ -498,6 +513,10 @@ fn required_u32_pointer(
         ))
     })?;
     json_u32(value)
+}
+
+fn optional_u32(body: &JsonValue, pointer: &str) -> Result<Option<u32>, ConnectorRuntimeError> {
+    body.pointer(pointer).map(json_u32).transpose()
 }
 
 fn json_u32(value: &JsonValue) -> Result<u32, ConnectorRuntimeError> {

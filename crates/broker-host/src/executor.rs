@@ -109,6 +109,10 @@ impl BrokerDescriptorRegistry {
         if !validate_broker_dispatch_descriptor(&descriptor)
             || expected != descriptor.contract_hash
             || descriptor.contract_hash != approval.contract_hash
+            || connector_spec::request_plan_hash(&descriptor.request_plan)
+                .ok()
+                .as_deref()
+                != Some(descriptor.request_plan_hash.as_str())
             || descriptor.response_data_policy != descriptor.contract.response_data_policy
             || descriptor.response_data_policy.max_bytes == 0
             || descriptor.response_data_policy.max_bytes > 256 * 1024
@@ -199,13 +203,13 @@ pub struct LocalBrokerConfig {
     pub broker_principal_id: String,
 }
 
-struct CountingSyntheticCustodian {
-    inner: SyntheticCustodian,
+struct CountingCustodian<C> {
+    inner: C,
     metadata_calls: AtomicUsize,
     material_accesses: AtomicUsize,
 }
 
-impl CredentialCustodian for CountingSyntheticCustodian {
+impl<C: CredentialCustodian> CredentialCustodian for CountingCustodian<C> {
     fn connection_metadata(&self) -> Result<ConnectionMetadata, BrokerError> {
         self.metadata_calls.fetch_add(1, Ordering::SeqCst);
         self.inner.connection_metadata()
@@ -271,12 +275,13 @@ impl ProviderDispatcher for PolicyDispatcher<'_> {
     }
 }
 
-pub struct LocalBrokerExecutor {
+pub struct LocalBrokerExecutor<C = SyntheticCustodian> {
     evidence: BrokerBindingEvidence,
     descriptors: BrokerDescriptorRegistry,
+    trusted_adapters: crate::TrustedAdapterRegistry,
     ledger: InMemoryLedger,
     dispatcher: MockDispatcher,
-    custodian: CountingSyntheticCustodian,
+    custodian: CountingCustodian<C>,
     trust: HostTrustRegistry,
     clock: FixedClock,
     signer: BrokerSigner,
@@ -293,8 +298,8 @@ pub struct LocalBrokerExecutor {
     broker_principal_id: String,
 }
 
-impl LocalBrokerExecutor {
-    pub fn new(config: LocalBrokerConfig) -> Result<Self, BrokerHostError> {
+impl LocalBrokerExecutor<SyntheticCustodian> {
+    pub fn new(mut config: LocalBrokerConfig) -> Result<Self, BrokerHostError> {
         let first_alias = config
             .evidence
             .entries_alias_for_bootstrap()
@@ -308,10 +313,20 @@ impl LocalBrokerExecutor {
             lock.provider(),
             "locked-account",
             lock.actual_scopes().to_vec(),
-            config.synthetic_secret,
+            std::mem::take(&mut config.synthetic_secret),
         );
         custodian.set_account_commitment(lock.account_commitment().clone())?;
         custodian.set_epoch(config.custodian_epoch)?;
+        Self::new_with_custodian(config, custodian, crate::TrustedAdapterRegistry::empty())
+    }
+}
+
+impl<C: CredentialCustodian> LocalBrokerExecutor<C> {
+    pub(crate) fn new_with_custodian(
+        config: LocalBrokerConfig,
+        custodian: C,
+        trusted_adapters: crate::TrustedAdapterRegistry,
+    ) -> Result<Self, BrokerHostError> {
         let approvals = config
             .descriptors
             .entries
@@ -334,9 +349,10 @@ impl LocalBrokerExecutor {
         Ok(Self {
             evidence: config.evidence,
             descriptors: config.descriptors,
+            trusted_adapters,
             ledger: InMemoryLedger::new(),
             dispatcher: MockDispatcher::new(config.dispatch_scripts),
-            custodian: CountingSyntheticCustodian {
+            custodian: CountingCustodian {
                 inner: custodian,
                 metadata_calls: AtomicUsize::new(0),
                 material_accesses: AtomicUsize::new(0),
@@ -387,7 +403,7 @@ impl LocalBrokerExecutor {
     }
 }
 
-impl ConnectorExecutor for LocalBrokerExecutor {
+impl<C: CredentialCustodian> ConnectorExecutor for LocalBrokerExecutor<C> {
     fn invoke(
         &self,
         host_scope: &TrustedHostScope,
@@ -465,7 +481,14 @@ impl ConnectorExecutor for LocalBrokerExecutor {
             host_scope.activation_ordinal(),
             &operation.semantic_effect_slot,
         )?;
-        let template = descriptor_plan_template(&operation.descriptor, canonical_input)?;
+        let template = descriptor_plan_template(
+            &operation.descriptor,
+            canonical_input,
+            &self.authority_facts,
+            &self.trusted_adapters,
+            &logical_effect_id,
+            &self.clock.now_rfc3339(),
+        )?;
         let planner = FixedTemplatePlanner {
             template,
             facts: self.authority_facts.clone(),
@@ -513,12 +536,24 @@ impl ConnectorExecutor for LocalBrokerExecutor {
 fn descriptor_plan_template(
     descriptor: &BrokerDispatchDescriptor,
     canonical_input: &[u8],
+    authority_facts: &[u8],
+    adapters: &crate::TrustedAdapterRegistry,
+    logical_effect_id: &str,
+    now: &str,
 ) -> Result<Vec<u8>, BrokerHostError> {
+    use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
+
     let input: serde_json::Value = serde_json::from_slice(canonical_input)
         .map_err(|_| BrokerHostError::Broker(BrokerError::Brk001))?;
-    let object = input
-        .as_object()
-        .ok_or(BrokerHostError::Broker(BrokerError::Brk001))?;
+    let facts: serde_json::Value = serde_json::from_slice(authority_facts)
+        .map_err(|_| BrokerHostError::Broker(BrokerError::Brk301))?;
+    let object = match &descriptor.request_plan.trusted_adapter {
+        Some(pin) => adapters.adapt(pin, &input, &facts)?,
+        None => input
+            .as_object()
+            .cloned()
+            .ok_or(BrokerHostError::Broker(BrokerError::Brk001))?,
+    };
     let mut body = serde_json::Map::new();
     for (wire, field) in &descriptor.request_plan.body {
         let value = object
@@ -533,21 +568,69 @@ fn descriptor_plan_template(
         let replacement = match declaration.kind.as_str() {
             "idempotency_key" => {
                 uses_idempotency = true;
-                serde_json::Value::String("$broker_idempotency".into())
+                utf8_percent_encode(
+                    &broker_slot_value("idempotency_key", logical_effect_id, now)?,
+                    NON_ALPHANUMERIC,
+                )
+                .to_string()
             }
             "input" => {
                 let field = declaration
                     .input_field
                     .as_ref()
                     .ok_or(BrokerHostError::DescriptorMismatch)?;
-                object
-                    .get(field)
-                    .cloned()
-                    .ok_or(BrokerHostError::DescriptorMismatch)?
+                let value = provider_scalar(
+                    object
+                        .get(field)
+                        .ok_or(BrokerHostError::DescriptorMismatch)?,
+                )?;
+                utf8_percent_encode(&value, NON_ALPHANUMERIC).to_string()
             }
-            other => serde_json::Value::String(format!("$broker:{other}")),
+            "timestamp" | "boundary" => utf8_percent_encode(
+                &broker_slot_value(&declaration.kind, logical_effect_id, now)?,
+                NON_ALPHANUMERIC,
+            )
+            .to_string(),
+            _ => return Err(BrokerHostError::DescriptorMismatch),
         };
-        path = path.replace(&format!("{{{name}}}"), &replacement.to_string());
+        path = path.replace(&format!("{{{name}}}"), &replacement);
+    }
+    let mut query = serde_json::Map::new();
+    for (name, declaration) in &descriptor.request_plan.query {
+        let value = match declaration.kind.as_str() {
+            "static" => serde_json::Value::String(
+                declaration
+                    .value
+                    .clone()
+                    .ok_or(BrokerHostError::DescriptorMismatch)?,
+            ),
+            "input" => {
+                let field = declaration
+                    .input_field
+                    .as_ref()
+                    .ok_or(BrokerHostError::DescriptorMismatch)?;
+                serde_json::Value::String(provider_scalar(
+                    object
+                        .get(field)
+                        .ok_or(BrokerHostError::DescriptorMismatch)?,
+                )?)
+            }
+            "idempotency_key" => {
+                uses_idempotency = true;
+                serde_json::Value::String(broker_slot_value(
+                    "idempotency_key",
+                    logical_effect_id,
+                    now,
+                )?)
+            }
+            "timestamp" | "boundary" => serde_json::Value::String(broker_slot_value(
+                &declaration.kind,
+                logical_effect_id,
+                now,
+            )?),
+            _ => return Err(BrokerHostError::DescriptorMismatch),
+        };
+        query.insert(name.clone(), value);
     }
     let value = serde_json::json!({
         "body": body,
@@ -555,10 +638,34 @@ fn descriptor_plan_template(
         "idempotency": uses_idempotency.then(|| serde_json::json!({"$broker":"idempotency_key"})),
         "method": descriptor.request_plan.method.as_str(),
         "path": path,
+        "query": query,
     });
     broker_core::canonical::from_serde(&value, broker_core::canonical::MAX_OPERATION_BYTES)
         .map(|value| value.into_bytes())
         .map_err(Into::into)
+}
+
+fn broker_slot_value(
+    kind: &str,
+    logical_effect_id: &str,
+    now: &str,
+) -> Result<String, BrokerHostError> {
+    let key = broker_core::dispatch::idempotency_key(logical_effect_id)?;
+    match kind {
+        "idempotency_key" => Ok(key),
+        "timestamp" => Ok(now.to_string()),
+        "boundary" => Ok(format!("lattice-{key}")),
+        _ => Err(BrokerHostError::DescriptorMismatch),
+    }
+}
+
+fn provider_scalar(value: &serde_json::Value) -> Result<String, BrokerHostError> {
+    match value {
+        serde_json::Value::String(value) => Ok(value.clone()),
+        serde_json::Value::Bool(value) => Ok(value.to_string()),
+        serde_json::Value::Number(value) => Ok(value.to_string()),
+        _ => Err(BrokerHostError::Broker(BrokerError::Brk301)),
+    }
 }
 
 #[derive(Clone, Debug)]

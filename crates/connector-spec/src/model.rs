@@ -405,6 +405,7 @@ pub struct BrokerDispatchDescriptor {
     pub contract: OperationContractDescriptor,
     pub contract_hash: String,
     pub request_plan: BrokerRequestPlan,
+    pub request_plan_hash: String,
     pub response_data_policy: ResponseDataPolicy,
 }
 
@@ -435,9 +436,33 @@ pub struct BrokerRequestPlan {
     #[serde(default)]
     pub placeholders: BTreeMap<String, RequestPlaceholderDecl>,
     #[serde(default)]
+    pub query: BTreeMap<String, QueryValueDecl>,
+    #[serde(default)]
     pub static_headers: BTreeMap<String, String>,
     #[serde(default)]
     pub body: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trusted_adapter: Option<TrustedAdapterPin>,
+}
+
+/// Closed query-value mapping. `kind` is validated as `static`, `input`, or
+/// one of the broker-owned slots `idempotency_key`, `timestamp`, `boundary`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QueryValueDecl {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_field: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrustedAdapterPin {
+    pub trusted_adapter_id: String,
+    pub implementation_version: String,
+    pub implementation_hash: String,
 }
 
 /// A placeholder is either input-derived (`kind: input`, with

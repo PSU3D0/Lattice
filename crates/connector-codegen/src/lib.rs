@@ -5,7 +5,7 @@ use anyhow::{Context, Result, anyhow};
 use connector_spec::{
     ActionSurface, ConnectorManifest, DefaultValue, FieldDecl, FieldKind, OutboundAuthProfile,
     ResourceRequirement, SurfaceDecl, TypeDecl, contract_hash, generated_module_name,
-    operation_contract_descriptor, paginated_collection_field,
+    operation_contract_descriptor, paginated_collection_field, request_plan_hash,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,6 +129,30 @@ pub fn generate_files(
     Ok(files)
 }
 
+/// Emit only Broker V1 descriptor fixtures. Unlike full crate generation this
+/// accepts validated handwritten semantic actions and leaves all Rust output
+/// byte-identical.
+pub fn generate_broker_descriptor_files(
+    manifest: &ConnectorManifest,
+) -> Result<Vec<GeneratedFile>> {
+    manifest
+        .validate()
+        .map_err(|err| anyhow!(err.to_string()))?;
+    sorted_actions(manifest)
+        .into_iter()
+        .filter(|action| action.contract.is_some())
+        .map(|action| {
+            Ok(GeneratedFile {
+                relative_path: format!(
+                    "broker/operations/{}.json",
+                    generated_module_name(&action.identifier)
+                ),
+                contents: emit_broker_dispatch_descriptor(manifest, action)?,
+            })
+        })
+        .collect()
+}
+
 pub fn write_generated_files(root: impl AsRef<Path>, files: &[GeneratedFile]) -> Result<()> {
     let root = root.as_ref();
     for file in files {
@@ -165,6 +189,10 @@ fn emit_broker_dispatch_descriptor(
         serde_json::Value::String(contract_hash(manifest, action)?),
     );
     descriptor.insert("request_plan", serde_json::to_value(request_plan)?);
+    descriptor.insert(
+        "request_plan_hash",
+        serde_json::Value::String(request_plan_hash(request_plan)?),
+    );
     descriptor.insert(
         "response_data_policy",
         serde_json::to_value(&contract.response_data_policy)?,
@@ -1194,6 +1222,18 @@ mod tests {
             .expect("semantic executor seam");
         assert!(seam.contents.contains("broker executor unavailable"));
         assert!(!seam.contents.contains("run_action_from_current"));
+    }
+
+    #[test]
+    fn broker_only_generation_supports_handwritten_semantic_actions() {
+        let text = synthetic_fixture_text().replace(
+            "    request:\n",
+            "    implementation: handwritten_semantic\n    request:\n",
+        );
+        let manifest = ConnectorManifest::from_yaml_str(&text).expect("manifest parses");
+        let files = generate_broker_descriptor_files(&manifest).expect("descriptor generation");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].relative_path, "broker/operations/echo_effect.json");
     }
 
     #[test]

@@ -21,7 +21,16 @@ pub struct ConnectionMetadata {
 pub struct AccessMaterial<'a> {
     secret: &'a [u8],
 }
-impl AccessMaterial<'_> {
+impl<'a> AccessMaterial<'a> {
+    /// Borrow secret bytes for one custodian-controlled closure handoff.
+    ///
+    /// The returned wrapper owns nothing, remains fully redacted under
+    /// `Debug`, and cannot outlive `secret`. Custodians must construct it only
+    /// at the point where they invoke their `with_access_material` closure.
+    pub fn borrow_for_custodian(secret: &'a [u8]) -> Self {
+        Self { secret }
+    }
+
     pub fn expose_to_dispatcher(&self) -> &[u8] {
         self.secret
     }
@@ -208,6 +217,10 @@ mod tests {
     use super::*;
     #[test]
     fn material_is_borrowed_and_redacted() {
+        let borrowed = AccessMaterial::borrow_for_custodian(b"borrowed-secret");
+        assert_eq!(borrowed.expose_to_dispatcher(), b"borrowed-secret");
+        assert_eq!(format!("{borrowed:?}"), "AccessMaterial([REDACTED])");
+
         let c = SyntheticCustodian::new("c", "p", "a", [], b"synthetic-secret".to_vec());
         assert_eq!(
             c.with_access_material(|m| Ok(m.expose_to_dispatcher().len()))

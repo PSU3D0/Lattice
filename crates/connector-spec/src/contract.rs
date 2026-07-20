@@ -3,7 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    ActionSurface, ConnectorManifest, FieldDecl, FieldKind, OperationContractDescriptor, TypeDecl,
+    ActionSurface, BrokerRequestPlan, ConnectorManifest, FieldDecl, FieldKind,
+    OperationContractDescriptor, TypeDecl,
 };
 
 /// Maximum canonical byte length of a contract descriptor or one schema
@@ -58,6 +59,18 @@ pub fn descriptor_hash(
     descriptor: &OperationContractDescriptor,
 ) -> Result<String, ContractCanonicalizationError> {
     hash_bytes(&canonical_contract_json(descriptor)?)
+}
+
+/// Hash the complete declarative provider plan, including typed query
+/// mappings and a pinned trusted-adapter reference.
+pub fn request_plan_hash(
+    plan: &BrokerRequestPlan,
+) -> Result<String, ContractCanonicalizationError> {
+    let bytes = serde_json::to_vec(plan)
+        .map_err(|_| ContractCanonicalizationError::UnsupportedDescriptorDomain)?;
+    let canonical = jcs_canonical::canonicalize_bounded(&bytes, MAX_CONTRACT_DESCRIPTOR_BYTES)
+        .map_err(|_| ContractCanonicalizationError::DescriptorLimitExceeded)?;
+    hash_bytes(canonical.as_bytes())
 }
 
 fn schema_hash(

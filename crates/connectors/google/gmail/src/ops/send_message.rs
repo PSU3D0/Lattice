@@ -5,6 +5,13 @@ use crate::runtime::gmail_api::GmailApi;
 pub struct GoogleGmailSendMessage;
 
 impl GoogleGmailSendMessage {
+    pub const BROKER_CONTRACT: Option<::dag_core::BrokerContractMetadata> = Some(
+        ::dag_core::BrokerContractMetadata {
+            contract_id: "connector.google.gmail.send_message@1",
+            contract_hash: "sha256:8fbdd2dbb63877b92004b7b5e6a7dc665a0ec5788850e4a466c0b6200639de2a",
+        },
+    );
+
     pub const META: ::dag_core::ConnectorOpMetadata = ::dag_core::ConnectorOpMetadata {
         operation_id: "connector.google.gmail.send_message",
         connector_id: "connector.google.gmail",

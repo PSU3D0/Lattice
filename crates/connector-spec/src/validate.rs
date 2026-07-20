@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::diagnostics::{ValidationCode, ValidationError, ValidationErrors};
 use crate::model::{
     ActionImplementation, ActionSurface, BrokerRequestPlan, ConnectorManifest, DefaultValue,
-    FieldDecl, FieldKind, OperationContract, PaginationDecl, RequestMapping, ResourceRequirement,
-    SurfaceDecl, TypeDecl,
+    FieldDecl, FieldKind, OperationContract, PaginationDecl, QueryValueDecl, RequestMapping,
+    ResourceRequirement, SurfaceDecl, TrustedAdapterPin, TypeDecl,
 };
 
 /// Validate the closed, schema-independent security grammar of a generated
@@ -25,8 +25,18 @@ pub fn validate_broker_dispatch_descriptor(descriptor: &crate::BrokerDispatchDes
         || !valid_https_origin(&request.origin)
         || validate_broker_path(&request.path_template).is_err()
         || request.placeholders.len() > 256
+        || request.query.len() > 256
         || request.static_headers.len() > 128
         || request.body.len() > 1024
+        || crate::request_plan_hash(request).ok().as_deref()
+            != Some(descriptor.request_plan_hash.as_str())
+        || !request.query.iter().all(|(name, declaration)| {
+            valid_query_name(name) && valid_query_value(declaration, None)
+        })
+        || request
+            .trusted_adapter
+            .as_ref()
+            .is_some_and(|pin| !valid_trusted_adapter_pin(pin))
     {
         return false;
     }
@@ -629,6 +639,7 @@ fn validate_broker_request_plan(
     let path = format!("{surface_path}.broker_request");
     if request.path_template.len() > 8192
         || request.placeholders.len() > 256
+        || request.query.len() > 256
         || request.static_headers.len() > 128
         || request.body.len() > 1024
     {
@@ -717,6 +728,33 @@ fn validate_broker_request_plan(
                 "placeholder kind is not in the closed Broker V1 vocabulary",
             )),
         }
+    }
+    for (name, declaration) in &request.query {
+        if !valid_query_name(name) {
+            errors.push(ValidationError::new(
+                ValidationCode::InvalidBrokerRequestPlan,
+                Some(format!("{path}.query.{name}")),
+                "query names must be non-empty printable ASCII without separators",
+            ));
+        }
+        if !valid_query_value(declaration, Some(input_fields)) {
+            errors.push(ValidationError::new(
+                ValidationCode::InvalidBrokerRequestPlan,
+                Some(format!("{path}.query.{name}")),
+                "query values must be a valid static, input, or broker-slot declaration",
+            ));
+        }
+    }
+    if request
+        .trusted_adapter
+        .as_ref()
+        .is_some_and(|pin| !valid_trusted_adapter_pin(pin))
+    {
+        errors.push(ValidationError::new(
+            ValidationCode::InvalidBrokerRequestPlan,
+            Some(format!("{path}.trusted_adapter")),
+            "trusted adapter pin is not in the closed Broker V1 registry",
+        ));
     }
     for (name, value) in &request.static_headers {
         if !valid_static_header(name, value) {
@@ -840,11 +878,14 @@ fn validate_broker_path(path: &str) -> Result<(), &'static str> {
             return Err("broker path must not contain raw or percent-encoded dot segments");
         }
         if segment.contains('{') || segment.contains('}') {
-            let Some(name) = segment
+            let placeholder = segment.strip_suffix(":append").unwrap_or(segment);
+            let Some(name) = placeholder
                 .strip_prefix('{')
                 .and_then(|value| value.strip_suffix('}'))
             else {
-                return Err("broker placeholders must occupy an entire path segment");
+                return Err(
+                    "broker placeholders must occupy a path segment, optionally with the closed `:append` suffix",
+                );
             };
             if !valid_placeholder_name(name) || segment.contains('%') {
                 return Err("broker placeholder name or encoding is invalid");
@@ -894,6 +935,62 @@ fn valid_placeholder_name(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
+fn valid_query_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+}
+
+fn valid_query_value(
+    declaration: &QueryValueDecl,
+    input_fields: Option<&BTreeMap<String, FieldDecl>>,
+) -> bool {
+    match declaration.kind.as_str() {
+        "static" => {
+            declaration.input_field.is_none()
+                && declaration.value.as_ref().is_some_and(|value| {
+                    !value.is_empty()
+                        && value.len() <= 8192
+                        && value.is_ascii()
+                        && !value.bytes().any(|byte| byte.is_ascii_control())
+                })
+        }
+        "input" => {
+            declaration.value.is_none()
+                && declaration.input_field.as_ref().is_some_and(|field| {
+                    !field.is_empty()
+                        && field.len() <= 256
+                        && input_fields.is_none_or(|fields| fields.contains_key(field))
+                })
+        }
+        "idempotency_key" | "timestamp" | "boundary" => {
+            declaration.input_field.is_none() && declaration.value.is_none()
+        }
+        _ => false,
+    }
+}
+
+fn valid_trusted_adapter_pin(pin: &TrustedAdapterPin) -> bool {
+    matches!(
+        (
+            pin.trusted_adapter_id.as_str(),
+            pin.implementation_version.as_str(),
+            pin.implementation_hash.as_str(),
+        ),
+        (
+            "google.sheets.append_row.v1",
+            "1",
+            "sha256:54db6603967e1ce4e46ef45ece7bfa947c129564e40a290989fa2ae901a23966"
+        ) | (
+            "google.gmail.rfc822_message.v1",
+            "1",
+            "sha256:5a5de77f756b49aac0fb5339bf764f9e53a9437cdc41619c2c978aa5dbb4e3fc"
+        )
+    )
 }
 
 fn valid_static_header(name: &str, value: &str) -> bool {

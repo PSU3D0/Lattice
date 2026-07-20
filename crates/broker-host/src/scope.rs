@@ -50,6 +50,22 @@ pub fn bootstrap_host_context(
 }
 
 impl HostContext {
+    /// Installs a deployment-owned custodian while this authenticated host
+    /// bootstrap capability is still in control. Invocation callers cannot
+    /// replace it after executor construction.
+    pub fn local_broker_executor<C: broker_core::custodian::CredentialCustodian>(
+        &self,
+        config: crate::LocalBrokerConfig,
+        custodian: C,
+        trusted_adapters: crate::TrustedAdapterRegistry,
+    ) -> Result<crate::LocalBrokerExecutor<C>, BrokerHostError> {
+        crate::executor::LocalBrokerExecutor::new_with_custodian(
+            config,
+            custodian,
+            trusted_adapters,
+        )
+    }
+
     pub fn scope_for_activation(
         &self,
         node_id: impl Into<String>,

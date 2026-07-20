@@ -1,10 +1,12 @@
 #![forbid(unsafe_code)]
 
+mod adapter;
 mod binding;
 mod executor;
 mod manifest;
 mod scope;
 
+pub use adapter::TrustedAdapterRegistry;
 pub use binding::{BindingLockRecord, BrokerBindingEvidence, VerifiedBinding};
 pub use executor::{
     BrokerDescriptorRegistry, BrokerOperation, BrokerTransport, ConnectorExecutor,

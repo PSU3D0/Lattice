@@ -22,8 +22,9 @@ use broker_host::{
     derive_authority_manifest,
 };
 use connector_spec::{
-    BrokerDispatchDescriptor, BrokerRequestPlan, OperationContractDescriptor, RequestMethod,
-    RequestPlaceholderDecl, ResponseDataPolicy, ResponseDataPolicyKind, descriptor_hash,
+    BrokerDispatchDescriptor, BrokerRequestPlan, OperationContractDescriptor, QueryValueDecl,
+    RequestMethod, RequestPlaceholderDecl, ResponseDataPolicy, ResponseDataPolicyKind,
+    descriptor_hash,
 };
 use dag_core::prelude::Version;
 use dag_core::{
@@ -71,23 +72,69 @@ fn descriptor(id: &str, path: &str, slot: &str) -> (Vec<u8>, String) {
         semantic_effect_slots: vec![slot.into()],
     };
     let hash = descriptor_hash(&contract).unwrap();
+    let request_plan = BrokerRequestPlan {
+        method: RequestMethod::Post,
+        origin: "https://provider.example".into(),
+        path_template: path.into(),
+        placeholders: BTreeMap::from([(
+            "effect_key".into(),
+            RequestPlaceholderDecl {
+                kind: "idempotency_key".into(),
+                input_field: None,
+            },
+        )]),
+        query: BTreeMap::from([
+            (
+                "at".into(),
+                QueryValueDecl {
+                    kind: "timestamp".into(),
+                    input_field: None,
+                    value: None,
+                },
+            ),
+            (
+                "boundary".into(),
+                QueryValueDecl {
+                    kind: "boundary".into(),
+                    input_field: None,
+                    value: None,
+                },
+            ),
+            (
+                "effect".into(),
+                QueryValueDecl {
+                    kind: "idempotency_key".into(),
+                    input_field: None,
+                    value: None,
+                },
+            ),
+            (
+                "mode".into(),
+                QueryValueDecl {
+                    kind: "static".into(),
+                    input_field: None,
+                    value: Some("strict".into()),
+                },
+            ),
+            (
+                "value".into(),
+                QueryValueDecl {
+                    kind: "input".into(),
+                    input_field: Some("value".into()),
+                    value: None,
+                },
+            ),
+        ]),
+        static_headers: BTreeMap::from([("Accept".into(), "application/json".into())]),
+        body: BTreeMap::from([("value".into(), "value".into())]),
+        trusted_adapter: None,
+    };
+    let request_plan_hash = connector_spec::request_plan_hash(&request_plan).unwrap();
     let descriptor = BrokerDispatchDescriptor {
         contract,
         contract_hash: hash.clone(),
-        request_plan: BrokerRequestPlan {
-            method: RequestMethod::Post,
-            origin: "https://provider.example".into(),
-            path_template: path.into(),
-            placeholders: BTreeMap::from([(
-                "effect_key".into(),
-                RequestPlaceholderDecl {
-                    kind: "idempotency_key".into(),
-                    input_field: None,
-                },
-            )]),
-            static_headers: BTreeMap::from([("Accept".into(), "application/json".into())]),
-            body: BTreeMap::from([("value".into(), "value".into())]),
-        },
+        request_plan,
+        request_plan_hash,
         response_data_policy: policy,
     };
     (serde_json::to_vec(&descriptor).unwrap(), hash)
@@ -414,6 +461,13 @@ fn s21_distinct_descriptors_issue_grants_internally_and_plan_distinctly() {
     assert_eq!(plans.len(), 3);
     assert_ne!(plans[0], plans[1]);
     assert_ne!(plans[1], plans[2]);
+    for plan in &plans {
+        let text = String::from_utf8(plan.clone()).unwrap();
+        assert!(!text.contains("$broker:"));
+        assert!(text.contains("2026-07-19T12:00:00Z"));
+        assert!(text.contains("lattice-"));
+        assert!(text.contains("strict"));
+    }
 
     let op = executor
         .operation(&contracts[0].0, &contracts[0].1, "one", "one")

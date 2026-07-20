@@ -125,6 +125,15 @@ types:
         type: string
       updated_range:
         type: string
+      updated_rows:
+        type: u32
+        optional: true
+      updated_columns:
+        type: u32
+        optional: true
+      updated_cells:
+        type: u32
+        optional: true
       row_index:
         type: u32
         optional: true
@@ -249,6 +258,44 @@ surfaces:
       - http_read(capabilities::http::HttpRead)
       - http_write(capabilities::http::HttpWrite)
     implementation: handwritten_semantic
+    contract:
+      contract_id: connector.google.sheets.append_row@1
+      effect_class: Effectful
+      auth_role: outbound_auth.google_workspace_auth
+      minimum_scopes: [https://www.googleapis.com/auth/spreadsheets]
+      response_data_policy:
+        fields: [updated_cells, updated_columns, updated_range, updated_rows]
+        kind: json_projection
+        max_bytes: 4096
+      broker_abi_version: "0.1"
+      semantic_effect_slots: [append_row]
+    broker_request:
+      method: POST
+      origin: https://sheets.googleapis.com
+      path_template: /v4/spreadsheets/{spreadsheet_id}/values/{range}:append
+      placeholders:
+        spreadsheet_id:
+          kind: input
+          input_field: spreadsheet_id
+        range:
+          kind: input
+          input_field: sheet
+      query:
+        insertDataOption:
+          kind: static
+          value: INSERT_ROWS
+        valueInputOption:
+          kind: input
+          input_field: value_input_option
+      static_headers:
+        Accept: application/json
+        Content-Type: application/json
+      body:
+        values: row
+      trusted_adapter:
+        trusted_adapter_id: google.sheets.append_row.v1
+        implementation_version: "1"
+        implementation_hash: sha256:54db6603967e1ce4e46ef45ece7bfa947c129564e40a290989fa2ae901a23966
 
   - kind: action
     identifier: connector.google.sheets.find_rows

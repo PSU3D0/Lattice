@@ -363,7 +363,10 @@ async fn append_row_executes_against_sheet_headers() {
             }));
         then.status(200).json_body_obj(&json!({
             "updates": {
-                "updatedRange": "'Leads'!A2:C2"
+                "updatedCells": 3,
+                "updatedColumns": 3,
+                "updatedRange": "'Leads'!A2:C2",
+                "updatedRows": 1
             }
         }));
     });
@@ -393,6 +396,9 @@ async fn append_row_executes_against_sheet_headers() {
             spreadsheet_id: spreadsheet_id.to_string(),
             sheet: sheet.to_string(),
             updated_range: "'Leads'!A2:C2".to_string(),
+            updated_rows: Some(1),
+            updated_columns: Some(3),
+            updated_cells: Some(3),
             row_index: Some(2),
         }
     );
