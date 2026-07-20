@@ -32,7 +32,7 @@ pub struct TrustedHostScope {
 }
 impl TrustedHostScope {
     #[allow(clippy::too_many_arguments)]
-    pub fn from_authenticated_host(
+    pub(crate) fn from_authenticated_host(
         org_id: impl Into<String>,
         principal_id: impl Into<String>,
         bundle_id: impl Into<String>,
@@ -99,12 +99,94 @@ pub struct StandingEnvelope {
     pub required_attenuations: Vec<String>,
     pub max_grant_lifetime_seconds: u64,
 }
+/// Opaque proof-of-possession session; fields are never caller-constructible.
+///
+/// ```compile_fail
+/// use broker_core::grant::PopSession;
+/// let forged = PopSession { proof: b"guest".to_vec() };
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PopSession {
-    pub method: ChannelMethod,
-    pub key_thumbprint: String,
-    pub session_id: String,
-    pub proof: Vec<u8>,
+    pub(crate) method: ChannelMethod,
+    pub(crate) key_thumbprint: String,
+    pub(crate) session_id: String,
+    pub(crate) proof: Vec<u8>,
+}
+
+/// Opaque capability minted at the authenticated broker-host bootstrap
+/// boundary. It is the only production constructor for trusted scopes and PoP
+/// sessions; ordinary invocation callers never receive it.
+pub struct HostAuthority {
+    _sealed: (),
+}
+
+/// Enter the broker host's authenticated bootstrap boundary.
+#[doc(hidden)]
+pub fn bootstrap_host_authority() -> HostAuthority {
+    HostAuthority { _sealed: () }
+}
+
+impl HostAuthority {
+    #[allow(clippy::too_many_arguments)]
+    pub fn trusted_scope(
+        &self,
+        org_id: impl Into<String>,
+        principal_id: impl Into<String>,
+        bundle_id: impl Into<String>,
+        flow_ir_hash: impl Into<String>,
+        binding_lock_hash: impl Into<String>,
+        flow_id: impl Into<String>,
+        node_id: impl Into<String>,
+        node_alias: impl Into<String>,
+        run_id: impl Into<String>,
+    ) -> Result<TrustedHostScope, BrokerError> {
+        TrustedHostScope::from_authenticated_host(
+            org_id,
+            principal_id,
+            bundle_id,
+            flow_ir_hash,
+            binding_lock_hash,
+            flow_id,
+            node_id,
+            node_alias,
+            run_id,
+        )
+    }
+
+    pub fn pop_session(
+        &self,
+        method: ChannelMethod,
+        key_thumbprint: impl Into<String>,
+        session_id: impl Into<String>,
+        proof: Vec<u8>,
+    ) -> Result<PopSession, BrokerError> {
+        let session = PopSession {
+            method,
+            key_thumbprint: key_thumbprint.into(),
+            session_id: session_id.into(),
+            proof,
+        };
+        if session.key_thumbprint.is_empty()
+            || session.session_id.is_empty()
+            || session.proof.is_empty()
+            || session.proof.len() > 1024
+        {
+            return Err(BrokerError::Brk102);
+        }
+        Ok(session)
+    }
+}
+
+impl PopSession {
+    #[cfg(any(test, feature = "test_fixtures"))]
+    pub fn test_fixture(
+        method: ChannelMethod,
+        key_thumbprint: impl Into<String>,
+        session_id: impl Into<String>,
+        proof: Vec<u8>,
+    ) -> Result<Self, BrokerError> {
+        bootstrap_host_authority().pop_session(method, key_thumbprint, session_id, proof)
+    }
 }
 pub trait PopVerifier: Send + Sync {
     fn verify(&self, session: &PopSession) -> bool;
@@ -197,7 +279,7 @@ impl GrantStore {
 }
 #[derive(Clone, Debug)]
 pub struct ExecutionGrantRecord {
-    pub grant: ExecutionGrant,
+    pub(crate) grant: ExecutionGrant,
     canonical_bytes: Vec<u8>,
 }
 impl ExecutionGrantRecord {
@@ -209,6 +291,9 @@ impl ExecutionGrantRecord {
             grant: parsed.view,
             canonical_bytes: bytes,
         })
+    }
+    pub fn grant(&self) -> &ExecutionGrant {
+        &self.grant
     }
     pub fn canonical_bytes(&self) -> &[u8] {
         &self.canonical_bytes

@@ -87,6 +87,7 @@ ensure the registry stays in sync with the implementation.
 | EGRESS101 | Validation     | Error   | No allow-listed egress domains for connector. |
 | SECR201   | Validation     | Error   | Credential binding grants scopes outside requested set. |
 | SAGA201   | Validation     | Error   | Compensation node incompatible with effect node output. |
+| BRK001    | Validation     | Error   | Broker authority metadata or repeated-activation bound is invalid. |
 | CAP101    | Runtime        | Error   | Required capability binding missing from ResourceBag during preflight. |
 | CAP110    | Runtime        | Error   | Node accessed a capability not declared in its effect hints. |
 | CAP-WS-001 | Capability    | Error   | Workspace path is invalid (empty, root-resolving, non-ASCII by default, or malformed). |

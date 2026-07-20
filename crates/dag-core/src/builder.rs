@@ -3,7 +3,8 @@ use std::collections::BTreeMap;
 use semver::Version;
 
 use crate::ir::{
-    BufferPolicy, Delivery, EdgeIR, FlowIR, FlowId, NodeIR, NodeId, NodeSpec, Profile,
+    BrokerAuthority, BufferPolicy, Delivery, EdgeIR, FlowIR, FlowId, NodeIR, NodeId, NodeSpec,
+    Profile,
 };
 
 /// Errors produced by the flow builder.
@@ -15,6 +16,9 @@ pub enum FlowBuilderError {
     /// Attempted to mutate an edge that does not exist.
     #[error("edge `{from}` -> `{to}` does not exist in workflow")]
     UnknownEdge { from: String, to: String },
+    /// Attempted to configure a node not owned by this builder.
+    #[error("node `{0}` does not exist in workflow")]
+    UnknownNode(String),
 }
 
 /// Handle referencing a node added to the builder.
@@ -131,6 +135,23 @@ impl FlowBuilder {
         self.flow.nodes.push(node_ir);
         self.alias_map.insert(alias.clone(), node_id);
         Ok(NodeHandle { alias })
+    }
+
+    /// Attach validated semantic-operation authority to a node. This is the
+    /// normal authoring path; callers no longer need to mutate built IR.
+    pub fn set_broker_authority(
+        &mut self,
+        node: &NodeHandle,
+        authority: BrokerAuthority,
+    ) -> Result<(), FlowBuilderError> {
+        let target = self
+            .flow
+            .nodes
+            .iter_mut()
+            .find(|candidate| candidate.alias == node.alias)
+            .ok_or_else(|| FlowBuilderError::UnknownNode(node.alias.clone()))?;
+        target.broker_authority = Some(authority);
+        Ok(())
     }
 
     /// Create an edge between two node handles.

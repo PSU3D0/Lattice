@@ -34,14 +34,21 @@
         "connection_aggregate_max_logical_calls": {
           "additionalProperties": {
             "format": "uint64",
-            "minimum": 0.0,
+            "maximum": 9007199254740991,
+            "minimum": 1,
             "type": "integer"
+          },
+          "propertyNames": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[ -~]{1,256}$"
           },
           "type": "object"
         },
         "flow_aggregate_max_logical_calls": {
           "format": "uint64",
-          "minimum": 0.0,
+          "maximum": 9007199254740991,
+          "minimum": 1,
           "type": [
             "integer",
             "null"
@@ -51,7 +58,10 @@
           "items": {
             "$ref": "#/definitions/BrokerOperationBudget"
           },
-          "type": "array"
+          "maxItems": 1024,
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
         }
       },
       "required": [
@@ -64,29 +74,43 @@
       "description": "Broker V1 operation budget scoped per run and node.",
       "properties": {
         "connection_aggregate_key": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[ -~]{1,256}$",
           "type": [
             "string",
             "null"
           ]
         },
         "contract_id": {
+          "maxLength": 1024,
+          "minLength": 3,
+          "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+@[1-9][0-9]*$",
           "type": "string"
         },
         "max_dispatch_attempts_per_call": {
-          "format": "uint64",
-          "minimum": 0.0,
+          "format": "uint8",
+          "maximum": 255.0,
+          "minimum": 1.0,
           "type": "integer"
         },
         "max_logical_calls": {
           "format": "uint64",
-          "minimum": 0.0,
+          "maximum": 9007199254740991,
+          "minimum": 1,
           "type": "integer"
         },
         "semantic_effect_slots": {
           "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
             "type": "string"
           },
-          "type": "array"
+          "maxItems": 1024,
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
         }
       },
       "required": [

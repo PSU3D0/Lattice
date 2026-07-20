@@ -346,6 +346,7 @@ pub struct RequestMapping {
 /// particular, conformance-corpus hashes and adapter/module hashes are not
 /// contract semantics and MUST NOT be added to that descriptor.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OperationContract {
     /// Grammar: `[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+@[1-9][0-9]*`;
     /// the pre-`@` portion must exactly equal the operation identifier.
@@ -361,33 +362,55 @@ pub struct OperationContract {
 }
 
 /// Exact deterministic descriptor hashed to identify an operation contract.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OperationContractDescriptor {
     pub auth_role: String,
     pub broker_abi_version: String,
     pub contract_id: String,
     pub effect_class: String,
+    /// Hash of the canonical, fully expanded input type declaration.
+    pub input_schema_hash: String,
     pub minimum_scopes: Vec<String>,
+    /// Hash of the canonical, fully expanded output type declaration.
+    pub output_schema_hash: String,
     pub response_data_policy: ResponseDataPolicy,
     pub semantic_effect_slots: Vec<String>,
 }
 
 impl OperationContract {
-    pub fn descriptor(&self) -> OperationContractDescriptor {
+    pub(crate) fn descriptor_with_schema_hashes(
+        &self,
+        input_schema_hash: String,
+        output_schema_hash: String,
+    ) -> OperationContractDescriptor {
         OperationContractDescriptor {
             auth_role: self.auth_role.clone(),
             broker_abi_version: self.broker_abi_version.clone(),
             contract_id: self.contract_id.clone(),
             effect_class: self.effect_class.as_broker_name().to_string(),
+            input_schema_hash,
             minimum_scopes: self.minimum_scopes.clone(),
+            output_schema_hash,
             response_data_policy: self.response_data_policy.clone(),
             semantic_effect_slots: self.semantic_effect_slots.clone(),
         }
     }
 }
 
+/// Generated broker dispatch descriptor loaded by a broker host registry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrokerDispatchDescriptor {
+    pub contract: OperationContractDescriptor,
+    pub contract_hash: String,
+    pub request_plan: BrokerRequestPlan,
+    pub response_data_policy: ResponseDataPolicy,
+}
+
 /// Bounded projection of provider response data exposed to the flow.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResponseDataPolicy {
     /// Top-level response field names admitted by the projection.
     pub fields: Vec<String>,
@@ -404,6 +427,7 @@ pub enum ResponseDataPolicyKind {
 
 /// Declarative Broker V1 provider request-plan template.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BrokerRequestPlan {
     pub method: RequestMethod,
     pub origin: String,
@@ -421,6 +445,7 @@ pub struct BrokerRequestPlan {
 /// `boundary`). `kind` remains a string so validation can issue a stable
 /// fail-closed diagnostic for unknown future vocabulary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RequestPlaceholderDecl {
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -48,9 +48,51 @@ pub fn flow_requirements_schema() -> RootSchema {
     schema
 }
 
+fn seal_broker_schema_constraints(schema: &mut serde_json::Value) {
+    // Schemars expresses scalar/range limits from Rust attributes. These
+    // collection/item constraints mirror validation that is relational or
+    // otherwise not representable by field attributes.
+    if let Some(slots) =
+        schema.pointer_mut("/definitions/BrokerOperationBudget/properties/semantic_effect_slots")
+    {
+        slots["uniqueItems"] = serde_json::Value::Bool(true);
+        slots["items"]["minLength"] = serde_json::json!(1);
+        slots["items"]["maxLength"] = serde_json::json!(128);
+        slots["items"]["pattern"] = serde_json::json!(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$");
+    }
+    if let Some(budgets) =
+        schema.pointer_mut("/definitions/BrokerAuthority/properties/operation_budgets")
+    {
+        budgets["uniqueItems"] = serde_json::Value::Bool(true);
+    }
+    if let Some(map) = schema.pointer_mut(
+        "/definitions/BrokerAuthority/properties/connection_aggregate_max_logical_calls",
+    ) {
+        map["propertyNames"] = serde_json::json!({
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": r"^[ -~]{1,256}$"
+        });
+    }
+    for pointer in [
+        "/definitions/BrokerOperationBudget/properties/max_logical_calls",
+        "/definitions/BrokerAuthority/properties/flow_aggregate_max_logical_calls",
+        "/definitions/BrokerAuthority/properties/connection_aggregate_max_logical_calls/additionalProperties",
+    ] {
+        if let Some(values) = schema.pointer_mut(pointer) {
+            values["minimum"] = serde_json::json!(1);
+            values["maximum"] = serde_json::json!(9_007_199_254_740_991_u64);
+        }
+    }
+}
+
 pub fn schema_json_for_file(file_name: &str) -> Option<serde_json::Value> {
     match file_name {
-        "flow_ir.schema.json" => Some(serde_json::to_value(flow_ir_schema()).expect("schema")),
+        "flow_ir.schema.json" => {
+            let mut value = serde_json::to_value(flow_ir_schema()).expect("schema");
+            seal_broker_schema_constraints(&mut value);
+            Some(value)
+        }
         "flow_requirements.schema.json" => {
             Some(serde_json::to_value(flow_requirements_schema()).expect("schema"))
         }

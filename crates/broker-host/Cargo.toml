@@ -10,6 +10,9 @@ description = "Lattice host integration for the Broker V1 semantic path"
 broker-core = { path = "../broker-core" }
 dag-core = { path = "../dag-core" }
 kernel-plan = { path = "../kernel-plan" }
+connector-spec = { path = "../connector-spec" }
+hex.workspace = true
+sha2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

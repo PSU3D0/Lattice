@@ -109,9 +109,21 @@ fn collect_diagnostics(flow: &FlowIR) -> Vec<Diagnostic> {
     check_if_control_surfaces(flow, &mut diagnostics);
     check_switch_control_surfaces(flow, &mut diagnostics);
     check_reserved_control_surfaces(flow, &mut diagnostics);
+    check_broker_authority(flow, &mut diagnostics);
     check_bare_json_boundaries(flow, &mut diagnostics);
 
     diagnostics
+}
+
+fn check_broker_authority(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    if let Err(errors) = flow.validate_broker_authority() {
+        diagnostics.extend(errors.into_iter().map(|error| {
+            diagnostic(
+                "BRK001",
+                format!("broker authority metadata is invalid: {error}"),
+            )
+        }));
+    }
 }
 
 fn split_diagnostics_by_severity(

@@ -352,6 +352,12 @@ pub static DIAGNOSTIC_CODES: Lazy<Vec<DiagnosticCode>> = Lazy::new(|| {
             summary: "Reserved control surface not supported by this host or profile",
         },
         DiagnosticCode {
+            code: "BRK001",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Broker authority metadata or repeated-activation bound is invalid",
+        },
+        DiagnosticCode {
             code: "CAP101",
             subsystem: "runtime",
             default_severity: Severity::Error,

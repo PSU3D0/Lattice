@@ -1,143 +1,131 @@
-use crate::{OperationContract, OperationContractDescriptor};
+use std::collections::{BTreeMap, BTreeSet};
 
-/// Canonicalize the deliberately small contract-descriptor value domain.
+use sha2::{Digest, Sha256};
+
+use crate::{
+    ActionSurface, ConnectorManifest, FieldDecl, FieldKind, OperationContractDescriptor, TypeDecl,
+};
+
+/// Maximum canonical byte length of a contract descriptor or one schema
+/// closure. This matches the Broker V1 operation/request-plan limit.
+pub const MAX_CONTRACT_DESCRIPTOR_BYTES: usize = 256 * 1024;
+/// Maximum number of type declarations reachable from one action schema.
+pub const MAX_SCHEMA_DECLARATIONS: usize = 1024;
+
+/// Return the exact deterministic operation-contract descriptor.
 ///
-/// This is not a general RFC 8785 implementation. It is JCS-equivalent only
-/// for validated descriptors: ASCII strings, positive `u32` integers, arrays,
-/// and the fixed object shapes whose fields are declared in UTF-16/JCS key
-/// order in `OperationContractDescriptor` and its nested policy. If that
-/// descriptor domain grows, this routine must be replaced or extended before
-/// the new field participates in a contract hash.
+/// The contract identity includes SHA-256 hashes of canonical input and output
+/// schema closures. A closure contains the action's root type name and every
+/// transitively referenced object/enum declaration, so changing a nested
+/// schema changes the contract hash even when the semantic contract fields do
+/// not. Unicode strings are retained byte-for-byte and canonicalized with the
+/// workspace's full RFC 8785 implementation.
+pub fn operation_contract_descriptor(
+    manifest: &ConnectorManifest,
+    action: &ActionSurface,
+) -> Result<OperationContractDescriptor, ContractCanonicalizationError> {
+    let contract = action
+        .contract
+        .as_ref()
+        .ok_or(ContractCanonicalizationError::MissingContract)?;
+    let input_schema_hash = schema_hash(manifest, &action.input)?;
+    let output_schema_hash = schema_hash(manifest, &action.output)?;
+    Ok(contract.descriptor_with_schema_hashes(input_schema_hash, output_schema_hash))
+}
+
+/// Canonicalize the complete contract-hash preimage using RFC 8785 JCS.
 pub fn canonical_contract_json(
     descriptor: &OperationContractDescriptor,
 ) -> Result<Vec<u8>, ContractCanonicalizationError> {
-    let value = serde_json::to_value(descriptor)
+    let bytes = serde_json::to_vec(descriptor)
         .map_err(|_| ContractCanonicalizationError::UnsupportedDescriptorDomain)?;
-    ensure_supported_value(&value)?;
-    serde_json::to_vec(descriptor)
-        .map_err(|_| ContractCanonicalizationError::UnsupportedDescriptorDomain)
+    jcs_canonical::canonicalize_bounded(&bytes, MAX_CONTRACT_DESCRIPTOR_BYTES)
+        .map(|value| value.into_bytes())
+        .map_err(|_| ContractCanonicalizationError::DescriptorLimitExceeded)
 }
 
+/// Derive the schema-inclusive identity for one manifest action.
 pub fn contract_hash(
-    contract: &OperationContract,
+    manifest: &ConnectorManifest,
+    action: &ActionSurface,
 ) -> Result<String, ContractCanonicalizationError> {
-    let bytes = canonical_contract_json(&contract.descriptor())?;
-    let digest = sha256(&bytes);
-    let mut encoded = String::with_capacity(71);
-    encoded.push_str("sha256:");
-    for byte in digest {
-        use std::fmt::Write as _;
-        write!(&mut encoded, "{byte:02x}").expect("writing to String cannot fail");
-    }
-    Ok(encoded)
+    let descriptor = operation_contract_descriptor(manifest, action)?;
+    descriptor_hash(&descriptor)
 }
 
-// Small self-contained SHA-256 for the fixed descriptor hash. Keeping the
-// primitive local avoids expanding the connector runtime dependency surface.
-fn sha256(input: &[u8]) -> [u8; 32] {
-    const INITIAL: [u32; 8] = [
-        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
-        0x5be0cd19,
-    ];
-    const K: [u32; 64] = [
-        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
-        0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
-        0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
-        0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
-        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
-        0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
-        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
-        0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
-        0xc67178f2,
-    ];
-
-    let bit_len = (input.len() as u64).wrapping_mul(8);
-    let mut padded = input.to_vec();
-    padded.push(0x80);
-    while padded.len() % 64 != 56 {
-        padded.push(0);
-    }
-    padded.extend_from_slice(&bit_len.to_be_bytes());
-
-    let mut state = INITIAL;
-    for chunk in padded.chunks_exact(64) {
-        let mut words = [0_u32; 64];
-        for (index, word) in words[..16].iter_mut().enumerate() {
-            let offset = index * 4;
-            *word = u32::from_be_bytes(chunk[offset..offset + 4].try_into().expect("four bytes"));
-        }
-        for index in 16..64 {
-            let s0 = words[index - 15].rotate_right(7)
-                ^ words[index - 15].rotate_right(18)
-                ^ (words[index - 15] >> 3);
-            let s1 = words[index - 2].rotate_right(17)
-                ^ words[index - 2].rotate_right(19)
-                ^ (words[index - 2] >> 10);
-            words[index] = words[index - 16]
-                .wrapping_add(s0)
-                .wrapping_add(words[index - 7])
-                .wrapping_add(s1);
-        }
-
-        let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = state;
-        for index in 0..64 {
-            let sum1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
-            let choose = (e & f) ^ ((!e) & g);
-            let temp1 = h
-                .wrapping_add(sum1)
-                .wrapping_add(choose)
-                .wrapping_add(K[index])
-                .wrapping_add(words[index]);
-            let sum0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
-            let majority = (a & b) ^ (a & c) ^ (b & c);
-            let temp2 = sum0.wrapping_add(majority);
-            h = g;
-            g = f;
-            f = e;
-            e = d.wrapping_add(temp1);
-            d = c;
-            c = b;
-            b = a;
-            a = temp1.wrapping_add(temp2);
-        }
-        for (slot, value) in state.iter_mut().zip([a, b, c, d, e, f, g, h].into_iter()) {
-            *slot = slot.wrapping_add(value);
-        }
-    }
-
-    let mut digest = [0_u8; 32];
-    for (chunk, value) in digest.chunks_exact_mut(4).zip(state) {
-        chunk.copy_from_slice(&value.to_be_bytes());
-    }
-    digest
+/// Hash an already generated descriptor after enforcing canonical limits.
+pub fn descriptor_hash(
+    descriptor: &OperationContractDescriptor,
+) -> Result<String, ContractCanonicalizationError> {
+    hash_bytes(&canonical_contract_json(descriptor)?)
 }
 
-fn ensure_supported_value(value: &serde_json::Value) -> Result<(), ContractCanonicalizationError> {
-    match value {
-        serde_json::Value::String(value) if value.is_ascii() => Ok(()),
-        serde_json::Value::Number(value) if value.as_u64().is_some() => Ok(()),
-        serde_json::Value::Array(values) => {
-            for value in values {
-                ensure_supported_value(value)?;
-            }
-            Ok(())
-        }
-        serde_json::Value::Object(values) => {
-            for (key, value) in values {
-                if !key.is_ascii() {
-                    return Err(ContractCanonicalizationError::UnsupportedDescriptorDomain);
-                }
-                ensure_supported_value(value)?;
-            }
-            Ok(())
-        }
-        _ => Err(ContractCanonicalizationError::UnsupportedDescriptorDomain),
+fn schema_hash(
+    manifest: &ConnectorManifest,
+    root: &str,
+) -> Result<String, ContractCanonicalizationError> {
+    #[derive(serde::Serialize)]
+    struct SchemaClosure<'a> {
+        declarations: BTreeMap<&'a str, &'a TypeDecl>,
+        root: &'a str,
     }
+
+    let mut pending = vec![root];
+    let mut seen = BTreeSet::new();
+    let mut declarations = BTreeMap::new();
+    while let Some(name) = pending.pop() {
+        if !seen.insert(name) {
+            continue;
+        }
+        if seen.len() > MAX_SCHEMA_DECLARATIONS {
+            return Err(ContractCanonicalizationError::DescriptorLimitExceeded);
+        }
+        let declaration = manifest
+            .type_decl(name)
+            .ok_or(ContractCanonicalizationError::MissingSchema)?;
+        declarations.insert(name, declaration);
+        if let TypeDecl::Object { fields } = declaration {
+            for field in fields.values() {
+                collect_references(field, &mut pending);
+            }
+        }
+    }
+
+    let source = serde_json::to_vec(&SchemaClosure { declarations, root })
+        .map_err(|_| ContractCanonicalizationError::UnsupportedDescriptorDomain)?;
+    let canonical = jcs_canonical::canonicalize_bounded(&source, MAX_CONTRACT_DESCRIPTOR_BYTES)
+        .map_err(|_| ContractCanonicalizationError::DescriptorLimitExceeded)?;
+    hash_bytes(canonical.as_bytes())
+}
+
+fn collect_references<'a>(field: &'a FieldDecl, pending: &mut Vec<&'a str>) {
+    match field.kind {
+        FieldKind::ObjectRef | FieldKind::EnumRef => {
+            if let Some(target) = field.target.as_deref() {
+                pending.push(target);
+            }
+        }
+        FieldKind::List => {
+            if let Some(item) = field.item.as_deref() {
+                collect_references(item, pending);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn hash_bytes(bytes: &[u8]) -> Result<String, ContractCanonicalizationError> {
+    Ok(format!("sha256:{}", hex::encode(Sha256::digest(bytes))))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ContractCanonicalizationError {
+    #[error("action does not declare an operation contract")]
+    MissingContract,
+    #[error("action references a missing schema declaration")]
+    MissingSchema,
+    #[error("contract descriptor exceeds its documented size or count limit")]
+    DescriptorLimitExceeded,
     #[error("contract descriptor is outside the supported canonical JSON domain")]
     UnsupportedDescriptorDomain,
 }

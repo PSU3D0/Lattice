@@ -938,10 +938,13 @@ name = "broker-host"
 version = "0.1.0"
 dependencies = [
  "broker-core",
+ "connector-spec",
  "dag-core",
+ "hex",
  "kernel-plan",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 1.0.69",
 ]
 
@@ -1408,9 +1411,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "dag-core",
+ "hex",
+ "jcs-canonical",
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "thiserror 1.0.69",
 ]
 

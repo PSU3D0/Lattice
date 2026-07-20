@@ -7,8 +7,62 @@ use crate::model::{
     SurfaceDecl, TypeDecl,
 };
 
+/// Validate the closed, schema-independent security grammar of a generated
+/// dispatch descriptor before a host registry loads it.
+pub fn validate_broker_dispatch_descriptor(descriptor: &crate::BrokerDispatchDescriptor) -> bool {
+    let contract = &descriptor.contract;
+    let request = &descriptor.request_plan;
+    if !valid_contract_id(&contract.contract_id)
+        || contract.broker_abi_version != "0.1"
+        || contract.semantic_effect_slots.is_empty()
+        || contract.semantic_effect_slots.len() > 1024
+        || !is_sorted_unique_ascii(&contract.semantic_effect_slots, true, 128)
+        || contract.minimum_scopes.len() > 1024
+        || !is_sorted_unique_ascii(&contract.minimum_scopes, false, 1024)
+        || descriptor.response_data_policy != contract.response_data_policy
+        || descriptor.response_data_policy.max_bytes == 0
+        || descriptor.response_data_policy.max_bytes > 256 * 1024
+        || !valid_https_origin(&request.origin)
+        || validate_broker_path(&request.path_template).is_err()
+        || request.placeholders.len() > 256
+        || request.static_headers.len() > 128
+        || request.body.len() > 1024
+    {
+        return false;
+    }
+    let Ok(placeholders) = extract_placeholders(&request.path_template) else {
+        return false;
+    };
+    if placeholders.len() != request.placeholders.len() {
+        return false;
+    }
+    request.placeholders.iter().all(|(name, declaration)| {
+        valid_placeholder_name(name)
+            && placeholders.contains(name)
+            && match declaration.kind.as_str() {
+                "input" => declaration
+                    .input_field
+                    .as_deref()
+                    .is_some_and(|field| !field.is_empty() && field.len() <= 256),
+                "idempotency_key" | "timestamp" | "boundary" => declaration.input_field.is_none(),
+                _ => false,
+            }
+    }) && request
+        .static_headers
+        .iter()
+        .all(|(name, value)| valid_static_header(name, value))
+}
+
 pub fn validate_manifest(manifest: &ConnectorManifest) -> Result<(), ValidationErrors> {
     let mut errors = ValidationErrors::new();
+
+    if manifest.types.len() > 1024 || manifest.surfaces.len() > 1024 {
+        errors.push(ValidationError::new(
+            ValidationCode::InvalidContractSemantics,
+            None,
+            "connector manifest exceeds documented descriptor count limits",
+        ));
+    }
 
     if manifest.connector.id.trim().is_empty() {
         errors.push(ValidationError::new(
@@ -519,14 +573,17 @@ fn validate_operation_contract(
         ));
     }
 
-    if !is_sorted_unique_ascii(&contract.minimum_scopes, false, 1024) {
+    if contract.minimum_scopes.len() > 1024
+        || !is_sorted_unique_ascii(&contract.minimum_scopes, false, 1024)
+    {
         errors.push(ValidationError::new(
             ValidationCode::InvalidContractSemantics,
             Some(format!("{path}.minimum_scopes")),
             "minimum scopes must be sorted, unique, non-empty ASCII strings",
         ));
     }
-    if !is_sorted_unique_ascii(&contract.semantic_effect_slots, true, 128)
+    if contract.semantic_effect_slots.len() > 1024
+        || !is_sorted_unique_ascii(&contract.semantic_effect_slots, true, 128)
         || !contract.semantic_effect_slots.iter().all(|slot| {
             slot.bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
@@ -551,6 +608,7 @@ fn validate_operation_contract(
         });
     if policy.max_bytes == 0
         || policy.max_bytes > 256 * 1024
+        || policy.fields.len() > 1024
         || !is_sorted_unique_ascii(&policy.fields, true, 256)
         || !fields_exist
     {
@@ -569,6 +627,17 @@ fn validate_broker_request_plan(
     errors: &mut ValidationErrors,
 ) {
     let path = format!("{surface_path}.broker_request");
+    if request.path_template.len() > 8192
+        || request.placeholders.len() > 256
+        || request.static_headers.len() > 128
+        || request.body.len() > 1024
+    {
+        errors.push(ValidationError::new(
+            ValidationCode::InvalidBrokerRequestPlan,
+            Some(path.clone()),
+            "broker request plan exceeds its documented size or count limits",
+        ));
+    }
     if !valid_https_origin(&request.origin) {
         errors.push(ValidationError::new(
             ValidationCode::InvalidBrokerRequestOrigin,
@@ -576,14 +645,11 @@ fn validate_broker_request_plan(
             "origin must be an HTTPS origin without path, query, fragment, userinfo, or wildcard",
         ));
     }
-    if !request.path_template.starts_with('/')
-        || request.path_template.contains('?')
-        || request.path_template.contains('#')
-    {
+    if let Err(message) = validate_broker_path(&request.path_template) {
         errors.push(ValidationError::new(
             ValidationCode::InvalidBrokerRequestPlan,
             Some(format!("{path}.path_template")),
-            "broker path template must start with `/` and contain no query or fragment",
+            message,
         ));
     }
 
@@ -608,6 +674,13 @@ fn validate_broker_request_plan(
         }
     }
     for (name, placeholder) in &request.placeholders {
+        if !valid_placeholder_name(name) {
+            errors.push(ValidationError::new(
+                ValidationCode::InvalidBrokerRequestPlan,
+                Some(format!("{path}.placeholders.{name}")),
+                "placeholder names must match `[a-z][a-z0-9_]{0,63}`",
+            ));
+        }
         if !placeholders.contains(name) {
             errors.push(ValidationError::new(
                 ValidationCode::InvalidBrokerRequestPlan,
@@ -643,6 +716,15 @@ fn validate_broker_request_plan(
                 Some(format!("{path}.placeholders.{name}.kind")),
                 "placeholder kind is not in the closed Broker V1 vocabulary",
             )),
+        }
+    }
+    for (name, value) in &request.static_headers {
+        if !valid_static_header(name, value) {
+            errors.push(ValidationError::new(
+                ValidationCode::InvalidBrokerRequestPlan,
+                Some(format!("{path}.static_headers.{name}")),
+                "static header name/value is invalid or security-sensitive",
+            ));
         }
     }
     validate_field_mapping(input_fields, &request.body, format!("{path}.body"), errors);
@@ -688,12 +770,7 @@ fn valid_https_origin(origin: &str) -> bool {
     if authority.is_empty()
         || !authority.is_ascii()
         || authority.bytes().any(|byte| byte.is_ascii_whitespace())
-        || authority.contains('/')
-        || authority.contains('?')
-        || authority.contains('#')
-        || authority.contains('@')
-        || authority.contains('*')
-        || authority.contains('\\')
+        || authority.contains(['/', '?', '#', '@', '*', '\\'])
     {
         return false;
     }
@@ -702,34 +779,166 @@ fn valid_https_origin(origin: &str) -> bool {
         let Some(close) = authority.find(']') else {
             return false;
         };
-        let host = &authority[..=close];
+        let literal = &authority[1..close];
+        if literal.parse::<std::net::Ipv6Addr>().is_err() {
+            return false;
+        }
         let suffix = &authority[close + 1..];
         let port = if suffix.is_empty() {
             None
         } else {
-            suffix.strip_prefix(':')
+            let Some(port) = suffix.strip_prefix(':') else {
+                return false;
+            };
+            Some(port)
         };
-        if !suffix.is_empty() && port.is_none() {
+        (None, port)
+    } else {
+        let (host, port) = authority
+            .rsplit_once(':')
+            .map_or((authority, None), |(host, port)| (host, Some(port)));
+        if host.is_empty()
+            || host.len() > 253
+            || host.split('.').any(|label| {
+                label.is_empty()
+                    || label.len() > 63
+                    || label.starts_with('-')
+                    || label.ends_with('-')
+                    || !label
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            })
+        {
             return false;
         }
-        (host, port)
-    } else if let Some((host, port)) = authority.rsplit_once(':') {
-        (host, Some(port))
-    } else {
-        (authority, None)
+        (Some(host), port)
     };
 
-    !host.is_empty()
-        && !host.starts_with('.')
-        && !host.ends_with('.')
-        && host.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'[' | b']' | b':')
-        })
+    (host.is_some() || authority.starts_with('['))
         && port.is_none_or(|port| {
             !port.is_empty()
                 && port.bytes().all(|byte| byte.is_ascii_digit())
                 && port.parse::<u16>().is_ok_and(|port| port != 0)
         })
+}
+
+fn validate_broker_path(path: &str) -> Result<(), &'static str> {
+    if !path.starts_with('/')
+        || path.starts_with("//")
+        || path.contains(['?', '#', '\\'])
+        || path.bytes().any(|byte| byte.is_ascii_control())
+        || contains_percent_encoded(path, b'\\')
+        || contains_percent_encoded(path, b'/')
+    {
+        return Err(
+            "broker path must be an absolute path without authority, query, fragment, backslash, or controls",
+        );
+    }
+    for segment in path.split('/') {
+        let dots = decode_percent_dots(segment);
+        if segment == "." || segment == ".." || dots == "." || dots == ".." {
+            return Err("broker path must not contain raw or percent-encoded dot segments");
+        }
+        if segment.contains('{') || segment.contains('}') {
+            let Some(name) = segment
+                .strip_prefix('{')
+                .and_then(|value| value.strip_suffix('}'))
+            else {
+                return Err("broker placeholders must occupy an entire path segment");
+            };
+            if !valid_placeholder_name(name) || segment.contains('%') {
+                return Err("broker placeholder name or encoding is invalid");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn contains_percent_encoded(value: &str, expected: u8) -> bool {
+    value.as_bytes().windows(3).any(|window| {
+        window[0] == b'%'
+            && std::str::from_utf8(&window[1..])
+                .ok()
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok())
+                == Some(expected)
+    })
+}
+
+fn decode_percent_dots(segment: &str) -> String {
+    let bytes = segment.as_bytes();
+    let mut out = String::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if index + 2 < bytes.len() && bytes[index] == b'%' {
+            if let Ok(hex) = std::str::from_utf8(&bytes[index + 1..index + 3]) {
+                if u8::from_str_radix(hex, 16).ok() == Some(b'.') {
+                    out.push('.');
+                    index += 3;
+                    continue;
+                }
+            }
+        }
+        out.push(bytes[index] as char);
+        index += 1;
+    }
+    out
+}
+
+fn valid_placeholder_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .as_bytes()
+            .first()
+            .is_some_and(|byte| byte.is_ascii_lowercase())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
+fn valid_static_header(name: &str, value: &str) -> bool {
+    const FORBIDDEN: &[&str] = &[
+        "authorization",
+        "host",
+        "cookie",
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "proxy-connection",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+    ];
+    !name.is_empty()
+        && name.len() <= 128
+        && name.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'!' | b'#'
+                        | b'$'
+                        | b'%'
+                        | b'&'
+                        | b'\''
+                        | b'*'
+                        | b'+'
+                        | b'-'
+                        | b'.'
+                        | b'^'
+                        | b'_'
+                        | b'`'
+                        | b'|'
+                        | b'~'
+                )
+        })
+        && !FORBIDDEN.contains(&name.to_ascii_lowercase().as_str())
+        && value.len() <= 8192
+        && !value.contains(['\r', '\n'])
+        && value
+            .bytes()
+            .all(|byte| byte == b'\t' || (byte >= 0x20 && byte != 0x7f))
 }
 
 fn validate_field_mapping(

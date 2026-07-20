@@ -11,6 +11,9 @@ description = "Connector specification schema and code generation utilities."
 
 [dependencies]
 dag-core = { path = "../dag-core" }
+jcs-canonical.workspace = true
+hex.workspace = true
+sha2.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

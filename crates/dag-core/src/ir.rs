@@ -194,8 +194,9 @@ pub struct ConnectorOpMetadata {
     pub resolution: ConnectorResolutionContract,
 }
 
-/// Additive Broker V1 capsule identity emitted alongside legacy operation
-/// metadata. Keeping this parallel avoids changing existing static literals.
+/// Product-neutral semantic operation-contract identity emitted alongside
+/// connector metadata. Hosts may use it to select any isolated semantic
+/// executor; dag-core has no dependency on, or knowledge of, a broker product.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BrokerContractMetadata {
     pub contract_id: &'static str,
@@ -603,20 +604,31 @@ impl FlowIR {
                 errors.push(error);
             }
 
-            // Broker protocol section 6.2 requires repeated activation to be
-            // author-bounded. Today's control-surface IR has no normative
-            // author-declared fan-out bound, so every brokered repeated target
-            // fails closed. B3 can teach this hook a typed bound once one is
-            // added; timeouts or opaque config must not be inferred as bounds.
+            // Repeated activation is derived from the typed control-surface
+            // vocabulary, including the real `config.body_entry` shape used
+            // by for_each. Opaque config and timeout fields are never treated
+            // as authority bounds. Nested bounds multiply and fail closed on
+            // overflow.
+            let mut nested_bound = 1_u64;
             for surface in &self.control_surfaces {
-                let repeats = matches!(
-                    surface.kind,
-                    ControlSurfaceKind::Loop
-                        | ControlSurfaceKind::ForEach
-                        | ControlSurfaceKind::Window
-                );
-                if repeats && surface.targets.iter().any(|target| target == &node.alias) {
-                    errors.push(BrokerAuthorityValidationError::UnboundedFanout);
+                let Some((entries, bound)) = repeated_surface_semantics(surface) else {
+                    continue;
+                };
+                if entries
+                    .iter()
+                    .any(|entry| self.alias_reaches(entry, &node.alias))
+                {
+                    let Some(bound) = bound else {
+                        errors.push(BrokerAuthorityValidationError::UnboundedFanout);
+                        continue;
+                    };
+                    if bound == 0 {
+                        errors.push(BrokerAuthorityValidationError::UnboundedFanout);
+                    } else if let Some(product) = nested_bound.checked_mul(bound) {
+                        nested_bound = product;
+                    } else {
+                        errors.push(BrokerAuthorityValidationError::FanoutOverflow);
+                    }
                 }
             }
         }
@@ -626,6 +638,59 @@ impl FlowIR {
             Err(errors)
         }
     }
+
+    fn alias_reaches(&self, start: &str, target: &str) -> bool {
+        let mut pending = vec![start];
+        let mut seen = BTreeSet::new();
+        while let Some(alias) = pending.pop() {
+            if alias == target {
+                return true;
+            }
+            if !seen.insert(alias) {
+                continue;
+            }
+            pending.extend(
+                self.edges
+                    .iter()
+                    .filter(|edge| edge.from == alias)
+                    .map(|edge| edge.to.as_str()),
+            );
+        }
+        false
+    }
+}
+
+fn repeated_surface_semantics(surface: &ControlSurfaceIR) -> Option<(Vec<&str>, Option<u64>)> {
+    let config = surface.config.as_object();
+    let mut entries = surface
+        .targets
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let (entry_fields, bound_fields): (&[&str], &[&str]) = match surface.kind {
+        ControlSurfaceKind::ForEach => (&["body_entry"], &["max_items", "max_iterations"]),
+        ControlSurfaceKind::Loop => (&["body_entry", "loop_entry"], &["max_iterations"]),
+        ControlSurfaceKind::Window => (
+            &["body_entry", "window_entry"],
+            &["max_windows", "max_items"],
+        ),
+        _ => return None,
+    };
+    if let Some(config) = config {
+        for field in entry_fields {
+            if let Some(entry) = config.get(*field).and_then(serde_json::Value::as_str) {
+                entries.push(entry);
+            }
+        }
+    }
+    entries.sort_unstable();
+    entries.dedup();
+    let bound = config.and_then(|config| {
+        bound_fields
+            .iter()
+            .find_map(|field| config.get(*field).and_then(serde_json::Value::as_u64))
+    });
+    Some((entries, bound))
 }
 
 pub const BROKER_MAX_EXACT_INTEGER: u64 = 9_007_199_254_740_991;
@@ -634,11 +699,19 @@ pub const BROKER_MAX_EXACT_INTEGER: u64 = 9_007_199_254_740_991;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BrokerOperationBudget {
+    #[schemars(
+        regex(pattern = r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+@[1-9][0-9]*$"),
+        length(min = 3, max = 1024)
+    )]
     pub contract_id: String,
+    #[schemars(length(min = 1, max = 1024))]
     pub semantic_effect_slots: Vec<String>,
+    #[schemars(range(min = 1))]
     pub max_logical_calls: u64,
-    pub max_dispatch_attempts_per_call: u64,
+    #[schemars(range(min = 1, max = 255))]
+    pub max_dispatch_attempts_per_call: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(regex(pattern = r"^[ -~]{1,256}$"), length(min = 1, max = 256))]
     pub connection_aggregate_key: Option<String>,
 }
 
@@ -646,10 +719,13 @@ pub struct BrokerOperationBudget {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BrokerAuthority {
+    #[schemars(length(min = 1, max = 1024))]
     operation_budgets: Vec<BrokerOperationBudget>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1))]
     flow_aggregate_max_logical_calls: Option<u64>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[schemars(length(max = 1024))]
     connection_aggregate_max_logical_calls: BTreeMap<String, u64>,
 }
 
@@ -709,9 +785,14 @@ impl BrokerAuthority {
         if self.operation_budgets.is_empty() {
             return Err(BrokerAuthorityValidationError::EmptyOperationBudgets);
         }
+        if self.operation_budgets.len() > 1024
+            || self.connection_aggregate_max_logical_calls.len() > 1024
+        {
+            return Err(BrokerAuthorityValidationError::InvalidMaximum);
+        }
         let mut contract_ids = BTreeSet::new();
         for budget in &self.operation_budgets {
-            if !valid_broker_contract_id(&budget.contract_id) {
+            if budget.contract_id.len() > 1024 || !valid_broker_contract_id(&budget.contract_id) {
                 return Err(BrokerAuthorityValidationError::InvalidContractId);
             }
             if !contract_ids.insert(&budget.contract_id) {
@@ -721,7 +802,7 @@ impl BrokerAuthority {
                 return Err(BrokerAuthorityValidationError::InvalidSemanticEffectSlots);
             }
             validate_broker_maximum(budget.max_logical_calls)?;
-            validate_broker_maximum(budget.max_dispatch_attempts_per_call)?;
+            validate_broker_maximum(u64::from(budget.max_dispatch_attempts_per_call))?;
             if budget
                 .connection_aggregate_key
                 .as_deref()
@@ -778,8 +859,10 @@ pub enum BrokerAuthorityValidationError {
     InvalidAggregateKey,
     #[error("broker authority contract is absent from node connector operation metadata")]
     ContractNotDeclaredByNode,
-    #[error("brokered node is targeted by an unbounded repeated-activation control surface")]
+    #[error("brokered node is reachable from an unbounded repeated-activation control surface")]
     UnboundedFanout,
+    #[error("nested repeated-activation bounds overflow")]
+    FanoutOverflow,
 }
 
 fn validate_broker_maximum(value: u64) -> Result<(), BrokerAuthorityValidationError> {
@@ -815,6 +898,7 @@ fn valid_broker_contract_id(value: &str) -> bool {
 
 fn valid_semantic_effect_slots(slots: &[String]) -> bool {
     !slots.is_empty()
+        && slots.len() <= 1024
         && slots.iter().all(|slot| {
             valid_broker_ascii_id(slot, 128)
                 && slot

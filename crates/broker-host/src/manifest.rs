@@ -6,6 +6,7 @@ use broker_core::artifacts::{
 };
 use dag_core::{BrokerContractMetadata, ConnectorOpMetadata, ConnectorRoleKindDecl};
 use kernel_plan::ValidatedIR;
+use sha2::{Digest, Sha256};
 
 #[derive(Clone, Debug)]
 pub struct ManifestProvenance<'a> {
@@ -26,6 +27,12 @@ pub struct NodeOperationMetadata<'a> {
 pub enum AuthorityManifestError {
     #[error("Flow IR hash is invalid")]
     InvalidFlowIrHash,
+    #[error("Flow IR hash does not match the exact supplied bytes")]
+    FlowIrHashMismatch,
+    #[error("supplied Flow IR bytes do not represent the validated IR")]
+    FlowIrBytesMismatch,
+    #[error("derived authority manifest failed protocol artifact validation")]
+    InvalidDerivedArtifact,
     #[error("manifest provenance is invalid")]
     InvalidProvenance,
     #[error("Flow IR broker authority is invalid")]
@@ -50,17 +57,31 @@ pub enum AuthorityManifestError {
     NoBrokerAuthority,
 }
 
-/// Purely derive a Broker V1 manifest from validated Flow IR and host-supplied
-/// connector registry metadata. `flow_ir_hash` is accepted verbatim from the
-/// bundle assembly hashing path; this function never serializes or hashes IR.
+/// Purely derive a Broker V1 manifest from validated Flow IR, the exact Flow
+/// IR artifact bytes used by bundle assembly, and host-supplied connector
+/// registry metadata. The declared hash must match those exact bytes.
 pub fn derive_authority_manifest(
     validated: &ValidatedIR,
+    flow_ir_bytes: &[u8],
     flow_ir_hash: &str,
     provenance: ManifestProvenance<'_>,
     metadata: &[NodeOperationMetadata<'_>],
 ) -> Result<FlowAuthorityManifest, AuthorityManifestError> {
     if !valid_hash(flow_ir_hash) {
         return Err(AuthorityManifestError::InvalidFlowIrHash);
+    }
+    let actual_hash = format!("sha256:{}", hex::encode(Sha256::digest(flow_ir_bytes)));
+    if actual_hash != flow_ir_hash {
+        return Err(AuthorityManifestError::FlowIrHashMismatch);
+    }
+    broker_core::canonical::canonicalize_bounded(flow_ir_bytes, 1024 * 1024)
+        .map_err(|_| AuthorityManifestError::FlowIrBytesMismatch)?;
+    let supplied: serde_json::Value = serde_json::from_slice(flow_ir_bytes)
+        .map_err(|_| AuthorityManifestError::FlowIrBytesMismatch)?;
+    let expected = serde_json::to_value(validated.flow())
+        .map_err(|_| AuthorityManifestError::FlowIrBytesMismatch)?;
+    if supplied != expected {
+        return Err(AuthorityManifestError::FlowIrBytesMismatch);
     }
     if provenance.org_id.is_empty() || provenance.principal_id.is_empty() {
         return Err(AuthorityManifestError::InvalidProvenance);
@@ -161,7 +182,7 @@ pub fn derive_authority_manifest(
             extensions: Default::default(),
         })
     };
-    Ok(FlowAuthorityManifest {
+    let manifest = FlowAuthorityManifest {
         schema_version: "0.1".into(),
         critical_fields: Vec::new(),
         org_id: provenance.org_id.into(),
@@ -173,7 +194,14 @@ pub fn derive_authority_manifest(
         nodes,
         aggregate_ceilings,
         extensions: Default::default(),
-    })
+    };
+    let bytes = broker_core::canonical::from_serde(&manifest, broker_core::artifacts::MANIFEST_MAX)
+        .map_err(|_| AuthorityManifestError::InvalidDerivedArtifact)?
+        .into_bytes();
+    let parsed: broker_core::artifacts::ParsedArtifact<FlowAuthorityManifest> =
+        broker_core::artifacts::parse(&bytes)
+            .map_err(|_| AuthorityManifestError::InvalidDerivedArtifact)?;
+    Ok(parsed.view)
 }
 
 fn operation_matches_ir(metadata: &ConnectorOpMetadata, ir: &dag_core::ConnectorOpRefIR) -> bool {

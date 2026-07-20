@@ -17,6 +17,60 @@ fn action_mut(manifest: &mut ConnectorManifest) -> &mut connector_spec::ActionSu
     }
 }
 
+#[test]
+fn strict_broker_paths_and_headers_fail_closed() {
+    for path in [
+        "//evil.example/path",
+        "/v1/../secret",
+        "/v1/%2e%2e/secret",
+        "/v1\\secret",
+        "/v1/%5csecret",
+        "/v1/prefix-{effect_key}",
+    ] {
+        let mut manifest = synthetic();
+        action_mut(&mut manifest)
+            .broker_request
+            .as_mut()
+            .unwrap()
+            .path_template = path.into();
+        assert!(
+            has_code(&manifest, ValidationCode::InvalidBrokerRequestPlan),
+            "path unexpectedly accepted: {path}"
+        );
+    }
+
+    for header in [
+        "Authorization",
+        "Host",
+        "Cookie",
+        "Connection",
+        "Transfer-Encoding",
+    ] {
+        let mut manifest = synthetic();
+        let request = action_mut(&mut manifest).broker_request.as_mut().unwrap();
+        request.static_headers.clear();
+        request.static_headers.insert(header.into(), "x".into());
+        assert!(has_code(
+            &manifest,
+            ValidationCode::InvalidBrokerRequestPlan
+        ));
+    }
+}
+
+#[test]
+fn security_objects_deny_unknown_fields() {
+    let source = fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../connector-codegen/tests/fixtures/dev_synthetic.connector.yaml"),
+    )
+    .unwrap();
+    let mutated = source.replace(
+        "      semantic_effect_slots: [echo_effect]",
+        "      semantic_effect_slots: [echo_effect]\n      future_authority: true",
+    );
+    assert!(ConnectorManifest::from_yaml_str(&mutated).is_err());
+}
+
 fn has_code(manifest: &ConnectorManifest, code: ValidationCode) -> bool {
     manifest
         .validate()
@@ -33,10 +87,35 @@ fn synthetic_contract_validates_and_has_golden_hash() {
     let SurfaceDecl::Action(action) = &manifest.surfaces[0] else {
         panic!("action")
     };
-    let hash = contract_hash(action.contract.as_ref().expect("contract")).expect("hash");
+    let hash = contract_hash(&manifest, action).expect("hash");
     assert_eq!(
         hash,
-        "sha256:937245180087550ae887dcf06012b020b5194ce43172a1e817c29ddd1b237a35"
+        "sha256:fd93671cfd9cedeb07dd6445ff26c007db85abae4c408f318e7721dd2fccfde1"
+    );
+}
+
+#[test]
+fn unicode_auth_role_is_hashed_with_full_jcs() {
+    let mut manifest = synthetic();
+    let profile = manifest
+        .profiles
+        .outbound_auth
+        .remove("synthetic_auth")
+        .unwrap();
+    manifest
+        .profiles
+        .outbound_auth
+        .insert("synthetic_é".into(), profile);
+    let action = action_mut(&mut manifest);
+    action.auth = Some("synthetic_é".into());
+    action.contract.as_mut().unwrap().auth_role = "outbound_auth.synthetic_é".into();
+    manifest.validate().unwrap();
+    let SurfaceDecl::Action(action) = &manifest.surfaces[0] else {
+        unreachable!()
+    };
+    assert_ne!(
+        contract_hash(&manifest, action).unwrap(),
+        "sha256:fd93671cfd9cedeb07dd6445ff26c007db85abae4c408f318e7721dd2fccfde1"
     );
 }
 

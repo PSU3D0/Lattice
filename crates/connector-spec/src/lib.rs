@@ -6,19 +6,23 @@ mod validate;
 use std::fs;
 use std::path::Path;
 
-pub use contract::{ContractCanonicalizationError, canonical_contract_json, contract_hash};
+pub use contract::{
+    ContractCanonicalizationError, MAX_CONTRACT_DESCRIPTOR_BYTES, MAX_SCHEMA_DECLARATIONS,
+    canonical_contract_json, contract_hash, descriptor_hash, operation_contract_descriptor,
+};
 pub use diagnostics::{ValidationCode, ValidationError, ValidationErrors};
 pub use model::{
-    ActionImplementation, ActionSurface, BrokerRequestPlan, ConnectorManifest, ConnectorMetadata,
-    ConnectorProfiles, DefaultValue, DeterminismLevel, EffectLevel, EndpointProfile, FieldDecl,
-    FieldKind, OperationContract, OperationContractDescriptor, OutboundAuthProfile, PaginationDecl,
-    PaginationKind, RequestMapping, RequestMethod, RequestPlaceholderDecl, ReservedProfile,
-    ReservedTriggerConfig, ResourceRequirement, ResponseDataPolicy, ResponseDataPolicyKind,
-    ResponseDecl, ResponseKind, StaticHeaderDecl, SurfaceDecl, TypeDecl, WebhookTriggerSurface,
+    ActionImplementation, ActionSurface, BrokerDispatchDescriptor, BrokerRequestPlan,
+    ConnectorManifest, ConnectorMetadata, ConnectorProfiles, DefaultValue, DeterminismLevel,
+    EffectLevel, EndpointProfile, FieldDecl, FieldKind, OperationContract,
+    OperationContractDescriptor, OutboundAuthProfile, PaginationDecl, PaginationKind,
+    RequestMapping, RequestMethod, RequestPlaceholderDecl, ReservedProfile, ReservedTriggerConfig,
+    ResourceRequirement, ResponseDataPolicy, ResponseDataPolicyKind, ResponseDecl, ResponseKind,
+    StaticHeaderDecl, SurfaceDecl, TypeDecl, WebhookTriggerSurface,
 };
 pub use validate::{
-    generated_module_name, paginated_collection_field, validate_manifest,
-    validate_manifest_for_codegen,
+    generated_module_name, paginated_collection_field, validate_broker_dispatch_descriptor,
+    validate_manifest, validate_manifest_for_codegen,
 };
 
 #[derive(Debug, thiserror::Error)]
