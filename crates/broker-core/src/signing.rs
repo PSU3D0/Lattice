@@ -4,7 +4,7 @@ use crate::{
     canonical,
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use ed25519_dalek::{Signature, Signer as _, SigningKey, Verifier as _, VerifyingKey};
+use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
 use std::fmt;
 
 pub const BINDING_DOMAIN: &str = "lattice.binding-attestation.v0.1";
@@ -73,7 +73,7 @@ impl BrokerVerifyingKey {
             .map_err(|_| BrokerError::Brk001)?;
         let signature = Signature::from_slice(&bytes).map_err(|_| BrokerError::Brk001)?;
         self.key
-            .verify(&preimage(domain, complete_json)?, &signature)
+            .verify_strict(&preimage(domain, complete_json)?, &signature)
             .map_err(|_| BrokerError::Brk109)
     }
 }

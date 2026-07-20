@@ -1,13 +1,19 @@
-use crate::{BrokerError, canonical, effect_id};
+use crate::{BrokerError, canonical, custodian::AccessMaterial, effect_id};
 use sha2::{Digest, Sha256};
 use std::{collections::VecDeque, sync::Mutex};
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct FinalRequestPlan {
     canonical: Vec<u8>,
+    approved_origin: String,
 }
 impl FinalRequestPlan {
-    pub fn from_template(template: &[u8], logical_effect_id: &str) -> Result<Self, BrokerError> {
+    pub(crate) fn from_template(
+        template: &[u8],
+        logical_effect_id: &str,
+        approved_origin: &str,
+    ) -> Result<Self, BrokerError> {
+        validate_https_origin(approved_origin)?;
         let canonical = canonical::canonicalize_bounded(template, canonical::MAX_OPERATION_BYTES)?;
         let mut value: serde_json::Value =
             serde_json::from_slice(canonical.as_bytes()).map_err(|_| BrokerError::Brk301)?;
@@ -15,10 +21,15 @@ impl FinalRequestPlan {
         let canonical = canonical::from_serde(&value, canonical::MAX_OPERATION_BYTES)?;
         Ok(Self {
             canonical: canonical.into_bytes(),
+            approved_origin: approved_origin.to_owned(),
         })
     }
     pub fn canonical_bytes(&self) -> &[u8] {
         &self.canonical
+    }
+    /// Destination is broker-supplied and never read from planner JSON.
+    pub fn destination_origin(&self) -> &str {
+        &self.approved_origin
     }
     pub fn hash(&self) -> String {
         format!("sha256:{}", hex::encode(Sha256::digest(&self.canonical)))
@@ -46,6 +57,21 @@ fn substitute(value: &mut serde_json::Value, key: &str) {
         _ => {}
     }
 }
+pub fn validate_https_origin(origin: &str) -> Result<(), BrokerError> {
+    let rest = origin.strip_prefix("https://").ok_or(BrokerError::Brk302)?;
+    if rest.is_empty()
+        || rest.contains(['/', '?', '#', '@'])
+        || rest
+            .bytes()
+            .any(|b| b.is_ascii_whitespace() || !b.is_ascii())
+        || rest.starts_with('.')
+        || rest.ends_with('.')
+    {
+        return Err(BrokerError::Brk302);
+    }
+    Ok(())
+}
+
 pub fn idempotency_key(effect_id: &str) -> Result<String, BrokerError> {
     Ok(hex::encode(effect_id::digest_bytes(effect_id)?))
 }
@@ -62,7 +88,14 @@ pub enum DispatchResult {
     Ambiguous,
 }
 pub trait ProviderDispatcher: Send + Sync {
-    fn dispatch(&self, plan: &FinalRequestPlan) -> Result<DispatchResult, BrokerError>;
+    /// The only boundary that receives credential material. Implementations
+    /// must derive the destination from `destination_origin`, never from a URL
+    /// embedded in canonical planner-controlled JSON.
+    fn dispatch(
+        &self,
+        plan: &FinalRequestPlan,
+        access: AccessMaterial<'_>,
+    ) -> Result<DispatchResult, BrokerError>;
 }
 
 #[derive(Clone, Debug)]
@@ -91,7 +124,12 @@ impl MockDispatcher {
     }
 }
 impl ProviderDispatcher for MockDispatcher {
-    fn dispatch(&self, plan: &FinalRequestPlan) -> Result<DispatchResult, BrokerError> {
+    fn dispatch(
+        &self,
+        plan: &FinalRequestPlan,
+        _access: AccessMaterial<'_>,
+    ) -> Result<DispatchResult, BrokerError> {
+        validate_https_origin(plan.destination_origin())?;
         if plan.canonical.len() > canonical::MAX_OPERATION_BYTES {
             return Err(BrokerError::Brk301);
         }
@@ -135,9 +173,12 @@ mod tests {
     #[test]
     fn fills_broker_slot_and_records_final() {
         let effect = crate::effect_id::derive("r", "n", 1, "s").unwrap();
-        let plan =
-            FinalRequestPlan::from_template(br#"{"key":{"$broker":"idempotency_key"}}"#, &effect)
-                .unwrap();
+        let plan = FinalRequestPlan::from_template(
+            br#"{"key":{"$broker":"idempotency_key"}}"#,
+            &effect,
+            "https://provider.example",
+        )
+        .unwrap();
         assert!(
             std::str::from_utf8(plan.canonical_bytes())
                 .unwrap()

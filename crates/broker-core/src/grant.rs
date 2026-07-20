@@ -1,17 +1,20 @@
 use crate::{BrokerError, artifacts::*, canonical};
 use std::{collections::BTreeMap, sync::Mutex};
 
+/// Broker-owned clock. Both wall and monotonic readings are mandatory: no
+/// zero/default monotonic clock is permitted at the lease boundary.
 pub trait Clock: Send + Sync {
     fn now_rfc3339(&self) -> String;
-    fn monotonic_seconds(&self) -> i64 {
-        0
-    }
+    fn monotonic_seconds(&self) -> i64;
 }
 #[derive(Clone, Debug)]
 pub struct FixedClock(pub String);
 impl Clock for FixedClock {
     fn now_rfc3339(&self) -> String {
         self.0.clone()
+    }
+    fn monotonic_seconds(&self) -> i64 {
+        crate::artifacts::timestamp_seconds(&self.0).expect("validated fixed test clock")
     }
 }
 
@@ -106,13 +109,43 @@ pub struct PopSession {
 pub trait PopVerifier: Send + Sync {
     fn verify(&self, session: &PopSession) -> bool;
 }
+#[derive(Clone)]
+pub struct ConfiguredPopVerifier {
+    expected_proof: Vec<u8>,
+}
+impl ConfiguredPopVerifier {
+    pub fn new(expected_proof: Vec<u8>) -> Result<Self, BrokerError> {
+        if expected_proof.is_empty() || expected_proof.len() > 1024 {
+            return Err(BrokerError::Brk102);
+        }
+        Ok(Self { expected_proof })
+    }
+}
+impl PopVerifier for ConfiguredPopVerifier {
+    fn verify(&self, session: &PopSession) -> bool {
+        use subtle::ConstantTimeEq;
+        session.proof.len() == self.expected_proof.len()
+            && bool::from(session.proof.ct_eq(&self.expected_proof))
+    }
+}
+impl Drop for ConfiguredPopVerifier {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.expected_proof.zeroize();
+    }
+}
+
+#[cfg(test)]
 #[derive(Clone, Debug)]
 pub struct ExactPopVerifier {
     pub expected_proof: Vec<u8>,
 }
+#[cfg(test)]
 impl PopVerifier for ExactPopVerifier {
     fn verify(&self, session: &PopSession) -> bool {
-        session.proof == self.expected_proof
+        use subtle::ConstantTimeEq;
+        session.proof.len() == self.expected_proof.len()
+            && bool::from(session.proof.ct_eq(&self.expected_proof))
     }
 }
 pub trait OpaqueIdGenerator: Send + Sync {
@@ -168,6 +201,7 @@ pub struct ExecutionGrantRecord {
     canonical_bytes: Vec<u8>,
 }
 impl ExecutionGrantRecord {
+    #[cfg(any(test, feature = "test_fixtures"))]
     pub fn from_grant(grant: &ExecutionGrant) -> Result<Self, BrokerError> {
         let bytes = canonical::from_serde(grant, GRANT_MAX)?.into_bytes();
         let parsed: ParsedArtifact<ExecutionGrant> = crate::artifacts::parse(&bytes)?;
@@ -193,6 +227,7 @@ pub struct GrantIssuer<'a> {
     pub clock: &'a dyn Clock,
     pub ids: &'a dyn OpaqueIdGenerator,
     pub store: &'a GrantStore,
+    pub pop_verifier: &'a dyn PopVerifier,
 }
 impl GrantIssuer<'_> {
     #[allow(clippy::too_many_arguments)]
@@ -202,13 +237,12 @@ impl GrantIssuer<'_> {
         envelope: &StandingEnvelope,
         binding: &BindingAttestation,
         pop: &PopSession,
-        verifier: &dyn PopVerifier,
         logical_calls: u64,
         attempts: u8,
         not_before: String,
         expires_at: String,
     ) -> Result<IssuedGrant, BrokerError> {
-        if !verifier.verify(pop) {
+        if !self.pop_verifier.verify(pop) {
             return Err(BrokerError::Brk102);
         }
         let now = crate::artifacts::timestamp_seconds(&self.clock.now_rfc3339())?;
@@ -270,6 +304,10 @@ impl GrantIssuer<'_> {
             operation_contract: envelope.operation_contract.clone(),
             contract_hash: envelope.contract_hash.clone(),
             connection_ref: binding.connection_ref.clone(),
+            provider: binding.provider.clone(),
+            account_commitment: binding.account_commitment.clone(),
+            roles: binding.roles.clone(),
+            scopes: binding.scope_alignment.actual_scopes.clone(),
             budgets: GrantBudgets {
                 logical_calls,
                 dispatch_attempts_per_call: attempts,

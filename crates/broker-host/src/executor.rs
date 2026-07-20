@@ -16,7 +16,7 @@ use broker_core::{
     engine::{
         BrokerEngine, FixedTemplatePlanner, ImplementationApproval, InvokeRequest, TrustRegistry,
     },
-    grant::{Clock, ExactPopVerifier, ExecutionGrantRecord, FixedClock, PopSession},
+    grant::{Clock, ConfiguredPopVerifier, ExecutionGrantRecord, FixedClock, PopSession},
     ledger::InMemoryLedger,
     signing::{BrokerSigner, BrokerVerifyingKey},
 };
@@ -165,7 +165,7 @@ pub struct LocalBrokerExecutor {
     clock: FixedClock,
     signer: BrokerSigner,
     commitments: CommitmentKey,
-    pop_verifier: ExactPopVerifier,
+    pop_verifier: ConfiguredPopVerifier,
     broker_principal_id: String,
 }
 
@@ -194,6 +194,11 @@ impl LocalBrokerExecutor {
             .map(|(issuer, key_id, key)| ((issuer, key_id), key))
             .collect();
         let custodian = CountingSyntheticCustodian::new(&config);
+        let configured_epoch = config
+            .evidence
+            .configured_epoch(&config.connection_ref)
+            .unwrap_or(0);
+        custodian.inner.set_epoch(configured_epoch)?;
         Ok(Self {
             evidence: config.evidence,
             ledger: InMemoryLedger::new(),
@@ -201,7 +206,6 @@ impl LocalBrokerExecutor {
                 template: config.request_template,
                 facts: config.authority_facts,
                 implementation: config.implementation,
-                endpoint_origin: config.endpoint_origin,
             },
             dispatcher: MockDispatcher::new(config.dispatch_scripts),
             custodian,
@@ -212,9 +216,7 @@ impl LocalBrokerExecutor {
             clock: config.clock,
             signer: config.receipt_signer,
             commitments: config.commitments,
-            pop_verifier: ExactPopVerifier {
-                expected_proof: config.expected_pop_proof,
-            },
+            pop_verifier: ConfiguredPopVerifier::new(config.expected_pop_proof)?,
             broker_principal_id: config.broker_principal_id,
         })
     }
@@ -265,16 +267,13 @@ impl ConnectorExecutor for LocalBrokerExecutor {
             signer: &self.signer,
             commitments: &self.commitments,
             broker_principal_id: &self.broker_principal_id,
+            pop_verifier: &self.pop_verifier,
         };
         let result = engine.invoke(InvokeRequest {
             scope: &core_scope,
             grant: &operation.grant,
             binding: binding.attestation,
             pop: &operation.pop,
-            pop_verifier: &self.pop_verifier,
-            current_revocation_epoch: operation.current_revocation_epoch,
-            asserted_operation_contract: &operation.contract_id,
-            asserted_connection_ref: &binding.attestation.view.connection_ref,
             logical_effect_id: &logical_effect_id,
             canonical_input,
             lease_seconds: 30,

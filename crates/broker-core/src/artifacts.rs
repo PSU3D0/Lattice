@@ -19,7 +19,11 @@ impl<T> ParsedArtifact<T> {
         self.canonical.as_bytes()
     }
     pub fn content_hash(&self) -> String {
-        self.canonical.sha256()
+        use sha2::Digest;
+        format!(
+            "sha256:{}",
+            hex::encode(sha2::Sha256::digest(self.canonical.as_bytes()))
+        )
     }
 }
 
@@ -41,6 +45,7 @@ pub fn parse<T: Artifact>(source: &[u8]) -> Result<ParsedArtifact<T>, BrokerErro
     if view.schema_version() != "0.1" {
         return Err(BrokerError::Brk002);
     }
+    validate_json_primitives(&raw, 0)?;
     check_critical(&raw, view.critical_fields(), T::KNOWN_ROOTS)?;
     view.validate_vocabulary()?;
     Ok(ParsedArtifact { view, canonical })
@@ -169,6 +174,7 @@ impl Artifact for FlowAuthorityManifest {
         &self.critical_fields
     }
     fn validate_vocabulary(&self) -> Result<(), BrokerError> {
+        validate_hash(&self.flow_ir_hash)?;
         if self.nodes.is_empty() || self.nodes.len() > 4096 {
             return Err(BrokerError::Brk001);
         }
@@ -178,6 +184,7 @@ impl Artifact for FlowAuthorityManifest {
             }
             let mut hashes = BTreeSet::new();
             for operation in &node.operations {
+                validate_hash(&operation.contract_hash)?;
                 if operation.call_budget.max_logical_calls == 0
                     || operation.call_budget.max_logical_calls > canonical::MAX_EXACT_INTEGER as u64
                     || operation.call_budget.max_dispatch_attempts_per_call == 0
@@ -201,7 +208,7 @@ pub enum Assurance {
     ProviderEnforced,
     Verifiable,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub struct CommitmentEnvelope {
     pub alg: CommitmentAlg,
     pub key_id: String,
@@ -215,6 +222,17 @@ pub struct CommitmentEnvelope {
 #[serde(rename_all = "kebab-case")]
 pub enum CommitmentAlg {
     HmacSha256,
+}
+impl Default for CommitmentEnvelope {
+    fn default() -> Self {
+        Self {
+            alg: CommitmentAlg::HmacSha256,
+            key_id: String::new(),
+            verification_tier: None,
+            value: String::new(),
+            extensions: Default::default(),
+        }
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -317,9 +335,28 @@ impl Artifact for BindingAttestation {
         {
             return Err(BrokerError::Brk109);
         }
+        for (role, kind) in &self.roles {
+            if !(role == "role" || role.starts_with("outbound_auth."))
+                || !matches!(kind.as_str(), "oauth2.access_token" | "synthetic.secret")
+            {
+                return Err(BrokerError::Brk004);
+            }
+        }
         sorted_unique(&self.scope_alignment.required_scopes)?;
         sorted_unique(&self.scope_alignment.actual_scopes)?;
         sorted_unique(&self.endpoint_origins)?;
+        let mut hashes = BTreeSet::new();
+        for contract in &self.supported_contracts {
+            validate_hash(&contract.contract_hash)?;
+            if !hashes.insert(&contract.contract_hash) {
+                return Err(BrokerError::Brk001);
+            }
+            sorted_unique(&contract.attenuation_profiles)?;
+        }
+        for origin in &self.endpoint_origins {
+            crate::dispatch::validate_https_origin(origin).map_err(|_| BrokerError::Brk001)?;
+        }
+        validate_commitment(&self.account_commitment)?;
         Ok(())
     }
 }
@@ -398,6 +435,14 @@ pub struct ExecutionGrant {
     pub operation_contract: String,
     pub contract_hash: String,
     pub connection_ref: String,
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
+    pub account_commitment: CommitmentEnvelope,
+    #[serde(default)]
+    pub roles: BTreeMap<String, String>,
+    #[serde(default)]
+    pub scopes: Vec<String>,
     pub budgets: GrantBudgets,
     #[serde(default)]
     pub aggregate_budgets: Option<AggregateBudgets>,
@@ -425,6 +470,10 @@ impl Artifact for ExecutionGrant {
         "operation_contract",
         "contract_hash",
         "connection_ref",
+        "provider",
+        "account_commitment",
+        "roles",
+        "scopes",
         "budgets",
         "aggregate_budgets",
         "minimum_assurance",
@@ -451,6 +500,15 @@ impl Artifact for ExecutionGrant {
         {
             return Err(BrokerError::Brk001);
         }
+        validate_hash(&self.contract_hash)?;
+        validate_commitment(&self.account_commitment)?;
+        if self.roles.is_empty() {
+            return Err(BrokerError::Brk109);
+        }
+        sorted_unique(&self.scopes)?;
+        validate_opaque_id(&self.grant_ref)?;
+        validate_opaque_id(&self.jti)?;
+        validate_opaque_id(&self.channel_binding.session_id)?;
         sorted_unique(&self.required_attenuations)
     }
 }
@@ -562,6 +620,7 @@ impl Artifact for InvocationReceipt {
         &self.critical_fields
     }
     fn validate_vocabulary(&self) -> Result<(), BrokerError> {
+        self.validate_semantics()?;
         if self.principal.kind != PrincipalKind::Broker
             || self.signature.key_id != self.broker_key_id
             || self.claims.remote_durable_state_proven
@@ -576,6 +635,117 @@ impl Artifact for InvocationReceipt {
         {
             return Err(BrokerError::Brk001);
         }
+        Ok(())
+    }
+}
+
+impl InvocationReceipt {
+    /// Single strict semantic validator used before signing and after signature
+    /// verification/redelivery.
+    pub fn validate_semantics(&self) -> Result<(), BrokerError> {
+        for hash in [
+            &self.grant_hash,
+            &self.policy_hash,
+            &self.contract_hash,
+            &self.plugin_module_sha256,
+        ] {
+            validate_hash(hash)?;
+        }
+        if self.budget_before < self.budget_after {
+            return Err(BrokerError::Brk001);
+        }
+        let dispatched = self.dispatch_attempt > 0;
+        if dispatched != self.claims.provider_dispatch_observed
+            || dispatched != self.request_plan_hash.is_some()
+            || dispatched != self.authority_facts_hash.is_some()
+            || (!dispatched && self.outcome != Outcome::Rejected)
+        {
+            return Err(BrokerError::Brk004);
+        }
+        if let Some(hash) = &self.request_plan_hash {
+            validate_hash(hash)?;
+        }
+        if let Some(hash) = &self.authority_facts_hash {
+            validate_hash(hash)?;
+        }
+        validate_commitment(&self.connection_commitment)?;
+        validate_commitment(&self.canonical_input_commitment)?;
+        validate_commitment(&self.response_commitment)?;
+        Ok(())
+    }
+}
+
+fn validate_json_primitives(value: &serde_json::Value, depth: usize) -> Result<(), BrokerError> {
+    if depth > canonical::MAX_DEPTH {
+        return Err(BrokerError::Brk001);
+    }
+    match value {
+        serde_json::Value::String(value) => validate_string(value),
+        serde_json::Value::Array(values) => {
+            if values.len() > canonical::MAX_ARRAY_ELEMENTS {
+                return Err(BrokerError::Brk001);
+            }
+            for value in values {
+                validate_json_primitives(value, depth + 1)?;
+            }
+            Ok(())
+        }
+        serde_json::Value::Object(values) => {
+            if values.len() > canonical::MAX_OBJECT_MEMBERS {
+                return Err(BrokerError::Brk001);
+            }
+            for (key, value) in values {
+                validate_string(key)?;
+                validate_json_primitives(value, depth + 1)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+fn validate_string(value: &str) -> Result<(), BrokerError> {
+    if value.is_empty() || value.len() > 1024 {
+        Err(BrokerError::Brk001)
+    } else {
+        Ok(())
+    }
+}
+fn validate_opaque_id(value: &str) -> Result<(), BrokerError> {
+    validate_string(value)?;
+    if value
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+    {
+        Ok(())
+    } else {
+        Err(BrokerError::Brk001)
+    }
+}
+fn validate_hash(value: &str) -> Result<(), BrokerError> {
+    let Some(hex) = value.strip_prefix("sha256:") else {
+        return Err(BrokerError::Brk001);
+    };
+    if hex.len() != 64
+        || !hex
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
+        Err(BrokerError::Brk001)
+    } else {
+        Ok(())
+    }
+}
+fn validate_commitment(value: &CommitmentEnvelope) -> Result<(), BrokerError> {
+    let Some(hex) = value.value.strip_prefix("hmac-sha256:") else {
+        return Err(BrokerError::Brk001);
+    };
+    if hex.len() != 64
+        || !hex
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
+        Err(BrokerError::Brk001)
+    } else {
         Ok(())
     }
 }

@@ -7,6 +7,7 @@ exclude = [
 members = [
   "crates/broker-core",
   "crates/broker-host",
+  "crates/jcs-canonical",
   "crates/cap-blob-fs",
   "crates/cap-opendal",
   "crates/cap-sql-sqlx-sqlite",
@@ -117,6 +118,7 @@ description = "Rust workflow platform workspace"
 msrv = "1.90"
 
 [workspace.dependencies]
+jcs-canonical = { path = "crates/jcs-canonical" }
 anyhow = "1"
 async-trait = "0.1"
 axum = { version = "0.7", features = ["json", "tokio", "http1"] }

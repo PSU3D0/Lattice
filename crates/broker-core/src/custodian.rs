@@ -1,11 +1,19 @@
-use crate::BrokerError;
-use std::{collections::BTreeSet, fmt, sync::Mutex};
+use crate::{
+    BrokerError,
+    artifacts::{CommitmentAlg, CommitmentEnvelope},
+};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+    sync::Mutex,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConnectionMetadata {
     pub connection_ref: String,
     pub provider: String,
-    pub account_subject: String,
+    pub account_commitment: CommitmentEnvelope,
+    pub roles: BTreeMap<String, String>,
     pub scopes: BTreeSet<String>,
     pub revocation_epoch: u64,
 }
@@ -14,7 +22,7 @@ pub struct AccessMaterial<'a> {
     secret: &'a [u8],
 }
 impl AccessMaterial<'_> {
-    pub(crate) fn expose_to_broker(&self) -> &[u8] {
+    pub fn expose_to_dispatcher(&self) -> &[u8] {
         self.secret
     }
 }
@@ -35,11 +43,30 @@ pub trait CredentialCustodian: Send + Sync {
     fn revoke(&self) -> Result<u64, BrokerError>;
 }
 
+/// Broker-owned immutable connection-ref lookup. The invoke request never
+/// supplies a separate connection assertion or epoch.
+pub trait CustodianLookup: CredentialCustodian {
+    fn lookup(&self, connection_ref: &str) -> Result<&Self, BrokerError> {
+        if self.connection_metadata()?.connection_ref == connection_ref {
+            Ok(self)
+        } else {
+            Err(BrokerError::Brk109)
+        }
+    }
+}
+impl<T: CredentialCustodian> CustodianLookup for T {}
+
 struct State {
     secret: Vec<u8>,
     metadata: ConnectionMetadata,
     revoked: bool,
     refreshes: u64,
+}
+impl Drop for State {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.secret.zeroize();
+    }
 }
 pub struct SyntheticCustodian {
     state: Mutex<State>,
@@ -48,7 +75,7 @@ impl SyntheticCustodian {
     pub fn new(
         connection_ref: impl Into<String>,
         provider: impl Into<String>,
-        account_subject: impl Into<String>,
+        _account_subject: impl Into<String>,
         scopes: impl IntoIterator<Item = String>,
         secret: Vec<u8>,
     ) -> Self {
@@ -58,7 +85,20 @@ impl SyntheticCustodian {
                 metadata: ConnectionMetadata {
                     connection_ref: connection_ref.into(),
                     provider: provider.into(),
-                    account_subject: account_subject.into(),
+                    // Synthetic fixtures use the protocol's deterministic
+                    // placeholder commitment. Production custodians return
+                    // their persisted immutable account commitment here.
+                    account_commitment: CommitmentEnvelope {
+                        alg: CommitmentAlg::HmacSha256,
+                        key_id: "account-key".into(),
+                        verification_tier: None,
+                        value: format!("hmac-sha256:{}", "0".repeat(64)),
+                        extensions: Default::default(),
+                    },
+                    roles: BTreeMap::from([
+                        ("role".into(), "synthetic.secret".into()),
+                        ("outbound_auth.synthetic".into(), "synthetic.secret".into()),
+                    ]),
                     scopes: scopes.into_iter().collect(),
                     revocation_epoch: 0,
                 },
@@ -66,6 +106,45 @@ impl SyntheticCustodian {
                 refreshes: 0,
             }),
         }
+    }
+    pub fn replace_scopes(
+        &self,
+        scopes: impl IntoIterator<Item = String>,
+    ) -> Result<(), BrokerError> {
+        self.state
+            .lock()
+            .map_err(|_| BrokerError::Brk401)?
+            .metadata
+            .scopes = scopes.into_iter().collect();
+        Ok(())
+    }
+    pub fn set_epoch(&self, epoch: u64) -> Result<(), BrokerError> {
+        self.state
+            .lock()
+            .map_err(|_| BrokerError::Brk401)?
+            .metadata
+            .revocation_epoch = epoch;
+        Ok(())
+    }
+    pub fn bump_epoch(&self) -> Result<u64, BrokerError> {
+        let mut state = self.state.lock().map_err(|_| BrokerError::Brk401)?;
+        state.metadata.revocation_epoch = state
+            .metadata
+            .revocation_epoch
+            .checked_add(1)
+            .ok_or(BrokerError::Brk401)?;
+        Ok(state.metadata.revocation_epoch)
+    }
+    pub fn set_account_commitment(
+        &self,
+        commitment: CommitmentEnvelope,
+    ) -> Result<(), BrokerError> {
+        self.state
+            .lock()
+            .map_err(|_| BrokerError::Brk401)?
+            .metadata
+            .account_commitment = commitment;
+        Ok(())
     }
     pub fn refresh_count(&self) -> u64 {
         self.state.lock().map(|s| s.refreshes).unwrap_or(0)
@@ -131,7 +210,7 @@ mod tests {
     fn material_is_borrowed_and_redacted() {
         let c = SyntheticCustodian::new("c", "p", "a", [], b"synthetic-secret".to_vec());
         assert_eq!(
-            c.with_access_material(|m| Ok(m.expose_to_broker().len()))
+            c.with_access_material(|m| Ok(m.expose_to_dispatcher().len()))
                 .unwrap(),
             16
         );

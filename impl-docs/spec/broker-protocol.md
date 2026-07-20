@@ -394,6 +394,14 @@ channel as authority.
   "operation_contract": "connector.google.gmail.send_message@1",
   "contract_hash": "sha256:...",
   "connection_ref": "conn_opaque_random",
+  "provider": "google",
+  "account_commitment": {
+    "alg": "hmac-sha256",
+    "key_id": "commit-key-3",
+    "value": "hmac-sha256:..."
+  },
+  "roles": {"outbound_auth.google_workspace_auth": "oauth2.access_token"},
+  "scopes": ["https://www.googleapis.com/auth/gmail.send"],
   "budgets": {
     "logical_calls": 1,
     "dispatch_attempts_per_call": 1
@@ -421,6 +429,7 @@ channel as authority.
 | `subject` | REQUIRED tagged union. `flow_node_run` is the only subject kind defined in `0.1`; its fields are all REQUIRED and host-owned. |
 | `operation_contract`, `contract_hash` | REQUIRED exact operation contract pair from the authority manifest and trust registry. |
 | `connection_ref` | REQUIRED exact connection from a fresh binding attestation. |
+| `provider`, `account_commitment`, `roles`, `scopes` | REQUIRED immutable snapshots from that signed binding. Admission and the pre-dispatch CAS MUST reconcile all of them with both the binding and broker-owned live custodian metadata; caller assertions cannot supply or override them. |
 | `budgets.logical_calls` | REQUIRED integer from 1 through the manifest's per-run, per-node maximum. |
 | `budgets.dispatch_attempts_per_call` | REQUIRED integer from 1 through 255 and no greater than the manifest maximum. |
 | `aggregate_budgets` | OPTIONAL narrowed flow/connection ceilings. Absence does not disable any operator ceiling. Enforcement MAY be policy in `0.1`. |
@@ -705,10 +714,30 @@ effect remains blocked for operator/provider reconciliation. A definitive
 `failed` attempt follows the contract's explicit retry policy; there is no
 implicit executor fallback.
 
+Each provider crossing has a durable per-effect attempt record containing the
+attempt number, final plan/facts hashes, selected implementation, and the
+`dispatched` boundary. An `ambiguous` attempt can transition to
+`retry_authorized(next_attempt)` only by explicit contract policy. V1 permits
+that transition solely for contracts marked idempotent-safe and with remaining
+attempt budget; non-idempotent ambiguity returns `BRK306`. The authorization is
+a real durable transition, not a predicate-only/no-op check.
+
+Terminal transition records MUST NOT contain or write the aggregate logical-call
+budget. Only reservation decrement and the single pre-dispatch release CAS may
+mutate that aggregate. Complete bounded receipt material (outcome, response
+projection, provider request ID, issue time, and all receipt inputs) MUST be
+persisted atomically with each terminal transition as a receipt outbox. Signing
+and publication are idempotent: recovery after terminal persistence MUST issue
+the byte-identical receipt. Failed, confirmed, ambiguous, and released terminal
+redelivery returns the recorded verified receipt rather than `BRK204`.
+
 Every transition MUST be durable and monotonic. Recovery replays the record,
-not caller assertions. Strict counters require one authoritative linearizable
-ledger; a Workers profile uses a Durable Object authority rather than D1 for
-strict grant/count state.
+not caller assertions. A broker-owned clock providing both wall time and a
+monotonic lease reading is mandatory; there is no zero/default clock. The
+broker MUST freshly validate lease, live custodian epoch/binding, and state CAS
+immediately before persisting `dispatched`. Strict counters require one
+authoritative linearizable ledger; a Workers profile uses a Durable Object
+authority rather than D1 for strict grant/count state.
 
 ## 8. Assurance vocabulary and executor selection
 
@@ -725,6 +754,13 @@ a strict substitute for every earlier row. A flow declares a minimum and the
 binding selects one explicit executor. There MUST be no silent fallback among
 local/direct, remote broker, provider-native, or compatibility proxy executors.
 Failure of the selected broker path fails closed.
+
+**V1 implementation boundary.** This kernel implements exactly
+`brokered_count`. It has no attenuation-policy evaluator. A grant or binding
+requiring `brokered_semantic`, `provider_enforced`, or `verifiable`, or naming
+any required attenuation profile beyond count semantics, MUST be rejected
+before reservation. The larger vocabulary remains reserved for future
+versioned implementations and MUST NOT be silently downgraded.
 
 Generic authenticated HTTP is explicitly outside the semantic broker path. A
 fixed-template compatibility gateway may emit separately typed
@@ -781,11 +817,24 @@ The broker sees plaintext operation input and bounded provider responses. This
 protocol reduces disclosure; it does not remove broker trust.
 
 Low-entropy, private, or account-identifying values MUST NOT use an unkeyed
-hash as a public commitment. The commitment is:
+hash as a public commitment. The derivation is normatively two-stage. First derive a purpose-scoped opening
+key (all lengths are unsigned big-endian):
+
+```text
+scoped_key = HMAC-SHA-256(
+  tenant_root_key,
+  ASCII("lattice.commitment-opening.v0.1") || 0x00 ||
+  u32be(len(UTF8(org_id))) || UTF8(org_id) ||
+  u32be(len(UTF8(field_name))) || UTF8(field_name) ||
+  u32be(len(salt_context)) || salt_context
+)
+```
+
+Then compute the commitment:
 
 ```text
 HMAC-SHA-256(
-  commitment_key,
+  scoped_key,
   ASCII("lattice.commitment.v0.1") || 0x00 ||
   u32be(len(UTF8(org_id))) || UTF8(org_id) ||
   u32be(len(UTF8(field_name))) || UTF8(field_name) ||
@@ -807,10 +856,24 @@ flow principals, and rotated independently of receipt signing keys. Rotation
 MUST preserve a bounded verification path for retained receipts or explicitly
 expire it.
 
-A disclosure verifier receives only a scoped derived key/opening proof for the
-approved commitment, never the broker root commitment key. Commitment equality
+`key_id` identifies the broker-controlled tenant-root version used to derive the
+scoped key; it is not the root and conveys no root bytes. An opening proof is a
+bounded object `{ "key_id", "org_id", "field_name", "salt_context_b64u",
+"scoped_key_b64u" }`. The verifier MUST require exact equality of `key_id` and
+scope fields with the envelope/context, decode canonical unpadded base64url,
+and compare the recomputed HMAC in constant time. A disclosure verifier receives
+only this one scoped derived key/opening proof for the approved commitment,
+never the broker root commitment key. Commitment equality
 across tenants or purposes MUST NOT be linkable. Receipt signing keys MUST NOT
 be reused as HMAC keys.
+
+Normative KDF vectors (hex; roots are test-only and never appear in an opening):
+
+| root / org / field / salt / value | scoped key | commitment |
+| --- | --- | --- |
+| `00`×32 / `org` / `field` / `ctx` / `value` | `149fc9a3d156d9c4175235abebb95708393dc0007a0bf97ef7d37bfeb75728ff` | `3b185077413b5a31d9e3085adc3c74eef0d904406821c652693abfd1d53e8e5e` |
+| bytes `00..1f` / `tenant-a` / `account_commitment` / `["issuer","connection","account_commitment"]` / `acct-123` | `0230c5dcc0e680c02b8e127358c37c0d82d38168f1d41728a774cc54178c7207` | `72594a1abdd74a094480cf408ba2776c7697010d65b270d19a5e46020c1078cc` |
+| `ff`×32 / `o` / `response_commitment` / `["i","r","n","sha256:e",1,"response_commitment"]` / `{}` | `1283252b6077ce053352c256efba0072a8cb8fdf108010322f9e58ac66ba21de` | `3ae1c25fc54f1559278d0f2a8258dcee561b3d118510abd2e848343243744dc0` |
 
 Runtime evidence and public errors MUST exclude credentials, access/refresh
 tokens, authenticated request bodies, provider response bodies, document
@@ -864,3 +927,18 @@ exhaustion, expiry, revocation, implementation mismatch, crash recovery from
 every durable state, single release, and ambiguous non-idempotent stop. Tests
 use synthetic custodians and mock dispatchers; no real credentials, tokens, or
 provider effects are required by this specification.
+
+## 14. Change log
+
+The document remains **Version 0.1 Draft**.
+
+- 2026-07-20: made per-effect attempt and policy-authorized ambiguous retry
+  transitions explicit; non-idempotent V1 retry remains blocked.
+- 2026-07-20: made the two-stage commitment-opening KDF, opening format,
+  `key_id` semantics, and vectors normative.
+- 2026-07-20: required terminal receipt outboxes and byte-identical crash
+  recovery while forbidding terminal records from writing aggregate budgets.
+- 2026-07-20: fixed the V1 assurance boundary at `brokered_count` with no
+  attenuation evaluator or downgrade.
+- 2026-07-20: made wall/monotonic clocks mandatory and required fresh
+  lease/epoch/state validation immediately before `dispatched`.

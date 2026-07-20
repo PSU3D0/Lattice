@@ -6,6 +6,8 @@ use crate::{
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use std::fmt;
+use subtle::ConstantTimeEq;
+use zeroize::Zeroize;
 
 type HmacSha256 = Hmac<Sha256>;
 const DOMAIN: &[u8] = b"lattice.commitment.v0.1";
@@ -55,6 +57,11 @@ impl CommitmentKey {
         ))
     }
 }
+impl Drop for CommitmentKey {
+    fn drop(&mut self) {
+        self.root.zeroize();
+    }
+}
 impl fmt::Debug for CommitmentKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CommitmentKey")
@@ -79,6 +86,13 @@ impl DisclosureKey {
         if envelope.key_id != self.key_id || envelope.alg != CommitmentAlg::HmacSha256 {
             return false;
         }
+        let Some(expected) = envelope
+            .value
+            .strip_prefix("hmac-sha256:")
+            .and_then(|v| hex::decode(v).ok())
+        else {
+            return false;
+        };
         calculate(
             &self.key,
             &self.org_id,
@@ -87,7 +101,13 @@ impl DisclosureKey {
             value,
         )
         .ok()
-        .is_some_and(|actual| envelope.value == format!("hmac-sha256:{}", hex::encode(actual)))
+        .is_some_and(|actual| expected.len() == actual.len() && bool::from(expected.ct_eq(&actual)))
+    }
+}
+impl Drop for DisclosureKey {
+    fn drop(&mut self) {
+        self.key.zeroize();
+        self.salt_context.zeroize();
     }
 }
 impl fmt::Debug for DisclosureKey {
@@ -181,6 +201,44 @@ fn validate_parts(org: &str, field: &str, salt: &[u8], value: &[u8]) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn normative_two_stage_vectors() {
+        let vectors = [
+            (
+                [0u8; 32],
+                "org",
+                "field",
+                b"ctx".as_slice(),
+                b"value".as_slice(),
+                "3b185077413b5a31d9e3085adc3c74eef0d904406821c652693abfd1d53e8e5e",
+            ),
+            (
+                std::array::from_fn(|i| i as u8),
+                "tenant-a",
+                "account_commitment",
+                br#"["issuer","connection","account_commitment"]"#.as_slice(),
+                b"acct-123".as_slice(),
+                "72594a1abdd74a094480cf408ba2776c7697010d65b270d19a5e46020c1078cc",
+            ),
+            (
+                [0xff; 32],
+                "o",
+                "response_commitment",
+                br#"["i","r","n","sha256:e",1,"response_commitment"]"#.as_slice(),
+                b"{}".as_slice(),
+                "3ae1c25fc54f1559278d0f2a8258dcee561b3d118510abd2e848343243744dc0",
+            ),
+        ];
+        for (root, org, field, salt, value, expected) in vectors {
+            let key = CommitmentKey::new("test", root).unwrap();
+            let (commitment, opening) = key
+                .commit(org, field, salt, value, VerificationTier::BrokerOnly)
+                .unwrap();
+            assert_eq!(commitment.value, format!("hmac-sha256:{expected}"));
+            assert!(opening.opens(&commitment, value));
+        }
+    }
+
     #[test]
     fn contexts_scope_openings() {
         let root = CommitmentKey::new("v1", [7; 32]).unwrap();

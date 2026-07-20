@@ -68,6 +68,33 @@ impl std::fmt::Debug for CanonicalInputIdentity {
     }
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// A receipt built and validated by the kernel. External callers cannot
+/// construct one and therefore cannot inject arbitrary signed bytes.
+pub struct KernelReceipt {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) response_projection: Vec<u8>,
+    pub(crate) provider_request_id: Option<String>,
+}
+impl KernelReceipt {
+    pub(crate) fn new(
+        bytes: Vec<u8>,
+        response_projection: Vec<u8>,
+        provider_request_id: Option<String>,
+    ) -> Result<Self, BrokerError> {
+        if bytes.len() > crate::artifacts::RECEIPT_MAX
+            || response_projection.len() > crate::canonical::MAX_OPERATION_BYTES
+        {
+            return Err(BrokerError::Brk001);
+        }
+        Ok(Self {
+            bytes,
+            response_projection,
+            provider_request_id,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DurableRecord {
     Reserved {
         key: ReservationKey,
@@ -89,8 +116,21 @@ pub enum DurableRecord {
         lease_token: u64,
         attempt: u8,
     },
+    /// Post-dispatch terminal records deliberately carry no aggregate budget.
+    /// They can never overwrite a later concurrent reservation.
     Terminal {
         key: ReservationKey,
+        outcome: TerminalOutcome,
+        /// Complete bounded signed receipt outbox, atomically persisted with
+        /// the terminal transition.
+        pending_receipt: Vec<u8>,
+        response_projection: Vec<u8>,
+        provider_request_id: Option<String>,
+    },
+    /// The sole pre-dispatch compare-and-swap refund record.
+    Released {
+        key: ReservationKey,
+        lease_token: u64,
         outcome: TerminalOutcome,
         budget_after: u64,
     },
@@ -98,6 +138,10 @@ pub enum DurableRecord {
         key: ReservationKey,
         outcome: TerminalOutcome,
         receipt: Vec<u8>,
+    },
+    RetryAuthorized {
+        key: ReservationKey,
+        next_attempt: u8,
     },
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -125,6 +169,7 @@ pub trait Ledger: Send + Sync {
         &self,
         key: &ReservationKey,
         outcome: TerminalOutcome,
+        receipt: KernelReceipt,
     ) -> Result<EntrySnapshot, BrokerError>;
     fn release(
         &self,
@@ -133,10 +178,11 @@ pub trait Ledger: Send + Sync {
         now: i64,
         expired: bool,
     ) -> Result<EntrySnapshot, BrokerError>;
-    fn issue_receipt(
+    fn issue_receipt(&self, key: &ReservationKey) -> Result<EntrySnapshot, BrokerError>;
+    fn issue_released_receipt(
         &self,
         key: &ReservationKey,
-        receipt: Vec<u8>,
+        receipt: KernelReceipt,
     ) -> Result<EntrySnapshot, BrokerError>;
     fn get(&self, key: &ReservationKey) -> Result<Option<EntrySnapshot>, BrokerError>;
     fn records(&self) -> Result<Vec<DurableRecord>, BrokerError>;
@@ -153,6 +199,8 @@ struct Entry {
     dispatch_attempts: u8,
     budget_before: u64,
     budget_after: u64,
+    pending_receipt: Option<Vec<u8>>,
+    last_planned: Option<PlannedData>,
 }
 #[derive(Default)]
 struct Inner {
@@ -205,11 +253,16 @@ impl InMemoryLedger {
                 .map(|e| e.key.clone())
                 .collect();
             for key in dispatched {
-                let budget_after = inner.entries[&key].budget_after;
+                // A dispatched record without its following atomic terminal
+                // record has no response material. Recovery marks ambiguity
+                // with an empty outbox; engine recovery must synthesize and
+                // persist the ambiguous receipt before redelivery.
                 let record = DurableRecord::Terminal {
                     key,
                     outcome: TerminalOutcome::Ambiguous,
-                    budget_after,
+                    pending_receipt: Vec::new(),
+                    response_projection: Vec::new(),
+                    provider_request_id: None,
                 };
                 apply_record(&mut inner, record)?;
             }
@@ -221,7 +274,7 @@ impl InMemoryLedger {
         key: &ReservationKey,
         safe_idempotent_retry: bool,
     ) -> Result<(), BrokerError> {
-        let inner = self.inner.lock().map_err(|_| BrokerError::Brk401)?;
+        let mut inner = self.inner.lock().map_err(|_| BrokerError::Brk401)?;
         let entry = inner.entries.get(key).ok_or(BrokerError::Brk401)?;
         if matches!(
             entry.state,
@@ -237,6 +290,27 @@ impl InMemoryLedger {
         if entry.dispatch_attempts >= entry.max_dispatch_attempts {
             return Err(BrokerError::Brk202);
         }
+        if !matches!(
+            entry.state,
+            InvocationState::Terminal(TerminalOutcome::Ambiguous)
+                | InvocationState::ReceiptIssued {
+                    outcome: TerminalOutcome::Ambiguous,
+                    ..
+                }
+        ) {
+            return Err(BrokerError::Brk204);
+        }
+        let next_attempt = entry
+            .dispatch_attempts
+            .checked_add(1)
+            .ok_or(BrokerError::Brk202)?;
+        apply_record(
+            &mut inner,
+            DurableRecord::RetryAuthorized {
+                key: key.clone(),
+                next_attempt,
+            },
+        )?;
         Ok(())
     }
 }
@@ -337,6 +411,7 @@ impl Ledger for InMemoryLedger {
         &self,
         key: &ReservationKey,
         outcome: TerminalOutcome,
+        receipt: KernelReceipt,
     ) -> Result<EntrySnapshot, BrokerError> {
         if matches!(
             outcome,
@@ -352,7 +427,9 @@ impl Ledger for InMemoryLedger {
         let record = DurableRecord::Terminal {
             key: key.clone(),
             outcome,
-            budget_after: entry.budget_after,
+            pending_receipt: receipt.bytes,
+            response_projection: receipt.response_projection,
+            provider_request_id: receipt.provider_request_id,
         };
         apply_record(&mut inner, record)?;
         Ok(snapshot(&inner.entries[key]))
@@ -400,19 +477,16 @@ impl Ledger for InMemoryLedger {
         } else {
             TerminalOutcome::ReleasedCancelled
         };
-        let record = DurableRecord::Terminal {
+        let record = DurableRecord::Released {
             key: key.clone(),
+            lease_token: token,
             outcome,
             budget_after: *remaining,
         };
         apply_record(&mut inner, record)?;
         Ok(snapshot(&inner.entries[key]))
     }
-    fn issue_receipt(
-        &self,
-        key: &ReservationKey,
-        receipt: Vec<u8>,
-    ) -> Result<EntrySnapshot, BrokerError> {
+    fn issue_receipt(&self, key: &ReservationKey) -> Result<EntrySnapshot, BrokerError> {
         let mut inner = self.inner.lock().map_err(|_| BrokerError::Brk401)?;
         let entry = inner.entries.get(key).ok_or(BrokerError::Brk401)?;
         if matches!(entry.state, InvocationState::ReceiptIssued { .. }) {
@@ -422,12 +496,43 @@ impl Ledger for InMemoryLedger {
             InvocationState::Terminal(o) => o.clone(),
             _ => return Err(BrokerError::Brk401),
         };
+        let receipt = entry
+            .pending_receipt
+            .clone()
+            .filter(|bytes| !bytes.is_empty())
+            .ok_or(BrokerError::Brk401)?;
         let record = DurableRecord::ReceiptIssued {
             key: key.clone(),
             outcome,
             receipt,
         };
         apply_record(&mut inner, record)?;
+        Ok(snapshot(&inner.entries[key]))
+    }
+    fn issue_released_receipt(
+        &self,
+        key: &ReservationKey,
+        receipt: KernelReceipt,
+    ) -> Result<EntrySnapshot, BrokerError> {
+        let mut inner = self.inner.lock().map_err(|_| BrokerError::Brk401)?;
+        let entry = inner.entries.get(key).ok_or(BrokerError::Brk401)?;
+        if matches!(entry.state, InvocationState::ReceiptIssued { .. }) {
+            return Ok(snapshot(entry));
+        }
+        let outcome = match &entry.state {
+            InvocationState::Terminal(
+                outcome @ (TerminalOutcome::ReleasedExpired | TerminalOutcome::ReleasedCancelled),
+            ) => outcome.clone(),
+            _ => return Err(BrokerError::Brk401),
+        };
+        apply_record(
+            &mut inner,
+            DurableRecord::ReceiptIssued {
+                key: key.clone(),
+                outcome,
+                receipt: receipt.bytes,
+            },
+        )?;
         Ok(snapshot(&inner.entries[key]))
     }
     fn get(&self, key: &ReservationKey) -> Result<Option<EntrySnapshot>, BrokerError> {
@@ -499,6 +604,8 @@ fn apply_record(inner: &mut Inner, record: DurableRecord) -> Result<(), BrokerEr
                     dispatch_attempts: 0,
                     budget_before: *budget_before,
                     budget_after: *budget_after,
+                    pending_receipt: None,
+                    last_planned: None,
                 },
             );
             let _ = max_logical_calls;
@@ -517,6 +624,7 @@ fn apply_record(inner: &mut Inner, record: DurableRecord) -> Result<(), BrokerEr
             {
                 return Err(BrokerError::Brk401);
             }
+            e.last_planned = Some(data.clone());
             e.state = InvocationState::Planned(data.clone());
         }
         DurableRecord::Dispatched {
@@ -541,11 +649,40 @@ fn apply_record(inner: &mut Inner, record: DurableRecord) -> Result<(), BrokerEr
         DurableRecord::Terminal {
             key,
             outcome,
+            pending_receipt,
+            response_projection: _,
+            provider_request_id: _,
+        } => {
+            let e = inner.entries.get_mut(key).ok_or(BrokerError::Brk401)?;
+            if !matches!(e.state, InvocationState::Dispatched { .. }) {
+                return Err(BrokerError::Brk401);
+            }
+            e.pending_receipt = Some(pending_receipt.clone());
+            e.state = InvocationState::Terminal(outcome.clone());
+        }
+        DurableRecord::Released {
+            key,
+            lease_token,
+            outcome,
             budget_after,
         } => {
+            let e = inner.entries.get_mut(key).ok_or(BrokerError::Brk401)?;
+            if e.lease_token != *lease_token
+                || !matches!(
+                    e.state,
+                    InvocationState::Reserved | InvocationState::Planned(_)
+                )
+                || !matches!(
+                    outcome,
+                    TerminalOutcome::ReleasedExpired | TerminalOutcome::ReleasedCancelled
+                )
+            {
+                return Err(BrokerError::Brk401);
+            }
             inner.budgets.insert(BudgetKey::from(key), *budget_after);
             let e = inner.entries.get_mut(key).ok_or(BrokerError::Brk401)?;
             e.budget_after = *budget_after;
+            e.pending_receipt = None;
             e.state = InvocationState::Terminal(outcome.clone());
         }
         DurableRecord::ReceiptIssued {
@@ -558,6 +695,26 @@ fn apply_record(inner: &mut Inner, record: DurableRecord) -> Result<(), BrokerEr
                 outcome: outcome.clone(),
                 receipt: receipt.clone(),
             };
+        }
+        DurableRecord::RetryAuthorized { key, next_attempt } => {
+            let e = inner.entries.get_mut(key).ok_or(BrokerError::Brk401)?;
+            if *next_attempt != e.dispatch_attempts + 1
+                || *next_attempt > e.max_dispatch_attempts
+                || !matches!(
+                    e.state,
+                    InvocationState::Terminal(TerminalOutcome::Ambiguous)
+                        | InvocationState::ReceiptIssued {
+                            outcome: TerminalOutcome::Ambiguous,
+                            ..
+                        }
+                )
+            {
+                return Err(BrokerError::Brk401);
+            }
+            let mut planned = e.last_planned.clone().ok_or(BrokerError::Brk401)?;
+            planned.next_attempt = *next_attempt;
+            e.pending_receipt = None;
+            e.state = InvocationState::Planned(planned);
         }
     }
     inner.records.push(record);
@@ -663,11 +820,66 @@ mod tests {
         ledger
             .mark_dispatched(&first, acquired.lease_token, 0)
             .unwrap();
-        ledger.finish(&first, TerminalOutcome::Ambiguous).unwrap();
+        ledger
+            .finish(
+                &first,
+                TerminalOutcome::Ambiguous,
+                KernelReceipt::new(b"{}".to_vec(), Vec::new(), None).unwrap(),
+            )
+            .unwrap();
         assert_eq!(
             ledger.retry_after_ambiguous(&first, true),
             Err(BrokerError::Brk202)
         );
+    }
+
+    #[test]
+    fn terminal_finish_never_resurrects_concurrent_budget_and_replay_preserves_it() {
+        let ledger = InMemoryLedger::new();
+        let reserve = |effect: &str| ReserveRequest {
+            key: key(effect),
+            canonical_input: b"{}".to_vec(),
+            max_logical_calls: 2,
+            max_dispatch_attempts: 1,
+            lease_deadline: 10,
+        };
+        let a = match ledger.reserve(reserve("a"), 0).unwrap() {
+            ReserveResult::Acquired(value) => value,
+            _ => unreachable!(),
+        };
+        let _b = ledger.reserve(reserve("b"), 0).unwrap();
+        ledger
+            .plan(
+                &a.key,
+                a.lease_token,
+                0,
+                PlannedData {
+                    request_plan_hash: "p".into(),
+                    authority_facts_hash: "f".into(),
+                    implementation: "i".into(),
+                    endpoint: "https://provider.example".into(),
+                    next_attempt: 0,
+                },
+            )
+            .unwrap();
+        ledger.mark_dispatched(&a.key, a.lease_token, 0).unwrap();
+        ledger
+            .finish(
+                &a.key,
+                TerminalOutcome::Confirmed,
+                KernelReceipt::new(b"receipt".to_vec(), Vec::new(), None).unwrap(),
+            )
+            .unwrap();
+        assert!(matches!(
+            ledger.reserve(reserve("c"), 0),
+            Err(BrokerError::Brk201)
+        ));
+
+        let recovered = InMemoryLedger::recover(&ledger.records().unwrap()).unwrap();
+        assert!(matches!(
+            recovered.reserve(reserve("c"), 0),
+            Err(BrokerError::Brk201)
+        ));
     }
 
     #[test]

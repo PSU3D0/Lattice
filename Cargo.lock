@@ -923,11 +923,14 @@ dependencies = [
  "ed25519-dalek",
  "hex",
  "hmac",
+ "jcs-canonical",
  "ryu-js",
  "serde",
  "serde_json",
  "sha2",
+ "subtle",
  "thiserror 1.0.69",
+ "zeroize",
 ]
 
 [[package]]
@@ -4805,6 +4808,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52f5385394064fa2c886205dba02598013ce83d3e92d33dbdc0c52fe0e7bf4fc"
 dependencies = [
  "cc",
+]
+
+[[package]]
+name = "jcs-canonical"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "ryu-js",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

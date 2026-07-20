@@ -13,3 +13,6 @@ kernel-plan = { path = "../kernel-plan" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+broker-core = { path = "../broker-core", features = ["test_fixtures"] }

@@ -99,6 +99,13 @@ impl BrokerBindingEvidence {
         })
     }
 
+    pub(crate) fn configured_epoch(&self, connection_ref: &str) -> Option<u64> {
+        self.entries
+            .values()
+            .find(|entry| entry.attestation.view.connection_ref == connection_ref)
+            .map(|entry| entry.attestation.view.revocation_epoch)
+    }
+
     pub(crate) fn trust_keys(&self) -> Vec<(String, String, BrokerVerifyingKey)> {
         self.entries
             .values()

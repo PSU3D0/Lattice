@@ -6,7 +6,13 @@ rust-version.workspace = true
 license.workspace = true
 description = "Lattice Broker V1 enforcement kernel"
 
+[features]
+test_fixtures = []
+
 [dependencies]
+jcs-canonical.workspace = true
+subtle = "2"
+zeroize = "1"
 base64 = "0.22"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 hex.workspace = true

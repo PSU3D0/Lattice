@@ -3,7 +3,7 @@ use crate::{
     artifacts::*,
     canonical,
     commitment::{CommitmentKey, receipt_salt_context},
-    custodian::CredentialCustodian,
+    custodian::CustodianLookup,
     dispatch::{DispatchResult, FinalRequestPlan, ProviderDispatcher},
     grant::{
         Clock, ExecutionGrantRecord, PopSession, PopVerifier, TrustedHostScope, validate_grant,
@@ -58,38 +58,27 @@ impl TrustRegistry for StaticTrustRegistry {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PlannedRequest {
-    pub template: Vec<u8>,
-    pub authority_facts: Vec<u8>,
-    pub implementation: String,
-    pub endpoint_origin: String,
+    pub(crate) template: Vec<u8>,
+    pub(crate) authority_facts: Vec<u8>,
+    pub(crate) implementation: String,
 }
 pub trait RequestPlanner: Send + Sync {
-    fn plan(
-        &self,
-        canonical_input: &[u8],
-        access_material: &[u8],
-    ) -> Result<PlannedRequest, BrokerError>;
+    fn plan(&self, canonical_input: &[u8]) -> Result<PlannedRequest, BrokerError>;
 }
 #[derive(Clone, Debug)]
 pub struct FixedTemplatePlanner {
     pub template: Vec<u8>,
     pub facts: Vec<u8>,
     pub implementation: String,
-    pub endpoint_origin: String,
 }
 impl RequestPlanner for FixedTemplatePlanner {
-    fn plan(
-        &self,
-        _canonical_input: &[u8],
-        _access_material: &[u8],
-    ) -> Result<PlannedRequest, BrokerError> {
+    fn plan(&self, _canonical_input: &[u8]) -> Result<PlannedRequest, BrokerError> {
         Ok(PlannedRequest {
             template: self.template.clone(),
             authority_facts: self.facts.clone(),
             implementation: self.implementation.clone(),
-            endpoint_origin: self.endpoint_origin.clone(),
         })
     }
 }
@@ -99,10 +88,6 @@ pub struct InvokeRequest<'a> {
     pub grant: &'a ExecutionGrantRecord,
     pub binding: &'a ParsedArtifact<BindingAttestation>,
     pub pop: &'a PopSession,
-    pub pop_verifier: &'a dyn PopVerifier,
-    pub current_revocation_epoch: u64,
-    pub asserted_operation_contract: &'a str,
-    pub asserted_connection_ref: &'a str,
     pub logical_effect_id: &'a str,
     pub canonical_input: &'a [u8],
     pub lease_seconds: i64,
@@ -124,8 +109,9 @@ pub struct BrokerEngine<'a, L, P, D, C, T> {
     pub signer: &'a BrokerSigner,
     pub commitments: &'a CommitmentKey,
     pub broker_principal_id: &'a str,
+    pub pop_verifier: &'a dyn PopVerifier,
 }
-impl<L: Ledger, P: RequestPlanner, D: ProviderDispatcher, C: CredentialCustodian, T: TrustRegistry>
+impl<L: Ledger, P: RequestPlanner, D: ProviderDispatcher, C: CustodianLookup, T: TrustRegistry>
     BrokerEngine<'_, L, P, D, C, T>
 {
     pub fn invoke(&self, request: InvokeRequest<'_>) -> Result<InvokeResult, BrokerError> {
@@ -134,21 +120,16 @@ impl<L: Ledger, P: RequestPlanner, D: ProviderDispatcher, C: CredentialCustodian
             request.grant,
             request.scope,
             request.pop,
-            request.pop_verifier,
-            request.current_revocation_epoch,
+            self.pop_verifier,
+            self.custodian.connection_metadata()?.revocation_epoch,
             &now_text,
         )?;
         let grant = &request.grant.grant;
-        if request.asserted_operation_contract != grant.operation_contract {
-            return Err(BrokerError::Brk107);
-        }
-        if request.asserted_connection_ref != grant.connection_ref {
-            return Err(BrokerError::Brk109);
-        }
-        if request.binding.view.expires_at <= now_text
-            || request.binding.view.revocation_epoch != request.current_revocation_epoch
-            || request.binding.view.connection_ref != grant.connection_ref
-            || request.binding.view.lane != "semantic_broker"
+        self.reconcile_custodian(grant, &request.binding.view)?;
+        // Deliberate V1 boundary: only count semantics are implemented. There
+        // is no attenuation-policy evaluator in this kernel.
+        if grant.minimum_assurance != Assurance::BrokeredCount
+            || !grant.required_attenuations.is_empty()
         {
             return Err(BrokerError::Brk109);
         }
@@ -205,59 +186,100 @@ impl<L: Ledger, P: RequestPlanner, D: ProviderDispatcher, C: CredentialCustodian
             ReserveResult::Acquired(value) => value,
             ReserveResult::Redelivery(value) => return self.redelivery(value),
         };
-        let planned = match self.custodian.with_access_material(|material| {
-            self.planner
-                .plan(input.as_bytes(), material.expose_to_broker())
-        }) {
+        let planned = match self.planner.plan(input.as_bytes()) {
             Ok(value) => value,
             Err(_) => {
                 let released = self
                     .ledger
                     .release(&key, acquired.lease_token, tick, false)?;
-                return self.pre_dispatch_receipt(request, approval, released, input.as_bytes());
+                return self.pre_dispatch_receipt(&request, approval, released, input.as_bytes());
             }
         };
         if planned.implementation != approval.implementation {
-            self.ledger
-                .release(&key, acquired.lease_token, tick, false)?;
-            return Err(BrokerError::Brk108);
+            let released = self.release_reservation(&key, &acquired)?;
+            return self.pre_dispatch_receipt(&request, approval, released, input.as_bytes());
         }
-        if !request
-            .binding
-            .view
-            .endpoint_origins
-            .contains(&planned.endpoint_origin)
-        {
-            self.ledger
-                .release(&key, acquired.lease_token, tick, false)?;
-            return Err(BrokerError::Brk302);
+        let Some(approved_origin) = request.binding.view.endpoint_origins.first() else {
+            let released = self.release_reservation(&key, &acquired)?;
+            return self.pre_dispatch_receipt(&request, approval, released, input.as_bytes());
+        };
+        if crate::dispatch::validate_https_origin(approved_origin).is_err() {
+            let released = self.release_reservation(&key, &acquired)?;
+            return self.pre_dispatch_receipt(&request, approval, released, input.as_bytes());
         }
-        let facts = canonical::canonicalize_bounded(
+        let facts = match canonical::canonicalize_bounded(
             &planned.authority_facts,
             canonical::MAX_OPERATION_BYTES,
-        )
-        .map_err(|_| BrokerError::Brk301)?;
-        let final_plan =
-            FinalRequestPlan::from_template(&planned.template, request.logical_effect_id)
-                .map_err(|_| BrokerError::Brk301)?;
+        ) {
+            Ok(value) => value,
+            Err(_) => {
+                let released = self.release_reservation(&key, &acquired)?;
+                return self.pre_dispatch_receipt(&request, approval, released, input.as_bytes());
+            }
+        };
+        let final_plan = match FinalRequestPlan::from_template(
+            &planned.template,
+            request.logical_effect_id,
+            approved_origin,
+        ) {
+            Ok(value) => value,
+            Err(_) => {
+                let released = self.release_reservation(&key, &acquired)?;
+                return self.pre_dispatch_receipt(&request, approval, released, input.as_bytes());
+            }
+        };
         let plan_hash = final_plan.hash();
         let facts_hash = format!("sha256:{}", hex::encode(Sha256::digest(facts.as_bytes())));
-        let planned_state = self.ledger.plan(
+        let planning_tick = self.clock.monotonic_seconds();
+        let planned_state = match self.ledger.plan(
             &key,
             acquired.lease_token,
-            tick,
+            planning_tick,
             PlannedData {
                 request_plan_hash: plan_hash.clone(),
                 authority_facts_hash: facts_hash.clone(),
                 implementation: approval.implementation.clone(),
-                endpoint: planned.endpoint_origin,
+                endpoint: approved_origin.clone(),
                 next_attempt: 0,
             },
-        )?;
-        let dispatched = self
-            .ledger
-            .mark_dispatched(&key, acquired.lease_token, tick)?;
-        let (outcome, response, provider_id) = match self.dispatcher.dispatch(&final_plan) {
+        ) {
+            Ok(value) => value,
+            Err(BrokerError::Brk205) => {
+                let released = self.release_reservation(&key, &acquired)?;
+                return self.pre_dispatch_receipt(&request, approval, released, input.as_bytes());
+            }
+            Err(error) => return Err(error),
+        };
+        // Fresh live metadata and lease/state CAS immediately before the
+        // durable dispatched transition close planning/custodian TOCTOU.
+        if let Err(error) = self.reconcile_custodian(grant, &request.binding.view) {
+            let released = self.release_reservation(&key, &acquired)?;
+            let _ =
+                self.pre_dispatch_receipt(&request, approval.clone(), released, input.as_bytes())?;
+            return Err(error);
+        }
+        let dispatch_tick = self.clock.monotonic_seconds();
+        let dispatched =
+            match self
+                .ledger
+                .mark_dispatched(&key, acquired.lease_token, dispatch_tick)
+            {
+                Ok(value) => value,
+                Err(BrokerError::Brk205) => {
+                    let released = self.release_reservation(&key, &acquired)?;
+                    return self.pre_dispatch_receipt(
+                        &request,
+                        approval,
+                        released,
+                        input.as_bytes(),
+                    );
+                }
+                Err(error) => return Err(error),
+            };
+        let dispatch_result = self
+            .custodian
+            .with_access_material(|material| self.dispatcher.dispatch(&final_plan, material));
+        let (outcome, response, provider_id) = match dispatch_result {
             Ok(DispatchResult::Confirmed(v)) => (
                 Outcome::Confirmed,
                 v.bounded_projection,
@@ -272,9 +294,8 @@ impl<L: Ledger, P: RequestPlanner, D: ProviderDispatcher, C: CredentialCustodian
             Outcome::Ambiguous => TerminalOutcome::Ambiguous,
             Outcome::Rejected => unreachable!(),
         };
-        self.ledger.finish(&key, terminal)?;
         let receipt = self.make_receipt(
-            request,
+            &request,
             &approval,
             &dispatched,
             outcome,
@@ -282,10 +303,13 @@ impl<L: Ledger, P: RequestPlanner, D: ProviderDispatcher, C: CredentialCustodian
             Some(facts_hash),
             input.as_bytes(),
             &response,
-            provider_id,
+            provider_id.clone(),
             true,
         )?;
-        self.ledger.issue_receipt(&key, receipt.1.clone())?;
+        let kernel_receipt =
+            crate::ledger::KernelReceipt::new(receipt.1.clone(), response, provider_id)?;
+        self.ledger.finish(&key, terminal, kernel_receipt)?;
+        self.ledger.issue_receipt(&key)?;
         let _ = planned_state;
         Ok(InvokeResult {
             receipt: receipt.0,
@@ -294,24 +318,99 @@ impl<L: Ledger, P: RequestPlanner, D: ProviderDispatcher, C: CredentialCustodian
         })
     }
 
+    fn reconcile_custodian(
+        &self,
+        grant: &ExecutionGrant,
+        binding: &BindingAttestation,
+    ) -> Result<(), BrokerError> {
+        let custodian = self.custodian.lookup(&grant.connection_ref)?;
+        let live = custodian.connection_metadata()?;
+        let required: std::collections::BTreeSet<_> = binding
+            .scope_alignment
+            .required_scopes
+            .iter()
+            .cloned()
+            .collect();
+        let actual: std::collections::BTreeSet<_> = binding
+            .scope_alignment
+            .actual_scopes
+            .iter()
+            .cloned()
+            .collect();
+        let supported = binding.supported_contracts.iter().find(|contract| {
+            contract.contract_id == grant.operation_contract
+                && contract.contract_hash == grant.contract_hash
+        });
+        if live.connection_ref != grant.connection_ref
+            || binding.connection_ref != grant.connection_ref
+            || live.provider != binding.provider
+            || grant.provider != binding.provider
+            || live.account_commitment != binding.account_commitment
+            || grant.account_commitment != binding.account_commitment
+            || grant.roles != binding.roles
+            || grant
+                .scopes
+                .iter()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>()
+                != actual
+            || !binding
+                .roles
+                .iter()
+                .all(|(role, kind)| live.roles.get(role) == Some(kind))
+            || live.scopes != actual
+            || !required.is_subset(&live.scopes)
+            || live.revocation_epoch != binding.revocation_epoch
+            || live.revocation_epoch != grant.revocation_epoch
+            || supported.is_none()
+            || supported.is_some_and(|contract| !contract.attenuation_profiles.is_empty())
+        {
+            return Err(BrokerError::Brk109);
+        }
+        custodian.validate_scopes(&required)?;
+        Ok(())
+    }
+
     fn redelivery(&self, state: crate::ledger::EntrySnapshot) -> Result<InvokeResult, BrokerError> {
         match state.state {
             InvocationState::ReceiptIssued { receipt, .. } => {
                 let parsed: ParsedArtifact<InvocationReceipt> = crate::artifacts::parse(&receipt)?;
+                self.signer
+                    .verifying_key()
+                    .verify_json(RECEIPT_DOMAIN, &receipt, &parsed.view.signature)
+                    .map_err(|_| BrokerError::Brk401)?;
+                parsed.view.validate_semantics()?;
                 Ok(InvokeResult {
                     receipt: parsed.view,
                     canonical_receipt: receipt,
                     redelivery: true,
                 })
             }
-            InvocationState::Terminal(TerminalOutcome::Ambiguous) => Err(BrokerError::Brk306),
+            InvocationState::Terminal(_) => {
+                let issued = self.ledger.issue_receipt(&state.key)?;
+                self.redelivery(issued)
+            }
             _ => Err(BrokerError::Brk204),
         }
     }
 
+    fn release_reservation(
+        &self,
+        key: &ReservationKey,
+        acquired: &crate::ledger::EntrySnapshot,
+    ) -> Result<crate::ledger::EntrySnapshot, BrokerError> {
+        let now = self.clock.monotonic_seconds();
+        self.ledger.release(
+            key,
+            acquired.lease_token,
+            now,
+            now >= acquired.lease_deadline,
+        )
+    }
+
     fn pre_dispatch_receipt(
         &self,
-        request: InvokeRequest<'_>,
+        request: &InvokeRequest<'_>,
         approval: ImplementationApproval,
         released: crate::ledger::EntrySnapshot,
         input: &[u8],
@@ -328,8 +427,10 @@ impl<L: Ledger, P: RequestPlanner, D: ProviderDispatcher, C: CredentialCustodian
             None,
             false,
         )?;
-        self.ledger
-            .issue_receipt(&released.key, receipt.1.clone())?;
+        self.ledger.issue_released_receipt(
+            &released.key,
+            crate::ledger::KernelReceipt::new(receipt.1.clone(), Vec::new(), None)?,
+        )?;
         Ok(InvokeResult {
             receipt: receipt.0,
             canonical_receipt: receipt.1,
@@ -340,7 +441,7 @@ impl<L: Ledger, P: RequestPlanner, D: ProviderDispatcher, C: CredentialCustodian
     #[allow(clippy::too_many_arguments)]
     fn make_receipt(
         &self,
-        request: InvokeRequest<'_>,
+        request: &InvokeRequest<'_>,
         approval: &ImplementationApproval,
         state: &crate::ledger::EntrySnapshot,
         outcome: Outcome,
@@ -457,6 +558,7 @@ impl<L: Ledger, P: RequestPlanner, D: ProviderDispatcher, C: CredentialCustodian
             signature: placeholder,
             extensions: Default::default(),
         };
+        receipt.validate_semantics()?;
         let unsigned = canonical::from_serde(&receipt, RECEIPT_MAX)?.into_bytes();
         receipt.signature = self.signer.sign_json(RECEIPT_DOMAIN, &unsigned)?;
         let bytes = canonical::from_serde(&receipt, RECEIPT_MAX)?.into_bytes();
@@ -476,6 +578,41 @@ mod tests {
         ledger::InMemoryLedger,
         signing::{BINDING_DOMAIN, BrokerSigner},
     };
+
+    struct AdvancingClock {
+        tick: std::sync::atomic::AtomicI64,
+    }
+    impl Clock for AdvancingClock {
+        fn now_rfc3339(&self) -> String {
+            "2026-07-19T12:00:00Z".into()
+        }
+        fn monotonic_seconds(&self) -> i64 {
+            self.tick.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+    struct ClockAdvancingPlanner<'a> {
+        clock: &'a AdvancingClock,
+        fixed: FixedTemplatePlanner,
+    }
+    impl RequestPlanner for ClockAdvancingPlanner<'_> {
+        fn plan(&self, input: &[u8]) -> Result<PlannedRequest, BrokerError> {
+            self.clock
+                .tick
+                .store(31, std::sync::atomic::Ordering::SeqCst);
+            self.fixed.plan(input)
+        }
+    }
+
+    struct EpochBumpingPlanner<'a> {
+        custodian: &'a SyntheticCustodian,
+        fixed: FixedTemplatePlanner,
+    }
+    impl RequestPlanner for EpochBumpingPlanner<'_> {
+        fn plan(&self, input: &[u8]) -> Result<PlannedRequest, BrokerError> {
+            self.custodian.bump_epoch()?;
+            self.fixed.plan(input)
+        }
+    }
 
     fn signed_binding(signer: &BrokerSigner) -> ParsedArtifact<BindingAttestation> {
         let placeholder = SignatureEnvelope {
@@ -568,6 +705,10 @@ mod tests {
             operation_contract: "contract@1".into(),
             contract_hash: format!("sha256:{}", "1".repeat(64)),
             connection_ref: binding.connection_ref.clone(),
+            provider: binding.provider.clone(),
+            account_commitment: binding.account_commitment.clone(),
+            roles: binding.roles.clone(),
+            scopes: binding.scope_alignment.actual_scopes.clone(),
             budgets: GrantBudgets {
                 logical_calls: 1,
                 dispatch_attempts_per_call: 1,
@@ -630,7 +771,6 @@ mod tests {
             template: br#"{"idempotency":{"$broker":"idempotency_key"},"method":"POST"}"#.to_vec(),
             facts: br#"{"allowed":true}"#.to_vec(),
             implementation: "impl-v1".into(),
-            endpoint_origin: "https://provider.example".into(),
         };
         let dispatcher = MockDispatcher::new([ScriptedDispatch::Confirmed {
             projection: br#"{"ok":true}"#.to_vec(),
@@ -643,6 +783,9 @@ mod tests {
             ["scope".into()],
             b"custodian-super-secret".to_vec(),
         );
+        custodian
+            .set_account_commitment(binding.view.account_commitment.clone())
+            .unwrap();
         let clock = FixedClock("2026-07-19T12:00:00Z".into());
         let commitments = CommitmentKey::new("commit-v1", [8; 32]).unwrap();
         let engine = BrokerEngine {
@@ -655,7 +798,9 @@ mod tests {
             signer: &receipt_signer,
             commitments: &commitments,
             broker_principal_id: "broker",
+            pop_verifier: &pop_verifier,
         };
+        custodian.set_epoch(4).unwrap();
         let effect = effect_id::derive("run", "node", 1, "send").unwrap();
         let input = br#"{"message":"input-super-secret"}"#;
         let invoke = || InvokeRequest {
@@ -663,32 +808,19 @@ mod tests {
             grant: &grant,
             binding: &binding,
             pop: &pop,
-            pop_verifier: &pop_verifier,
-            current_revocation_epoch: 4,
-            asserted_operation_contract: "contract@1",
-            asserted_connection_ref: "connection",
             logical_effect_id: &effect,
             canonical_input: input,
             lease_seconds: 30,
         };
-        assert_eq!(
-            engine
-                .invoke(InvokeRequest {
-                    asserted_operation_contract: "wrong-contract",
-                    ..invoke()
-                })
-                .unwrap_err(),
-            BrokerError::Brk107
-        );
-        assert_eq!(
-            engine
-                .invoke(InvokeRequest {
-                    asserted_connection_ref: "wrong-connection",
-                    ..invoke()
-                })
-                .unwrap_err(),
-            BrokerError::Brk109
-        );
+        let good_commitment = binding.view.account_commitment.clone();
+        let mut wrong_commitment = good_commitment.clone();
+        wrong_commitment.value = format!("hmac-sha256:{}", "f".repeat(64));
+        custodian.set_account_commitment(wrong_commitment).unwrap();
+        assert_eq!(engine.invoke(invoke()).unwrap_err(), BrokerError::Brk109);
+        custodian.set_account_commitment(good_commitment).unwrap();
+        custodian.replace_scopes(Vec::<String>::new()).unwrap();
+        assert_eq!(engine.invoke(invoke()).unwrap_err(), BrokerError::Brk109);
+        custodian.replace_scopes(["scope".into()]).unwrap();
         assert!(dispatcher.recorded_plans().is_empty());
         let first = engine.invoke(invoke()).unwrap();
         assert!(!first.redelivery);
@@ -740,6 +872,114 @@ mod tests {
         );
         assert!(!public.contains("custodian-super-secret"));
         assert!(!public.contains("input-super-secret"));
+
+        // The live epoch is checked again after planning and immediately
+        // before the durable dispatched transition.
+        custodian.set_epoch(4).unwrap();
+        let second_ledger = InMemoryLedger::new();
+        let second_dispatcher = MockDispatcher::new([ScriptedDispatch::Confirmed {
+            projection: b"{}".to_vec(),
+            provider_request_id: None,
+        }]);
+        let bumping = EpochBumpingPlanner {
+            custodian: &custodian,
+            fixed: FixedTemplatePlanner {
+                template: br#"{"method":"POST"}"#.to_vec(),
+                facts: b"{}".to_vec(),
+                implementation: "impl-v1".into(),
+            },
+        };
+        let second_engine = BrokerEngine {
+            ledger: &second_ledger,
+            planner: &bumping,
+            dispatcher: &second_dispatcher,
+            custodian: &custodian,
+            trust: &trust,
+            clock: &clock,
+            signer: &receipt_signer,
+            commitments: &commitments,
+            broker_principal_id: "broker",
+            pop_verifier: &pop_verifier,
+        };
+        let second_effect = effect_id::derive("run", "node", 2, "send").unwrap();
+        assert_eq!(
+            second_engine
+                .invoke(InvokeRequest {
+                    scope: &scope,
+                    grant: &grant,
+                    binding: &binding,
+                    pop: &pop,
+                    logical_effect_id: &second_effect,
+                    canonical_input: input,
+                    lease_seconds: 30,
+                })
+                .unwrap_err(),
+            BrokerError::Brk109
+        );
+        assert!(second_dispatcher.recorded_plans().is_empty());
+        assert!(
+            second_ledger
+                .records()
+                .unwrap()
+                .iter()
+                .any(|record| matches!(record, crate::ledger::DurableRecord::ReceiptIssued { .. }))
+        );
+
+        custodian.set_epoch(4).unwrap();
+        let expiring_clock = AdvancingClock {
+            tick: std::sync::atomic::AtomicI64::new(0),
+        };
+        let expiring_planner = ClockAdvancingPlanner {
+            clock: &expiring_clock,
+            fixed: FixedTemplatePlanner {
+                template: br#"{"method":"POST"}"#.to_vec(),
+                facts: b"{}".to_vec(),
+                implementation: "impl-v1".into(),
+            },
+        };
+        let expiry_ledger = InMemoryLedger::new();
+        let expiry_dispatcher = MockDispatcher::new([ScriptedDispatch::Confirmed {
+            projection: b"{}".to_vec(),
+            provider_request_id: None,
+        }]);
+        let expiry_engine = BrokerEngine {
+            ledger: &expiry_ledger,
+            planner: &expiring_planner,
+            dispatcher: &expiry_dispatcher,
+            custodian: &custodian,
+            trust: &trust,
+            clock: &expiring_clock,
+            signer: &receipt_signer,
+            commitments: &commitments,
+            broker_principal_id: "broker",
+            pop_verifier: &pop_verifier,
+        };
+        let expired = expiry_engine
+            .invoke(InvokeRequest {
+                scope: &scope,
+                grant: &grant,
+                binding: &binding,
+                pop: &pop,
+                logical_effect_id: &second_effect,
+                canonical_input: input,
+                lease_seconds: 30,
+            })
+            .unwrap();
+        assert_eq!(expired.receipt.outcome, Outcome::Rejected);
+        assert!(expiry_dispatcher.recorded_plans().is_empty());
+        assert!(
+            expiry_ledger
+                .records()
+                .unwrap()
+                .iter()
+                .any(|record| matches!(
+                    record,
+                    crate::ledger::DurableRecord::Released {
+                        outcome: TerminalOutcome::ReleasedExpired,
+                        ..
+                    }
+                ))
+        );
     }
 
     #[test]

@@ -267,6 +267,16 @@ fn operation(node: &str, alias: &str, contract: &str, hash: &str) -> BrokerOpera
         operation_contract: contract.into(),
         contract_hash: hash.into(),
         connection_ref: "connection".into(),
+        provider: "synthetic".into(),
+        account_commitment: CommitmentEnvelope {
+            alg: CommitmentAlg::HmacSha256,
+            key_id: "account-key".into(),
+            verification_tier: None,
+            value: format!("hmac-sha256:{}", "0".repeat(64)),
+            extensions: Default::default(),
+        },
+        roles: BTreeMap::from([("outbound_auth.synthetic".into(), "synthetic.secret".into())]),
+        scopes: vec!["synthetic.write".into()],
         budgets: GrantBudgets {
             logical_calls: 1,
             dispatch_attempts_per_call: 1,
