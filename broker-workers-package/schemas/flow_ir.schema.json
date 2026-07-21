@@ -1,0 +1,1364 @@
+{
+  "$id": "https://lattice.dev/schemas/flow_ir.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "definitions": {
+    "ArtifactRef": {
+      "description": "Artifact reference bundled alongside Flow IR.",
+      "properties": {
+        "format": {
+          "description": "Optional format identifier.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "description": "Artifact kind (dot, wit, json-schema, etc.).",
+          "type": "string"
+        },
+        "path": {
+          "description": "Relative path to the artifact.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "path"
+      ],
+      "type": "object"
+    },
+    "BrokerAuthority": {
+      "additionalProperties": false,
+      "description": "Hash-covered Broker V1 authority authoring carried by a node.",
+      "properties": {
+        "connection_aggregate_max_logical_calls": {
+          "additionalProperties": {
+            "format": "uint64",
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "propertyNames": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[ -~]{1,256}$"
+          },
+          "type": "object"
+        },
+        "flow_aggregate_max_logical_calls": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "operation_budgets": {
+          "items": {
+            "$ref": "#/definitions/BrokerOperationBudget"
+          },
+          "maxItems": 1024,
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "operation_budgets"
+      ],
+      "type": "object"
+    },
+    "BrokerOperationBudget": {
+      "additionalProperties": false,
+      "description": "Broker V1 operation budget scoped per run and node.",
+      "properties": {
+        "connection_aggregate_key": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[ -~]{1,256}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "contract_id": {
+          "maxLength": 1024,
+          "minLength": 3,
+          "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+@[1-9][0-9]*$",
+          "type": "string"
+        },
+        "max_dispatch_attempts_per_call": {
+          "format": "uint8",
+          "maximum": 255.0,
+          "minimum": 1.0,
+          "type": "integer"
+        },
+        "max_logical_calls": {
+          "format": "uint64",
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "semantic_effect_slots": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+            "type": "string"
+          },
+          "maxItems": 1024,
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "contract_id",
+        "max_dispatch_attempts_per_call",
+        "max_logical_calls",
+        "semantic_effect_slots"
+      ],
+      "type": "object"
+    },
+    "BufferPolicy": {
+      "description": "Buffering behaviour metadata.",
+      "properties": {
+        "max_items": {
+          "description": "Optional max items held in memory.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "on_drop": {
+          "description": "Drop behaviour description.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "spill_threshold_bytes": {
+          "description": "Optional spill threshold in bytes.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "spill_tier": {
+          "description": "Optional spill tier identifier.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "CheckpointIR": {
+      "description": "Checkpoint definition.",
+      "properties": {
+        "id": {
+          "description": "Checkpoint identifier.",
+          "type": "string"
+        },
+        "summary": {
+          "description": "Optional summary.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "ConnectorOpRefIR": {
+      "description": "Serializable connector operation reference emitted into Flow IR.",
+      "properties": {
+        "connector_id": {
+          "type": "string"
+        },
+        "default_resolution_mode": {
+          "$ref": "#/definitions/ConnectorResolutionModeDecl"
+        },
+        "operation_id": {
+          "type": "string"
+        },
+        "roles": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ConnectorRoleRequirementIR"
+          },
+          "type": "array"
+        },
+        "selected_resolution_mode": {
+          "$ref": "#/definitions/ConnectorResolutionModeDecl"
+        },
+        "supported_resolution_modes": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ConnectorResolutionModeDecl"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "connector_id",
+        "default_resolution_mode",
+        "operation_id",
+        "selected_resolution_mode"
+      ],
+      "type": "object"
+    },
+    "ConnectorResolutionModeDecl": {
+      "enum": [
+        "bound_connection",
+        "late_bound_refs",
+        "inline_payload"
+      ],
+      "type": "string"
+    },
+    "ConnectorRoleKindDecl": {
+      "description": "Declarative connector role kinds used by node and connector-op metadata.",
+      "enum": [
+        "outbound_auth",
+        "provisioning_auth",
+        "inbound_verifier",
+        "endpoint_profile"
+      ],
+      "type": "string"
+    },
+    "ConnectorRoleRequirementIR": {
+      "description": "Serializable connector role requirement emitted into Flow IR.",
+      "properties": {
+        "expected_handle_kind": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/ConnectorRoleKindDecl"
+        },
+        "name": {
+          "type": "string"
+        },
+        "required": {
+          "description": "Whether lock-time binding must satisfy this role. Defaults to `true` and is omitted from serialized output when `true`, so existing IR, requirements manifests, and goldens are byte-identical.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "expected_handle_kind",
+        "kind",
+        "name"
+      ],
+      "type": "object"
+    },
+    "ControlSurfaceIR": {
+      "description": "Control surface metadata for branching/looping constructs.",
+      "properties": {
+        "config": {
+          "description": "JSON payload describing surface-specific configuration."
+        },
+        "id": {
+          "description": "Stable identifier for the control surface.",
+          "type": "string"
+        },
+        "kind": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ControlSurfaceKind"
+            }
+          ],
+          "description": "Control surface type."
+        },
+        "targets": {
+          "description": "Target node/edge aliases.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "targets"
+      ],
+      "type": "object"
+    },
+    "ControlSurfaceKind": {
+      "description": "Supported control surface variants.",
+      "oneOf": [
+        {
+          "description": "Switch/multi-branch control flow.",
+          "enum": [
+            "switch"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Binary branching (if).",
+          "enum": [
+            "if"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Loop construct.",
+          "enum": [
+            "loop"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "For-each iteration construct.",
+          "enum": [
+            "for_each"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Windowing configuration.",
+          "enum": [
+            "window"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Partition description.",
+          "enum": [
+            "partition"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Timeout/latency guard.",
+          "enum": [
+            "timeout"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Rate limit guard.",
+          "enum": [
+            "rate_limit"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Error-handling surface.",
+          "enum": [
+            "error_handler"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "Delivery": {
+      "description": "Delivery semantics enumeration.",
+      "oneOf": [
+        {
+          "description": "At least once delivery (default).",
+          "enum": [
+            "at_least_once"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "At most once delivery.",
+          "enum": [
+            "at_most_once"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Exactly once delivery (requires dedupe).",
+          "enum": [
+            "exactly_once"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "Determinism": {
+      "description": "Determinism lattice describing replay guarantees.",
+      "oneOf": [
+        {
+          "description": "Fully deterministic, no time or randomness.",
+          "enum": [
+            "strict"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Stable under pinned resources.",
+          "enum": [
+            "stable"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Best-effort determinism, may vary on retries.",
+          "enum": [
+            "best_effort"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Explicitly non-deterministic.",
+          "enum": [
+            "nondeterministic"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "DurabilityMode": {
+      "description": "Durability modes for checkpointing.",
+      "oneOf": [
+        {
+          "description": "No checkpoints written; resume disabled.",
+          "enum": [
+            "off"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Checkpoints only at halt nodes.",
+          "enum": [
+            "partial"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Checkpoints at every node boundary.",
+          "enum": [
+            "strong"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "DurabilityPolicy": {
+      "description": "Durability policy settings.",
+      "properties": {
+        "blob_threshold_bytes": {
+          "description": "Blob spill threshold in bytes.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "checkpoint_interval": {
+          "description": "Checkpoint interval (host-specific interpretation).",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "checkpoint_ttl": {
+          "description": "Maximum time a checkpoint remains valid (milliseconds).",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "lease_ttl": {
+          "description": "Lease TTL in milliseconds.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_resume_attempts": {
+          "description": "Maximum number of resume attempts.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "mode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/DurabilityMode"
+            }
+          ],
+          "default": "partial",
+          "description": "Requested durability mode."
+        },
+        "retain_completed_for": {
+          "description": "Retention window after ack (milliseconds).",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "retry_on_lease_conflict": {
+          "description": "Retry resume on lease conflict.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "DurabilityProfile": {
+      "description": "Durability profile used for checkpoint validation.",
+      "properties": {
+        "checkpointable": {
+          "description": "Node state can be serialized and resumed.",
+          "type": "boolean"
+        },
+        "halts": {
+          "description": "Node is a halting boundary requiring suspend + resume.",
+          "type": "boolean"
+        },
+        "replayable": {
+          "description": "Streaming outputs can be replayed on resume.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "checkpointable",
+        "halts",
+        "replayable"
+      ],
+      "type": "object"
+    },
+    "EdgeIR": {
+      "description": "Edge entry within the Flow IR.",
+      "properties": {
+        "buffer": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/BufferPolicy"
+            }
+          ],
+          "description": "Buffer policy."
+        },
+        "delivery": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/Delivery"
+            }
+          ],
+          "description": "Delivery semantics."
+        },
+        "from": {
+          "description": "Source node alias.",
+          "type": "string"
+        },
+        "ordering": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/Ordering"
+            }
+          ],
+          "description": "Ordering semantics."
+        },
+        "partition_key": {
+          "description": "Optional partition key expression.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timeout_ms": {
+          "description": "Optional timeout in milliseconds.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "to": {
+          "description": "Destination node alias.",
+          "type": "string"
+        },
+        "transform": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/EdgeTransformIR"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional transform metadata."
+        }
+      },
+      "required": [
+        "buffer",
+        "delivery",
+        "from",
+        "ordering",
+        "to"
+      ],
+      "type": "object"
+    },
+    "EdgeTransformIR": {
+      "description": "Edge transform metadata block.",
+      "properties": {
+        "kind": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/EdgeTransformKind"
+            }
+          ],
+          "description": "Transform kind."
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "EdgeTransformKind": {
+      "description": "Edge transform kind enumeration.",
+      "oneOf": [
+        {
+          "description": "Rust Into conversion.",
+          "enum": [
+            "into"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "Effects": {
+      "description": "Effect lattice describing resource access.",
+      "oneOf": [
+        {
+          "description": "No observable side-effects.",
+          "enum": [
+            "pure"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Read-only side-effects (e.g. cache lookups).",
+          "enum": [
+            "read_only"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "External side-effects (e.g. network, writes).",
+          "enum": [
+            "effectful"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "EntrypointMetadata": {
+      "description": "Entrypoint metadata describing external ingress wiring.",
+      "properties": {
+        "capture_alias": {
+          "description": "Capture node alias for response/egress.",
+          "type": "string"
+        },
+        "method": {
+          "description": "Optional HTTP method for HTTP-capable hosts.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "route_aliases": {
+          "default": [],
+          "description": "Optional non-authoritative aliases for the canonical route.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "route_path": {
+          "description": "Optional canonical route path (host-derived when omitted).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "schedule": {
+          "description": "Optional cron expression for schedule-shaped entrypoints (5-field Cloudflare dialect, UTC). Mutually exclusive with `method` and `route_aliases` (TRIG002). See `impl-docs/spec/schedule-trigger.md`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "trigger_alias": {
+          "description": "Trigger node alias for ingress.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "capture_alias",
+        "trigger_alias"
+      ],
+      "type": "object"
+    },
+    "FlowIR": {
+      "description": "Canonical Flow IR structure serialised to JSON/dot/etc.",
+      "properties": {
+        "artifacts": {
+          "default": [],
+          "description": "Associated artifact references (DOT, WIT, etc.).",
+          "items": {
+            "$ref": "#/definitions/ArtifactRef"
+          },
+          "type": "array"
+        },
+        "checkpoints": {
+          "default": [],
+          "description": "Declared checkpoints.",
+          "items": {
+            "$ref": "#/definitions/CheckpointIR"
+          },
+          "type": "array"
+        },
+        "control_surfaces": {
+          "default": [],
+          "description": "Control surface metadata (branching/loops/etc).",
+          "items": {
+            "$ref": "#/definitions/ControlSurfaceIR"
+          },
+          "type": "array"
+        },
+        "edges": {
+          "default": [],
+          "description": "Edges describing the DAG.",
+          "items": {
+            "$ref": "#/definitions/EdgeIR"
+          },
+          "type": "array"
+        },
+        "id": {
+          "description": "Unique workflow identifier.",
+          "type": "string"
+        },
+        "metadata": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/FlowMetadata"
+            }
+          ],
+          "default": {
+            "tags": []
+          },
+          "description": "Documentation and tag metadata."
+        },
+        "name": {
+          "description": "Workflow display name.",
+          "type": "string"
+        },
+        "nodes": {
+          "default": [],
+          "description": "Nodes contained in the workflow.",
+          "items": {
+            "$ref": "#/definitions/NodeIR"
+          },
+          "type": "array"
+        },
+        "policies": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/FlowPolicies"
+            }
+          ],
+          "default": {
+            "durability": {
+              "mode": "partial"
+            },
+            "lint": {
+              "require_control_hints": false
+            }
+          },
+          "description": "Policy metadata."
+        },
+        "profile": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/Profile"
+            }
+          ],
+          "description": "Target profile."
+        },
+        "summary": {
+          "description": "Optional human readable summary.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "description": "Semantic version.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "profile",
+        "version"
+      ],
+      "type": "object"
+    },
+    "FlowMetadata": {
+      "description": "Arbitrary metadata describing the workflow.",
+      "properties": {
+        "entrypoints": {
+          "default": [],
+          "description": "Optional entrypoint metadata provided by hosts or tooling.",
+          "items": {
+            "$ref": "#/definitions/EntrypointMetadata"
+          },
+          "type": "array"
+        },
+        "tags": {
+          "default": [],
+          "description": "Optional tags associated with the workflow.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "FlowPolicies": {
+      "description": "Policy lint configuration.",
+      "properties": {
+        "durability": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/DurabilityPolicy"
+            }
+          ],
+          "default": {
+            "mode": "partial"
+          },
+          "description": "Durability configuration."
+        },
+        "lint": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/PolicyLintSettings"
+            }
+          ],
+          "default": {
+            "require_control_hints": false
+          },
+          "description": "Lint configuration."
+        }
+      },
+      "type": "object"
+    },
+    "IdempotencyScope": {
+      "description": "Supported idempotency scopes.",
+      "oneOf": [
+        {
+          "description": "Key applies to a specific node.",
+          "enum": [
+            "node"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Key applies to a specific edge.",
+          "enum": [
+            "edge"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Key applies to a partition.",
+          "enum": [
+            "partition"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "IdempotencySpec": {
+      "description": "Idempotency metadata for a node.",
+      "properties": {
+        "key": {
+          "description": "Canonical idempotency key expression.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/IdempotencyScope"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Scope for the idempotency key."
+        },
+        "ttlMs": {
+          "description": "Optional TTL (in milliseconds) for dedupe reservations.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ImplementationDependency": {
+      "description": "Serializable implementation dependency emitted into Flow IR.",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/ImplementationDependencyKind"
+        }
+      },
+      "required": [
+        "key",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "ImplementationDependencyKind": {
+      "description": "Generic class of fixed implementation invoked by a composite node.\n\nDag-core deliberately knows only the execution class, never product- or sample-specific implementations. The stable key is owned by the declaring node's crate and is requirements metadata, not a handler lookup alias.",
+      "enum": [
+        "sandboxed_transform"
+      ],
+      "type": "string"
+    },
+    "NodeIR": {
+      "description": "Node entry within the Flow IR.",
+      "properties": {
+        "alias": {
+          "description": "Alias used within the workflow definition.",
+          "type": "string"
+        },
+        "broker_authority": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BrokerAuthority"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional Broker V1 budgets. Snake case is intentional and normative."
+        },
+        "connectorOps": {
+          "default": [],
+          "description": "Structured connector operations declared for the node.",
+          "items": {
+            "$ref": "#/definitions/ConnectorOpRefIR"
+          },
+          "type": "array"
+        },
+        "determinism": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/Determinism"
+            }
+          ],
+          "description": "Declared determinism metadata."
+        },
+        "determinismHints": {
+          "default": [],
+          "description": "Determinism hints recorded during macro expansion.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "durability": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/DurabilityProfile"
+            }
+          ],
+          "description": "Optional durability profile (checkpoint/halts metadata)."
+        },
+        "effectHints": {
+          "default": [],
+          "description": "Effect hints recorded during macro expansion.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "effects": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/Effects"
+            }
+          ],
+          "description": "Declared effects metadata."
+        },
+        "id": {
+          "description": "Stable identifier derived from the spec.",
+          "type": "string"
+        },
+        "idempotency": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/IdempotencySpec"
+            }
+          ],
+          "default": {},
+          "description": "Optional idempotency configuration."
+        },
+        "identifier": {
+          "description": "Fully-qualified implementation identifier used for runtime lookup.",
+          "type": "string"
+        },
+        "implementationDependencies": {
+          "description": "Fixed implementations invoked internally by this typed composite node.",
+          "items": {
+            "$ref": "#/definitions/ImplementationDependency"
+          },
+          "type": "array"
+        },
+        "in_schema": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/SchemaRef"
+            }
+          ],
+          "description": "Input schema reference."
+        },
+        "kind": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/NodeKind"
+            }
+          ],
+          "description": "Node kind."
+        },
+        "name": {
+          "description": "Human readable name.",
+          "type": "string"
+        },
+        "out_schema": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/SchemaRef"
+            }
+          ],
+          "description": "Output schema reference."
+        },
+        "subflow_ir": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/FlowIR"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional expanded subflow IR for analysis-only views."
+        },
+        "summary": {
+          "description": "Optional summary/description.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "alias",
+        "determinism",
+        "effects",
+        "id",
+        "identifier",
+        "in_schema",
+        "kind",
+        "name",
+        "out_schema"
+      ],
+      "type": "object"
+    },
+    "NodeKind": {
+      "description": "High-level node categories.",
+      "oneOf": [
+        {
+          "description": "Trigger originating the workflow.",
+          "enum": [
+            "trigger"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Inline rust node.",
+          "enum": [
+            "inline"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Activity/connector node.",
+          "enum": [
+            "activity"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Subflow invocation.",
+          "enum": [
+            "subflow"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "Ordering": {
+      "description": "Edge ordering semantics.",
+      "oneOf": [
+        {
+          "description": "FIFO semantics per partition.",
+          "enum": [
+            "ordered"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "No ordering guarantees.",
+          "enum": [
+            "unordered"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "PolicyLintSettings": {
+      "description": "Lint-specific policy settings.",
+      "properties": {
+        "allow_multiple_triggers": {
+          "description": "Allow multiple trigger nodes in a single flow.\n\nDefault is false when omitted.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "require_control_hints": {
+          "default": false,
+          "description": "Whether control surface hints are required.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "Profile": {
+      "description": "Workflow execution profile.",
+      "oneOf": [
+        {
+          "description": "HTTP/Axum host.",
+          "enum": [
+            "web"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Queue/Redis-backed workers.",
+          "enum": [
+            "queue"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Temporal orchestration.",
+          "enum": [
+            "temporal"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "WASM/Edge runtime.",
+          "enum": [
+            "wasm"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Local developer profile.",
+          "enum": [
+            "dev"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "SchemaRef": {
+      "description": "Schema reference used within Flow IR.",
+      "oneOf": [
+        {
+          "description": "Schema is opaque/unknown.",
+          "properties": {
+            "kind": {
+              "enum": [
+                "opaque"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Strongly named schema reference.",
+          "properties": {
+            "kind": {
+              "enum": [
+                "named"
+              ],
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "name"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "description": "Canonical, host-agnostic representation for workflows emitted by the Lattice Rust macro DSL.",
+  "properties": {
+    "artifacts": {
+      "default": [],
+      "description": "Associated artifact references (DOT, WIT, etc.).",
+      "items": {
+        "$ref": "#/definitions/ArtifactRef"
+      },
+      "type": "array"
+    },
+    "checkpoints": {
+      "default": [],
+      "description": "Declared checkpoints.",
+      "items": {
+        "$ref": "#/definitions/CheckpointIR"
+      },
+      "type": "array"
+    },
+    "control_surfaces": {
+      "default": [],
+      "description": "Control surface metadata (branching/loops/etc).",
+      "items": {
+        "$ref": "#/definitions/ControlSurfaceIR"
+      },
+      "type": "array"
+    },
+    "edges": {
+      "default": [],
+      "description": "Edges describing the DAG.",
+      "items": {
+        "$ref": "#/definitions/EdgeIR"
+      },
+      "type": "array"
+    },
+    "id": {
+      "description": "Unique workflow identifier.",
+      "type": "string"
+    },
+    "metadata": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/FlowMetadata"
+        }
+      ],
+      "default": {
+        "tags": []
+      },
+      "description": "Documentation and tag metadata."
+    },
+    "name": {
+      "description": "Workflow display name.",
+      "type": "string"
+    },
+    "nodes": {
+      "default": [],
+      "description": "Nodes contained in the workflow.",
+      "items": {
+        "$ref": "#/definitions/NodeIR"
+      },
+      "type": "array"
+    },
+    "policies": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/FlowPolicies"
+        }
+      ],
+      "default": {
+        "durability": {
+          "mode": "partial"
+        },
+        "lint": {
+          "require_control_hints": false
+        }
+      },
+      "description": "Policy metadata."
+    },
+    "profile": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/Profile"
+        }
+      ],
+      "description": "Target profile."
+    },
+    "summary": {
+      "description": "Optional human readable summary.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "version": {
+      "description": "Semantic version.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "name",
+    "profile",
+    "version"
+  ],
+  "title": "Lattice Flow IR",
+  "type": "object"
+}

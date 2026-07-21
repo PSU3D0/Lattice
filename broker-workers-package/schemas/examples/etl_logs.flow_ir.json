@@ -1,0 +1,136 @@
+{
+  "id": "02d0ded2-03f8-5d43-8d96-4831f3fa423e",
+  "name": "etl_logs",
+  "version": "1.0.0",
+  "profile": "queue",
+  "summary": "Window log events and write to warehouse with exactly-once semantics.",
+  "nodes": [
+    {
+      "id": "02d0ded2-03f8-5d43-8d96-4831f3fa423e::trigger",
+      "alias": "trigger",
+      "identifier": "example_etl::queue_trigger",
+      "name": "QueueTrigger",
+      "kind": "trigger",
+      "summary": "Ingress trigger for queued log batches",
+      "in_schema": {
+        "kind": "opaque"
+      },
+      "out_schema": {
+        "kind": "named",
+        "name": "ObjectRef"
+      },
+      "effects": "read_only",
+      "determinism": "strict",
+      "idempotency": {},
+      "determinismHints": [],
+      "effectHints": ["resource::queue::consume"]
+    },
+    {
+      "id": "02d0ded2-03f8-5d43-8d96-4831f3fa423e::parse",
+      "alias": "parse",
+      "identifier": "example_etl::parse_logs",
+      "name": "ParseLogs",
+      "kind": "inline",
+      "summary": "Parse log objects into structured events",
+      "in_schema": {
+        "kind": "named",
+        "name": "ObjectRef"
+      },
+      "out_schema": {
+        "kind": "named",
+        "name": "LogEvent"
+      },
+      "effects": "pure",
+      "determinism": "strict",
+      "idempotency": {},
+      "determinismHints": [],
+      "effectHints": ["resource::blob::read"]
+    },
+    {
+      "id": "02d0ded2-03f8-5d43-8d96-4831f3fa423e::window",
+      "alias": "window",
+      "identifier": "example_etl::window_tumbling",
+      "name": "WindowTumbling",
+      "kind": "inline",
+      "summary": "Group log events into tumbling windows",
+      "in_schema": {
+        "kind": "named",
+        "name": "LogEvent"
+      },
+      "out_schema": {
+        "kind": "named",
+        "name": "WindowBatch"
+      },
+      "effects": "read_only",
+      "determinism": "stable",
+      "idempotency": {},
+      "determinismHints": [],
+      "effectHints": []
+    },
+    {
+      "id": "02d0ded2-03f8-5d43-8d96-4831f3fa423e::write_wh",
+      "alias": "write_wh",
+      "identifier": "example_etl::write_warehouse",
+      "name": "WriteWarehouse",
+      "kind": "activity",
+      "summary": "Write window aggregates to warehouse",
+      "in_schema": {
+        "kind": "named",
+        "name": "WindowBatch"
+      },
+      "out_schema": {
+        "kind": "named",
+        "name": "Ack"
+      },
+      "effects": "effectful",
+      "determinism": "best_effort",
+      "idempotency": {
+        "key": "customer_id:window_start:window_end",
+        "scope": "partition",
+        "ttlMs": 86400000
+      },
+      "determinismHints": [],
+      "effectHints": ["resource::db::write", "resource::dedupe::store"]
+    }
+  ],
+  "edges": [
+    {
+      "from": "trigger",
+      "to": "parse",
+      "delivery": "at_least_once",
+      "ordering": "ordered",
+      "buffer": {}
+    },
+    {
+      "from": "parse",
+      "to": "window",
+      "delivery": "at_least_once",
+      "ordering": "ordered",
+      "buffer": {}
+    },
+    {
+      "from": "window",
+      "to": "write_wh",
+      "delivery": "exactly_once",
+      "ordering": "ordered",
+      "partition_key": "customer_id",
+      "timeout_ms": 300000,
+      "buffer": {
+        "max_items": 5000,
+        "spill_threshold_bytes": 67108864,
+        "spill_tier": "disk"
+      }
+    }
+  ],
+  "control_surfaces": [],
+  "checkpoints": [],
+  "policies": {
+    "lint": {
+      "require_control_hints": false
+    }
+  },
+  "metadata": {
+    "tags": []
+  },
+  "artifacts": []
+}

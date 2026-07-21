@@ -1,0 +1,24 @@
+[package]
+name = "broker-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Lattice Broker V1 enforcement kernel"
+
+[features]
+test_fixtures = []
+
+[dependencies]
+jcs-canonical.workspace = true
+subtle = "2"
+zeroize = "1"
+base64 = "0.22"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+hex.workspace = true
+hmac = "0.12"
+ryu-js = "1"
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true

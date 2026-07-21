@@ -1,0 +1,21 @@
+{
+  "name": "@lattice-flow/broker-workers-tests",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bash ../scripts/build-matrix.sh",
+    "build:production": "rm -rf ../build build-production && bash ../scripts/build.sh && cp -R ../build build-production && cp ../deploy/public-callback/src/index.mjs build-production/public.mjs",
+    "types": "wrangler types --config ../wrangler.jsonc --env-interface BrokerWorkerEnv worker-configuration.d.ts",
+    "test": "npm run build && vitest run",
+    "package": "node scripts/package.mjs",
+    "package:verify": "node scripts/verify-package.mjs",
+    "package:test": "node --test scripts/package.test.mjs",
+    "deploy:test": "node --test ../deploy/scripts/deploy.test.mjs ../deploy/scripts/cleanup.test.mjs"
+  },
+  "devDependencies": {
+    "miniflare": "4.20260708.1",
+    "vitest": "3.2.7",
+    "wrangler": "4.110.0"
+  }
+}

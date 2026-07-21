@@ -1,0 +1,3847 @@
+use std::collections::{HashMap, HashSet};
+
+use dag_core::{
+    Delivery, Diagnostic, DurabilityMode, EdgeTransformKind, EffectHint, Effects, FlowIR,
+    SchemaRef, Severity, diagnostic_codes, schemas_compatible, supported_into_coercion,
+};
+
+const MIN_EXACTLY_ONCE_TTL_MS: u64 = 300_000;
+
+/// The one non-`resource::*` marker allowed in `effect_hints`: a policy
+/// annotation consumed by the TYPE001 bare-JSON boundary lint.
+const POLICY_HINT_JSON_BOUNDARY: &str = "policy::json_boundary";
+
+/// Result of a successful validation run.
+#[derive(Debug, Clone)]
+pub struct ValidatedIR {
+    flow: FlowIR,
+    warnings: Vec<Diagnostic>,
+}
+
+impl ValidatedIR {
+    /// Access the validated Flow IR.
+    pub fn flow(&self) -> &FlowIR {
+        &self.flow
+    }
+
+    /// Non-blocking diagnostics (warning/info) emitted during validation.
+    pub fn warnings(&self) -> &[Diagnostic] {
+        &self.warnings
+    }
+
+    /// Consume the validated wrapper and return the underlying Flow IR.
+    pub fn into_inner(self) -> FlowIR {
+        self.flow
+    }
+}
+
+/// Validate a flow and return diagnostics if issues are discovered.
+///
+/// Severity-aware behavior:
+/// - `Error` diagnostics fail validation (`Err`).
+/// - `Warn`/`Info` diagnostics are preserved in `ValidatedIR::warnings()`.
+pub fn validate(flow: &FlowIR) -> Result<ValidatedIR, Vec<Diagnostic>> {
+    let diagnostics = collect_diagnostics(flow);
+    let (errors, warnings) = split_diagnostics_by_severity(diagnostics);
+
+    if errors.is_empty() {
+        Ok(ValidatedIR {
+            flow: flow.clone(),
+            warnings,
+        })
+    } else {
+        Err(errors)
+    }
+}
+
+/// Derive the static requirements manifest for a validated flow (packet C1).
+///
+/// This is a pure function of the validated IR: it executes no node, calls no
+/// connector runtime, and reads no environment. Bound-connection
+/// instance-binding satisfaction is deliberately NOT computed here — the
+/// manifest records the declared connector contract (supported resolution
+/// modes, role requirements) and bindings.lock generation owns instance
+/// resolution. See `impl-docs/spec/flow-requirements.md`.
+///
+/// Lives in kernel-plan (not dag-core) at the public-API level because the
+/// manifest must only ever be derived from a `ValidatedIR`: EFFECT202
+/// validation is what guarantees every effect hint parses as a canonical
+/// `dag_core::EffectHint`, which is what makes this function infallible.
+pub fn derive_requirements(ir: &ValidatedIR) -> dag_core::FlowRequirements {
+    dag_core::FlowRequirements::derive(ir.flow()).expect(
+        "ValidatedIR guarantees canonical effect hints (EFFECT202); \
+         derivation cannot fail on validated IR",
+    )
+}
+
+/// Strict validation mode that fails on any diagnostic severity.
+pub fn validate_strict(flow: &FlowIR) -> Result<ValidatedIR, Vec<Diagnostic>> {
+    let diagnostics = collect_diagnostics(flow);
+    if diagnostics.is_empty() {
+        Ok(ValidatedIR {
+            flow: flow.clone(),
+            warnings: Vec::new(),
+        })
+    } else {
+        Err(diagnostics)
+    }
+}
+
+fn collect_diagnostics(flow: &FlowIR) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+
+    check_hint_validity(flow, &mut diagnostics);
+    check_duplicate_aliases(flow, &mut diagnostics);
+    check_trigger_policy(flow, &mut diagnostics);
+    check_schedule_entrypoints(flow, &mut diagnostics);
+    check_edge_references(flow, &mut diagnostics);
+    check_cycles(flow, &mut diagnostics);
+    check_port_compatibility(flow, &mut diagnostics);
+    check_idempotency_declarations(flow, &mut diagnostics);
+    check_effect_conflicts(flow, &mut diagnostics);
+    check_determinism_conflicts(flow, &mut diagnostics);
+    check_node_metadata(flow, &mut diagnostics);
+    check_exactly_once_requirements(flow, &mut diagnostics);
+    check_edge_timeout_requirements(flow, &mut diagnostics);
+    check_edge_buffer_requirements(flow, &mut diagnostics);
+    check_spill_requirements(flow, &mut diagnostics);
+    check_durability_requirements(flow, &mut diagnostics);
+    check_if_control_surfaces(flow, &mut diagnostics);
+    check_switch_control_surfaces(flow, &mut diagnostics);
+    check_reserved_control_surfaces(flow, &mut diagnostics);
+    check_broker_authority(flow, &mut diagnostics);
+    check_bare_json_boundaries(flow, &mut diagnostics);
+
+    diagnostics
+}
+
+fn check_broker_authority(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    if let Err(errors) = flow.validate_broker_authority() {
+        diagnostics.extend(errors.into_iter().map(|error| {
+            diagnostic(
+                "BRK001",
+                format!("broker authority metadata is invalid: {error}"),
+            )
+        }));
+    }
+}
+
+fn split_diagnostics_by_severity(
+    diagnostics: Vec<Diagnostic>,
+) -> (Vec<Diagnostic>, Vec<Diagnostic>) {
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+
+    for diagnostic in diagnostics {
+        match diagnostic.code.default_severity {
+            Severity::Error => errors.push(diagnostic),
+            Severity::Warn | Severity::Info => warnings.push(diagnostic),
+        }
+    }
+
+    (errors, warnings)
+}
+
+fn check_bare_json_boundaries(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    let mut inbound_counts = std::collections::HashMap::new();
+    let mut outbound_counts = std::collections::HashMap::new();
+
+    for edge in &flow.edges {
+        *outbound_counts.entry(edge.from.as_str()).or_insert(0) += 1;
+        *inbound_counts.entry(edge.to.as_str()).or_insert(0) += 1;
+    }
+
+    for node in &flow.nodes {
+        let has_inbound = inbound_counts.get(node.alias.as_str()).unwrap_or(&0) > &0;
+        let has_outbound = outbound_counts.get(node.alias.as_str()).unwrap_or(&0) > &0;
+
+        if has_inbound && has_outbound {
+            if is_bare_json_schema(&node.in_schema) && is_bare_json_schema(&node.out_schema) {
+                let has_boundary_hint = node
+                    .effect_hints
+                    .iter()
+                    .any(|h| h == POLICY_HINT_JSON_BOUNDARY);
+                if !has_boundary_hint {
+                    diagnostics.push(diagnostic(
+                        "TYPE001",
+                        format!(
+                            "internal node `{}` uses unconstrained JSON in both input and output; annotate with `json_boundary = true` if this is intentional",
+                            node.alias
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+fn is_bare_json_schema(schema: &dag_core::SchemaRef) -> bool {
+    match schema {
+        dag_core::SchemaRef::Named { name } => {
+            name == "JsonValue"
+                || name == "serde_json::Value"
+                || name == "::dag_core::serde_json::Value"
+                || name == "Value"
+        }
+        _ => false,
+    }
+}
+
+fn check_trigger_policy(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    let trigger_count = flow
+        .nodes
+        .iter()
+        .filter(|node| node.kind == dag_core::NodeKind::Trigger)
+        .count();
+
+    if trigger_count > 1 && !flow.policies.lint.allow_multiple_triggers.unwrap_or(false) {
+        diagnostics.push(diagnostic(
+            "DAG104",
+            format!(
+                "flow declares {trigger_count} trigger nodes; set policies.lint.allow_multiple_triggers=true to opt in"
+            ),
+        ));
+    }
+}
+
+/// Schedule (cron) entrypoint validation (impl-docs/spec/schedule-trigger.md §4).
+///
+/// Runs on the IR so hand-built flows are covered, not only `entrypoint!`
+/// output (dag-macros performs the same checks at expansion time for spans):
+/// - TRIG001: schedule expression must parse as a Cloudflare-dialect cron and
+///   fire at least once. Validated with saffron — the parser Cloudflare
+///   itself runs for Cron Triggers — so acceptance matches CF exactly.
+///   Skipped on wasm32, where saffron is deliberately absent from the
+///   dependency graph: IR always passes host-side validation at
+///   plan/bundle/deploy time before it can reach a wasm host, and
+///   host-workers routes cron fires by byte equality without parsing.
+/// - TRIG002: `schedule` is mutually exclusive with `method`/`route_aliases`
+///   on one entrypoint (an entrypoint is schedule-shaped or HTTP-shaped,
+///   never both).
+/// - TRIG003: one trigger alias may not be wired to both schedule and HTTP
+///   entrypoints.
+/// - TRIG004: duplicate schedule entrypoint (same cron + trigger alias).
+fn check_schedule_entrypoints(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    let mut schedule_crons_by_alias: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut http_aliases: HashSet<&str> = HashSet::new();
+    let mut mixed_aliases_reported: HashSet<&str> = HashSet::new();
+
+    for entry in &flow.metadata.entrypoints {
+        let Some(cron) = &entry.schedule else {
+            http_aliases.insert(entry.trigger_alias.as_str());
+            continue;
+        };
+
+        if entry.method.is_some() || !entry.route_aliases.is_empty() {
+            diagnostics.push(diagnostic(
+                "TRIG002",
+                format!(
+                    "entrypoint `{}` declares schedule `{cron}` together with method/route_aliases; \
+                     an entrypoint is either schedule-shaped or HTTP-shaped, never both",
+                    entry.trigger_alias
+                ),
+            ));
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        match cron.parse::<saffron::Cron>() {
+            Ok(parsed) if parsed.any() => {}
+            Ok(_) => diagnostics.push(diagnostic(
+                "TRIG001",
+                format!(
+                    "entrypoint `{}` schedule `{cron}` never fires; Cloudflare rejects cron \
+                     expressions with no matching times",
+                    entry.trigger_alias
+                ),
+            )),
+            Err(_) => diagnostics.push(diagnostic(
+                "TRIG001",
+                format!(
+                    "entrypoint `{}` schedule `{cron}` is not a valid Cloudflare-dialect cron \
+                     expression (5 fields: minute hour day-of-month month day-of-week, UTC)",
+                    entry.trigger_alias
+                ),
+            )),
+        }
+
+        let crons = schedule_crons_by_alias
+            .entry(entry.trigger_alias.as_str())
+            .or_default();
+        if crons.contains(&cron.as_str()) {
+            diagnostics.push(diagnostic(
+                "TRIG004",
+                format!(
+                    "duplicate schedule entrypoint: trigger `{}` declares cron `{cron}` more \
+                     than once",
+                    entry.trigger_alias
+                ),
+            ));
+        } else {
+            crons.push(cron.as_str());
+        }
+    }
+
+    // Second pass in declaration order for deterministic diagnostics.
+    for entry in &flow.metadata.entrypoints {
+        let alias = entry.trigger_alias.as_str();
+        if entry.schedule.is_some()
+            && http_aliases.contains(alias)
+            && mixed_aliases_reported.insert(alias)
+        {
+            diagnostics.push(diagnostic(
+                "TRIG003",
+                format!(
+                    "trigger alias `{alias}` is wired to both schedule and HTTP entrypoints; \
+                     use a distinct trigger node per ingress kind"
+                ),
+            ));
+        }
+    }
+}
+
+fn check_exactly_once_requirements(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    let nodes: HashMap<_, _> = flow
+        .nodes
+        .iter()
+        .map(|node| (node.alias.as_str(), node))
+        .collect();
+
+    for edge in &flow.edges {
+        if edge.delivery == Delivery::ExactlyOnce {
+            let Some(target) = nodes.get(edge.to.as_str()) else {
+                continue;
+            };
+
+            if !has_dedupe_binding(target) {
+                diagnostics.push(diagnostic(
+                    "EXACT001",
+                    format!(
+                        "edge `{}` -> `{}` requests Delivery::ExactlyOnce but node `{}` does not bind a dedupe capability (hint `{}` expected)",
+                        edge.from,
+                        edge.to,
+                        target.alias,
+                        EffectHint::Dedupe.as_str()
+                    ),
+                ));
+            }
+
+            if target.idempotency.key.is_none() {
+                diagnostics.push(diagnostic(
+                    "EXACT002",
+                    format!(
+                        "edge `{}` -> `{}` requests Delivery::ExactlyOnce but node `{}` has no idempotency key",
+                        edge.from, edge.to, target.alias
+                    ),
+                ));
+            }
+
+            match target.idempotency.ttl_ms {
+                Some(ttl) if ttl >= MIN_EXACTLY_ONCE_TTL_MS => {}
+                Some(ttl) => diagnostics.push(diagnostic(
+                    "EXACT003",
+                    format!(
+                        "edge `{}` -> `{}` requests Delivery::ExactlyOnce but node `{}` declares dedupe TTL {}ms (minimum {}ms)",
+                        edge.from,
+                        edge.to,
+                        target.alias,
+                        ttl,
+                        MIN_EXACTLY_ONCE_TTL_MS
+                    ),
+                )),
+                None => diagnostics.push(diagnostic(
+                    "EXACT003",
+                    format!(
+                        "edge `{}` -> `{}` requests Delivery::ExactlyOnce but node `{}` does not declare a dedupe TTL (minimum {}ms)",
+                        edge.from,
+                        edge.to,
+                        target.alias,
+                        MIN_EXACTLY_ONCE_TTL_MS
+                    ),
+                )),
+            }
+        }
+    }
+}
+
+fn has_dedupe_binding(node: &dag_core::NodeIR) -> bool {
+    node.effect_hints.iter().any(|hint| {
+        matches!(
+            EffectHint::parse(hint),
+            Ok(EffectHint::Dedupe | EffectHint::DedupeWrite)
+        )
+    })
+}
+
+fn check_duplicate_aliases(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    let mut seen = HashSet::new();
+    for node in &flow.nodes {
+        if !seen.insert(&node.alias) {
+            diagnostics.push(diagnostic(
+                "DAG205",
+                format!("duplicate node alias `{}`", node.alias),
+            ));
+        }
+    }
+}
+
+fn check_edge_references(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    let aliases: HashSet<_> = flow.nodes.iter().map(|node| node.alias.as_str()).collect();
+    for edge in &flow.edges {
+        if !aliases.contains(edge.from.as_str()) {
+            diagnostics.push(diagnostic(
+                "DAG202",
+                format!("unknown node alias `{}` referenced as source", edge.from),
+            ));
+        }
+        if !aliases.contains(edge.to.as_str()) {
+            diagnostics.push(diagnostic(
+                "DAG202",
+                format!("unknown node alias `{}` referenced as target", edge.to),
+            ));
+        }
+        if !aliases.contains(edge.from.as_str()) || !aliases.contains(edge.to.as_str()) {
+            continue;
+        }
+    }
+}
+
+fn check_cycles(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    let mut adjacency: HashMap<&str, Vec<&str>> = HashMap::new();
+    for edge in &flow.edges {
+        adjacency
+            .entry(edge.from.as_str())
+            .or_default()
+            .push(edge.to.as_str());
+    }
+
+    let mut visiting = HashSet::new();
+    let mut visited = HashSet::new();
+
+    for node in &flow.nodes {
+        if dfs_cycle(node.alias.as_str(), &adjacency, &mut visiting, &mut visited) {
+            diagnostics.push(diagnostic("DAG200", "cycle detected in workflow"));
+            break;
+        }
+    }
+}
+
+fn dfs_cycle<'a>(
+    node: &'a str,
+    adjacency: &HashMap<&'a str, Vec<&'a str>>,
+    visiting: &mut HashSet<&'a str>,
+    visited: &mut HashSet<&'a str>,
+) -> bool {
+    if visiting.contains(node) {
+        return true;
+    }
+    if visited.contains(node) {
+        return false;
+    }
+
+    visiting.insert(node);
+    if let Some(neighbours) = adjacency.get(node) {
+        for &next in neighbours {
+            if dfs_cycle(next, adjacency, visiting, visited) {
+                return true;
+            }
+        }
+    }
+    visiting.remove(node);
+    visited.insert(node);
+    false
+}
+
+fn check_port_compatibility(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    let nodes: HashMap<_, _> = flow
+        .nodes
+        .iter()
+        .map(|node| (node.alias.as_str(), node))
+        .collect();
+    for edge in &flow.edges {
+        let source = match nodes.get(edge.from.as_str()) {
+            Some(node) => node,
+            None => continue,
+        };
+        let target = match nodes.get(edge.to.as_str()) {
+            Some(node) => node,
+            None => continue,
+        };
+
+        if matches!(
+            edge.transform.as_ref().map(|transform| transform.kind),
+            Some(EdgeTransformKind::Into)
+        ) {
+            if supported_into_coercion(&source.out_schema, &target.in_schema).is_some() {
+                continue;
+            }
+            if schemas_compatible(&source.out_schema, &target.in_schema) {
+                continue;
+            }
+
+            diagnostics.push(diagnostic(
+                "DAG201",
+                format!(
+                    "edge `{}` -> `{}` declares Into transform but no deterministic runtime coercion is supported for schema pair {} -> {}",
+                    edge.from,
+                    edge.to,
+                    schema_label(&source.out_schema),
+                    schema_label(&target.in_schema),
+                ),
+            ));
+            continue;
+        }
+
+        if schemas_compatible(&source.out_schema, &target.in_schema) {
+            continue;
+        }
+
+        diagnostics.push(diagnostic(
+            "DAG201",
+            format!(
+                "port type mismatch: `{}` -> `{}` ({:?} -> {:?})",
+                edge.from, edge.to, source.out_schema, target.in_schema
+            ),
+        ));
+    }
+}
+
+fn schema_label(schema: &SchemaRef) -> &str {
+    match schema {
+        SchemaRef::Named { name } => name.as_str(),
+        SchemaRef::Opaque => "opaque",
+    }
+}
+
+fn check_idempotency_declarations(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    for node in &flow.nodes {
+        let spec = &node.idempotency;
+        if spec.key.is_none() && (spec.scope.is_some() || spec.ttl_ms.is_some()) {
+            diagnostics.push(diagnostic(
+                "DAG004",
+                format!(
+                    "node `{}` declares idempotency but is missing a key",
+                    node.alias
+                ),
+            ));
+        }
+    }
+}
+
+/// EFFECT202: every hint string in the IR must name a canonical
+/// `dag_core::EffectHint` (or the json-boundary policy marker). This fails
+/// closed on BOTH historical typo classes: suffix typos
+/// (`resource::http_raed`) that previously surfaced as a misleading
+/// `MissingCapabilities` preflight error, and prefix typos
+/// (`resorce::http::read`) that were previously dropped silently.
+fn check_hint_validity(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    for node in &flow.nodes {
+        let hint_sets = [
+            ("effect", &node.effect_hints),
+            ("determinism", &node.determinism_hints),
+        ];
+        for (kind, hints) in hint_sets {
+            for hint in hints.iter() {
+                if hint == POLICY_HINT_JSON_BOUNDARY {
+                    continue;
+                }
+                if let Err(err) = EffectHint::parse(hint) {
+                    diagnostics.push(diagnostic(
+                        "EFFECT202",
+                        format!(
+                            "node `{}` declares an invalid {} hint: {}. Validation fails closed; \
+                             fix the spelling or emit hints via dag_core::EffectHint \
+                             (see impl-docs/error-codes.md, EFFECT202 remediation).",
+                            node.alias, kind, err
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+fn check_effect_conflicts(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    for node in &flow.nodes {
+        for hint in &node.effect_hints {
+            if let Some(conflict) = dag_core::effects_registry::constraint_for_hint(hint)
+                && !node.effects.is_at_least(conflict.minimum)
+            {
+                diagnostics.push(diagnostic(
+                    "EFFECT201",
+                    format!(
+                        "node `{}` declares effects {} but resource `{}` requires at least {}: {}",
+                        node.alias,
+                        node.effects.as_str(),
+                        hint,
+                        conflict.minimum.as_str(),
+                        conflict.guidance
+                    ),
+                ));
+            }
+        }
+    }
+}
+
+fn check_determinism_conflicts(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    for node in &flow.nodes {
+        for hint in &node.determinism_hints {
+            if let Some(conflict) = dag_core::determinism::constraint_for_hint(hint)
+                && !node.determinism.is_at_least(conflict.minimum)
+            {
+                diagnostics.push(diagnostic(
+                    "DET302",
+                    format!(
+                        "node `{}` declares determinism {} but resource `{}` requires at least {}: {}",
+                        node.alias,
+                        node.determinism.as_str(),
+                        hint,
+                        conflict.minimum.as_str(),
+                        conflict.guidance
+                    ),
+                ));
+            }
+        }
+    }
+}
+
+fn check_node_metadata(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    for node in &flow.nodes {
+        if node.summary.is_none() {
+            diagnostics.push(diagnostic(
+                "DAG350",
+                format!("node `{}` missing summary metadata", node.alias),
+            ));
+        }
+    }
+}
+
+fn check_edge_timeout_requirements(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    for edge in &flow.edges {
+        if edge.timeout_ms == Some(0) {
+            diagnostics.push(diagnostic(
+                "CTRL101",
+                format!(
+                    "edge `{}` -> `{}` configures `timeout_ms = 0`; timeout budgets must be positive",
+                    edge.from, edge.to
+                ),
+            ));
+        }
+    }
+}
+
+fn check_edge_buffer_requirements(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    for edge in &flow.edges {
+        if edge.buffer.max_items == Some(0) {
+            diagnostics.push(diagnostic(
+                "CTRL102",
+                format!(
+                    "edge `{}` -> `{}` configures `buffer.max_items = 0`; buffer budgets must be positive",
+                    edge.from, edge.to
+                ),
+            ));
+        }
+    }
+}
+
+fn check_spill_requirements(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    let has_blob_hint = flow.nodes.iter().any(|node| {
+        node.effect_hints.iter().any(|hint| {
+            matches!(
+                EffectHint::parse(hint),
+                Ok(EffectHint::BlobRead | EffectHint::BlobWrite)
+            )
+        })
+    });
+
+    let mut emitted_blob_diagnostic = false;
+
+    for edge in &flow.edges {
+        if let Some(tier) = &edge.buffer.spill_tier {
+            if edge.buffer.max_items.is_none() {
+                diagnostics.push(diagnostic(
+                    "SPILL001",
+                    format!(
+                        "edge `{}` -> `{}` configures `spill_tier = {tier}` without bounding `max_items`",
+                        edge.from, edge.to
+                    ),
+                ));
+            }
+
+            if !has_blob_hint && !emitted_blob_diagnostic {
+                diagnostics.push(diagnostic(
+                    "SPILL002",
+                    format!(
+                        "edge `{}` -> `{}` configures `spill_tier = {tier}` but no node declares a blob capability hint",
+                        edge.from, edge.to
+                    ),
+                ));
+                emitted_blob_diagnostic = true;
+            }
+        }
+    }
+}
+
+fn check_durability_requirements(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    let mode = flow.policies.durability.mode;
+
+    if mode == DurabilityMode::Strong {
+        for node in &flow.nodes {
+            if !node.durability.checkpointable {
+                diagnostics.push(diagnostic(
+                    "DAG-CKPT-001",
+                    format!(
+                        "node `{}` is not checkpointable; cannot use durability=strong",
+                        node.alias
+                    ),
+                ));
+            }
+        }
+    }
+
+    if mode == DurabilityMode::Off {
+        for node in &flow.nodes {
+            if node.durability.halts {
+                diagnostics.push(diagnostic(
+                    "DAG-CKPT-002",
+                    format!("halt node `{}` requires durability != off", node.alias),
+                ));
+            }
+        }
+        return;
+    }
+
+    let resume_nodes = resume_path_nodes(flow, mode);
+    for node in &flow.nodes {
+        if !resume_nodes.contains(node.alias.as_str()) {
+            continue;
+        }
+        if node.effects == Effects::Effectful && node.idempotency.key.is_none() {
+            diagnostics.push(diagnostic(
+                "DAG-CKPT-004",
+                format!(
+                    "effectful node `{}` on resume path must declare idempotency",
+                    node.alias
+                ),
+            ));
+        }
+    }
+}
+
+fn resume_path_nodes<'a>(flow: &'a FlowIR, mode: DurabilityMode) -> HashSet<&'a str> {
+    if mode == DurabilityMode::Strong {
+        return flow.nodes.iter().map(|node| node.alias.as_str()).collect();
+    }
+
+    let mut adjacency: HashMap<&str, Vec<&str>> = HashMap::new();
+    for edge in &flow.edges {
+        adjacency
+            .entry(edge.from.as_str())
+            .or_default()
+            .push(edge.to.as_str());
+    }
+
+    let mut resume_nodes = HashSet::new();
+    let mut stack: Vec<&str> = flow
+        .nodes
+        .iter()
+        .filter(|node| node.durability.halts)
+        .map(|node| node.alias.as_str())
+        .collect();
+
+    while let Some(current) = stack.pop() {
+        if !resume_nodes.insert(current) {
+            continue;
+        }
+        if let Some(next) = adjacency.get(current) {
+            for &target in next {
+                stack.push(target);
+            }
+        }
+    }
+
+    resume_nodes
+}
+
+fn check_if_control_surfaces(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    let node_aliases: HashSet<&str> = flow.nodes.iter().map(|n| n.alias.as_str()).collect();
+    let mut seen_sources = HashSet::new();
+
+    for surface in &flow.control_surfaces {
+        if surface.kind != dag_core::ControlSurfaceKind::If {
+            continue;
+        }
+
+        let config = match surface.config.as_object() {
+            Some(config) => config,
+            None => {
+                diagnostics.push(diagnostic(
+                    "CTRL120",
+                    format!(
+                        "control surface `{}` (if) config must be an object",
+                        surface.id
+                    ),
+                ));
+                continue;
+            }
+        };
+
+        let v_ok = config
+            .get("v")
+            .and_then(|v| v.as_u64())
+            .map(|v| v == 1)
+            .unwrap_or(false);
+        if !v_ok {
+            diagnostics.push(diagnostic(
+                "CTRL120",
+                format!(
+                    "control surface `{}` (if) requires config.v = 1",
+                    surface.id
+                ),
+            ));
+            continue;
+        }
+
+        let Some(source) = config.get("source").and_then(|v| v.as_str()) else {
+            diagnostics.push(diagnostic(
+                "CTRL120",
+                format!(
+                    "control surface `{}` (if) requires config.source string",
+                    surface.id
+                ),
+            ));
+            continue;
+        };
+
+        if !node_aliases.contains(source) {
+            diagnostics.push(diagnostic(
+                "CTRL120",
+                format!(
+                    "control surface `{}` (if) references unknown source node `{source}`",
+                    surface.id
+                ),
+            ));
+            continue;
+        }
+
+        if !seen_sources.insert(source.to_string()) {
+            diagnostics.push(diagnostic(
+                "CTRL122",
+                format!(
+                    "control surface `{}` (if): multiple if surfaces reference source node `{source}`",
+                    surface.id
+                ),
+            ));
+        }
+
+        let Some(pointer) = config.get("selector_pointer").and_then(|v| v.as_str()) else {
+            diagnostics.push(diagnostic(
+                "CTRL120",
+                format!(
+                    "control surface `{}` (if) requires config.selector_pointer string",
+                    surface.id
+                ),
+            ));
+            continue;
+        };
+
+        if !(pointer.is_empty() || pointer.starts_with('/')) {
+            diagnostics.push(diagnostic(
+                "CTRL120",
+                format!(
+                    "control surface `{}` (if) has invalid selector_pointer `{pointer}`",
+                    surface.id
+                ),
+            ));
+        }
+
+        let Some(then_target) = config.get("then").and_then(|v| v.as_str()) else {
+            diagnostics.push(diagnostic(
+                "CTRL120",
+                format!(
+                    "control surface `{}` (if) requires config.then string",
+                    surface.id
+                ),
+            ));
+            continue;
+        };
+
+        let Some(else_target) = config.get("else").and_then(|v| v.as_str()) else {
+            diagnostics.push(diagnostic(
+                "CTRL120",
+                format!(
+                    "control surface `{}` (if) requires config.else string",
+                    surface.id
+                ),
+            ));
+            continue;
+        };
+
+        for target in [then_target, else_target] {
+            if !node_aliases.contains(target) {
+                diagnostics.push(diagnostic(
+                    "CTRL120",
+                    format!(
+                        "control surface `{}` (if) references unknown target node `{target}`",
+                        surface.id
+                    ),
+                ));
+                continue;
+            }
+
+            if !flow
+                .edges
+                .iter()
+                .any(|edge| edge.from == source && edge.to == target)
+            {
+                diagnostics.push(diagnostic(
+                    "CTRL121",
+                    format!(
+                        "control surface `{}` (if) references `{source}` -> `{target}` but the edge is missing",
+                        surface.id
+                    ),
+                ));
+            }
+
+            if !surface.targets.iter().any(|t| t == target) {
+                diagnostics.push(diagnostic(
+                    "CTRL120",
+                    format!(
+                        "control surface `{}` (if) must include target `{target}` in targets[]",
+                        surface.id
+                    ),
+                ));
+            }
+        }
+
+        if !surface.targets.iter().any(|t| t == source) {
+            diagnostics.push(diagnostic(
+                "CTRL120",
+                format!(
+                    "control surface `{}` (if) must include source `{source}` in targets[]",
+                    surface.id
+                ),
+            ));
+        }
+    }
+}
+
+fn check_reserved_control_surfaces(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    let node_aliases: HashSet<&str> = flow.nodes.iter().map(|n| n.alias.as_str()).collect();
+
+    for surface in &flow.control_surfaces {
+        match surface.kind {
+            dag_core::ControlSurfaceKind::ForEach => {
+                let config = match surface.config.as_object() {
+                    Some(config) => config,
+                    None => {
+                        diagnostics.push(diagnostic(
+                            "CTRL130",
+                            format!(
+                                "control surface `{}` (for_each) config must be an object",
+                                surface.id
+                            ),
+                        ));
+                        continue;
+                    }
+                };
+
+                let v_ok = config
+                    .get("v")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v == 1)
+                    .unwrap_or(false);
+                if !v_ok {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (for_each) requires config.v = 1",
+                            surface.id
+                        ),
+                    ));
+                    continue;
+                }
+
+                let Some(source) = config.get("source").and_then(|v| v.as_str()) else {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (for_each) requires config.source string",
+                            surface.id
+                        ),
+                    ));
+                    continue;
+                };
+
+                let Some(items_pointer) = config.get("items_pointer").and_then(|v| v.as_str())
+                else {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (for_each) requires config.items_pointer string",
+                            surface.id
+                        ),
+                    ));
+                    continue;
+                };
+
+                let Some(body_entry) = config.get("body_entry").and_then(|v| v.as_str()) else {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (for_each) requires config.body_entry string",
+                            surface.id
+                        ),
+                    ));
+                    continue;
+                };
+
+                for alias in [source, body_entry] {
+                    if !node_aliases.contains(alias) {
+                        diagnostics.push(diagnostic(
+                            "CTRL131",
+                            format!(
+                                "control surface `{}` (for_each) references unknown node `{alias}`",
+                                surface.id
+                            ),
+                        ));
+                    }
+                }
+
+                if !(items_pointer.is_empty() || items_pointer.starts_with('/')) {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (for_each) has invalid items_pointer `{items_pointer}`",
+                            surface.id
+                        ),
+                    ));
+                }
+
+                if node_aliases.contains(source)
+                    && node_aliases.contains(body_entry)
+                    && !flow
+                        .edges
+                        .iter()
+                        .any(|edge| edge.from == source && edge.to == body_entry)
+                {
+                    diagnostics.push(diagnostic(
+                        "CTRL132",
+                        format!(
+                            "control surface `{}` (for_each) references `{source}` -> `{body_entry}` but the edge is missing",
+                            surface.id
+                        ),
+                    ));
+                }
+            }
+            dag_core::ControlSurfaceKind::Partition => {
+                let config = match surface.config.as_object() {
+                    Some(config) => config,
+                    None => {
+                        diagnostics.push(diagnostic(
+                            "CTRL130",
+                            format!(
+                                "control surface `{}` (partition) config must be an object",
+                                surface.id
+                            ),
+                        ));
+                        continue;
+                    }
+                };
+
+                let v_ok = config
+                    .get("v")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v == 1)
+                    .unwrap_or(false);
+                if !v_ok {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (partition) requires config.v = 1",
+                            surface.id
+                        ),
+                    ));
+                    continue;
+                }
+
+                let Some(edge_obj) = config.get("edge").and_then(|v| v.as_object()) else {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (partition) requires config.edge object",
+                            surface.id
+                        ),
+                    ));
+                    continue;
+                };
+
+                let Some(from) = edge_obj.get("from").and_then(|v| v.as_str()) else {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (partition) requires config.edge.from string",
+                            surface.id
+                        ),
+                    ));
+                    continue;
+                };
+
+                let Some(to) = edge_obj.get("to").and_then(|v| v.as_str()) else {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (partition) requires config.edge.to string",
+                            surface.id
+                        ),
+                    ));
+                    continue;
+                };
+
+                let Some(key) = config.get("key").and_then(|v| v.as_str()) else {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (partition) requires config.key string",
+                            surface.id
+                        ),
+                    ));
+                    continue;
+                };
+
+                if key.is_empty() {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (partition) requires non-empty config.key",
+                            surface.id
+                        ),
+                    ));
+                }
+
+                for alias in [from, to] {
+                    if !node_aliases.contains(alias) {
+                        diagnostics.push(diagnostic(
+                            "CTRL131",
+                            format!(
+                                "control surface `{}` (partition) references unknown node `{alias}`",
+                                surface.id
+                            ),
+                        ));
+                    }
+                }
+
+                if node_aliases.contains(from)
+                    && node_aliases.contains(to)
+                    && !flow
+                        .edges
+                        .iter()
+                        .any(|edge| edge.from == from && edge.to == to)
+                {
+                    diagnostics.push(diagnostic(
+                        "CTRL132",
+                        format!(
+                            "control surface `{}` (partition) references `{from}` -> `{to}` but the edge is missing",
+                            surface.id
+                        ),
+                    ));
+                }
+            }
+            dag_core::ControlSurfaceKind::RateLimit => {
+                let config = match surface.config.as_object() {
+                    Some(config) => config,
+                    None => {
+                        diagnostics.push(diagnostic(
+                            "CTRL130",
+                            format!(
+                                "control surface `{}` (rate_limit) config must be an object",
+                                surface.id
+                            ),
+                        ));
+                        continue;
+                    }
+                };
+
+                let v_ok = config
+                    .get("v")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v == 1)
+                    .unwrap_or(false);
+                if !v_ok {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (rate_limit) requires config.v = 1",
+                            surface.id
+                        ),
+                    ));
+                    continue;
+                }
+
+                let Some(target) = config.get("target").and_then(|v| v.as_str()) else {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (rate_limit) requires config.target string",
+                            surface.id
+                        ),
+                    ));
+                    continue;
+                };
+
+                if !node_aliases.contains(target) {
+                    diagnostics.push(diagnostic(
+                        "CTRL131",
+                        format!(
+                            "control surface `{}` (rate_limit) references unknown node `{target}`",
+                            surface.id
+                        ),
+                    ));
+                }
+
+                let qps_ok = config
+                    .get("qps")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v > 0)
+                    .unwrap_or(false);
+                if !qps_ok {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (rate_limit) requires positive config.qps",
+                            surface.id
+                        ),
+                    ));
+                }
+
+                let burst_ok = config
+                    .get("burst")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v > 0)
+                    .unwrap_or(false);
+                if !burst_ok {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (rate_limit) requires positive config.burst",
+                            surface.id
+                        ),
+                    ));
+                }
+            }
+            dag_core::ControlSurfaceKind::ErrorHandler => {
+                let config = match surface.config.as_object() {
+                    Some(config) => config,
+                    None => {
+                        diagnostics.push(diagnostic(
+                            "CTRL130",
+                            format!(
+                                "control surface `{}` (error_handler) config must be an object",
+                                surface.id
+                            ),
+                        ));
+                        continue;
+                    }
+                };
+
+                let v_ok = config
+                    .get("v")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v == 1)
+                    .unwrap_or(false);
+                if !v_ok {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (error_handler) requires config.v = 1",
+                            surface.id
+                        ),
+                    ));
+                    continue;
+                }
+
+                let Some(scope) = config.get("scope").and_then(|v| v.as_object()) else {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (error_handler) requires config.scope object",
+                            surface.id
+                        ),
+                    ));
+                    continue;
+                };
+
+                let Some(nodes) = scope.get("nodes").and_then(|v| v.as_array()) else {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (error_handler) requires scope.nodes array",
+                            surface.id
+                        ),
+                    ));
+                    continue;
+                };
+
+                for node in nodes {
+                    let Some(alias) = node.as_str() else {
+                        diagnostics.push(diagnostic(
+                            "CTRL130",
+                            format!(
+                                "control surface `{}` (error_handler) scope.nodes must contain strings",
+                                surface.id
+                            ),
+                        ));
+                        continue;
+                    };
+
+                    if !node_aliases.contains(alias) {
+                        diagnostics.push(diagnostic(
+                            "CTRL131",
+                            format!(
+                                "control surface `{}` (error_handler) references unknown node `{alias}`",
+                                surface.id
+                            ),
+                        ));
+                    }
+                }
+
+                let Some(strategy) = config.get("strategy").and_then(|v| v.as_str()) else {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (error_handler) requires config.strategy string",
+                            surface.id
+                        ),
+                    ));
+                    continue;
+                };
+
+                if !matches!(strategy, "retry" | "fail" | "continue") {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (error_handler) has invalid strategy `{strategy}`",
+                            surface.id
+                        ),
+                    ));
+                }
+
+                if let Some(max_retries) = config.get("max_retries") {
+                    let ok = max_retries.as_u64().is_some();
+                    if !ok {
+                        diagnostics.push(diagnostic(
+                            "CTRL130",
+                            format!(
+                                "control surface `{}` (error_handler) requires numeric max_retries",
+                                surface.id
+                            ),
+                        ));
+                    }
+                }
+
+                if let Some(backoff_ms) = config.get("backoff_ms") {
+                    let ok = backoff_ms.as_u64().is_some();
+                    if !ok {
+                        diagnostics.push(diagnostic(
+                            "CTRL130",
+                            format!(
+                                "control surface `{}` (error_handler) requires numeric backoff_ms",
+                                surface.id
+                            ),
+                        ));
+                    }
+                }
+            }
+            dag_core::ControlSurfaceKind::Window => {
+                let config = match surface.config.as_object() {
+                    Some(config) => config,
+                    None => {
+                        diagnostics.push(diagnostic(
+                            "CTRL130",
+                            format!(
+                                "control surface `{}` (window) config must be an object",
+                                surface.id
+                            ),
+                        ));
+                        continue;
+                    }
+                };
+
+                let v_ok = config
+                    .get("v")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v == 1)
+                    .unwrap_or(false);
+                if !v_ok {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (window) requires config.v = 1",
+                            surface.id
+                        ),
+                    ));
+                    continue;
+                }
+
+                let Some(event_time_pointer) =
+                    config.get("event_time_pointer").and_then(|v| v.as_str())
+                else {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (window) requires config.event_time_pointer string",
+                            surface.id
+                        ),
+                    ));
+                    continue;
+                };
+
+                if !(event_time_pointer.is_empty() || event_time_pointer.starts_with('/')) {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (window) has invalid event_time_pointer `{event_time_pointer}`",
+                            surface.id
+                        ),
+                    ));
+                }
+
+                let size_ok = config
+                    .get("size_ms")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v > 0)
+                    .unwrap_or(false);
+                if !size_ok {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (window) requires positive config.size_ms",
+                            surface.id
+                        ),
+                    ));
+                }
+
+                let lateness_ok = config
+                    .get("allowed_lateness_ms")
+                    .and_then(|v| v.as_u64())
+                    .is_some();
+                if !lateness_ok {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (window) requires numeric config.allowed_lateness_ms",
+                            surface.id
+                        ),
+                    ));
+                }
+
+                let Some(watermark) = config.get("watermark").and_then(|v| v.as_str()) else {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (window) requires config.watermark string",
+                            surface.id
+                        ),
+                    ));
+                    continue;
+                };
+
+                if watermark.is_empty() {
+                    diagnostics.push(diagnostic(
+                        "CTRL130",
+                        format!(
+                            "control surface `{}` (window) requires non-empty config.watermark",
+                            surface.id
+                        ),
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn check_switch_control_surfaces(flow: &FlowIR, diagnostics: &mut Vec<Diagnostic>) {
+    let node_aliases: HashSet<&str> = flow.nodes.iter().map(|n| n.alias.as_str()).collect();
+    let mut seen_sources = HashSet::new();
+
+    for surface in &flow.control_surfaces {
+        if surface.kind != dag_core::ControlSurfaceKind::Switch {
+            continue;
+        }
+
+        let config = match surface.config.as_object() {
+            Some(config) => config,
+            None => {
+                diagnostics.push(diagnostic(
+                    "CTRL110",
+                    format!(
+                        "control surface `{}` (switch) config must be an object",
+                        surface.id
+                    ),
+                ));
+                continue;
+            }
+        };
+
+        let v_ok = config
+            .get("v")
+            .and_then(|v| v.as_u64())
+            .map(|v| v == 1)
+            .unwrap_or(false);
+        if !v_ok {
+            diagnostics.push(diagnostic(
+                "CTRL110",
+                format!(
+                    "control surface `{}` (switch) requires config.v = 1",
+                    surface.id
+                ),
+            ));
+            continue;
+        }
+
+        let Some(source) = config.get("source").and_then(|v| v.as_str()) else {
+            diagnostics.push(diagnostic(
+                "CTRL110",
+                format!(
+                    "control surface `{}` (switch) requires config.source string",
+                    surface.id
+                ),
+            ));
+            continue;
+        };
+
+        if !node_aliases.contains(source) {
+            diagnostics.push(diagnostic(
+                "CTRL110",
+                format!(
+                    "control surface `{}` (switch) references unknown source node `{source}`",
+                    surface.id
+                ),
+            ));
+            continue;
+        }
+
+        if !seen_sources.insert(source.to_string()) {
+            diagnostics.push(diagnostic(
+                "CTRL112",
+                format!(
+                    "control surface `{}` (switch): multiple switch surfaces reference source node `{source}`",
+                    surface.id
+                ),
+            ));
+        }
+
+        let Some(pointer) = config.get("selector_pointer").and_then(|v| v.as_str()) else {
+            diagnostics.push(diagnostic(
+                "CTRL110",
+                format!(
+                    "control surface `{}` (switch) requires config.selector_pointer string",
+                    surface.id
+                ),
+            ));
+            continue;
+        };
+
+        if !(pointer.is_empty() || pointer.starts_with('/')) {
+            diagnostics.push(diagnostic(
+                "CTRL110",
+                format!(
+                    "control surface `{}` (switch) has invalid selector_pointer `{pointer}`",
+                    surface.id
+                ),
+            ));
+        }
+
+        let cases = match config.get("cases").and_then(|v| v.as_object()) {
+            Some(cases) => cases,
+            None => {
+                diagnostics.push(diagnostic(
+                    "CTRL110",
+                    format!(
+                        "control surface `{}` (switch) requires config.cases object",
+                        surface.id
+                    ),
+                ));
+                continue;
+            }
+        };
+
+        if cases.is_empty() {
+            diagnostics.push(diagnostic(
+                "CTRL110",
+                format!(
+                    "control surface `{}` (switch) requires at least one case",
+                    surface.id
+                ),
+            ));
+        }
+
+        let mut required_targets = Vec::new();
+        for (_key, target) in cases {
+            let Some(target) = target.as_str() else {
+                diagnostics.push(diagnostic(
+                    "CTRL110",
+                    format!(
+                        "control surface `{}` (switch) case targets must be strings",
+                        surface.id
+                    ),
+                ));
+                continue;
+            };
+            required_targets.push(target);
+        }
+
+        if let Some(default) = config.get("default") {
+            match default.as_str() {
+                Some(default) => required_targets.push(default),
+                None => diagnostics.push(diagnostic(
+                    "CTRL110",
+                    format!(
+                        "control surface `{}` (switch) default target must be a string when present",
+                        surface.id
+                    ),
+                )),
+            }
+        }
+
+        for target in required_targets {
+            if !node_aliases.contains(target) {
+                diagnostics.push(diagnostic(
+                    "CTRL110",
+                    format!(
+                        "control surface `{}` (switch) references unknown target node `{target}`",
+                        surface.id
+                    ),
+                ));
+                continue;
+            }
+
+            if !flow
+                .edges
+                .iter()
+                .any(|edge| edge.from == source && edge.to == target)
+            {
+                diagnostics.push(diagnostic(
+                    "CTRL111",
+                    format!(
+                        "control surface `{}` (switch) references `{source}` -> `{target}` but the edge is missing",
+                        surface.id
+                    ),
+                ));
+            }
+
+            if !surface.targets.iter().any(|t| t == target) {
+                diagnostics.push(diagnostic(
+                    "CTRL110",
+                    format!(
+                        "control surface `{}` (switch) must include target `{target}` in targets[]",
+                        surface.id
+                    ),
+                ));
+            }
+        }
+
+        if !surface.targets.iter().any(|t| t == source) {
+            diagnostics.push(diagnostic(
+                "CTRL110",
+                format!(
+                    "control surface `{}` (switch) must include source `{source}` in targets[]",
+                    surface.id
+                ),
+            ));
+        }
+    }
+}
+
+fn diagnostic(code: &str, message: impl Into<String>) -> Diagnostic {
+    let entry = diagnostic_codes()
+        .iter()
+        .find(|item| item.code == code)
+        .unwrap_or_else(|| panic!("unknown diagnostic code `{code}`"));
+    Diagnostic::new(entry, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use capabilities::{blob, db, http, kv, queue};
+    use dag_core::IdempotencyScope;
+    use dag_core::NodeResult;
+    use dag_core::prelude::*;
+    use dag_macros::def_node;
+    use proptest::prelude::*;
+    use proptest::sample::select;
+    use std::collections::BTreeSet;
+
+    fn build_sample_flow() -> FlowIR {
+        let mut builder = FlowBuilder::new("sample", Version::new(1, 0, 0), Profile::Web);
+
+        let producer_spec = NodeSpec::inline(
+            "tests::producer",
+            "Producer",
+            SchemaSpec::Opaque,
+            SchemaSpec::Named("String"),
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+        let consumer_spec = NodeSpec::inline(
+            "tests::consumer",
+            "Consumer",
+            SchemaSpec::Named("String"),
+            SchemaSpec::Opaque,
+            Effects::ReadOnly,
+            Determinism::Stable,
+            None,
+        );
+
+        let producer = builder
+            .add_node("producer", &producer_spec)
+            .expect("add producer");
+        let consumer = builder
+            .add_node("consumer", &consumer_spec)
+            .expect("add consumer");
+        builder.connect(&producer, &consumer);
+
+        builder.build()
+    }
+
+    fn downgrade_effect(level: Effects) -> Option<Effects> {
+        match level {
+            Effects::Effectful => Some(Effects::ReadOnly),
+            Effects::ReadOnly => Some(Effects::Pure),
+            Effects::Pure => None,
+        }
+    }
+
+    fn downgrade_determinism(level: Determinism) -> Option<Determinism> {
+        match level {
+            Determinism::Nondeterministic => Some(Determinism::BestEffort),
+            Determinism::BestEffort => Some(Determinism::Stable),
+            Determinism::Stable => Some(Determinism::Strict),
+            Determinism::Strict => None,
+        }
+    }
+
+    const DEDUPE_HINT_WRITE: &str = capabilities::dedupe::HINT_DEDUPE_WRITE;
+
+    fn set_idempotency(flow: &mut FlowIR, alias: &str) {
+        if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == alias) {
+            node.idempotency.key = Some("prop.case".to_string());
+            node.idempotency.scope = Some(IdempotencyScope::Node);
+            node.idempotency.ttl_ms = Some(MIN_EXACTLY_ONCE_TTL_MS);
+        }
+    }
+
+    fn mark_halt(flow: &mut FlowIR, alias: &str) {
+        if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == alias) {
+            node.durability.halts = true;
+        }
+    }
+
+    fn ensure_dedupe_hint(flow: &mut FlowIR, alias: &str) {
+        if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == alias)
+            && !node
+                .effect_hints
+                .iter()
+                .any(|hint| hint == DEDUPE_HINT_WRITE)
+        {
+            node.effect_hints.push(DEDUPE_HINT_WRITE.to_string());
+        }
+    }
+
+    fn register_all_hints() {
+        http::ensure_registered();
+        db::ensure_registered();
+        kv::ensure_registered();
+        blob::ensure_registered();
+        queue::ensure_registered();
+        capabilities::clock::ensure_registered();
+        capabilities::rng::ensure_registered();
+    }
+
+    fn assert_ok_or_metadata_warnings(result: Result<ValidatedIR, Vec<Diagnostic>>) {
+        match result {
+            Ok(validated) => {
+                assert!(
+                    validated.warnings().iter().all(|d| d.code.code == "DAG350"),
+                    "unexpected warnings: {:?}",
+                    validated.warnings()
+                );
+            }
+            Err(diagnostics) => {
+                assert!(
+                    diagnostics.iter().all(|d| d.code.code == "DAG350"),
+                    "unexpected diagnostics: {:?}",
+                    diagnostics
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn strong_durability_rejects_incompatible_nodes() {
+        let mut flow = build_sample_flow();
+        flow.policies.durability.mode = DurabilityMode::Strong;
+
+        flow.nodes
+            .iter_mut()
+            .find(|node| node.alias == "consumer")
+            .expect("consumer node")
+            .durability
+            .checkpointable = false;
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "DAG-CKPT-001"));
+    }
+
+    #[test]
+    fn halt_nodes_require_durability_enabled() {
+        let mut flow = build_sample_flow();
+        flow.policies.durability.mode = DurabilityMode::Off;
+        mark_halt(&mut flow, "producer");
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "DAG-CKPT-002"));
+    }
+
+    #[test]
+    fn lint_warns_when_node_metadata_missing() {
+        let mut builder = FlowBuilder::new("lint", Version::new(1, 0, 0), Profile::Web);
+        let spec = NodeSpec::inline(
+            "tests::missing",
+            "Missing",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::BestEffort,
+            None,
+        );
+        builder
+            .add_node("missing", &spec)
+            .expect("add missing node");
+
+        let flow = builder.build();
+        let validated = validate(&flow).expect("lint warnings should not fail validation");
+
+        assert!(validated.warnings().iter().any(|d| d.code.code == "DAG350"));
+    }
+
+    #[test]
+    fn partial_durability_requires_idempotency_on_resume_path() {
+        let mut flow = build_sample_flow();
+        flow.policies.durability.mode = DurabilityMode::Partial;
+        mark_halt(&mut flow, "producer");
+
+        if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "consumer") {
+            node.effects = Effects::Effectful;
+        }
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "DAG-CKPT-004"));
+    }
+
+    #[test]
+    fn strong_durability_requires_idempotency_for_effectful_nodes() {
+        let mut flow = build_sample_flow();
+        flow.policies.durability.mode = DurabilityMode::Strong;
+
+        if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "consumer") {
+            node.effects = Effects::Effectful;
+        }
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "DAG-CKPT-004"));
+    }
+
+    #[test]
+    fn exactly_once_requires_dedupe_binding() {
+        let mut flow = build_sample_flow();
+        if let Some(edge) = flow.edges.first_mut() {
+            edge.delivery = Delivery::ExactlyOnce;
+        }
+        set_idempotency(&mut flow, "consumer");
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "EXACT001"));
+    }
+
+    #[test]
+    fn exactly_once_requires_idempotency_key() {
+        let mut flow = build_sample_flow();
+        if let Some(edge) = flow.edges.first_mut() {
+            edge.delivery = Delivery::ExactlyOnce;
+        }
+        set_idempotency(&mut flow, "consumer");
+        ensure_dedupe_hint(&mut flow, "consumer");
+        if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "consumer") {
+            node.idempotency.key = None;
+        }
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "EXACT002"));
+        // Without a key TTL is irrelevant; ensure no panic when missing.
+    }
+
+    #[test]
+    fn exactly_once_requires_ttl() {
+        let mut flow = build_sample_flow();
+        if let Some(edge) = flow.edges.first_mut() {
+            edge.delivery = Delivery::ExactlyOnce;
+        }
+        set_idempotency(&mut flow, "consumer");
+        ensure_dedupe_hint(&mut flow, "consumer");
+        if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "consumer") {
+            node.idempotency.ttl_ms = None;
+        }
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "EXACT003"));
+    }
+
+    #[test]
+    fn exactly_once_requires_minimum_ttl() {
+        let mut flow = build_sample_flow();
+        if let Some(edge) = flow.edges.first_mut() {
+            edge.delivery = Delivery::ExactlyOnce;
+        }
+        set_idempotency(&mut flow, "consumer");
+        ensure_dedupe_hint(&mut flow, "consumer");
+        if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "consumer") {
+            node.idempotency.ttl_ms = Some(MIN_EXACTLY_ONCE_TTL_MS - 1);
+        }
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "EXACT003"));
+    }
+
+    #[test]
+    fn edge_timeout_requires_positive_budget() {
+        let mut flow = build_sample_flow();
+        if let Some(edge) = flow.edges.first_mut() {
+            edge.timeout_ms = Some(0);
+        }
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL101"));
+    }
+
+    #[test]
+    fn edge_buffer_requires_positive_max_items() {
+        let mut flow = build_sample_flow();
+        if let Some(edge) = flow.edges.first_mut() {
+            edge.buffer.max_items = Some(0);
+        }
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL102"));
+    }
+
+    #[test]
+    fn switch_requires_edges_for_all_targets() {
+        let mut builder = FlowBuilder::new("switch", Version::new(1, 0, 0), Profile::Dev);
+        let route_spec = NodeSpec::inline(
+            "tests::route",
+            "Route",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+        let branch_spec = NodeSpec::inline(
+            "tests::branch",
+            "Branch",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+
+        let route = builder.add_node("route", &route_spec).unwrap();
+        let a = builder.add_node("a", &branch_spec).unwrap();
+        let _b = builder.add_node("b", &branch_spec).unwrap();
+        builder.connect(&route, &a);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "switch:route:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::Switch,
+            targets: vec!["route".into(), "a".into(), "b".into()],
+            config: serde_json::json!({
+                "v": 1,
+                "source": "route",
+                "selector_pointer": "/type",
+                "cases": { "a": "a", "b": "b" }
+            }),
+        });
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL111"));
+    }
+
+    #[test]
+    fn switch_duplicate_sources_rejected() {
+        let mut builder = FlowBuilder::new("switch_dupe", Version::new(1, 0, 0), Profile::Dev);
+        let route_spec = NodeSpec::inline(
+            "tests::route",
+            "Route",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+        let a_spec = NodeSpec::inline(
+            "tests::branch",
+            "Branch",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+
+        let route = builder.add_node("route", &route_spec).unwrap();
+        let a = builder.add_node("a", &a_spec).unwrap();
+        builder.connect(&route, &a);
+
+        let mut flow = builder.build();
+        for idx in 0..2 {
+            flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+                id: format!("switch:route:{idx}"),
+                kind: dag_core::ControlSurfaceKind::Switch,
+                targets: vec!["route".into(), "a".into()],
+                config: serde_json::json!({
+                    "v": 1,
+                    "source": "route",
+                    "selector_pointer": "/type",
+                    "cases": { "a": "a" }
+                }),
+            });
+        }
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL112"));
+    }
+
+    #[test]
+    fn switch_config_must_be_object() {
+        let mut builder =
+            FlowBuilder::new("switch_config_obj", Version::new(1, 0, 0), Profile::Dev);
+        let route_spec = NodeSpec::inline(
+            "tests::route",
+            "Route",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+        let branch_spec = NodeSpec::inline(
+            "tests::branch",
+            "Branch",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+
+        let route = builder.add_node("route", &route_spec).unwrap();
+        let a = builder.add_node("a", &branch_spec).unwrap();
+        builder.connect(&route, &a);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "switch:route:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::Switch,
+            targets: vec!["route".into(), "a".into()],
+            config: serde_json::Value::Null,
+        });
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL110"));
+    }
+
+    #[test]
+    fn switch_requires_v1_config() {
+        let mut builder = FlowBuilder::new("switch_bad_v", Version::new(1, 0, 0), Profile::Dev);
+        let route_spec = NodeSpec::inline(
+            "tests::route",
+            "Route",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+        let branch_spec = NodeSpec::inline(
+            "tests::branch",
+            "Branch",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+
+        let route = builder.add_node("route", &route_spec).unwrap();
+        let a = builder.add_node("a", &branch_spec).unwrap();
+        builder.connect(&route, &a);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "switch:route:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::Switch,
+            targets: vec!["route".into(), "a".into()],
+            config: serde_json::json!({
+                "v": 2,
+                "source": "route",
+                "selector_pointer": "/type",
+                "cases": { "a": "a" }
+            }),
+        });
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL110"));
+    }
+
+    #[test]
+    fn switch_cases_must_be_object() {
+        let mut builder = FlowBuilder::new("switch_cases_obj", Version::new(1, 0, 0), Profile::Dev);
+        let route_spec = NodeSpec::inline(
+            "tests::route",
+            "Route",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+        let branch_spec = NodeSpec::inline(
+            "tests::branch",
+            "Branch",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+
+        let route = builder.add_node("route", &route_spec).unwrap();
+        let a = builder.add_node("a", &branch_spec).unwrap();
+        builder.connect(&route, &a);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "switch:route:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::Switch,
+            targets: vec!["route".into(), "a".into()],
+            config: serde_json::json!({
+                "v": 1,
+                "source": "route",
+                "selector_pointer": "/type",
+                "cases": "not-an-object"
+            }),
+        });
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL110"));
+    }
+
+    #[test]
+    fn switch_case_targets_must_be_strings() {
+        let mut builder =
+            FlowBuilder::new("switch_case_targets", Version::new(1, 0, 0), Profile::Dev);
+        let route_spec = NodeSpec::inline(
+            "tests::route",
+            "Route",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+        let branch_spec = NodeSpec::inline(
+            "tests::branch",
+            "Branch",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+
+        let route = builder.add_node("route", &route_spec).unwrap();
+        let a = builder.add_node("a", &branch_spec).unwrap();
+        builder.connect(&route, &a);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "switch:route:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::Switch,
+            targets: vec!["route".into(), "a".into()],
+            config: serde_json::json!({
+                "v": 1,
+                "source": "route",
+                "selector_pointer": "/type",
+                "cases": { "a": 1 }
+            }),
+        });
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL110"));
+    }
+
+    #[test]
+    fn switch_targets_must_include_source_and_case_targets() {
+        let mut builder = FlowBuilder::new("switch_targets", Version::new(1, 0, 0), Profile::Dev);
+        let route_spec = NodeSpec::inline(
+            "tests::route",
+            "Route",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+        let branch_spec = NodeSpec::inline(
+            "tests::branch",
+            "Branch",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+
+        let route = builder.add_node("route", &route_spec).unwrap();
+        let a = builder.add_node("a", &branch_spec).unwrap();
+        let b = builder.add_node("b", &branch_spec).unwrap();
+        builder.connect(&route, &a);
+        builder.connect(&route, &b);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "switch:route:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::Switch,
+            targets: vec!["route".into(), "a".into()],
+            config: serde_json::json!({
+                "v": 1,
+                "source": "route",
+                "selector_pointer": "/type",
+                "cases": { "a": "a", "b": "b" }
+            }),
+        });
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL110"));
+    }
+
+    #[test]
+    fn if_requires_edges_for_then_else() {
+        let mut builder = FlowBuilder::new("if_missing_edge", Version::new(1, 0, 0), Profile::Dev);
+        let route_spec = NodeSpec::inline(
+            "tests::route",
+            "Route",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+        let branch_spec = NodeSpec::inline(
+            "tests::branch",
+            "Branch",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+
+        let route = builder.add_node("route", &route_spec).unwrap();
+        let then_branch = builder.add_node("then", &branch_spec).unwrap();
+        let _else_branch = builder.add_node("else", &branch_spec).unwrap();
+        builder.connect(&route, &then_branch);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "if:route:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::If,
+            targets: vec!["route".into(), "then".into(), "else".into()],
+            config: serde_json::json!({
+                "v": 1,
+                "source": "route",
+                "selector_pointer": "/ok",
+                "then": "then",
+                "else": "else"
+            }),
+        });
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL121"));
+    }
+
+    #[test]
+    fn if_duplicate_sources_rejected() {
+        let mut builder = FlowBuilder::new("if_dupe", Version::new(1, 0, 0), Profile::Dev);
+        let route_spec = NodeSpec::inline(
+            "tests::route",
+            "Route",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+        let branch_spec = NodeSpec::inline(
+            "tests::branch",
+            "Branch",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+
+        let route = builder.add_node("route", &route_spec).unwrap();
+        let then_branch = builder.add_node("then", &branch_spec).unwrap();
+        let else_branch = builder.add_node("else", &branch_spec).unwrap();
+        builder.connect(&route, &then_branch);
+        builder.connect(&route, &else_branch);
+
+        let mut flow = builder.build();
+        for idx in 0..2 {
+            flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+                id: format!("if:route:{idx}"),
+                kind: dag_core::ControlSurfaceKind::If,
+                targets: vec!["route".into(), "then".into(), "else".into()],
+                config: serde_json::json!({
+                    "v": 1,
+                    "source": "route",
+                    "selector_pointer": "/ok",
+                    "then": "then",
+                    "else": "else"
+                }),
+            });
+        }
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL122"));
+    }
+
+    #[test]
+    fn if_config_must_be_object() {
+        let mut builder = FlowBuilder::new("if_config_obj", Version::new(1, 0, 0), Profile::Dev);
+        let route_spec = NodeSpec::inline(
+            "tests::route",
+            "Route",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+        let branch_spec = NodeSpec::inline(
+            "tests::branch",
+            "Branch",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+
+        let route = builder.add_node("route", &route_spec).unwrap();
+        let then_branch = builder.add_node("then", &branch_spec).unwrap();
+        let else_branch = builder.add_node("else", &branch_spec).unwrap();
+        builder.connect(&route, &then_branch);
+        builder.connect(&route, &else_branch);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "if:route:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::If,
+            targets: vec!["route".into(), "then".into(), "else".into()],
+            config: serde_json::Value::Null,
+        });
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL120"));
+    }
+
+    #[test]
+    fn if_requires_v1_config() {
+        let mut builder = FlowBuilder::new("if_bad_v", Version::new(1, 0, 0), Profile::Dev);
+        let route_spec = NodeSpec::inline(
+            "tests::route",
+            "Route",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+        let branch_spec = NodeSpec::inline(
+            "tests::branch",
+            "Branch",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+
+        let route = builder.add_node("route", &route_spec).unwrap();
+        let then_branch = builder.add_node("then", &branch_spec).unwrap();
+        let else_branch = builder.add_node("else", &branch_spec).unwrap();
+        builder.connect(&route, &then_branch);
+        builder.connect(&route, &else_branch);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "if:route:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::If,
+            targets: vec!["route".into(), "then".into(), "else".into()],
+            config: serde_json::json!({
+                "v": 2,
+                "source": "route",
+                "selector_pointer": "/ok",
+                "then": "then",
+                "else": "else"
+            }),
+        });
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL120"));
+    }
+
+    #[test]
+    fn for_each_requires_edge_from_source_to_body_entry() {
+        let mut builder =
+            FlowBuilder::new("for_each_missing_edge", Version::new(1, 0, 0), Profile::Dev);
+        let node_spec = NodeSpec::inline(
+            "tests::node",
+            "Node",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+
+        let source = builder.add_node("source", &node_spec).unwrap();
+        let _body = builder.add_node("body", &node_spec).unwrap();
+        let capture = builder.add_node("capture", &node_spec).unwrap();
+        builder.connect(&source, &capture);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "for_each:source:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::ForEach,
+            targets: vec![],
+            config: serde_json::json!({
+                "v": 1,
+                "source": "source",
+                "items_pointer": "/items",
+                "body_entry": "body"
+            }),
+        });
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL132"));
+    }
+
+    #[test]
+    fn partition_requires_referenced_edge() {
+        let mut builder = FlowBuilder::new(
+            "partition_missing_edge",
+            Version::new(1, 0, 0),
+            Profile::Dev,
+        );
+        let node_spec = NodeSpec::inline(
+            "tests::node",
+            "Node",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+
+        let from = builder.add_node("from", &node_spec).unwrap();
+        let _to = builder.add_node("to", &node_spec).unwrap();
+        let capture = builder.add_node("capture", &node_spec).unwrap();
+        builder.connect(&from, &capture);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "partition:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::Partition,
+            targets: vec![],
+            config: serde_json::json!({
+                "v": 1,
+                "edge": { "from": "from", "to": "to" },
+                "key": "customer_id"
+            }),
+        });
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL132"));
+    }
+
+    #[test]
+    fn rate_limit_requires_positive_qps_and_burst() {
+        let mut flow = build_sample_flow();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "rate_limit:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::RateLimit,
+            targets: vec![],
+            config: serde_json::json!({
+                "v": 1,
+                "target": "producer",
+                "qps": 0,
+                "burst": 1
+            }),
+        });
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL130"));
+    }
+
+    #[test]
+    fn rate_limit_unknown_target_alias_rejected() {
+        let mut flow = build_sample_flow();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "rate_limit:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::RateLimit,
+            targets: vec![],
+            config: serde_json::json!({
+                "v": 1,
+                "target": "missing",
+                "qps": 1,
+                "burst": 1
+            }),
+        });
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL131"));
+    }
+
+    #[test]
+    fn for_each_rejects_invalid_items_pointer_format() {
+        let mut builder =
+            FlowBuilder::new("for_each_bad_pointer", Version::new(1, 0, 0), Profile::Dev);
+        let node_spec = NodeSpec::inline(
+            "tests::node",
+            "Node",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+
+        let source = builder.add_node("source", &node_spec).unwrap();
+        let body = builder.add_node("body", &node_spec).unwrap();
+        builder.connect(&source, &body);
+
+        let mut flow = builder.build();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "for_each:source:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::ForEach,
+            targets: vec![],
+            config: serde_json::json!({
+                "v": 1,
+                "source": "source",
+                "items_pointer": "items",
+                "body_entry": "body"
+            }),
+        });
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL130"));
+    }
+
+    #[test]
+    fn error_handler_rejects_invalid_strategy() {
+        let mut flow = build_sample_flow();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "on_error:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::ErrorHandler,
+            targets: vec![],
+            config: serde_json::json!({
+                "v": 1,
+                "scope": { "nodes": ["producer"] },
+                "strategy": "bogus"
+            }),
+        });
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL130"));
+    }
+
+    #[test]
+    fn error_handler_rejects_non_string_scope_nodes() {
+        let mut flow = build_sample_flow();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "on_error:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::ErrorHandler,
+            targets: vec![],
+            config: serde_json::json!({
+                "v": 1,
+                "scope": { "nodes": [1] },
+                "strategy": "retry"
+            }),
+        });
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL130"));
+    }
+
+    #[test]
+    fn window_rejects_non_positive_size_ms() {
+        let mut flow = build_sample_flow();
+        flow.control_surfaces.push(dag_core::ControlSurfaceIR {
+            id: "window:0".to_string(),
+            kind: dag_core::ControlSurfaceKind::Window,
+            targets: vec![],
+            config: serde_json::json!({
+                "v": 1,
+                "event_time_pointer": "/ts",
+                "size_ms": 0,
+                "allowed_lateness_ms": 1,
+                "watermark": "max(ts)"
+            }),
+        });
+
+        let diagnostics = validate(&flow).expect_err("expected validation errors");
+        assert!(diagnostics.iter().any(|d| d.code.code == "CTRL130"));
+    }
+
+    #[test]
+    fn exactly_once_succeeds_when_prerequisites_met() {
+        let mut flow = build_sample_flow();
+        if let Some(edge) = flow.edges.first_mut() {
+            edge.delivery = Delivery::ExactlyOnce;
+        }
+        set_idempotency(&mut flow, "consumer");
+        ensure_dedupe_hint(&mut flow, "consumer");
+        if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "consumer") {
+            node.idempotency.ttl_ms = Some(MIN_EXACTLY_ONCE_TTL_MS);
+            // `resource::dedupe::write` requires Effectful. Before A1 this
+            // fixture escaped EFFECT201 only because the dedupe constraint
+            // was never `ensure_registered()`d in this process (the
+            // registration-order hazard); constraints are now derived
+            // exhaustively from dag_core::EffectHint.
+            node.effects = Effects::Effectful;
+        }
+
+        let result = validate(&flow);
+        assert_ok_or_metadata_warnings(result);
+    }
+
+    fn dedup_hints(hints: Vec<&'static str>) -> Vec<&'static str> {
+        let mut set = BTreeSet::new();
+        for hint in hints {
+            set.insert(hint);
+        }
+        set.into_iter().collect()
+    }
+
+    #[test]
+    fn validate_accepts_well_formed_flow() {
+        let flow = build_sample_flow();
+        let result = validate(&flow);
+        assert_ok_or_metadata_warnings(result);
+    }
+
+    #[test]
+    fn detect_type_mismatch() {
+        let mut flow = build_sample_flow();
+        if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "consumer") {
+            node.in_schema = SchemaRef::Named {
+                name: "Other".to_string(),
+            };
+        }
+        let result = validate(&flow);
+        assert!(result.is_err());
+        let diagnostics = result.err().unwrap();
+        assert!(diagnostics.iter().any(|d| d.code.code == "DAG201"));
+    }
+
+    #[test]
+    fn detect_cycles() {
+        let mut flow = build_sample_flow();
+        flow.edges.push(dag_core::EdgeIR {
+            from: "consumer".to_string(),
+            to: "producer".to_string(),
+            ..dag_core::EdgeIR::default()
+        });
+        let diagnostics = validate(&flow).expect_err("expected cycle diagnostic");
+        assert!(diagnostics.iter().any(|d| d.code.code == "DAG200"));
+    }
+
+    #[test]
+    fn detect_unknown_aliases() {
+        let mut flow = build_sample_flow();
+        flow.edges.push(dag_core::EdgeIR {
+            from: "missing".to_string(),
+            to: "consumer".to_string(),
+            ..dag_core::EdgeIR::default()
+        });
+        flow.edges.push(dag_core::EdgeIR {
+            from: "producer".to_string(),
+            to: "absent".to_string(),
+            ..dag_core::EdgeIR::default()
+        });
+        let diagnostics = validate(&flow).expect_err("expected alias diagnostics");
+        let mut seen_source = false;
+        let mut seen_target = false;
+        for diag in diagnostics {
+            if diag.code.code == "DAG202" && diag.message.contains("source") {
+                seen_source = true;
+            }
+            if diag.code.code == "DAG202" && diag.message.contains("target") {
+                seen_target = true;
+            }
+        }
+        assert!(seen_source, "missing source alias diagnostic not emitted");
+        assert!(seen_target, "missing target alias diagnostic not emitted");
+    }
+
+    #[test]
+    fn fuzz_registry_hint_enforcement() {
+        register_all_hints();
+        let effect_universe: Vec<&'static str> = dag_core::effects_registry::all_constraints()
+            .into_iter()
+            .map(|c| c.hint)
+            .collect();
+        let determinism_universe: Vec<&'static str> = dag_core::determinism::all_constraints()
+            .into_iter()
+            .map(|c| c.hint)
+            .collect();
+
+        let effect_levels = vec![Effects::Pure, Effects::ReadOnly, Effects::Effectful];
+        let determinism_levels = vec![
+            Determinism::Strict,
+            Determinism::Stable,
+            Determinism::BestEffort,
+            Determinism::Nondeterministic,
+        ];
+
+        let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
+            cases: 64,
+            ..ProptestConfig::default()
+        });
+
+        let strategy = (
+            proptest::collection::vec(select(effect_universe.clone()), 0..=3),
+            proptest::collection::vec(select(determinism_universe.clone()), 0..=3),
+            select(effect_levels.clone()),
+            select(determinism_levels.clone()),
+            proptest::bool::ANY,
+            proptest::bool::ANY,
+        );
+
+        runner
+            .run(
+                &strategy,
+                |(
+                    effect_hints_case,
+                    det_hints_case,
+                    base_effect,
+                    base_det,
+                    degrade_effect_flag,
+                    degrade_det_flag,
+                )| {
+                    let effect_vec = dedup_hints(effect_hints_case);
+                    let det_vec = dedup_hints(det_hints_case);
+
+                    let required_effect = effect_vec
+                        .iter()
+                        .filter_map(|hint| {
+                            dag_core::effects_registry::constraint_for_hint(hint).map(|c| c.minimum)
+                        })
+                        .fold(None::<Effects>, |acc, next| match acc {
+                            Some(current) if current.rank() >= next.rank() => Some(current),
+                            Some(_) => Some(next),
+                            None => Some(next),
+                        });
+
+                    let required_det = det_vec
+                        .iter()
+                        .filter_map(|hint| {
+                            dag_core::determinism::constraint_for_hint(hint).map(|c| c.minimum)
+                        })
+                        .fold(None::<Determinism>, |acc, next| match acc {
+                            Some(current) if current.rank() >= next.rank() => Some(current),
+                            Some(_) => Some(next),
+                            None => Some(next),
+                        });
+
+                    let declared_effect = if degrade_effect_flag {
+                        downgrade_effect(base_effect).unwrap_or(base_effect)
+                    } else {
+                        base_effect
+                    };
+                    let declared_det = if degrade_det_flag {
+                        downgrade_determinism(base_det).unwrap_or(base_det)
+                    } else {
+                        base_det
+                    };
+
+                    let effect_slice: &'static [&'static str] =
+                        Box::leak(effect_vec.clone().into_boxed_slice());
+                    let det_slice: &'static [&'static str] =
+                        Box::leak(det_vec.clone().into_boxed_slice());
+
+                    let spec_box = Box::new(NodeSpec::inline_with_hints(
+                        "tests::prop_validator",
+                        "PropValidator",
+                        SchemaSpec::Opaque,
+                        SchemaSpec::Opaque,
+                        declared_effect,
+                        declared_det,
+                        None,
+                        det_slice,
+                        effect_slice,
+                    ));
+                    let spec: &'static NodeSpec = Box::leak(spec_box);
+
+                    let mut builder =
+                        FlowBuilder::new("prop_validation", Version::new(0, 0, 1), Profile::Web);
+                    builder.add_node("entry", spec).expect("add node");
+                    let mut flow = builder.build();
+                    if declared_effect == Effects::Effectful {
+                        set_idempotency(&mut flow, "entry");
+                    }
+
+                    let result = validate(&flow);
+
+                    let violates_effect = required_effect
+                        .map(|req| !declared_effect.is_at_least(req))
+                        .unwrap_or(false);
+                    let violates_det = required_det
+                        .map(|req| !declared_det.is_at_least(req))
+                        .unwrap_or(false);
+
+                    if violates_effect || violates_det {
+                        let diagnostics = result.expect_err("expected validation errors");
+                        if violates_effect {
+                            prop_assert!(
+                                diagnostics.iter().any(|d| d.code.code == "EFFECT201"),
+                                "expected EFFECT201 diagnostic"
+                            );
+                        }
+                        if violates_det {
+                            prop_assert!(
+                                diagnostics.iter().any(|d| d.code.code == "DET302"),
+                                "expected DET302 diagnostic"
+                            );
+                        }
+                    } else {
+                        assert_ok_or_metadata_warnings(result);
+                    }
+                    Ok(())
+                },
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn detect_effect_conflicts() {
+        let mut builder = FlowBuilder::new("effect_conflict", Version::new(1, 0, 0), Profile::Web);
+        let writer = builder
+            .add_node(
+                "writer",
+                &NodeSpec::inline_with_hints(
+                    "tests::writer",
+                    "Writer",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                    &[],
+                    &[capabilities::http::HINT_HTTP_WRITE],
+                ),
+            )
+            .expect("add writer node");
+        let sink = builder
+            .add_node(
+                "sink",
+                &NodeSpec::inline(
+                    "tests::sink",
+                    "Sink",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::ReadOnly,
+                    Determinism::BestEffort,
+                    None,
+                ),
+            )
+            .expect("add sink node");
+        builder.connect(&writer, &sink);
+        let flow = builder.build();
+
+        let diagnostics = validate(&flow).expect_err("expected effect diagnostic");
+        assert!(diagnostics.iter().any(|d| d.code.code == "EFFECT201"));
+    }
+
+    #[test]
+    fn effectful_nodes_may_be_non_idempotent_by_default() {
+        let mut flow = build_sample_flow();
+        if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "consumer") {
+            node.effects = Effects::Effectful;
+            node.idempotency.key = None;
+            node.idempotency.scope = None;
+            node.idempotency.ttl_ms = None;
+        }
+        let result = validate(&flow);
+        if let Err(diagnostics) = result {
+            assert!(
+                !diagnostics.iter().any(|d| d.code.code == "DAG004"),
+                "unexpected DAG004 diagnostic: {diagnostics:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn idempotency_declaration_requires_key() {
+        let mut flow = build_sample_flow();
+        if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "consumer") {
+            node.idempotency.key = None;
+            node.idempotency.scope = Some(dag_core::IdempotencyScope::Node);
+        }
+        let diagnostics = validate(&flow).expect_err("expected idempotency diagnostic");
+        assert!(diagnostics.iter().any(|d| d.code.code == "DAG004"));
+    }
+
+    #[test]
+    fn multiple_triggers_rejected_without_policy_opt_in() {
+        let mut builder = FlowBuilder::new("multi_trigger", Version::new(1, 0, 0), Profile::Web);
+        let node_spec = NodeSpec::inline(
+            "tests::noop",
+            "Noop",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+
+        let trigger_a = builder.add_node("trigger_a", &node_spec).unwrap();
+        let trigger_b = builder.add_node("trigger_b", &node_spec).unwrap();
+        builder.connect(&trigger_a, &trigger_b);
+
+        let mut flow = builder.build();
+        if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "trigger_a") {
+            node.kind = dag_core::NodeKind::Trigger;
+        }
+        if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "trigger_b") {
+            node.kind = dag_core::NodeKind::Trigger;
+        }
+
+        let diagnostics = validate(&flow).expect_err("expected trigger policy error");
+        assert!(diagnostics.iter().any(|d| d.code.code == "DAG104"));
+    }
+
+    #[test]
+    fn multiple_triggers_allowed_with_policy_opt_in() {
+        let mut builder = FlowBuilder::new("multi_trigger_ok", Version::new(1, 0, 0), Profile::Web);
+        let node_spec = NodeSpec::inline(
+            "tests::noop",
+            "Noop",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            None,
+        );
+
+        let trigger_a = builder.add_node("trigger_a", &node_spec).unwrap();
+        let trigger_b = builder.add_node("trigger_b", &node_spec).unwrap();
+        builder.connect(&trigger_a, &trigger_b);
+
+        let mut flow = builder.build();
+        flow.policies.lint.allow_multiple_triggers = Some(true);
+        if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "trigger_a") {
+            node.kind = dag_core::NodeKind::Trigger;
+        }
+        if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "trigger_b") {
+            node.kind = dag_core::NodeKind::Trigger;
+        }
+
+        assert_ok_or_metadata_warnings(validate(&flow));
+    }
+
+    /// Hand-built schedule flow: one trigger node (`tick`) + one capture
+    /// (`capture`) with caller-supplied entrypoint metadata. This is the IR a
+    /// non-macro producer could hand us, so the TRIG checks must fire here
+    /// without any dag-macros involvement.
+    fn schedule_test_flow(entrypoints: Vec<dag_core::EntrypointMetadata>) -> FlowIR {
+        let mut builder = FlowBuilder::new("schedule_flow", Version::new(1, 0, 0), Profile::Web);
+        let node_spec = NodeSpec::inline(
+            "tests::noop",
+            "Noop",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Pure,
+            Determinism::Strict,
+            Some("schedule test node"),
+        );
+
+        let tick = builder.add_node("tick", &node_spec).unwrap();
+        let capture = builder.add_node("capture", &node_spec).unwrap();
+        builder.connect(&tick, &capture);
+
+        let mut flow = builder.build();
+        if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "tick") {
+            node.kind = dag_core::NodeKind::Trigger;
+        }
+        flow.metadata.entrypoints = entrypoints;
+        flow
+    }
+
+    fn schedule_entry(trigger: &str, cron: &str) -> dag_core::EntrypointMetadata {
+        dag_core::EntrypointMetadata {
+            trigger_alias: trigger.to_string(),
+            capture_alias: "capture".to_string(),
+            route_path: None,
+            method: None,
+            route_aliases: Vec::new(),
+            schedule: Some(cron.to_string()),
+        }
+    }
+
+    fn http_entry(trigger: &str) -> dag_core::EntrypointMetadata {
+        dag_core::EntrypointMetadata {
+            trigger_alias: trigger.to_string(),
+            capture_alias: "capture".to_string(),
+            route_path: Some("/tick".to_string()),
+            method: Some("POST".to_string()),
+            route_aliases: vec!["/tick".to_string()],
+            schedule: None,
+        }
+    }
+
+    #[test]
+    fn schedule_entrypoint_with_valid_cron_validates() {
+        let flow = schedule_test_flow(vec![schedule_entry("tick", "*/5 * * * *")]);
+        let validated = validate(&flow).expect("schedule flow should validate");
+        let requirements = derive_requirements(&validated);
+
+        assert_eq!(requirements.triggers.len(), 1);
+        let trigger = &requirements.triggers[0];
+        assert_eq!(trigger.alias, "tick");
+        assert_eq!(trigger.kind, dag_core::requirements::TriggerKind::Schedule);
+        assert_eq!(trigger.crons, vec!["*/5 * * * *".to_string()]);
+
+        assert_eq!(requirements.entrypoints.len(), 1);
+        assert_eq!(
+            requirements.entrypoints[0].schedule.as_deref(),
+            Some("*/5 * * * *")
+        );
+    }
+
+    #[test]
+    fn invalid_cron_fails_closed_with_trig001() {
+        for bad in ["61 * * * *", "not a cron", "* * * *", "*/5 * * * * *"] {
+            let flow = schedule_test_flow(vec![schedule_entry("tick", bad)]);
+            let diagnostics =
+                validate(&flow).expect_err("invalid cron must fail validation (TRIG001)");
+            assert!(
+                diagnostics.iter().any(|d| d.code.code == "TRIG001"),
+                "expected TRIG001 for cron `{bad}`, got {diagnostics:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn never_firing_cron_fails_closed_with_trig001() {
+        // February 31st never exists: parses, but has no matching times.
+        let flow = schedule_test_flow(vec![schedule_entry("tick", "0 0 31 2 *")]);
+        let diagnostics =
+            validate(&flow).expect_err("never-firing cron must fail validation (TRIG001)");
+        assert!(diagnostics.iter().any(|d| d.code.code == "TRIG001"));
+    }
+
+    #[test]
+    fn schedule_with_method_rejected_with_trig002() {
+        let mut entry = schedule_entry("tick", "*/5 * * * *");
+        entry.method = Some("POST".to_string());
+        let flow = schedule_test_flow(vec![entry]);
+        let diagnostics =
+            validate(&flow).expect_err("schedule+method must fail validation (TRIG002)");
+        assert!(diagnostics.iter().any(|d| d.code.code == "TRIG002"));
+    }
+
+    #[test]
+    fn alias_wired_to_both_schedule_and_http_rejected_with_trig003() {
+        let flow = schedule_test_flow(vec![
+            schedule_entry("tick", "*/5 * * * *"),
+            http_entry("tick"),
+        ]);
+        let diagnostics =
+            validate(&flow).expect_err("mixed schedule+HTTP alias must fail validation (TRIG003)");
+        assert!(diagnostics.iter().any(|d| d.code.code == "TRIG003"));
+    }
+
+    #[test]
+    fn duplicate_schedule_entrypoint_rejected_with_trig004() {
+        let flow = schedule_test_flow(vec![
+            schedule_entry("tick", "*/5 * * * *"),
+            schedule_entry("tick", "*/5 * * * *"),
+        ]);
+        let diagnostics = validate(&flow)
+            .expect_err("duplicate schedule entrypoint must fail validation (TRIG004)");
+        assert!(diagnostics.iter().any(|d| d.code.code == "TRIG004"));
+    }
+
+    #[test]
+    fn distinct_crons_on_one_alias_are_allowed() {
+        // Two cadences driving the same trigger alias is legal in hand-built
+        // IR (the macro's per-alias uniqueness is an authoring-surface rule).
+        let flow = schedule_test_flow(vec![
+            schedule_entry("tick", "*/5 * * * *"),
+            schedule_entry("tick", "0 0 * * *"),
+        ]);
+        let validated = validate(&flow).expect("multi-cadence schedule flow should validate");
+        let requirements = derive_requirements(&validated);
+        assert_eq!(
+            requirements.triggers[0].crons,
+            vec!["*/5 * * * *".to_string(), "0 0 * * *".to_string()]
+        );
+    }
+
+    #[test]
+    fn spill_requires_max_items_bound() {
+        let mut builder = FlowBuilder::new("spill_no_bound", Version::new(1, 0, 0), Profile::Queue);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let worker = builder
+            .add_node(
+                "worker",
+                &NodeSpec::inline(
+                    "tests::worker",
+                    "Worker",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &worker);
+
+        let mut flow = builder.build();
+        for edge in &mut flow.edges {
+            edge.buffer.spill_tier = Some("local".into());
+            edge.buffer.max_items = None;
+        }
+
+        let diagnostics = validate(&flow).expect_err("expected spill diagnostic");
+        assert!(diagnostics.iter().any(|d| d.code.code == "SPILL001"));
+    }
+
+    #[test]
+    fn validator_flags_bare_json_passthrough() {
+        let mut builder = FlowBuilder::new("json_passthrough", Version::new(1, 0, 0), Profile::Web);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    Some("trigger boundary"),
+                ),
+            )
+            .unwrap();
+        let internal = builder
+            .add_node(
+                "internal",
+                &NodeSpec::inline(
+                    "tests::internal",
+                    "Internal",
+                    SchemaSpec::Named("JsonValue"),
+                    SchemaSpec::Named("JsonValue"),
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let sink = builder
+            .add_node(
+                "sink",
+                &NodeSpec::inline(
+                    "tests::sink",
+                    "Sink",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+
+        builder.connect(&trigger, &internal);
+        builder.connect(&internal, &sink);
+
+        let flow = builder.build();
+        let diagnostics = validate(&flow).expect_err("expected JSON boundary diagnostic");
+        assert!(
+            diagnostics.iter().any(|d| d.code.code == "TYPE001"),
+            "expected TYPE001"
+        );
+    }
+
+    #[test]
+    fn validator_allows_annotated_json_boundary() {
+        let mut builder = FlowBuilder::new("json_boundary", Version::new(1, 0, 0), Profile::Web);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    Some("trigger boundary"),
+                ),
+            )
+            .unwrap();
+        let internal = builder
+            .add_node(
+                "internal",
+                &NodeSpec::inline_with_hints(
+                    "tests::internal",
+                    "Internal",
+                    SchemaSpec::Named("JsonValue"),
+                    SchemaSpec::Named("JsonValue"),
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                    &[],
+                    &["policy::json_boundary"],
+                ),
+            )
+            .unwrap();
+        let sink = builder
+            .add_node(
+                "sink",
+                &NodeSpec::inline(
+                    "tests::sink",
+                    "Sink",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+
+        builder.connect(&trigger, &internal);
+        builder.connect(&internal, &sink);
+
+        let flow = builder.build();
+        assert_ok_or_metadata_warnings(validate(&flow));
+    }
+
+    #[test]
+    fn spill_requires_blob_hint() {
+        let mut builder =
+            FlowBuilder::new("spill_blob_hint", Version::new(1, 0, 0), Profile::Queue);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let worker = builder
+            .add_node(
+                "worker",
+                &NodeSpec::inline(
+                    "tests::worker",
+                    "Worker",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        builder.connect(&trigger, &worker);
+
+        let mut flow = builder.build();
+        for edge in &mut flow.edges {
+            edge.buffer.spill_tier = Some("local".into());
+            edge.buffer.max_items = Some(1);
+        }
+
+        let diagnostics = validate(&flow).expect_err("expected blob hint diagnostic");
+        assert!(diagnostics.iter().any(|d| d.code.code == "SPILL002"));
+    }
+
+    #[test]
+    fn spill_passes_when_blob_hint_declared() {
+        let mut builder = FlowBuilder::new("spill_blob_ok", Version::new(1, 0, 0), Profile::Queue);
+        let trigger = builder
+            .add_node(
+                "trigger",
+                &NodeSpec::inline(
+                    "tests::trigger",
+                    "Trigger",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Pure,
+                    Determinism::Strict,
+                    None,
+                ),
+            )
+            .unwrap();
+        let worker_spec = NodeSpec::inline_with_hints(
+            "tests::worker",
+            "Worker",
+            SchemaSpec::Opaque,
+            SchemaSpec::Opaque,
+            Effects::Effectful,
+            Determinism::BestEffort,
+            None,
+            &[],
+            &[capabilities::blob::HINT_BLOB_WRITE],
+        );
+        let worker = builder.add_node("worker", &worker_spec).unwrap();
+        builder.connect(&trigger, &worker);
+
+        let mut flow = builder.build();
+        for edge in &mut flow.edges {
+            edge.buffer.spill_tier = Some("local".into());
+            edge.buffer.max_items = Some(1);
+        }
+        set_idempotency(&mut flow, "worker");
+
+        let result = validate(&flow);
+        assert_ok_or_metadata_warnings(result);
+    }
+
+    #[test]
+    fn detect_determinism_conflicts() {
+        let mut builder = FlowBuilder::new("det_conflict", Version::new(1, 0, 0), Profile::Web);
+        let clock = builder
+            .add_node(
+                "clock",
+                &NodeSpec::inline_with_hints(
+                    "tests::clock",
+                    "Clock",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::ReadOnly,
+                    Determinism::Strict,
+                    None,
+                    &[capabilities::clock::HINT_CLOCK],
+                    &[],
+                ),
+            )
+            .expect("add clock node");
+        let sink = builder
+            .add_node(
+                "sink",
+                &NodeSpec::inline(
+                    "tests::sink",
+                    "Sink",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::ReadOnly,
+                    Determinism::BestEffort,
+                    None,
+                ),
+            )
+            .expect("add sink node");
+        builder.connect(&clock, &sink);
+        let flow = builder.build();
+
+        let diagnostics = validate(&flow).expect_err("expected determinism diagnostic");
+        assert!(diagnostics.iter().any(|d| d.code.code == "DET302"));
+    }
+
+    #[test]
+    fn respect_registered_custom_conflicts() {
+        const HINT: &str = "test::custom";
+        dag_core::determinism::register_determinism_constraint(
+            dag_core::determinism::DeterminismConstraint::new(
+                HINT,
+                Determinism::Stable,
+                "Custom resource requires Stable determinism",
+            ),
+        );
+
+        let mut builder = FlowBuilder::new("custom_conflict", Version::new(1, 0, 0), Profile::Web);
+        let source = builder
+            .add_node(
+                "source",
+                &NodeSpec::inline_with_hints(
+                    "tests::source",
+                    "Source",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::ReadOnly,
+                    Determinism::Strict,
+                    None,
+                    &[HINT],
+                    &[],
+                ),
+            )
+            .expect("add source node");
+        let sink = builder
+            .add_node(
+                "sink",
+                &NodeSpec::inline(
+                    "tests::sink",
+                    "Sink",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::ReadOnly,
+                    Determinism::BestEffort,
+                    None,
+                ),
+            )
+            .expect("add sink node");
+        builder.connect(&source, &sink);
+        let flow = builder.build();
+
+        let diagnostics = validate(&flow).expect_err("expected determinism diagnostic");
+        assert!(diagnostics.iter().any(|d| d.code.code == "DET302"));
+    }
+
+    /// Ported from the W0-2 characterization packet (packet A1): typo'd hint
+    /// strings now fail closed at validation time with EFFECT202 instead of
+    /// passing silently. Covers both historical typo classes.
+    #[test]
+    fn unknown_hint_strings_fail_closed_with_effect202() {
+        // Built via concat so the typo literals don't trip the
+        // scripts/check-hint-literals.sh grep gate.
+        let suffix_typo: &'static str =
+            Box::leak(["resource", "::http_raed"].concat().into_boxed_str());
+        let prefix_typo: &'static str = "resorce::http::read";
+        let unknown_family: &'static str =
+            Box::leak(["resource", "::mystery::read"].concat().into_boxed_str());
+
+        for (case, bad_hint, as_effect_hint) in [
+            ("suffix typo", suffix_typo, true),
+            ("prefix typo", prefix_typo, true),
+            ("unknown family", unknown_family, true),
+            ("suffix typo (determinism)", suffix_typo, false),
+            ("prefix typo (determinism)", prefix_typo, false),
+        ] {
+            let hints: &'static [&'static str] = Box::leak(vec![bad_hint].into_boxed_slice());
+            let (determinism_hints, effect_hints): (&[&str], &[&str]) = if as_effect_hint {
+                (&[], hints)
+            } else {
+                (hints, &[])
+            };
+
+            let mut builder = FlowBuilder::new("typo_hint", Version::new(1, 0, 0), Profile::Web);
+            let source = builder
+                .add_node(
+                    "source",
+                    &NodeSpec::inline_with_hints(
+                        "tests::source",
+                        "Source",
+                        SchemaSpec::Opaque,
+                        SchemaSpec::Opaque,
+                        Effects::ReadOnly,
+                        Determinism::BestEffort,
+                        None,
+                        determinism_hints,
+                        effect_hints,
+                    ),
+                )
+                .expect("add source node");
+            let sink = builder
+                .add_node(
+                    "sink",
+                    &NodeSpec::inline(
+                        "tests::sink",
+                        "Sink",
+                        SchemaSpec::Opaque,
+                        SchemaSpec::Opaque,
+                        Effects::ReadOnly,
+                        Determinism::BestEffort,
+                        None,
+                    ),
+                )
+                .expect("add sink node");
+            builder.connect(&source, &sink);
+            let flow = builder.build();
+
+            let diagnostics =
+                validate(&flow).expect_err(&format!("{case}: expected EFFECT202 failure"));
+            let effect202 = diagnostics
+                .iter()
+                .find(|d| d.code.code == "EFFECT202")
+                .unwrap_or_else(|| panic!("{case}: missing EFFECT202 in {diagnostics:?}"));
+            assert!(
+                effect202.message.contains(bad_hint),
+                "{case}: diagnostic should name the offending hint, got: {}",
+                effect202.message
+            );
+        }
+    }
+
+    /// Canonical hints (and the json-boundary policy marker) must NOT trip
+    /// EFFECT202.
+    #[test]
+    fn canonical_hints_do_not_trip_effect202() {
+        let mut builder = FlowBuilder::new("canonical_hints", Version::new(1, 0, 0), Profile::Web);
+        let source = builder
+            .add_node(
+                "source",
+                &NodeSpec::inline_with_hints(
+                    "tests::source",
+                    "Source",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::Effectful,
+                    Determinism::BestEffort,
+                    None,
+                    &[capabilities::http::HINT_HTTP],
+                    &[
+                        capabilities::http::HINT_HTTP_READ,
+                        capabilities::http::HINT_HTTP_WRITE,
+                        POLICY_HINT_JSON_BOUNDARY,
+                    ],
+                ),
+            )
+            .expect("add source node");
+        let sink = builder
+            .add_node(
+                "sink",
+                &NodeSpec::inline(
+                    "tests::sink",
+                    "Sink",
+                    SchemaSpec::Opaque,
+                    SchemaSpec::Opaque,
+                    Effects::ReadOnly,
+                    Determinism::BestEffort,
+                    None,
+                ),
+            )
+            .expect("add sink node");
+        builder.connect(&source, &sink);
+        let mut flow = builder.build();
+        if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "source") {
+            node.idempotency.key = Some("case".to_string());
+        }
+
+        match validate(&flow) {
+            Ok(validated) => assert!(
+                validated
+                    .warnings()
+                    .iter()
+                    .all(|d| d.code.code != "EFFECT202"),
+                "unexpected EFFECT202 warning: {:?}",
+                validated.warnings()
+            ),
+            Err(diagnostics) => assert!(
+                diagnostics.iter().all(|d| d.code.code != "EFFECT202"),
+                "unexpected EFFECT202 error: {diagnostics:?}"
+            ),
+        }
+    }
+
+    mod auto_hint_validation {
+        use super::*;
+        use dag_core::IdempotencyScope;
+
+        #[allow(dead_code)]
+        struct HttpWrite;
+        #[allow(dead_code)]
+        struct TestClock;
+        #[allow(dead_code)]
+        struct DbHandle;
+        #[allow(dead_code)]
+        struct Noop;
+        #[allow(dead_code)]
+        struct DemoConnectorWrite;
+
+        impl DemoConnectorWrite {
+            const META: dag_core::ConnectorOpMetadata = dag_core::ConnectorOpMetadata {
+                operation_id: "connector.demo.write",
+                connector_id: "connector.demo",
+                summary: "Write through demo connector op",
+                min_effects: Effects::Effectful,
+                max_determinism: Determinism::BestEffort,
+                determinism_hints: &[capabilities::http::HINT_HTTP],
+                effect_hints: &[capabilities::http::HINT_HTTP_WRITE],
+                roles: &[
+                    dag_core::ConnectorRoleRequirement {
+                        kind: dag_core::ConnectorRoleKindDecl::EndpointProfile,
+                        name: "demo_default",
+                        expected_handle_kind: "endpoint.profile",
+                        required: true,
+                    },
+                    dag_core::ConnectorRoleRequirement {
+                        kind: dag_core::ConnectorRoleKindDecl::OutboundAuth,
+                        name: "demo_auth",
+                        expected_handle_kind: "http.bearer",
+                        required: true,
+                    },
+                ],
+                resolution: dag_core::ConnectorResolutionContract {
+                    supported_modes: &[dag_core::ConnectorResolutionModeDecl::BoundConnection],
+                    default_mode: dag_core::ConnectorResolutionModeDecl::BoundConnection,
+                },
+            };
+        }
+
+        #[allow(dead_code)]
+        #[def_node(
+            name = "HttpWriter",
+            effects = "Effectful",
+            determinism = "BestEffort",
+            resources(http(HttpWrite))
+        )]
+        async fn http_writer(_: ()) -> NodeResult<()> {
+            Ok(())
+        }
+
+        #[allow(dead_code)]
+        #[def_node(
+            name = "ClockBestEffort",
+            effects = "ReadOnly",
+            determinism = "BestEffort",
+            resources(clock(TestClock))
+        )]
+        async fn clock_best_effort(_: ()) -> NodeResult<()> {
+            Ok(())
+        }
+
+        #[allow(dead_code)]
+        #[def_node(
+            name = "DbWriter",
+            effects = "Effectful",
+            determinism = "BestEffort",
+            resources(db_writer(DbHandle))
+        )]
+        async fn db_writer(_: ()) -> NodeResult<()> {
+            Ok(())
+        }
+
+        #[allow(dead_code)]
+        #[def_node(name = "NoResources", effects = "Pure", determinism = "Strict")]
+        async fn no_resources(_: ()) -> NodeResult<()> {
+            Ok(())
+        }
+
+        #[allow(dead_code)]
+        #[def_node(
+            name = "ConnectorWriterViaOp",
+            summary = "Connector-backed write with an intentionally conflicting effect declaration",
+            effects = "Pure",
+            determinism = "BestEffort",
+            connector_ops(DemoConnectorWrite)
+        )]
+        async fn connector_writer_via_op(_: ()) -> NodeResult<()> {
+            Ok(())
+        }
+
+        fn single_node_flow(alias: &str, spec: &'static NodeSpec) -> FlowIR {
+            let mut builder = FlowBuilder::new(alias, Version::new(1, 0, 0), Profile::Web);
+            builder.add_node(alias, spec).expect("add node");
+            builder.build()
+        }
+
+        fn ensure_idempotency(flow: &mut FlowIR, alias: &str) {
+            if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == alias) {
+                node.idempotency.key = Some("request.id".to_string());
+                node.idempotency.scope = Some(IdempotencyScope::Node);
+            }
+        }
+
+        #[test]
+        fn validator_flags_effect_conflict_from_registry_hint() {
+            capabilities::http::ensure_registered();
+            let mut flow = single_node_flow("writer", http_writer_node_spec());
+            ensure_idempotency(&mut flow, "writer");
+            if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "writer") {
+                node.effects = Effects::Pure;
+            }
+            let diagnostics = validate(&flow).expect_err("expected effect mismatch diagnostic");
+            assert!(
+                diagnostics.iter().any(|d| d.code.code == "EFFECT201"),
+                "expected EFFECT201, got: {:?}",
+                diagnostics
+            );
+        }
+
+        #[test]
+        fn validator_flags_effect_conflict_from_connector_op_hint() {
+            capabilities::http::ensure_registered();
+            let mut flow =
+                single_node_flow("connector_writer", connector_writer_via_op_node_spec());
+            ensure_idempotency(&mut flow, "connector_writer");
+            let diagnostics = validate(&flow).expect_err("expected connector-op effect mismatch");
+            assert!(
+                diagnostics.iter().any(|d| d.code.code == "EFFECT201"),
+                "expected EFFECT201, got: {:?}",
+                diagnostics
+            );
+        }
+
+        #[test]
+        fn validator_accepts_effectful_node_with_registry_hint() {
+            capabilities::http::ensure_registered();
+            let flow = single_node_flow("writer_ok", http_writer_node_spec());
+            // effectful nodes require idempotency; clone and set before validation
+            let mut flow = flow;
+            ensure_idempotency(&mut flow, "writer_ok");
+            assert_ok_or_metadata_warnings(validate(&flow));
+        }
+
+        #[test]
+        fn validator_flags_determinism_conflict_from_registry_hint() {
+            capabilities::clock::ensure_registered();
+            let mut flow = single_node_flow("clock", clock_best_effort_node_spec());
+            if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "clock") {
+                node.determinism = Determinism::Strict;
+            }
+            let diagnostics =
+                validate(&flow).expect_err("expected determinism mismatch diagnostic");
+            assert!(
+                diagnostics.iter().any(|d| d.code.code == "DET302"),
+                "expected DET302, got: {:?}",
+                diagnostics
+            );
+        }
+
+        #[test]
+        fn validator_flags_workspace_write_effect_conflict_from_default_registry() {
+            let mut builder = FlowBuilder::new(
+                "workspace_effect_conflict",
+                Version::new(1, 0, 0),
+                Profile::Web,
+            );
+            builder
+                .add_node(
+                    "workspace_writer",
+                    &NodeSpec::inline_with_hints(
+                        "tests::workspace_writer",
+                        "WorkspaceWriter",
+                        SchemaSpec::Opaque,
+                        SchemaSpec::Opaque,
+                        Effects::Pure,
+                        Determinism::BestEffort,
+                        None,
+                        &[],
+                        &[capabilities::workspace::HINT_WORKSPACE_WRITE],
+                    ),
+                )
+                .expect("add workspace writer node");
+            let flow = builder.build();
+
+            let diagnostics =
+                validate(&flow).expect_err("expected workspace write effect mismatch diagnostic");
+            assert!(
+                diagnostics.iter().any(|d| d.code.code == "EFFECT201"),
+                "expected EFFECT201, got: {:?}",
+                diagnostics
+            );
+        }
+
+        #[test]
+        fn validator_flags_workspace_determinism_conflict_from_default_registry() {
+            let mut builder = FlowBuilder::new(
+                "workspace_det_conflict",
+                Version::new(1, 0, 0),
+                Profile::Web,
+            );
+            builder
+                .add_node(
+                    "workspace_reader",
+                    &NodeSpec::inline_with_hints(
+                        "tests::workspace_reader",
+                        "WorkspaceReader",
+                        SchemaSpec::Opaque,
+                        SchemaSpec::Opaque,
+                        Effects::ReadOnly,
+                        Determinism::Strict,
+                        None,
+                        &[capabilities::workspace::HINT_WORKSPACE],
+                        &[],
+                    ),
+                )
+                .expect("add workspace reader node");
+            let flow = builder.build();
+
+            let diagnostics =
+                validate(&flow).expect_err("expected workspace determinism mismatch diagnostic");
+            assert!(
+                diagnostics.iter().any(|d| d.code.code == "DET302"),
+                "expected DET302, got: {:?}",
+                diagnostics
+            );
+        }
+
+        #[test]
+        fn fallback_hints_still_trigger_conflicts() {
+            let mut flow = single_node_flow("db_writer", db_writer_node_spec());
+            ensure_idempotency(&mut flow, "db_writer");
+            if let Some(node) = flow.nodes.iter_mut().find(|n| n.alias == "db_writer") {
+                node.effects = Effects::Pure;
+            }
+            let diagnostics =
+                validate(&flow).expect_err("expected effect conflict from fallback hints");
+            assert!(
+                diagnostics.iter().any(|d| d.code.code == "EFFECT201"),
+                "expected EFFECT201 from fallback hints, got: {:?}",
+                diagnostics
+            );
+        }
+
+        #[test]
+        fn nodes_without_resources_remain_hint_free() {
+            let spec = no_resources_node_spec();
+            assert!(
+                spec.effect_hints.is_empty() && spec.determinism_hints.is_empty(),
+                "expected no hints for resource-free node"
+            );
+            let flow = single_node_flow("noop", spec);
+            assert_ok_or_metadata_warnings(validate(&flow));
+        }
+    }
+}

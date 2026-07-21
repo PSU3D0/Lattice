@@ -205,6 +205,7 @@ fn binding(
         issuer: "issuer".into(),
         broker_key_id: signer.key_id().into(),
         lane: "semantic_broker".into(),
+        authority_manifest_hash: None,
         connection_ref: "connection".into(),
         provider: "synthetic".into(),
         account_commitment: account(),
@@ -220,13 +221,14 @@ fn binding(
             .map(|(id, hash)| SupportedContract {
                 contract_id: id.clone(),
                 contract_hash: hash.clone(),
-                observed_plugin_module_sha256: None,
+                observed_plugin_module_sha256: Some(format!("sha256:{}", "5".repeat(64))),
                 attenuation_profiles: vec![],
                 extensions: Default::default(),
             })
             .collect(),
         endpoint_origins: vec!["https://provider.example".into()],
         revocation_epoch: 4,
+        not_before: "2026-07-19T10:59:59Z".into(),
         observed_at: "2026-07-19T11:00:00Z".into(),
         expires_at: "2026-07-19T13:00:00Z".into(),
         signature: placeholder,

@@ -1,0 +1,15 @@
+{
+  "schema_version": "0.1",
+  "provider_native_routes_only": true,
+  "payload_logging": "disabled",
+  "payload_logging_header": {
+    "name": "cf-aig-collect-log-payload",
+    "value": "false"
+  },
+  "authorization_header_binding": "AI_GATEWAY_AUTHORIZATION",
+  "account_id_input": "required-at-deploy",
+  "gateway_id_input": "required-at-deploy",
+  "spend_limit_usd_input": "required-at-deploy",
+  "rate_limit_per_minute_input": "required-at-deploy",
+  "evidence_status": "declared-not-applied-locally"
+}

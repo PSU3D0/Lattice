@@ -154,7 +154,10 @@ where
                     .headers
                     .iter()
                     .filter_map(|(k, v)| {
-                        if k == http::header::AUTHORIZATION || k.as_str().contains("api-key") {
+                        if k == http::header::AUTHORIZATION
+                            || k.as_str().contains("api-key")
+                            || k.as_str() == "cf-aig-authorization"
+                        {
                             None
                         } else {
                             Some((k, v))

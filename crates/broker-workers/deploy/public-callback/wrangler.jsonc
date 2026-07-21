@@ -1,0 +1,27 @@
+{
+  "$schema": "../../../../examples/s21_ai_cv_screening/workers/flow-worker/node_modules/wrangler/config-schema.json",
+  "name": "lattice-broker-template-public",
+  "main": "src/index.mjs",
+  "compatibility_date": "2026-07-15",
+  "workers_dev": false,
+  "preview_urls": false,
+  "send_metrics": false,
+  "observability": {
+    "enabled": false,
+    "logs": {
+      "enabled": false,
+      "invocation_logs": false,
+      "persist": false
+    },
+    "traces": {
+      "enabled": false,
+      "persist": false
+    }
+  },
+  "services": [
+    {
+      "binding": "BROKER_PRIVATE",
+      "service": "lattice-broker-template-private"
+    }
+  ]
+}

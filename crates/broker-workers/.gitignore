@@ -1,0 +1,5 @@
+.wrangler/
+build/
+deploy/public-callback/.wrangler/
+workerd-tests/build/
+workerd-tests/node_modules/

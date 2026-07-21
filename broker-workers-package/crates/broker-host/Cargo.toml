@@ -1,0 +1,20 @@
+[package]
+name = "broker-host"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Lattice host integration for the Broker V1 semantic path"
+
+[dependencies]
+broker-core = { path = "../broker-core" }
+dag-core = { path = "../dag-core" }
+kernel-plan = { path = "../kernel-plan" }
+connector-spec = { path = "../connector-spec" }
+connector_google_platform = { path = "../connectors/google/platform" }
+hex.workspace = true
+percent-encoding = "2.3"
+sha2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

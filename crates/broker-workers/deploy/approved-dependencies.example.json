@@ -1,0 +1,36 @@
+{
+  "schema_version": "2",
+  "account_id": "00000000000000000000000000000000",
+  "prefix": "lattice-b5-example1",
+  "d1_database_id": "00000000000000000000000000000000",
+  "services": {
+    "GOOGLE_PROVIDER_SERVICE": {
+      "name": "approved-google-provider-service",
+      "account_id": "00000000000000000000000000000000",
+      "deployment_id": "immutable-provider-deployment-id",
+      "source_hash": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "GOOGLE_TOKEN_SERVICE": {
+      "name": "approved-google-token-service",
+      "account_id": "00000000000000000000000000000000",
+      "deployment_id": "immutable-token-deployment-id",
+      "source_hash": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  },
+  "workers": {
+    "private": {
+      "name": "lattice-b5-example1-broker-private",
+      "account_id": "00000000000000000000000000000000",
+      "prefix": "lattice-b5-example1",
+      "deployment_id": "only-required-when-pre-existing",
+      "source_hash": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "public": {
+      "name": "lattice-b5-example1-broker-public",
+      "account_id": "00000000000000000000000000000000",
+      "prefix": "lattice-b5-example1",
+      "deployment_id": "only-required-when-pre-existing",
+      "source_hash": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  }
+}

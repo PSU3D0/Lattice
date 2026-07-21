@@ -1,0 +1,75 @@
+{
+  "$schema": "../../examples/s21_ai_cv_screening/workers/flow-worker/node_modules/wrangler/config-schema.json",
+  "name": "lattice-broker-template-private",
+  "main": "build/worker/shim.mjs",
+  "compatibility_date": "2026-07-15",
+  "workers_dev": false,
+  "preview_urls": false,
+  "send_metrics": false,
+  "observability": {
+    "enabled": false,
+    "logs": {
+      "enabled": false,
+      "invocation_logs": false,
+      "persist": false
+    },
+    "traces": {
+      "enabled": false,
+      "persist": false
+    }
+  },
+  "build": {
+    "command": "bash \"$(git rev-parse --show-toplevel)/crates/broker-workers/scripts/build.sh\""
+  },
+  "vars": {
+    "PUBLIC_CALLBACK_BASE": "https://invalid.example",
+    "OAUTH_REDIRECT_URI": "https://invalid.example/v1/oauth/callback",
+    "GOOGLE_AUTHORIZE_ENDPOINT": "https://accounts.google.com/o/oauth2/v2/auth",
+    "GOOGLE_OAUTH_CLIENT_ID": "configure-at-deploy.invalid",
+    "AI_GATEWAY_PAYLOAD_LOGGING": "disabled",
+    "AI_GATEWAY_SPEND_LIMIT_USD": "0",
+    "AI_GATEWAY_RATE_LIMIT_PER_MINUTE": "0"
+  },
+  "d1_databases": [
+    {
+      "binding": "BROKER_DB",
+      "database_name": "lattice-broker-template",
+      "database_id": "00000000000000000000000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "BROKER_LEDGER_DO",
+        "class_name": "BrokerLedgerDurableObject"
+      },
+      {
+        "name": "CONNECTION_REFRESH_DO",
+        "class_name": "ConnectionRefreshDurableObject"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "BrokerLedgerDurableObject",
+        "ConnectionRefreshDurableObject"
+      ]
+    }
+  ],
+  "services": [
+    {
+      "binding": "GOOGLE_PROVIDER_SERVICE",
+      "service": "lattice-broker-template-google-provider"
+    },
+    {
+      "binding": "GOOGLE_TOKEN_SERVICE",
+      "service": "lattice-broker-template-google-token"
+    }
+  ],
+  "limits": {
+    "cpu_ms": 30000
+  }
+}

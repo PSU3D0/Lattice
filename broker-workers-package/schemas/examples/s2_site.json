@@ -1,0 +1,99 @@
+{
+  "id": "25c7b343-7bb9-5822-b686-4b13d3e3b396",
+  "name": "s2_site_flow",
+  "version": "1.0.0",
+  "profile": "web",
+  "summary": "Implements the S2 streaming site-status example with SSE",
+  "nodes": [
+    {
+      "id": "25c7b343-7bb9-5822-b686-4b13d3e3b396::trigger",
+      "alias": "trigger",
+      "identifier": "example_s2_site::http_trigger",
+      "name": "SiteHttpTrigger",
+      "kind": "trigger",
+      "summary": "Ingress trigger for site status requests",
+      "in_schema": {
+        "kind": "named",
+        "name": "SiteRequest"
+      },
+      "out_schema": {
+        "kind": "named",
+        "name": "SiteRequest"
+      },
+      "effects": "read_only",
+      "determinism": "strict",
+      "idempotency": {},
+      "determinismHints": [],
+      "effectHints": []
+    },
+    {
+      "id": "25c7b343-7bb9-5822-b686-4b13d3e3b396::snapshot",
+      "alias": "snapshot",
+      "identifier": "example_s2_site::build_snapshot",
+      "name": "BuildSnapshot",
+      "kind": "inline",
+      "summary": "Construct the initial site snapshot prior to streaming",
+      "in_schema": {
+        "kind": "named",
+        "name": "SiteRequest"
+      },
+      "out_schema": {
+        "kind": "named",
+        "name": "SiteSnapshot"
+      },
+      "effects": "read_only",
+      "determinism": "stable",
+      "idempotency": {},
+      "determinismHints": [],
+      "effectHints": []
+    },
+    {
+      "id": "25c7b343-7bb9-5822-b686-4b13d3e3b396::stream",
+      "alias": "stream",
+      "identifier": "example_s2_site::stream_telemetry",
+      "name": "StreamTelemetry",
+      "kind": "inline",
+      "summary": "Emit incremental status updates as an SSE stream",
+      "in_schema": {
+        "kind": "named",
+        "name": "SiteSnapshot"
+      },
+      "out_schema": {
+        "kind": "named",
+        "name": "SiteEvent"
+      },
+      "effects": "read_only",
+      "determinism": "best_effort",
+      "idempotency": {},
+      "determinismHints": [],
+      "effectHints": []
+    }
+  ],
+  "edges": [
+    {
+      "from": "trigger",
+      "to": "snapshot",
+      "delivery": "at_least_once",
+      "ordering": "ordered",
+      "buffer": {}
+    },
+    {
+      "from": "snapshot",
+      "to": "stream",
+      "delivery": "at_least_once",
+      "ordering": "ordered",
+      "buffer": {}
+    }
+  ],
+  "control_surfaces": [],
+  "checkpoints": [],
+  "policies": {
+    "lint": {
+      "require_control_hints": false
+    }
+  },
+  "metadata": {
+    "tags": []
+  },
+  "artifacts": []
+}

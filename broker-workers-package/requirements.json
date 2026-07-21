@@ -1,0 +1,42 @@
+{
+  "schema_version": "0.2",
+  "package": "broker-workers",
+  "package_version": "0.1.0",
+  "compatibility_date": "2026-07-15",
+  "rust_is_sole_state_writer": true,
+  "public_entrypoint": "crates/broker-workers/deploy/public-callback/src/index.mjs",
+  "private_entrypoint": "crates/broker-workers/build/worker/shim.mjs",
+  "build_command": "cargo run --locked --offline --manifest-path crates/broker-workers/tools/worker-build-0.8.1/Cargo.toml --bin worker-build -- --release crates/broker-workers",
+  "feature_flags": {
+    "production": [],
+    "workerd_tests_separate_artifact": [
+      "test-fixtures"
+    ]
+  },
+  "required_secret_bindings": [
+    "AI_GATEWAY_AUTHORIZATION",
+    "BINDING_SIGNING_SEED",
+    "COMMITMENT_KEY",
+    "CUSTODY_ROOT_KEY",
+    "DEPLOYMENT_BOOTSTRAP_AUTH",
+    "INVOKE_SERVICE_AUTH",
+    "KEY_HASH_PEPPER",
+    "RECEIPT_SIGNING_SEED"
+  ],
+  "required_variable_bindings": [
+    "GOOGLE_AUTHORIZE_ENDPOINT",
+    "GOOGLE_OAUTH_CLIENT_ID",
+    "OAUTH_REDIRECT_URI",
+    "PUBLIC_CALLBACK_BASE"
+  ],
+  "required_service_bindings": [
+    "GOOGLE_PROVIDER_SERVICE",
+    "GOOGLE_TOKEN_SERVICE"
+  ],
+  "ai_gateway_policy": {
+    "payload_logging": "disabled",
+    "spend_limit_usd": "required-at-deploy",
+    "rate_limit_per_minute": "required-at-deploy",
+    "applied_locally": false
+  }
+}

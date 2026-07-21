@@ -16,6 +16,9 @@ name = "llm_lattice"
 bytes = { workspace = true }
 capabilities = { path = "../capabilities" }
 http = "1"
+llm-agent = { path = "../llm-agent" }
+llm-provider-anthropic = { path = "../llm-provider-anthropic" }
+llm-provider-openai = { path = "../llm-provider-openai" }
 llm-types = { path = "../llm-types" }
 thiserror = { workspace = true }
 

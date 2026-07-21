@@ -1,0 +1,511 @@
+use once_cell::sync::Lazy;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+/// Canonical diagnostic severity levels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Severity {
+    /// Build or runtime must halt.
+    Error,
+    /// Action recommended but execution may proceed.
+    Warn,
+    /// Informational context only.
+    Info,
+}
+
+/// Structured metadata for a diagnostic emitted by the platform.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DiagnosticCode {
+    /// Stable identifier (e.g. `DAG200`).
+    pub code: &'static str,
+    /// Primary subsystem or producer of the diagnostic.
+    pub subsystem: &'static str,
+    /// Default severity when policies do not override the level.
+    pub default_severity: Severity,
+    /// Short human-readable description.
+    pub summary: &'static str,
+}
+
+/// Concrete diagnostic emitted during validation or runtime.
+#[derive(Debug, Clone)]
+pub struct Diagnostic {
+    /// Diagnostic code metadata.
+    pub code: &'static DiagnosticCode,
+    /// Long form message presented to the user.
+    pub message: String,
+    /// Optional machine-readable location (file span, node id, etc.).
+    pub location: Option<String>,
+}
+
+impl Diagnostic {
+    /// Convenience constructor.
+    pub fn new(code: &'static DiagnosticCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            location: None,
+        }
+    }
+
+    /// Attach location metadata to an existing diagnostic.
+    pub fn with_location(mut self, location: impl Into<String>) -> Self {
+        self.location = Some(location.into());
+        self
+    }
+}
+
+/// Public accessor for the registry.
+pub fn diagnostic_codes() -> &'static [DiagnosticCode] {
+    &DIAGNOSTIC_CODES
+}
+
+/// Canonical diagnostic registry used across the workspace.
+pub static DIAGNOSTIC_CODES: Lazy<Vec<DiagnosticCode>> = Lazy::new(|| {
+    vec![
+        DiagnosticCode {
+            code: "DAG001",
+            subsystem: "macros",
+            default_severity: Severity::Error,
+            summary: "Missing or unknown port type on a node definition",
+        },
+        DiagnosticCode {
+            code: "DAG002",
+            subsystem: "macros",
+            default_severity: Severity::Error,
+            summary: "Node parameters could not be reflected into a schema",
+        },
+        DiagnosticCode {
+            code: "DAG003",
+            subsystem: "macros",
+            default_severity: Severity::Error,
+            summary: "Referenced resource or capability is undefined",
+        },
+        DiagnosticCode {
+            code: "DAG004",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Malformed idempotency declaration",
+        },
+        DiagnosticCode {
+            code: "DAG005",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Node concurrency hints exceed allowed bounds",
+        },
+        DiagnosticCode {
+            code: "DAG006",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Conflicting batch configuration detected on node",
+        },
+        DiagnosticCode {
+            code: "DAG101",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Trigger definition does not expose an output port",
+        },
+        DiagnosticCode {
+            code: "DAG102",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Trigger respond configuration incompatible with profile",
+        },
+        DiagnosticCode {
+            code: "DAG103",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Trigger route or method conflicts with an existing trigger",
+        },
+        DiagnosticCode {
+            code: "DAG104",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Multiple trigger nodes declared without policy opt-in",
+        },
+        DiagnosticCode {
+            code: "DAG200",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Cycle detected in workflow graph",
+        },
+        DiagnosticCode {
+            code: "DAG201",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Port type mismatch between connected nodes",
+        },
+        DiagnosticCode {
+            code: "DAG202",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Referenced workflow variable or alias is undefined",
+        },
+        DiagnosticCode {
+            code: "DAG205",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Duplicate node alias encountered in workflow",
+        },
+        DiagnosticCode {
+            code: "DAG350",
+            subsystem: "lint",
+            default_severity: Severity::Warn,
+            summary: "Node summary missing; add a short description",
+        },
+        DiagnosticCode {
+            code: "DAG-CKPT-001",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Node not checkpointable; cannot use durability=strong",
+        },
+        DiagnosticCode {
+            code: "DAG-CKPT-002",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Halt node requires durability != off",
+        },
+        DiagnosticCode {
+            code: "DAG-CKPT-003",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Halt node requires CheckpointStore capability",
+        },
+        DiagnosticCode {
+            code: "DAG-CKPT-004",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Effectful node on resume path must declare idempotency",
+        },
+        DiagnosticCode {
+            code: "DAG-CKPT-005",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Streaming node not replayable; cannot checkpoint mid-stream",
+        },
+        DiagnosticCode {
+            code: "DAG-CKPT-006",
+            subsystem: "runtime",
+            default_severity: Severity::Error,
+            summary: "Checkpoint not found",
+        },
+        DiagnosticCode {
+            code: "DAG-CKPT-007",
+            subsystem: "runtime",
+            default_severity: Severity::Error,
+            summary: "Lease conflict on checkpoint",
+        },
+        DiagnosticCode {
+            code: "DAG-CKPT-008",
+            subsystem: "runtime",
+            default_severity: Severity::Error,
+            summary: "Checkpoint state corrupted",
+        },
+        DiagnosticCode {
+            code: "DAG-CKPT-009",
+            subsystem: "runtime",
+            default_severity: Severity::Error,
+            summary: "Incompatible checkpoint version",
+        },
+        DiagnosticCode {
+            code: "DAG206",
+            subsystem: "macros",
+            default_severity: Severity::Error,
+            summary: "Edge control statement references a missing edge",
+        },
+        DiagnosticCode {
+            code: "DAG207",
+            subsystem: "macros",
+            default_severity: Severity::Error,
+            summary: "Duplicate edge control statement for the same edge",
+        },
+        DiagnosticCode {
+            code: "EXACT001",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Exactly-once delivery requires a dedupe capability binding",
+        },
+        DiagnosticCode {
+            code: "EXACT002",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Exactly-once delivery requires an idempotency key",
+        },
+        DiagnosticCode {
+            code: "EXACT003",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Exactly-once delivery requires a minimum dedupe TTL",
+        },
+        DiagnosticCode {
+            code: "SPILL001",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Spill tiers require a bounded in-memory buffer",
+        },
+        DiagnosticCode {
+            code: "SPILL002",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Spill tiers require a blob capability binding",
+        },
+        DiagnosticCode {
+            code: "EFFECT201",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Declared effects do not match bound capabilities",
+        },
+        DiagnosticCode {
+            code: "EFFECT202",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Unknown resource hint string; not a canonical resource::* hint",
+        },
+        DiagnosticCode {
+            code: "DET301",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Determinism claim conflicts with resource usage",
+        },
+        DiagnosticCode {
+            code: "DET302",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Declared determinism is incompatible with referenced resource hints",
+        },
+        DiagnosticCode {
+            code: "CTRL001",
+            subsystem: "lint",
+            default_severity: Severity::Warn,
+            summary: "Control-flow surface hint recommended for branching or loop",
+        },
+        DiagnosticCode {
+            code: "CTRL101",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Edge timeout budget must be positive",
+        },
+        DiagnosticCode {
+            code: "CTRL102",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Edge buffer max_items must be positive",
+        },
+        DiagnosticCode {
+            code: "CTRL110",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Switch control surface config is invalid",
+        },
+        DiagnosticCode {
+            code: "CTRL111",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Switch control surface references a missing edge",
+        },
+        DiagnosticCode {
+            code: "CTRL112",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Multiple switch control surfaces reference the same source node",
+        },
+        DiagnosticCode {
+            code: "CTRL120",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "If control surface config is invalid",
+        },
+        DiagnosticCode {
+            code: "CTRL121",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "If control surface references a missing edge",
+        },
+        DiagnosticCode {
+            code: "CTRL122",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Multiple if control surfaces reference the same source node",
+        },
+        DiagnosticCode {
+            code: "CTRL130",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Reserved control surface config is invalid",
+        },
+        DiagnosticCode {
+            code: "CTRL131",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Reserved control surface references an unknown node alias",
+        },
+        DiagnosticCode {
+            code: "CTRL132",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Reserved control surface references a missing edge",
+        },
+        DiagnosticCode {
+            code: "CTRL901",
+            subsystem: "runtime",
+            default_severity: Severity::Error,
+            summary: "Reserved control surface not supported by this host or profile",
+        },
+        DiagnosticCode {
+            code: "BRK001",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Broker authority metadata or repeated-activation bound is invalid",
+        },
+        DiagnosticCode {
+            code: "CAP101",
+            subsystem: "runtime",
+            default_severity: Severity::Error,
+            summary: "Required capability binding missing from ResourceBag during preflight",
+        },
+        DiagnosticCode {
+            code: "CAP110",
+            subsystem: "runtime",
+            default_severity: Severity::Error,
+            summary: "Node accessed a capability not declared in its effect hints",
+        },
+        DiagnosticCode {
+            code: "IDEM020",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Effectful sink missing partition key and idempotency key",
+        },
+        DiagnosticCode {
+            code: "IDEM025",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Idempotency key references non-deterministic fields",
+        },
+        DiagnosticCode {
+            code: "CACHE001",
+            subsystem: "validation",
+            default_severity: Severity::Warn,
+            summary: "Strict node missing cache specification",
+        },
+        DiagnosticCode {
+            code: "CACHE002",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Stable node missing pinned inputs or cache policy",
+        },
+        DiagnosticCode {
+            code: "TYPE001",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Internal node uses unconstrained JSON in both input and output without boundary annotation",
+        },
+        DiagnosticCode {
+            code: "TRIG001",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Schedule expression is not a valid Cloudflare-dialect cron",
+        },
+        DiagnosticCode {
+            code: "TRIG002",
+            subsystem: "macros",
+            default_severity: Severity::Error,
+            summary: "schedule conflicts with method/route_aliases on one entrypoint",
+        },
+        DiagnosticCode {
+            code: "TRIG003",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Trigger alias wired to both schedule and HTTP entrypoints",
+        },
+        DiagnosticCode {
+            code: "TRIG004",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Duplicate schedule entrypoint (same cron + trigger alias)",
+        },
+        DiagnosticCode {
+            code: "HTTP001",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "connector.http input `path` malformed (missing `/`, `//`, `..`, control chars); checked at runtime pre-send, fail closed",
+        },
+        DiagnosticCode {
+            code: "HTTP002",
+            subsystem: "validation",
+            default_severity: Severity::Error,
+            summary: "Tier-1 `target` names an endpoint-profile role not bound on the node's connection",
+        },
+        DiagnosticCode {
+            code: "HTTP003",
+            subsystem: "lock-preflight",
+            default_severity: Severity::Error,
+            summary: "`any_origin` op with an outbound-auth role bound (auth x dynamic host is forbidden)",
+        },
+        DiagnosticCode {
+            code: "HTTP004",
+            subsystem: "lock-preflight",
+            default_severity: Severity::Error,
+            summary: "Required role unbound / handle-kind mismatch for connector.http (existing failure, connector.http-attributed message)",
+        },
+        DiagnosticCode {
+            code: "HTTP101",
+            subsystem: "runtime",
+            default_severity: Severity::Error,
+            summary: "Non-2xx response in error-on-status mode (carries status + bounded body excerpt)",
+        },
+        DiagnosticCode {
+            code: "HTTP102",
+            subsystem: "runtime",
+            default_severity: Severity::Error,
+            summary: "2xx body not valid JSON in a JSON mode",
+        },
+        DiagnosticCode {
+            code: "HTTP103",
+            subsystem: "runtime",
+            default_severity: Severity::Error,
+            summary: "2xx JSON did not match typed output `T` (carries serde path)",
+        },
+        DiagnosticCode {
+            code: "HTTP104",
+            subsystem: "runtime",
+            default_severity: Severity::Error,
+            summary: "2xx body not valid UTF-8 in text mode",
+        },
+        DiagnosticCode {
+            code: "HTTP105",
+            subsystem: "runtime",
+            default_severity: Severity::Error,
+            summary: "Composed URL origin != granted profile origin (fatal invariant breach — bug or attack; never retried)",
+        },
+        DiagnosticCode {
+            code: "HTTP106",
+            subsystem: "runtime",
+            default_severity: Severity::Error,
+            summary: "Forbidden/malformed header name or CR/LF in header value",
+        },
+        DiagnosticCode {
+            code: "HTTP110",
+            subsystem: "runtime",
+            default_severity: Severity::Error,
+            summary: "connector.http.get_binary staging denied: node lacks the workspace::write grant",
+        },
+        DiagnosticCode {
+            code: "HTTP111",
+            subsystem: "runtime",
+            default_severity: Severity::Error,
+            summary: "connector.http.post_multipart artifact deref denied: node lacks the workspace::read grant",
+        },
+        DiagnosticCode {
+            code: "HTTP112",
+            subsystem: "runtime",
+            default_severity: Severity::Error,
+            summary: "connector.http.get_binary response body exceeds the workspace artifact size cap (no partial artifact staged)",
+        },
+        DiagnosticCode {
+            code: "HTTP113",
+            subsystem: "runtime",
+            default_severity: Severity::Error,
+            summary: "connector.http workspace byte access failed (macaroon verification, out-of-scope path, or store mismatch)",
+        },
+    ]
+});

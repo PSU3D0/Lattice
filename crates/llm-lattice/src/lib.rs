@@ -3,6 +3,8 @@
 //! This crate adapts Lattice resource access to the portable `llm_types`
 //! HTTP client abstraction.
 
+pub mod ai_gateway;
+
 use bytes::Bytes;
 use capabilities::{
     ResourceAccess, context,
