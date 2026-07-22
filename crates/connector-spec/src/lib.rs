@@ -8,19 +8,23 @@ use std::path::Path;
 
 pub use contract::{
     ContractCanonicalizationError, MAX_CONTRACT_DESCRIPTOR_BYTES, MAX_SCHEMA_DECLARATIONS,
-    canonical_contract_json, contract_hash, descriptor_hash, operation_contract_descriptor,
-    request_plan_hash,
+    canonical_contract_json, canonical_value_hash, contract_hash, descriptor_hash,
+    operation_contract_descriptor, request_plan_hash, type_schema_hash,
+    v2_auth_profile_requirement_descriptor, v2_operation_requirement_descriptor,
 };
 pub use diagnostics::{ValidationCode, ValidationError, ValidationErrors};
 pub use model::{
-    ActionImplementation, ActionSurface, BrokerDispatchDescriptor, BrokerRequestPlan,
-    ConnectorManifest, ConnectorMetadata, ConnectorProfiles, DefaultValue, DeterminismLevel,
-    EffectLevel, EndpointProfile, FieldDecl, FieldKind, OperationContract,
+    ActionImplementation, ActionSurface, AuthProfileRefDeclaration, AuthProfileRequirement,
+    BrokerDispatchDescriptor, BrokerRequestPlan, ConnectorManifest, ConnectorMetadata,
+    ConnectorProfiles, CredentialPlaneDeclarations, DefaultValue, DeterminismLevel, EffectLevel,
+    EndpointProfile, FactRequirement, FieldDecl, FieldKind, ImplementationPin, OperationContract,
     OperationContractDescriptor, OutboundAuthProfile, PaginationDecl, PaginationKind,
-    QueryValueDecl, RequestMapping, RequestMethod, RequestPlaceholderDecl, ReservedProfile,
-    ReservedTriggerConfig, ResourceRequirement, ResponseDataPolicy, ResponseDataPolicyKind,
-    ResponseDecl, ResponseKind, StaticHeaderDecl, SurfaceDecl, TrustedAdapterPin, TypeDecl,
-    WebhookTriggerSurface,
+    PolicyRequirement, QueryValueDecl, RegistryClass, RegistryDeclaration, RelationRequirement,
+    RequestMapping, RequestMethod, RequestPlaceholderDecl, ReservedProfile, ReservedTriggerConfig,
+    ResourceRequirement, ResponseDataPolicy, ResponseDataPolicyKind, ResponseDecl,
+    ResponseFirewallRequirement, ResponseKind, StaticHeaderDecl, SurfaceDecl, TrustedAdapterPin,
+    TypeDecl, V2AuthProfileRequirementDescriptor, V2OperationRequirementDescriptor,
+    V2OperationRequirements, VocabularySchemaRef, WebhookTriggerSurface,
 };
 pub use validate::{
     generated_module_name, paginated_collection_field, validate_broker_dispatch_descriptor,

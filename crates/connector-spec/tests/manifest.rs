@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use connector_spec::{ConnectorManifest, ValidationCode};
+use connector_spec::{ConnectorManifest, OutboundAuthProfile, ValidationCode};
 
 fn fixture_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -171,6 +171,47 @@ fn validate_for_codegen_rejects_reserved_surface_kinds() {
             .iter()
             .any(|error| error.code == ValidationCode::UnsupportedSurfaceKind)
     );
+}
+
+#[test]
+fn all_nine_v2_scheme_configs_have_provider_neutral_refs() {
+    let cases = [
+        ("kind: bearer\nhandle_kind: secret", "generic_bearer"),
+        (
+            "kind: api_key_header\nheader_name: X-Key\nhandle_kind: secret",
+            "api_key_header",
+        ),
+        (
+            "kind: api_key_query\nquery_name: key\nhandle_kind: secret",
+            "api_key_query",
+        ),
+        ("kind: basic\nhandle_kind: secret", "http_basic"),
+        (
+            "kind: oauth2\nhandle_kind: secret",
+            "oauth2_authorization_code_pkce",
+        ),
+        (
+            "kind: service_account_jwt\nhandle_kind: secret",
+            "service_account_jwt",
+        ),
+        (
+            "kind: signed_request\nhandle_kind: secret",
+            "signed_request",
+        ),
+        (
+            "kind: workload_oidc\nhandle_kind: secret",
+            "oauth_token_exchange_workload_oidc",
+        ),
+        (
+            "kind: session_bootstrap\nhandle_kind: secret",
+            "external_custodian_reference",
+        ),
+    ];
+    for (source, expected) in cases {
+        let profile: OutboundAuthProfile = serde_yaml::from_str(source).unwrap();
+        assert!(profile.v2_scheme_ref().contains(expected));
+        assert!(!profile.v2_scheme_ref().contains("unsupported"));
+    }
 }
 
 #[test]

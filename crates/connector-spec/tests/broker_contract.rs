@@ -253,17 +253,28 @@ fn typed_query_mappings_are_hashed_and_invalid_shapes_fail_closed() {
 }
 
 #[test]
-fn unknown_or_unpinned_trusted_adapter_fails_closed() {
+fn v1_adapter_validator_checks_syntax_without_provider_trust_policy() {
     let mut manifest = synthetic();
     action_mut(&mut manifest)
         .broker_request
         .as_mut()
         .unwrap()
         .trusted_adapter = Some(TrustedAdapterPin {
-        trusted_adapter_id: "google.unknown.v1".into(),
+        trusted_adapter_id: "synthetic.adapter.v1".into(),
         implementation_version: "1".into(),
         implementation_hash: format!("sha256:{}", "0".repeat(64)),
     });
+    manifest
+        .validate()
+        .expect("provider-neutral syntactic pin validates");
+    action_mut(&mut manifest)
+        .broker_request
+        .as_mut()
+        .unwrap()
+        .trusted_adapter
+        .as_mut()
+        .unwrap()
+        .implementation_hash = "not-a-digest".into();
     assert!(has_code(
         &manifest,
         ValidationCode::InvalidBrokerRequestPlan

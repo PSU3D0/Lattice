@@ -3,6 +3,7 @@
 pub mod artifacts;
 pub mod canonical;
 pub mod commitment;
+pub mod credential;
 pub mod custodian;
 pub mod dispatch;
 pub mod effect_id;

@@ -3,8 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::diagnostics::{ValidationCode, ValidationError, ValidationErrors};
 use crate::model::{
     ActionImplementation, ActionSurface, BrokerRequestPlan, ConnectorManifest, DefaultValue,
-    FieldDecl, FieldKind, OperationContract, PaginationDecl, QueryValueDecl, RequestMapping,
-    ResourceRequirement, SurfaceDecl, TrustedAdapterPin, TypeDecl,
+    FieldDecl, FieldKind, ImplementationPin, OperationContract, PaginationDecl, QueryValueDecl,
+    RegistryClass, RequestMapping, ResourceRequirement, SurfaceDecl, TrustedAdapterPin, TypeDecl,
+    V2OperationRequirements,
 };
 
 /// Validate the closed, schema-independent security grammar of a generated
@@ -93,6 +94,8 @@ pub fn validate_manifest(manifest: &ConnectorManifest) -> Result<(), ValidationE
     for (type_name, decl) in &manifest.types {
         validate_type_decl(type_name, decl, manifest, &mut errors);
     }
+
+    validate_credential_plane_declarations(manifest, &mut errors);
 
     let mut seen_identifiers = BTreeSet::new();
     let mut seen_modules = BTreeSet::new();
@@ -239,6 +242,195 @@ pub fn paginated_collection_field<'a>(
     } else {
         None
     }
+}
+
+fn validate_credential_plane_declarations(
+    manifest: &ConnectorManifest,
+    errors: &mut ValidationErrors,
+) {
+    let Some(declarations) = &manifest.credential_plane else {
+        return;
+    };
+    for (name, declaration) in &declarations.registry {
+        if name != &declaration.entry_ref
+            || !valid_ref(name)
+            || !valid_ref(&declaration.version)
+            || !valid_sha256(&declaration.definition_hash)
+        {
+            errors.push(ValidationError::new(
+                ValidationCode::InvalidCredentialPlaneDeclaration,
+                Some(format!("credential_plane.registry.{name}")),
+                "registry declarations require matching printable refs, versions, and sha256 pins",
+            ));
+        }
+    }
+    for (name, profile) in &declarations.auth_profiles {
+        let matching_kind = manifest
+            .profiles
+            .outbound_auth
+            .get(name)
+            .is_some_and(|kind| kind.v2_scheme_ref() == profile.scheme_ref);
+        if !matching_kind
+            || !valid_ref(&profile.auth_profile_ref.profile_ref)
+            || !valid_ref(&profile.auth_profile_ref.version)
+            || !valid_ref(&profile.authorization_claims_schema.vocabulary_ref)
+            || !valid_sha256(&profile.authorization_claims_schema.schema_hash)
+            || !valid_sha256(&profile.public_claims_projection_policy_hash)
+        {
+            errors.push(ValidationError::new(
+                ValidationCode::InvalidCredentialPlaneDeclaration,
+                Some(format!("credential_plane.auth_profiles.{name}")),
+                "V2 auth profiles must map the advertised auth kind and pin claim/projection schemas",
+            ));
+        }
+    }
+    for name in manifest.profiles.outbound_auth.keys() {
+        if !declarations.auth_profiles.contains_key(name) {
+            errors.push(ValidationError::new(
+                ValidationCode::InvalidCredentialPlaneDeclaration,
+                Some(format!("credential_plane.auth_profiles.{name}")),
+                "every advertised auth kind requires a V2 auth profile declaration when V2 is enabled",
+            ));
+        }
+    }
+}
+
+fn validate_v2_operation_requirements(
+    requirements: &V2OperationRequirements,
+    action: &ActionSurface,
+    manifest: &ConnectorManifest,
+    surface_path: &str,
+    errors: &mut ValidationErrors,
+) {
+    let path = format!("{surface_path}.credential_requirements");
+    let Some(declarations) = &manifest.credential_plane else {
+        errors.push(ValidationError::new(
+            ValidationCode::InvalidCredentialPlaneDeclaration,
+            Some(path),
+            "V2 operation requirements require top-level credential_plane declarations",
+        ));
+        return;
+    };
+    let profile_matches = action.auth.as_ref().and_then(|name| {
+        declarations.auth_profiles.get(name).map(|profile| {
+            profile.auth_profile_ref == requirements.auth_profile_ref
+                && profile.authorization_claims_schema == requirements.authorization_claims_schema
+        })
+    }) == Some(true);
+    if !profile_matches {
+        errors.push(ValidationError::new(
+            ValidationCode::InvalidCredentialPlaneDeclaration,
+            Some(format!("{path}.auth_profile_ref")),
+            "operation auth profile and private claims schema must equal the declared profile",
+        ));
+    }
+
+    let expected = [
+        ("auth_driver", RegistryClass::AuthDriver),
+        ("custodian", RegistryClass::Custodian),
+        ("planner", RegistryClass::CapsulePlanner),
+        (
+            "privileged_response_firewall",
+            RegistryClass::PrivilegedResponseFirewall,
+        ),
+        ("projector", RegistryClass::ResponseProjector),
+        ("transport", RegistryClass::Transport),
+    ];
+    if requirements.implementations.len() != expected.len() {
+        errors.push(ValidationError::new(
+            ValidationCode::InvalidCredentialPlaneDeclaration,
+            Some(format!("{path}.implementations")),
+            "implementation requirements must contain the exact six core registry roles",
+        ));
+    }
+    for (role, class) in expected {
+        let valid = requirements.implementations.get(role).is_some_and(|pin| {
+            pin.registry_class() == class
+                && valid_implementation_pin(pin)
+                && declarations
+                    .registry
+                    .get(pin.registry_ref())
+                    .is_some_and(|entry| entry.class == class)
+        });
+        if !valid {
+            errors.push(ValidationError::new(
+                ValidationCode::InvalidCredentialPlaneDeclaration,
+                Some(format!("{path}.implementations.{role}")),
+                "unknown, missing, or class-substituted implementation pin",
+            ));
+        }
+    }
+    let firewall = &requirements.response_firewall;
+    if !valid_sha256(&firewall.policy_hash)
+        || declarations
+            .registry
+            .get(&firewall.implementation_registry_ref)
+            .is_none_or(|entry| entry.class != RegistryClass::PrivilegedResponseFirewall)
+    {
+        errors.push(ValidationError::new(
+            ValidationCode::InvalidCredentialPlaneDeclaration,
+            Some(format!("{path}.response_firewall")),
+            "response firewall requires a policy hash and class-correct registry declaration",
+        ));
+    }
+    for (index, requirement) in requirements.policies.iter().enumerate() {
+        if !valid_sha256(&requirement.schema_hash)
+            || !valid_ref(&requirement.profile_ref.profile_ref)
+            || !valid_ref(&requirement.profile_ref.version)
+            || declarations
+                .registry
+                .get(&requirement.evaluator_registry_ref)
+                .is_none_or(|entry| entry.class != RegistryClass::PolicyEvaluator)
+        {
+            errors.push(ValidationError::new(
+                ValidationCode::InvalidCredentialPlaneDeclaration,
+                Some(format!("{path}.policies[{index}]")),
+                "policy requirement must pin a schema and class-correct evaluator",
+            ));
+        }
+    }
+    if requirements
+        .facts
+        .iter()
+        .any(|item| !valid_ref(&item.vocabulary_ref) || !valid_sha256(&item.schema_hash))
+        || requirements
+            .relations
+            .iter()
+            .any(|item| !valid_ref(&item.relation_ref) || !valid_sha256(&item.schema_hash))
+    {
+        errors.push(ValidationError::new(
+            ValidationCode::InvalidCredentialPlaneDeclaration,
+            Some(path),
+            "fact and relation requirements require printable vocabulary refs and sha256 schema pins",
+        ));
+    }
+}
+
+fn valid_implementation_pin(pin: &ImplementationPin) -> bool {
+    if !valid_ref(pin.registry_ref()) || !valid_sha256(pin.identity_pin()) {
+        return false;
+    }
+    match pin {
+        ImplementationPin::WasmComponent { abi_version, .. } => valid_ref(abi_version),
+        ImplementationPin::RemoteService {
+            protocol_version, ..
+        } => valid_ref(protocol_version),
+        _ => true,
+    }
+}
+
+fn valid_ref(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 256
+        && value.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+}
+
+fn valid_sha256(value: &str) -> bool {
+    value.len() == 71
+        && value.starts_with("sha256:")
+        && value[7..]
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 fn validate_type_decl(
@@ -446,6 +638,10 @@ fn validate_action_surface(
                 format!("unknown outbound auth profile `{auth_name}`"),
             ));
         }
+    }
+
+    if let Some(requirements) = &action.credential_requirements {
+        validate_v2_operation_requirements(requirements, action, manifest, surface_path, errors);
     }
 
     match (&action.contract, &action.broker_request) {
@@ -975,22 +1171,11 @@ fn valid_query_value(
 }
 
 fn valid_trusted_adapter_pin(pin: &TrustedAdapterPin) -> bool {
-    matches!(
-        (
-            pin.trusted_adapter_id.as_str(),
-            pin.implementation_version.as_str(),
-            pin.implementation_hash.as_str(),
-        ),
-        (
-            "google.sheets.append_row.v1",
-            "1",
-            "sha256:54db6603967e1ce4e46ef45ece7bfa947c129564e40a290989fa2ae901a23966"
-        ) | (
-            "google.gmail.rfc822_message.v1",
-            "1",
-            "sha256:5a5de77f756b49aac0fb5339bf764f9e53a9437cdc41619c2c978aa5dbb4e3fc"
-        )
-    )
+    // V1 compatibility checks syntax only. Trust is a composition-owned
+    // registry decision and must never be embedded in connector-spec.
+    valid_ref(&pin.trusted_adapter_id)
+        && valid_ref(&pin.implementation_version)
+        && valid_sha256(&pin.implementation_hash)
 }
 
 fn valid_static_header(name: &str, value: &str) -> bool {

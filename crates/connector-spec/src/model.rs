@@ -9,6 +9,10 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 pub struct ConnectorManifest {
     pub connector: ConnectorMetadata,
     pub profiles: ConnectorProfiles,
+    /// Optional provider-neutral credential-plane declarations. V1 manifests
+    /// omit this member and retain their existing descriptor bytes.
+    #[serde(default)]
+    pub credential_plane: Option<CredentialPlaneDeclarations>,
     pub types: BTreeMap<String, TypeDecl>,
     pub surfaces: Vec<SurfaceDecl>,
 }
@@ -64,6 +68,9 @@ pub enum OutboundAuthProfile {
         query_name: String,
         handle_kind: String,
     },
+    Basic {
+        handle_kind: String,
+    },
     #[serde(rename = "oauth2")]
     OAuth2 {
         handle_kind: String,
@@ -72,6 +79,9 @@ pub enum OutboundAuthProfile {
         handle_kind: String,
     },
     SessionBootstrap {
+        handle_kind: String,
+    },
+    WorkloadOidc {
         handle_kind: String,
     },
     SignedRequest {
@@ -85,9 +95,11 @@ impl OutboundAuthProfile {
             OutboundAuthProfile::Bearer { handle_kind }
             | OutboundAuthProfile::ApiKeyHeader { handle_kind, .. }
             | OutboundAuthProfile::ApiKeyQuery { handle_kind, .. }
+            | OutboundAuthProfile::Basic { handle_kind }
             | OutboundAuthProfile::OAuth2 { handle_kind }
             | OutboundAuthProfile::ServiceAccountJwt { handle_kind }
             | OutboundAuthProfile::SessionBootstrap { handle_kind }
+            | OutboundAuthProfile::WorkloadOidc { handle_kind }
             | OutboundAuthProfile::SignedRequest { handle_kind } => handle_kind,
         }
     }
@@ -97,9 +109,11 @@ impl OutboundAuthProfile {
             OutboundAuthProfile::Bearer { .. } => "bearer",
             OutboundAuthProfile::ApiKeyHeader { .. } => "api_key_header",
             OutboundAuthProfile::ApiKeyQuery { .. } => "api_key_query",
+            OutboundAuthProfile::Basic { .. } => "basic",
             OutboundAuthProfile::OAuth2 { .. } => "oauth2",
             OutboundAuthProfile::ServiceAccountJwt { .. } => "service_account_jwt",
             OutboundAuthProfile::SessionBootstrap { .. } => "session_bootstrap",
+            OutboundAuthProfile::WorkloadOidc { .. } => "workload_oidc",
             OutboundAuthProfile::SignedRequest { .. } => "signed_request",
         }
     }
@@ -110,8 +124,209 @@ impl OutboundAuthProfile {
             OutboundAuthProfile::Bearer { .. }
                 | OutboundAuthProfile::ApiKeyHeader { .. }
                 | OutboundAuthProfile::ApiKeyQuery { .. }
+                | OutboundAuthProfile::Basic { .. }
         )
     }
+
+    /// Closed mapping to protocol scheme-config branches. This mapping
+    /// declares syntax and never chooses a provider or trusted implementation.
+    pub const fn v2_scheme_ref(&self) -> &'static str {
+        match self {
+            Self::Bearer { .. } => "lattice.scheme.generic_bearer.v0.2",
+            Self::ApiKeyHeader { .. } => "lattice.scheme.api_key_header.v0.2",
+            Self::ApiKeyQuery { .. } => "lattice.scheme.api_key_query.v0.2",
+            Self::Basic { .. } => "lattice.scheme.http_basic.v0.2",
+            Self::OAuth2 { .. } => "lattice.scheme.oauth2_authorization_code_pkce.v0.2",
+            Self::ServiceAccountJwt { .. } => "lattice.scheme.service_account_jwt.v0.2",
+            Self::SessionBootstrap { .. } => "lattice.scheme.external_custodian_reference.v0.2",
+            Self::WorkloadOidc { .. } => "lattice.scheme.oauth_token_exchange_workload_oidc.v0.2",
+            Self::SignedRequest { .. } => "lattice.scheme.signed_request.v0.2",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CredentialPlaneDeclarations {
+    /// Static declarations are owned by composition. Validation checks closed
+    /// syntax and pins, not publisher/provider allowlists.
+    #[serde(default)]
+    pub registry: BTreeMap<String, RegistryDeclaration>,
+    #[serde(default)]
+    pub auth_profiles: BTreeMap<String, AuthProfileRequirement>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthProfileRequirement {
+    pub auth_profile_ref: AuthProfileRefDeclaration,
+    pub scheme_ref: String,
+    pub authorization_claims_schema: VocabularySchemaRef,
+    pub public_claims_projection_policy_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthProfileRefDeclaration {
+    pub profile_ref: String,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VocabularySchemaRef {
+    pub vocabulary_ref: String,
+    pub schema_hash: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RegistryClass {
+    AuthProfile,
+    CapsulePlanner,
+    ResponseProjector,
+    AuthDriver,
+    Custodian,
+    Transport,
+    PrivilegedResponseFirewall,
+    PolicyEvaluator,
+    DynamicSource,
+    ClaimNormalizer,
+    LegacyInventory,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegistryDeclaration {
+    pub class: RegistryClass,
+    pub entry_ref: String,
+    pub version: String,
+    pub definition_hash: String,
+    pub approval_epoch: u64,
+    pub revocation_epoch: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ImplementationPin {
+    DeclarativePlan {
+        registry_class: RegistryClass,
+        registry_ref: String,
+        artifact_hash: String,
+    },
+    NativeComponent {
+        registry_class: RegistryClass,
+        registry_ref: String,
+        binary_hash: String,
+    },
+    WasmComponent {
+        registry_class: RegistryClass,
+        registry_ref: String,
+        module_hash: String,
+        abi_version: String,
+    },
+    RemoteService {
+        registry_class: RegistryClass,
+        registry_ref: String,
+        service_identity_commitment: String,
+        protocol_version: String,
+    },
+}
+
+impl ImplementationPin {
+    pub fn registry_class(&self) -> RegistryClass {
+        match self {
+            Self::DeclarativePlan { registry_class, .. }
+            | Self::NativeComponent { registry_class, .. }
+            | Self::WasmComponent { registry_class, .. }
+            | Self::RemoteService { registry_class, .. } => *registry_class,
+        }
+    }
+
+    pub fn registry_ref(&self) -> &str {
+        match self {
+            Self::DeclarativePlan { registry_ref, .. }
+            | Self::NativeComponent { registry_ref, .. }
+            | Self::WasmComponent { registry_ref, .. }
+            | Self::RemoteService { registry_ref, .. } => registry_ref,
+        }
+    }
+
+    pub fn identity_pin(&self) -> &str {
+        match self {
+            Self::DeclarativePlan { artifact_hash, .. } => artifact_hash,
+            Self::NativeComponent { binary_hash, .. } => binary_hash,
+            Self::WasmComponent { module_hash, .. } => module_hash,
+            Self::RemoteService {
+                service_identity_commitment,
+                ..
+            } => service_identity_commitment,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyRequirement {
+    pub profile_ref: AuthProfileRefDeclaration,
+    pub schema_hash: String,
+    pub evaluator_registry_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FactRequirement {
+    pub vocabulary_ref: String,
+    pub schema_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RelationRequirement {
+    pub relation_ref: String,
+    pub schema_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResponseFirewallRequirement {
+    pub policy_hash: String,
+    pub implementation_registry_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct V2OperationRequirements {
+    pub auth_profile_ref: AuthProfileRefDeclaration,
+    pub authorization_claims_schema: VocabularySchemaRef,
+    #[serde(default)]
+    pub policies: Vec<PolicyRequirement>,
+    #[serde(default)]
+    pub facts: Vec<FactRequirement>,
+    #[serde(default)]
+    pub relations: Vec<RelationRequirement>,
+    pub response_firewall: ResponseFirewallRequirement,
+    pub implementations: BTreeMap<String, ImplementationPin>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct V2AuthProfileRequirementDescriptor {
+    pub connector_id: String,
+    pub profile_name: String,
+    pub requirement: AuthProfileRequirement,
+    pub requirement_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct V2OperationRequirementDescriptor {
+    pub connector_id: String,
+    pub operation_id: String,
+    pub input_schema_hash: String,
+    pub output_schema_hash: String,
+    pub requirements: V2OperationRequirements,
+    pub requirements_hash: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -272,6 +487,10 @@ pub struct ActionSurface {
     /// direct-runtime `request` mapping during additive migration.
     #[serde(default)]
     pub broker_request: Option<BrokerRequestPlan>,
+    /// Optional V2 provider-neutral requirement descriptor. It is separate
+    /// from the byte-stable V1 contract during migration.
+    #[serde(default)]
+    pub credential_requirements: Option<Box<V2OperationRequirements>>,
 }
 
 impl ActionSurface {

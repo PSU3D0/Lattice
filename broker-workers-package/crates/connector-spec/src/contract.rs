@@ -4,7 +4,8 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     ActionSurface, BrokerRequestPlan, ConnectorManifest, FieldDecl, FieldKind,
-    OperationContractDescriptor, TypeDecl,
+    OperationContractDescriptor, TypeDecl, V2AuthProfileRequirementDescriptor,
+    V2OperationRequirementDescriptor,
 };
 
 /// Maximum canonical byte length of a contract descriptor or one schema
@@ -29,9 +30,58 @@ pub fn operation_contract_descriptor(
         .contract
         .as_ref()
         .ok_or(ContractCanonicalizationError::MissingContract)?;
-    let input_schema_hash = schema_hash(manifest, &action.input)?;
-    let output_schema_hash = schema_hash(manifest, &action.output)?;
+    let input_schema_hash = type_schema_hash(manifest, &action.input)?;
+    let output_schema_hash = type_schema_hash(manifest, &action.output)?;
     Ok(contract.descriptor_with_schema_hashes(input_schema_hash, output_schema_hash))
+}
+
+pub fn v2_auth_profile_requirement_descriptor(
+    manifest: &ConnectorManifest,
+    profile_name: &str,
+) -> Result<V2AuthProfileRequirementDescriptor, ContractCanonicalizationError> {
+    let requirement = manifest
+        .credential_plane
+        .as_ref()
+        .and_then(|plane| plane.auth_profiles.get(profile_name))
+        .cloned()
+        .ok_or(ContractCanonicalizationError::MissingV2Declaration)?;
+    let requirement_hash = canonical_value_hash(&requirement)?;
+    Ok(V2AuthProfileRequirementDescriptor {
+        connector_id: manifest.connector.id.clone(),
+        profile_name: profile_name.to_string(),
+        requirement,
+        requirement_hash,
+    })
+}
+
+pub fn v2_operation_requirement_descriptor(
+    manifest: &ConnectorManifest,
+    action: &ActionSurface,
+) -> Result<V2OperationRequirementDescriptor, ContractCanonicalizationError> {
+    let requirements = action
+        .credential_requirements
+        .as_deref()
+        .cloned()
+        .ok_or(ContractCanonicalizationError::MissingV2Declaration)?;
+    let requirements_hash = canonical_value_hash(&requirements)?;
+    Ok(V2OperationRequirementDescriptor {
+        connector_id: manifest.connector.id.clone(),
+        operation_id: action.identifier.clone(),
+        input_schema_hash: type_schema_hash(manifest, &action.input)?,
+        output_schema_hash: type_schema_hash(manifest, &action.output)?,
+        requirements,
+        requirements_hash,
+    })
+}
+
+pub fn canonical_value_hash<T: serde::Serialize>(
+    value: &T,
+) -> Result<String, ContractCanonicalizationError> {
+    let bytes = serde_json::to_vec(value)
+        .map_err(|_| ContractCanonicalizationError::UnsupportedDescriptorDomain)?;
+    let canonical = jcs_canonical::canonicalize_bounded(&bytes, MAX_CONTRACT_DESCRIPTOR_BYTES)
+        .map_err(|_| ContractCanonicalizationError::DescriptorLimitExceeded)?;
+    hash_bytes(canonical.as_bytes())
 }
 
 /// Canonicalize the complete contract-hash preimage using RFC 8785 JCS.
@@ -73,7 +123,7 @@ pub fn request_plan_hash(
     hash_bytes(canonical.as_bytes())
 }
 
-fn schema_hash(
+pub fn type_schema_hash(
     manifest: &ConnectorManifest,
     root: &str,
 ) -> Result<String, ContractCanonicalizationError> {
@@ -137,6 +187,8 @@ pub enum ContractCanonicalizationError {
     MissingContract,
     #[error("action references a missing schema declaration")]
     MissingSchema,
+    #[error("manifest does not declare the requested V2 requirement")]
+    MissingV2Declaration,
     #[error("contract descriptor exceeds its documented size or count limit")]
     DescriptorLimitExceeded,
     #[error("contract descriptor is outside the supported canonical JSON domain")]

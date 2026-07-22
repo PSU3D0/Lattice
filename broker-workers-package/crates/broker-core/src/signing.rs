@@ -43,6 +43,15 @@ impl BrokerSigner {
             value: URL_SAFE_NO_PAD.encode(signature.to_bytes()),
         })
     }
+
+    pub(crate) fn sign_preimage(&self, payload: &[u8]) -> SignatureEnvelope {
+        let signature = self.key.sign(payload);
+        SignatureEnvelope {
+            alg: SignatureAlg::Ed25519,
+            key_id: self.key_id.clone(),
+            value: URL_SAFE_NO_PAD.encode(signature.to_bytes()),
+        }
+    }
 }
 impl fmt::Debug for BrokerSigner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -59,6 +68,13 @@ pub struct BrokerVerifyingKey {
     key: VerifyingKey,
 }
 impl BrokerVerifyingKey {
+    pub fn from_bytes(key_id: impl Into<String>, bytes: [u8; 32]) -> Result<Self, BrokerError> {
+        Ok(Self {
+            key_id: key_id.into(),
+            key: VerifyingKey::from_bytes(&bytes).map_err(|_| BrokerError::Brk001)?,
+        })
+    }
+
     pub fn verify_json(
         &self,
         domain: &str,
@@ -77,6 +93,26 @@ impl BrokerVerifyingKey {
         let signature = Signature::from_slice(&bytes).map_err(|_| BrokerError::Brk001)?;
         self.key
             .verify_strict(&preimage(domain, complete_json)?, &signature)
+            .map_err(|_| BrokerError::Brk109)
+    }
+
+    pub(crate) fn verify_preimage(
+        &self,
+        payload: &[u8],
+        envelope: &SignatureEnvelope,
+    ) -> Result<(), BrokerError> {
+        if envelope.alg != SignatureAlg::Ed25519 || envelope.key_id != self.key_id {
+            return Err(BrokerError::Brk004);
+        }
+        let bytes = URL_SAFE_NO_PAD
+            .decode(&envelope.value)
+            .map_err(|_| BrokerError::Brk001)?;
+        if bytes.len() != 64 || URL_SAFE_NO_PAD.encode(&bytes) != envelope.value {
+            return Err(BrokerError::Brk001);
+        }
+        let signature = Signature::from_slice(&bytes).map_err(|_| BrokerError::Brk001)?;
+        self.key
+            .verify_strict(payload, &signature)
             .map_err(|_| BrokerError::Brk109)
     }
 }

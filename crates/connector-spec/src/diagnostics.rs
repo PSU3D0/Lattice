@@ -10,6 +10,7 @@ pub enum ValidationCode {
     InvalidBrokerRequestPlan,
     InvalidContractId,
     InvalidContractSemantics,
+    InvalidCredentialPlaneDeclaration,
     InvalidInputFieldReference,
     InvalidJsonEscapeHatch,
     InvalidPathTemplate,
@@ -40,6 +41,9 @@ impl ValidationCode {
             ValidationCode::InvalidBrokerRequestPlan => "connector::invalid_broker_request_plan",
             ValidationCode::InvalidContractId => "connector::invalid_contract_id",
             ValidationCode::InvalidContractSemantics => "connector::invalid_contract_semantics",
+            ValidationCode::InvalidCredentialPlaneDeclaration => {
+                "connector::invalid_credential_plane_declaration"
+            }
             ValidationCode::InvalidInputFieldReference => {
                 "connector::invalid_input_field_reference"
             }

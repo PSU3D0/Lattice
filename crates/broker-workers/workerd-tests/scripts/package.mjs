@@ -92,6 +92,11 @@ rootCargo = rootCargo.replace(
 await writeFile(join(output, "Cargo.toml"), rootCargo);
 await cp(join(workspace, "Cargo.lock"), join(output, "Cargo.lock"));
 await cp(join(workspace, "schemas"), join(output, "schemas"), { recursive: true });
+await mkdir(join(output, "impl-docs/spec"), { recursive: true });
+await cp(
+  join(workspace, "impl-docs/spec/credential-plane-protocol.schema.json"),
+  join(output, "impl-docs/spec/credential-plane-protocol.schema.json"),
+);
 
 const requirements = {
   schema_version: "0.2", package: "broker-workers", package_version: "0.1.0",
@@ -106,6 +111,7 @@ const requirements = {
   ],
   required_variable_bindings: ["GOOGLE_AUTHORIZE_ENDPOINT", "GOOGLE_OAUTH_CLIENT_ID", "OAUTH_REDIRECT_URI", "PUBLIC_CALLBACK_BASE"],
   required_service_bindings: ["GOOGLE_PROVIDER_SERVICE", "GOOGLE_TOKEN_SERVICE"],
+  static_registry_seed: "crates/broker-workers/deploy/credential-registry-seed.json",
   ai_gateway_policy: { payload_logging: "disabled", spend_limit_usd: "required-at-deploy", rate_limit_per_minute: "required-at-deploy", applied_locally: false },
 };
 await writeFile(join(output, "requirements.json"), `${JSON.stringify(requirements, null, 2)}\n`);

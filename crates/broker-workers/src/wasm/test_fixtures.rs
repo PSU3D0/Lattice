@@ -385,6 +385,38 @@ pub(super) async fn provision_fixture(
 }
 
 #[cfg(feature = "test-fixtures")]
+pub(super) async fn credential_state_v2(
+    request: &mut Request,
+    env: &Env,
+) -> worker::Result<Response> {
+    if env
+        .var(concat!("LOCAL_", "TEST_MODE"))
+        .ok()
+        .map(|value| value.to_string())
+        .as_deref()
+        != Some("true")
+    {
+        return json(&PublicError::invalid(), 404);
+    }
+    let envelope: CredentialStateEnvelope = match bounded_json(request, MAX_MANAGEMENT_BODY).await {
+        Ok(value) => value,
+        Err(_) => return json(&PublicError::invalid(), 400),
+    };
+    let mut hash = Sha256::new();
+    hash.update(b"lattice.credential-state.v2");
+    hash.update([0]);
+    hash.update(envelope.org_id.as_bytes());
+    hash.update([0]);
+    hash.update(envelope.connection_ref.as_bytes());
+    let route = format!("credential-{}", hex::encode(hash.finalize()));
+    match do_request::<CredentialStateReply>(env, "CREDENTIAL_STATE_V2_DO", &route, &envelope).await
+    {
+        Ok(reply) => json(&reply, 200),
+        Err(_) => json(&PublicError::broker(BrokerError::Brk401), 409),
+    }
+}
+
+#[cfg(feature = "test-fixtures")]
 async fn ensure_test_schema(db: &D1Database) -> worker::Result<()> {
     for statement in include_str!("../../migrations/0001_broker.sql").split(';') {
         let statement = statement.trim();

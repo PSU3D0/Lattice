@@ -47,6 +47,10 @@
       {
         "name": "CONNECTION_REFRESH_DO",
         "class_name": "ConnectionRefreshDurableObject"
+      },
+      {
+        "name": "CREDENTIAL_STATE_V2_DO",
+        "class_name": "CredentialStateDurableObject"
       }
     ]
   },
@@ -56,6 +60,12 @@
       "new_sqlite_classes": [
         "BrokerLedgerDurableObject",
         "ConnectionRefreshDurableObject"
+      ]
+    },
+    {
+      "tag": "v2-credential-state",
+      "new_sqlite_classes": [
+        "CredentialStateDurableObject"
       ]
     }
   ],

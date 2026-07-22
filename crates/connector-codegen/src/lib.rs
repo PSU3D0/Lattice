@@ -6,6 +6,7 @@ use connector_spec::{
     ActionSurface, ConnectorManifest, DefaultValue, FieldDecl, FieldKind, OutboundAuthProfile,
     ResourceRequirement, SurfaceDecl, TypeDecl, contract_hash, generated_module_name,
     operation_contract_descriptor, paginated_collection_field, request_plan_hash,
+    v2_auth_profile_requirement_descriptor, v2_operation_requirement_descriptor,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,6 +93,21 @@ pub fn generate_files(
         relative_path: "src/generated/actions/mod.rs".to_string(),
         contents: emit_generated_actions_mod_rs(&actions),
     });
+    if let Some(plane) = &manifest.credential_plane {
+        files.push(GeneratedFile {
+            relative_path: "broker/v2/registry.json".to_string(),
+            contents: serde_json::to_string(&plane.registry)? + "\n",
+        });
+        for profile_name in plane.auth_profiles.keys() {
+            files.push(GeneratedFile {
+                relative_path: format!("broker/v2/auth-profiles/{profile_name}.json"),
+                contents: serde_json::to_string(&v2_auth_profile_requirement_descriptor(
+                    manifest,
+                    profile_name,
+                )?)? + "\n",
+            });
+        }
+    }
     for action in &actions {
         if action.contract.is_some() {
             files.push(GeneratedFile {
@@ -100,6 +116,23 @@ pub fn generate_files(
                     generated_module_name(&action.identifier)
                 ),
                 contents: emit_broker_dispatch_descriptor(manifest, action)?,
+            });
+        }
+        if action.credential_requirements.is_some() {
+            let descriptor = v2_operation_requirement_descriptor(manifest, action)?;
+            files.push(GeneratedFile {
+                relative_path: format!(
+                    "broker/v2/operations/{}.json",
+                    generated_module_name(&action.identifier)
+                ),
+                contents: serde_json::to_string(&descriptor)? + "\n",
+            });
+            files.push(GeneratedFile {
+                relative_path: format!(
+                    "broker/v2/implementations/{}.json",
+                    generated_module_name(&action.identifier)
+                ),
+                contents: serde_json::to_string(&descriptor.requirements.implementations)? + "\n",
             });
         }
         files.push(GeneratedFile {
@@ -138,19 +171,51 @@ pub fn generate_broker_descriptor_files(
     manifest
         .validate()
         .map_err(|err| anyhow!(err.to_string()))?;
-    sorted_actions(manifest)
-        .into_iter()
-        .filter(|action| action.contract.is_some())
-        .map(|action| {
-            Ok(GeneratedFile {
+    let mut files = Vec::new();
+    if let Some(plane) = &manifest.credential_plane {
+        files.push(GeneratedFile {
+            relative_path: "broker/v2/registry.json".to_string(),
+            contents: serde_json::to_string(&plane.registry)? + "\n",
+        });
+        for profile_name in plane.auth_profiles.keys() {
+            files.push(GeneratedFile {
+                relative_path: format!("broker/v2/auth-profiles/{profile_name}.json"),
+                contents: serde_json::to_string(&v2_auth_profile_requirement_descriptor(
+                    manifest,
+                    profile_name,
+                )?)? + "\n",
+            });
+        }
+    }
+    for action in sorted_actions(manifest) {
+        if action.contract.is_some() {
+            files.push(GeneratedFile {
                 relative_path: format!(
                     "broker/operations/{}.json",
                     generated_module_name(&action.identifier)
                 ),
                 contents: emit_broker_dispatch_descriptor(manifest, action)?,
-            })
-        })
-        .collect()
+            });
+        }
+        if action.credential_requirements.is_some() {
+            let descriptor = v2_operation_requirement_descriptor(manifest, action)?;
+            files.push(GeneratedFile {
+                relative_path: format!(
+                    "broker/v2/operations/{}.json",
+                    generated_module_name(&action.identifier)
+                ),
+                contents: serde_json::to_string(&descriptor)? + "\n",
+            });
+            files.push(GeneratedFile {
+                relative_path: format!(
+                    "broker/v2/implementations/{}.json",
+                    generated_module_name(&action.identifier)
+                ),
+                contents: serde_json::to_string(&descriptor.requirements.implementations)? + "\n",
+            });
+        }
+    }
+    Ok(files)
 }
 
 pub fn write_generated_files(root: impl AsRef<Path>, files: &[GeneratedFile]) -> Result<()> {
@@ -859,6 +924,10 @@ fn emit_outbound_auth_kind(profile: &OutboundAuthProfile) -> String {
             escape_rust_string(query_name),
             escape_rust_string(handle_kind)
         ),
+        OutboundAuthProfile::Basic { handle_kind } => format!(
+            "OutboundAuthKind::Basic {{ handle_kind: \"{}\" }}",
+            escape_rust_string(handle_kind)
+        ),
         other => format!(
             "OutboundAuthKind::Unsupported {{ kind_name: \"{}\", handle_kind: \"{}\" }}",
             other.kind_name(),
@@ -1234,6 +1303,121 @@ mod tests {
         let files = generate_broker_descriptor_files(&manifest).expect("descriptor generation");
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].relative_path, "broker/operations/echo_effect.json");
+    }
+
+    fn with_v2_declarations(mut manifest: ConnectorManifest) -> ConnectorManifest {
+        use connector_spec::{
+            AuthProfileRefDeclaration, AuthProfileRequirement, CredentialPlaneDeclarations,
+            ImplementationPin, RegistryClass, RegistryDeclaration, ResponseFirewallRequirement,
+            V2OperationRequirements, VocabularySchemaRef,
+        };
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let classes = [
+            ("auth-driver", RegistryClass::AuthDriver),
+            ("custodian", RegistryClass::Custodian),
+            ("planner", RegistryClass::CapsulePlanner),
+            ("firewall", RegistryClass::PrivilegedResponseFirewall),
+            ("projector", RegistryClass::ResponseProjector),
+            ("transport", RegistryClass::Transport),
+        ];
+        let registry = classes
+            .iter()
+            .map(|(name, class)| {
+                (
+                    (*name).to_string(),
+                    RegistryDeclaration {
+                        class: *class,
+                        entry_ref: (*name).to_string(),
+                        version: "1".into(),
+                        definition_hash: digest.clone(),
+                        approval_epoch: 1,
+                        revocation_epoch: 0,
+                    },
+                )
+            })
+            .collect();
+        let profile_ref = AuthProfileRefDeclaration {
+            profile_ref: "profile.synthetic".into(),
+            version: "1".into(),
+        };
+        let claims = VocabularySchemaRef {
+            vocabulary_ref: "claims.synthetic".into(),
+            schema_hash: digest.clone(),
+        };
+        manifest.credential_plane = Some(CredentialPlaneDeclarations {
+            registry,
+            auth_profiles: std::collections::BTreeMap::from([(
+                "synthetic_auth".into(),
+                AuthProfileRequirement {
+                    auth_profile_ref: profile_ref.clone(),
+                    scheme_ref: "lattice.scheme.generic_bearer.v0.2".into(),
+                    authorization_claims_schema: claims.clone(),
+                    public_claims_projection_policy_hash: digest.clone(),
+                },
+            )]),
+        });
+        let action = match &mut manifest.surfaces[0] {
+            connector_spec::SurfaceDecl::Action(action) => action,
+            _ => unreachable!(),
+        };
+        action.credential_requirements = Some(Box::new(V2OperationRequirements {
+            auth_profile_ref: profile_ref,
+            authorization_claims_schema: claims,
+            policies: vec![],
+            facts: vec![],
+            relations: vec![],
+            response_firewall: ResponseFirewallRequirement {
+                policy_hash: digest.clone(),
+                implementation_registry_ref: "firewall".into(),
+            },
+            implementations: classes
+                .into_iter()
+                .map(|(name, class)| {
+                    let role = match name {
+                        "auth-driver" => "auth_driver",
+                        "firewall" => "privileged_response_firewall",
+                        other => other,
+                    };
+                    (
+                        role.to_string(),
+                        ImplementationPin::DeclarativePlan {
+                            registry_class: class,
+                            registry_ref: name.into(),
+                            artifact_hash: digest.clone(),
+                        },
+                    )
+                })
+                .collect(),
+        }));
+        manifest
+    }
+
+    #[test]
+    fn v2_descriptors_are_deterministic_and_leave_v1_descriptor_bytes_stable() {
+        let text = synthetic_fixture_text();
+        let v1 = ConnectorManifest::from_yaml_str(&text).unwrap();
+        let old = generate_broker_descriptor_files(&v1).unwrap();
+        let v2 = with_v2_declarations(v1);
+        let left = generate_broker_descriptor_files(&v2).unwrap();
+        let right = generate_broker_descriptor_files(&v2).unwrap();
+        assert_eq!(left, right);
+        let old_descriptor = old
+            .iter()
+            .find(|file| file.relative_path == "broker/operations/echo_effect.json")
+            .unwrap();
+        let migrated_descriptor = left
+            .iter()
+            .find(|file| file.relative_path == "broker/operations/echo_effect.json")
+            .unwrap();
+        assert_eq!(old_descriptor.contents, migrated_descriptor.contents);
+        assert!(
+            left.iter()
+                .any(|file| file.relative_path == "broker/v2/registry.json")
+        );
+        assert!(
+            left.iter()
+                .any(|file| file.relative_path == "broker/v2/operations/echo_effect.json")
+        );
     }
 
     #[test]

@@ -33,6 +33,7 @@
     "GOOGLE_PROVIDER_SERVICE",
     "GOOGLE_TOKEN_SERVICE"
   ],
+  "static_registry_seed": "crates/broker-workers/deploy/credential-registry-seed.json",
   "ai_gateway_policy": {
     "payload_logging": "disabled",
     "spend_limit_usd": "required-at-deploy",

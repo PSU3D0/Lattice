@@ -29,6 +29,7 @@ const mf = new Miniflare({
       durableObjects: {
         BROKER_LEDGER_DO: { className: "BrokerLedgerDurableObject", useSQLite: true },
         CONNECTION_REFRESH_DO: { className: "ConnectionRefreshDurableObject", useSQLite: true },
+        CREDENTIAL_STATE_V2_DO: { className: "CredentialStateDurableObject", useSQLite: true },
       },
       serviceBindings: {
         GOOGLE_TOKEN_SERVICE: "mock-services",
@@ -141,9 +142,11 @@ beforeAll(async () => {
   publicWorker = await mf.getWorker("broker-public");
   privateWorker = await mf.getWorker("broker-private");
   const db = await mf.getD1Database("BROKER_DB", "broker-private");
-  const migration = await readFile("../migrations/0001_broker.sql", "utf8");
-  for (const statement of migration.split(";").map((value) => value.trim()).filter(Boolean)) {
-    await db.prepare(statement).run();
+  for (const name of ["0001_broker.sql", "0002_credential_plane_v2.sql"]) {
+    const migration = await readFile(`../migrations/${name}`, "utf8");
+    for (const statement of migration.split(";").map((value) => value.trim()).filter(Boolean)) {
+      await db.prepare(statement).run();
+    }
   }
   const fixture = await jsonRequest(privateWorker, "/__test/fixtures", {
     fixture: "google-semantic-broker-v1",
@@ -319,6 +322,38 @@ describe("broker Worker management and topology", () => {
       body: JSON.stringify({ fixture: "google-semantic-broker-v1" }),
     });
     expect(response.status).toBe(404);
+    const credentialState = await production.fetch(
+      "http://broker/__test/credential-state-v2",
+      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+    );
+    expect(credentialState.status).toBe(404);
+  });
+
+  it("seals and reads back V2 prepared state behind the fixture-only route", async () => {
+    const fence = {
+      schema_version: "0.2", critical_fields: [], extensions: {}, phase: "v1_authoritative",
+      fence_generation: 0, v2_lease_ever_issued: false, v2_rotation_ever_started: false,
+      v1_leasing_disabled: false, active_v2_generation: null, cas_version: 0,
+    };
+    const base = { org_id: "org-v2-fixture", connection_ref: "connection-v2-fixture" };
+    const initialized = await jsonRequest(privateWorker, "/__test/credential-state-v2", {
+      ...base,
+      command: { op: "initialize", fence_json: [...Buffer.from(JSON.stringify(fence))] },
+    });
+    expect(initialized.status).toBe(200);
+    const sealed = await jsonRequest(privateWorker, "/__test/credential-state-v2", {
+      ...base,
+      command: { op: "seal_material", generation: 1, sealed_envelope: [...Buffer.from("sealed-v2-fixture")] },
+    });
+    expect(sealed.status).toBe(200);
+    const sealedBody = await sealed.json() as any;
+    expect(sealedBody.material_generations).toHaveLength(1);
+    expect(JSON.stringify(sealedBody)).not.toContain("sealed-v2-fixture");
+    const readback = await jsonRequest(privateWorker, "/__test/credential-state-v2", {
+      ...base, command: { op: "read" },
+    });
+    expect(readback.status).toBe(200);
+    expect((await readback.json() as any).material_generations).toEqual(sealedBody.material_generations);
   });
 
   it("keeps fixture and invoke routes off the public facade", async () => {

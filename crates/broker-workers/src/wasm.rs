@@ -1,4 +1,5 @@
 use crate::{
+    credential_state::{CredentialStateV2, PublicRecordSchema},
     durable::{
         LedgerAuthority, LedgerCommand, LedgerPersistence, LedgerReply, apply_persisted_command,
     },
@@ -41,6 +42,7 @@ mod test_fixtures;
 const LEDGER_SNAPSHOT_KEY: &str = "broker:ledger:snapshot:v1";
 const LEDGER_TAIL_KEY: &str = "broker:ledger:tail:v1";
 const REFRESH_STORAGE_KEY: &str = "broker:refresh:v1";
+const CREDENTIAL_STATE_V2_KEY: &str = "broker:credential-state:v2";
 const JSON_CONTENT_TYPE: &str = "application/json";
 
 #[derive(Deserialize, Serialize)]
@@ -342,6 +344,157 @@ fn open_refresh_state(
     serde_json::from_slice(&plaintext).map_err(|_| worker_rust_error("custody"))
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+enum CredentialStateCommand {
+    Initialize {
+        fence_json: Vec<u8>,
+    },
+    PutPublic {
+        record_ref: String,
+        schema: PublicRecordSchema,
+        canonical_json: Vec<u8>,
+    },
+    SealMaterial {
+        generation: u64,
+        sealed_envelope: Vec<u8>,
+    },
+    PutRotationJournal {
+        canonical_json: Vec<u8>,
+    },
+    AdvanceFence {
+        canonical_json: Vec<u8>,
+    },
+    Read,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct CredentialStateEnvelope {
+    org_id: String,
+    connection_ref: String,
+    command: CredentialStateCommand,
+}
+
+#[derive(Deserialize, Serialize)]
+struct CredentialStateReply {
+    initialized: bool,
+    public_record_count: usize,
+    material_generations: Vec<(u64, String)>,
+    fence_json: Vec<u8>,
+    rotation_journal_json: Option<Vec<u8>>,
+}
+
+#[durable_object]
+pub struct CredentialStateDurableObject {
+    state: State,
+}
+
+impl worker::DurableObject for CredentialStateDurableObject {
+    fn new(state: State, _env: Env) -> Self {
+        Self { state }
+    }
+
+    async fn fetch(&self, mut request: Request) -> worker::Result<Response> {
+        let envelope: CredentialStateEnvelope =
+            match bounded_json(&mut request, MAX_MANAGEMENT_BODY).await {
+                Ok(value) => value,
+                Err(_) => return do_error(BrokerError::Brk001),
+            };
+        let existing = self
+            .state
+            .storage()
+            .get::<CredentialStateV2>(CREDENTIAL_STATE_V2_KEY)
+            .await?;
+        let mut state = match (existing, &envelope.command) {
+            (None, CredentialStateCommand::Initialize { fence_json }) => {
+                CredentialStateV2::initialize(
+                    envelope.org_id.clone(),
+                    envelope.connection_ref.clone(),
+                    fence_json,
+                )
+            }
+            (Some(state), CredentialStateCommand::Initialize { fence_json }) => {
+                match CredentialStateV2::initialize(
+                    envelope.org_id.clone(),
+                    envelope.connection_ref.clone(),
+                    fence_json,
+                ) {
+                    Ok(candidate)
+                        if state.org_id == candidate.org_id
+                            && state.connection_ref == candidate.connection_ref
+                            && state.fence_json == candidate.fence_json =>
+                    {
+                        Ok(state)
+                    }
+                    Ok(_) => Err(BrokerError::Brk203),
+                    Err(error) => Err(error),
+                }
+            }
+            (Some(state), _) => Ok(state),
+            (None, _) => Err(BrokerError::Brk103),
+        };
+        let state = match state.as_mut() {
+            Ok(state) => state,
+            Err(error) => return do_error(*error),
+        };
+        if state.org_id != envelope.org_id || state.connection_ref != envelope.connection_ref {
+            return do_error(BrokerError::Brk107);
+        }
+        let mut changed = matches!(envelope.command, CredentialStateCommand::Initialize { .. });
+        let result = match envelope.command {
+            CredentialStateCommand::Initialize { .. } | CredentialStateCommand::Read => Ok(()),
+            CredentialStateCommand::PutPublic {
+                record_ref,
+                schema,
+                canonical_json,
+            } => state
+                .put_public(&envelope.org_id, &record_ref, schema, &canonical_json)
+                .map(|_| {
+                    changed = true;
+                }),
+            CredentialStateCommand::SealMaterial {
+                generation,
+                sealed_envelope,
+            } => state
+                .seal_material(&envelope.org_id, generation, sealed_envelope)
+                .map(|_| {
+                    changed = true;
+                }),
+            CredentialStateCommand::PutRotationJournal { canonical_json } => state
+                .put_rotation_journal(&envelope.org_id, &canonical_json)
+                .map(|_| {
+                    changed = true;
+                }),
+            CredentialStateCommand::AdvanceFence { canonical_json } => state
+                .advance_fence(&envelope.org_id, &canonical_json)
+                .map(|_| {
+                    changed = true;
+                }),
+        };
+        if let Err(error) = result {
+            return do_error(error);
+        }
+        if changed {
+            self.state
+                .storage()
+                .put(CREDENTIAL_STATE_V2_KEY, &*state)
+                .await?;
+        }
+        Response::from_json(&CredentialStateReply {
+            initialized: true,
+            public_record_count: state.public_records.len(),
+            material_generations: state
+                .sealed_material
+                .iter()
+                .map(|(generation, material)| (*generation, material.envelope_hash.clone()))
+                .collect(),
+            fence_json: state.fence_json.clone(),
+            rotation_journal_json: state.rotation_journal_json.clone(),
+        })
+    }
+}
+
 #[event(fetch)]
 async fn fetch(mut request: Request, env: Env, _context: Context) -> worker::Result<Response> {
     let method = request.method();
@@ -366,6 +519,10 @@ async fn fetch(mut request: Request, env: Env, _context: Context) -> worker::Res
         #[cfg(feature = "test-fixtures")]
         (Method::Post, concat!("/__", "test/fixtures")) => {
             test_fixtures::provision_fixture(&mut request, &env).await
+        }
+        #[cfg(feature = "test-fixtures")]
+        (Method::Post, concat!("/__", "test/credential-state-v2")) => {
+            test_fixtures::credential_state_v2(&mut request, &env).await
         }
         _ if path.starts_with("/v1/connections/") => connection_route(&request, &env).await,
         _ if path.starts_with("/v1/receipts/") => receipt_route(&request, &env).await,
