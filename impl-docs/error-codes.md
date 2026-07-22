@@ -86,6 +86,16 @@ ensure the registry stays in sync with the implementation.
 | DATA101   | Validation     | Error   | Data-class annotations missing for emitted schema. |
 | EGRESS101 | Validation     | Error   | No allow-listed egress domains for connector. |
 | SECR201   | Validation     | Error   | Credential binding grants scopes outside requested set. |
+| CRED001   | Credential plane | Error | Authentication profile, scheme, or descriptor pin is unknown or invalid. |
+| CRED002   | Credential plane | Error | Activation correlation, callback, or operator-channel proof is invalid, expired, or replayed. |
+| CRED003   | Credential plane | Error | Authorization claims fail the profile-pinned schema, normalization, equality, or subset policy. |
+| CRED004   | Credential plane | Error | Principal discovery is unavailable, ambiguous, or inconsistent with the committed connection. |
+| CRED005   | Credential plane | Error | Custodian, auth-driver, transport, or policy-evaluator trust entry is absent, mismatched, or revoked. |
+| CRED006   | Credential plane | Error | Credential material generation, lease, rotation overlap, sealing context, or destruction confirmation is invalid. |
+| CRED007   | Credential plane | Error | Connection authority epoch or lifecycle status forbids the requested operation. |
+| CRED008   | Credential plane | Fatal | Registered origin, endpoint, credential placement, signing policy, or remote dispatch boundary was violated. |
+| CRED009   | Credential plane | Error | Required policy/attenuation instance or trusted dynamic-source commitment cannot be evaluated. |
+| CRED010   | Credential plane | Error | Protocol 0.1 execution artifact is absent from the active signed legacy admission inventory. |
 | SAGA201   | Validation     | Error   | Compensation node incompatible with effect node output. |
 | BRK001    | Validation     | Error   | Broker authority metadata or repeated-activation bound is invalid. |
 | CAP101    | Runtime        | Error   | Required capability binding missing from ResourceBag during preflight. |
