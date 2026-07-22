@@ -164,6 +164,41 @@ impl BrokerError {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CredentialDiagnostic {
+    Cred001,
+    Cred002,
+    Cred003,
+    Cred004,
+    Cred005,
+    Cred006,
+    Cred007,
+    Cred008,
+    Cred009,
+    Cred010,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CredentialBoundaryFailure {
+    UnknownVocabulary,
+    InvalidAuthority,
+    RevokedOrEpochMismatch,
+    CustodyUnavailable,
+    EndpointViolation,
+}
+
+impl CredentialBoundaryFailure {
+    pub const fn broker_error(self) -> BrokerError {
+        match self {
+            Self::UnknownVocabulary => BrokerError::Brk004,
+            Self::InvalidAuthority => BrokerError::Brk109,
+            Self::RevokedOrEpochMismatch => BrokerError::Brk106,
+            Self::CustodyUnavailable => BrokerError::Brk401,
+            Self::EndpointViolation => BrokerError::Brk302,
+        }
+    }
+}
+
 pub struct PublicError(pub BrokerError);
 impl fmt::Display for PublicError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

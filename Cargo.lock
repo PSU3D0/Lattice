@@ -934,6 +934,7 @@ dependencies = [
  "hex",
  "hmac",
  "jcs-canonical",
+ "jsonschema",
  "ryu-js",
  "serde",
  "serde_json",
