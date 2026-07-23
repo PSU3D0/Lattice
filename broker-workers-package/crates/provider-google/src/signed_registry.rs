@@ -12,6 +12,10 @@ use broker_core::{
 use serde_json::Value;
 
 use crate::{GMAIL_CONTRACT_HASH, PROFILE_REF, PROFILE_VERSION, SHEETS_CONTRACT_HASH};
+use connector_google_platform::broker::{
+    GMAIL_RFC822_ADAPTER_HASH, GMAIL_RFC822_ADAPTER_ID, SHEETS_APPEND_ROW_ADAPTER_HASH,
+    SHEETS_APPEND_ROW_ADAPTER_ID,
+};
 
 const KEY_ID: &str = "google-registry-root-1";
 const HASH_A: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -44,24 +48,24 @@ pub fn deterministic_signed_registry() -> Result<SignedRegistryBundle, BrokerErr
             firewall_payload(),
         ),
         (
-            "planner.connector.google.gmail.send_message@1",
+            GMAIL_RFC822_ADAPTER_ID,
             "capsule_planner",
-            planner_payload(GMAIL_CONTRACT_HASH),
+            planner_payload(GMAIL_CONTRACT_HASH, GMAIL_RFC822_ADAPTER_HASH),
         ),
         (
             "projector.connector.google.gmail.send_message@1",
             "response_projector",
-            projector_payload(GMAIL_CONTRACT_HASH),
+            projector_payload(GMAIL_CONTRACT_HASH, GMAIL_RFC822_ADAPTER_HASH),
         ),
         (
-            "planner.connector.google.sheets.append_row@1",
+            SHEETS_APPEND_ROW_ADAPTER_ID,
             "capsule_planner",
-            planner_payload(SHEETS_CONTRACT_HASH),
+            planner_payload(SHEETS_CONTRACT_HASH, SHEETS_APPEND_ROW_ADAPTER_HASH),
         ),
         (
             "projector.connector.google.sheets.append_row@1",
             "response_projector",
-            projector_payload(SHEETS_CONTRACT_HASH),
+            projector_payload(SHEETS_CONTRACT_HASH, SHEETS_APPEND_ROW_ADAPTER_HASH),
         ),
     ] {
         let signed = sign_definition(&publisher, entry, class, payload)?;
@@ -155,7 +159,7 @@ fn sign_decision(
         "schema_version":"0.2","critical_fields":[],"extensions":{},
         "entry_ref":entry_ref,"version":"1","definition_hash":definition_hash,
         "approval_status":approval_status,"approval_epoch":1,
-        "revocation_status":revocation_status,"revocation_epoch":0,
+        "revocation_status":revocation_status,"revocation_epoch":if revocation_status == "active" { 0 } else { 1 },
         "authority_ref":"lattice.registry.approver","authority_key_id":KEY_ID,
         "policy_hash":HASH_A,"not_before":"2026-01-01T00:00:00Z",
         "expires_at":"2035-01-01T00:00:00Z",
@@ -243,8 +247,9 @@ fn firewall_payload() -> Value {
     object.insert("maximum_response_bytes".into(), Value::from(65536));
     value
 }
-fn planner_payload(contract_hash: &str) -> Value {
+fn planner_payload(contract_hash: &str, implementation_digest: &str) -> Value {
     let mut value = common("capsule_planner");
+    value["implementation_digest"] = Value::String(implementation_digest.into());
     let object = value.as_object_mut().expect("object");
     object.insert(
         "implementation_kind".into(),
@@ -256,8 +261,8 @@ fn planner_payload(contract_hash: &str) -> Value {
     );
     value
 }
-fn projector_payload(contract_hash: &str) -> Value {
-    let mut value = planner_payload(contract_hash);
+fn projector_payload(contract_hash: &str, implementation_digest: &str) -> Value {
+    let mut value = planner_payload(contract_hash, implementation_digest);
     value["kind"] = Value::String("response_projector".into());
     value
 }

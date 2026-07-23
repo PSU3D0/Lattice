@@ -4,9 +4,15 @@ mod adapter;
 mod binding;
 mod executor;
 mod manifest;
+mod policy;
 mod scope;
+mod v2;
+mod v2_executor;
 
-pub use adapter::TrustedAdapterRegistry;
+pub use adapter::{
+    CredentialBlindPlannerImplementation, ResponseFirewallImplementation,
+    ResponseProjectorImplementation, TrustedAdapterRegistry,
+};
 pub use binding::{BindingLockRecord, BrokerBindingEvidence, VerifiedBinding};
 pub use executor::{
     BrokerDescriptorRegistry, BrokerOperation, BrokerTransport, ConnectorExecutor,
@@ -19,9 +25,23 @@ pub use manifest::{
     ApprovedAuthorityContract, AuthorityManifestError, ManifestProvenance, NodeOperationMetadata,
     VerifiedAuthorityManifest, derive_authority_manifest, verify_authority_manifest,
 };
+pub use policy::{
+    DeterministicEqualityEvaluator, PolicyEvaluationInput, PolicyEvaluatorImplementation,
+    PolicyEvaluatorRegistry, SYNTHETIC_EQUALITY_PROFILE_REF,
+};
 pub use scope::{
     GuestScopeAssertion, HostBootstrapIdentity, HostContext, TrustedHostScope,
     bootstrap_host_context,
+};
+pub use v2::{
+    BindingDerivationV2, BindingVerificationLockV2, DerivedGrantV2, ExactGrantRefV2,
+    InMemoryLiveConnectionAuthority, LiveConnectionAuthority, NodeLeaseLimitsV2, NodeLeaseStoreV2,
+    VerifiedBindingV2, issue_binding_v2, verify_binding_v2,
+};
+pub use v2_executor::{
+    LocalV2ConnectorExecutor, RemoteV2ConnectorExecutor, V2AttemptStage, V2BrokerTransport,
+    V2ConnectorOutcome, V2DispatchEvidence, V2ReceiptTrustStore, V2RemoteInvokeRequest,
+    V2RemoteInvokeResponse,
 };
 
 use broker_core::BrokerError;
@@ -58,6 +78,12 @@ pub enum BrokerHostError {
     BindingLaneMismatch,
     #[error("broker descriptor is invalid or does not match the operation")]
     DescriptorMismatch,
+    #[error("verified implementation registry rejected the exact entry")]
+    RegistryRejected,
+    #[error("V2 host derivation evidence is invalid")]
+    V2DerivationRejected,
+    #[error("live connection authority or material generation drifted")]
+    V2AuthorityDrift,
     #[error("broker response projection exceeds the descriptor policy")]
     ResponsePolicyExceeded,
     #[error("remote broker receipt verification failed")]

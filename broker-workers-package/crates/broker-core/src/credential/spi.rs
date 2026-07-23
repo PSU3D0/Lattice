@@ -141,6 +141,22 @@ impl CredentialMaterial<'_> {
     }
 }
 
+pub struct ProviderNarrowingEvidence(Value);
+impl ProviderNarrowingEvidence {
+    /// Only a trusted auth driver may call this after validating a
+    /// provider-issued narrowing response against its pinned evidence schema.
+    pub fn from_trusted_driver(value: Value) -> Result<Self, BrokerError> {
+        if !value.is_object() {
+            return Err(BrokerError::Brk109);
+        }
+        crate::canonical::from_serde(&value, crate::canonical::MAX_OPERATION_BYTES)?;
+        Ok(Self(value))
+    }
+    pub fn value(&self) -> &Value {
+        &self.0
+    }
+}
+
 pub trait TrustedAuthDriver: Send + Sync {
     fn authorize(
         &self,
@@ -149,6 +165,13 @@ pub trait TrustedAuthDriver: Send + Sync {
         broker_context_jcs: &[u8],
         sink: &mut dyn AuthenticatedRequestSink,
     ) -> Result<(), BrokerError>;
+
+    /// Ordinary authentication returns no provider-enforcement evidence.
+    /// Drivers override this only for a provider-issued, schema-verified
+    /// narrowed credential or assertion.
+    fn take_provider_narrowing_evidence(&self) -> Option<ProviderNarrowingEvidence> {
+        None
+    }
 }
 
 pub fn authorize_with_driver(

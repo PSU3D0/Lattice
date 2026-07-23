@@ -155,6 +155,22 @@ impl TrustedHostScope {
         &self.core
     }
 
+    pub(crate) fn subject_v2(&self) -> serde_json::Value {
+        serde_json::json!({
+            "kind":"flow_node_run", "bundle_id":self.bundle_id,
+            "flow_ir_hash":self.flow_ir_hash, "binding_lock_hash":self.binding_lock_hash,
+            "flow_id":self.flow_id, "node_id":self.node_id, "node_alias":self.node_alias,
+            "run_id":self.run_id
+        })
+    }
+
+    pub(crate) fn channel_binding_v2(&self) -> serde_json::Value {
+        serde_json::json!({
+            "method":"deployment_key", "key_thumbprint":self.binding_lock_hash,
+            "session_id":self.run_id
+        })
+    }
+
     pub(crate) fn matches_receipt(
         &self,
         receipt: &broker_core::artifacts::InvocationReceipt,

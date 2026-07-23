@@ -4,6 +4,8 @@ pub mod activation;
 pub mod composition;
 pub mod credential_state;
 pub mod durable;
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod host_integration;
 pub mod management;
 pub mod protocol;
 pub mod refresh;

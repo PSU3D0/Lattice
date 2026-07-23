@@ -110,6 +110,12 @@ impl ChildDerivationStore for InMemoryChildDerivationStore {
 
 /// Dispatch accepts only an exact execution grant. A node lease has a distinct
 /// Rust type, schema, audience, signature domain, and cannot be passed here.
+///
+/// ```compile_fail
+/// use broker_core::credential::{grant::{NodeLeaseV2, require_invocable}};
+/// let lease: NodeLeaseV2 = todo!();
+/// require_invocable(&lease).unwrap();
+/// ```
 pub fn verify_canonical_input(
     grant: &ExecutionGrantV2,
     opening: &crate::commitment::DisclosureKey,

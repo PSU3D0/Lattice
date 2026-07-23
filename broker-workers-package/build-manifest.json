@@ -3,9 +3,9 @@
   "package": "broker-workers",
   "package_version": "0.1.0",
   "requirements_sha256": "c791f210a666156e2ba2aa238623c77606c2a00ca54fa1ac8c40216c08f1f807",
-  "cargo_lock_sha256": "603caa2f33c95c2757af418ab41a73349f12c6a60cabdf212365c21fdde3d448",
-  "wasm_sha256": "ae763e43538c8d6ce58f5c2670668f753ef6e3e2a3e2177ad0495eeca6f219d0",
-  "root_production_wasm_sha256": "ae763e43538c8d6ce58f5c2670668f753ef6e3e2a3e2177ad0495eeca6f219d0",
+  "cargo_lock_sha256": "1576af803441159d2f002057d94648fd5ecf8e6df063c7c75bed1450961492a4",
+  "wasm_sha256": "e1d99cb40467377246a4abbea39de094a443d0cfa1be453bb63191bf377d69ab",
+  "root_production_wasm_sha256": "e1d99cb40467377246a4abbea39de094a443d0cfa1be453bb63191bf377d69ab",
   "feature_flags": {
     "production": [],
     "workerd_tests_separate_artifact": [
@@ -15,8 +15,8 @@
   "files": [
     {
       "path": "Cargo.lock",
-      "sha256": "603caa2f33c95c2757af418ab41a73349f12c6a60cabdf212365c21fdde3d448",
-      "size_bytes": 219700
+      "sha256": "1576af803441159d2f002057d94648fd5ecf8e6df063c7c75bed1450961492a4",
+      "size_bytes": 219704
     },
     {
       "path": "Cargo.toml",
@@ -85,13 +85,13 @@
     },
     {
       "path": "crates/broker-core/src/credential/grant.rs",
-      "sha256": "d63839844f81440a8e3c58934756859ee2b28a41223658ecf1a5d8884c1e78b6",
-      "size_bytes": 4497
+      "sha256": "093e7f9874a61d8f0fb822e814d3fc61133debe429e66a25153d5c9ab08a1aa5",
+      "size_bytes": 4683
     },
     {
       "path": "crates/broker-core/src/credential/legacy.rs",
-      "sha256": "8024a686675b70c0bfe8274367ae1cf22af7f356166b4db80d333af78be3ca59",
-      "size_bytes": 3828
+      "sha256": "29ec5b2f9d13dcb6c6515f72b25d9ceb39bf5d4ff03aa70f3ce02a66b83f5bb6",
+      "size_bytes": 10259
     },
     {
       "path": "crates/broker-core/src/credential/mod.rs",
@@ -105,8 +105,8 @@
     },
     {
       "path": "crates/broker-core/src/credential/policy.rs",
-      "sha256": "6fc9c2168aa70489348b78c45954a97a721ac35f49e3d8e715e4d705cf8139ec",
-      "size_bytes": 1701
+      "sha256": "5770be3c8b950efa781b5b44050eb068fce13b65bebb006f3d0b1be55789051b",
+      "size_bytes": 4344
     },
     {
       "path": "crates/broker-core/src/credential/private_codec.rs",
@@ -140,8 +140,8 @@
     },
     {
       "path": "crates/broker-core/src/credential/spi.rs",
-      "sha256": "2f7cd317bd2441882cda3480d8766ba016ee8c7233a5615fde60790bd94f4de5",
-      "size_bytes": 5284
+      "sha256": "ce0a1e758d81c1ed5c7e61f4e2e33b685a02b4a30d939f6a31ad7248fad39148",
+      "size_bytes": 6145
     },
     {
       "path": "crates/broker-core/src/credential/tests.rs",
@@ -200,13 +200,13 @@
     },
     {
       "path": "crates/broker-host/Cargo.toml",
-      "sha256": "a5d5ed06cb4fa73113ea200e35d4091086e273b617151ea86222a56f4cfed2d1",
-      "size_bytes": 603
+      "sha256": "7231c2e166a57565579d1ce5e2cb04f1ef3e2ef2a615761bdaffe20ae1891b8f",
+      "size_bytes": 532
     },
     {
       "path": "crates/broker-host/src/adapter.rs",
-      "sha256": "2dd07c0bb402ac444eb56322c901fb54a3dd21dbf01b7bca357b0f8ee7b48656",
-      "size_bytes": 1843
+      "sha256": "67cb8b5489af2e49d10e1e2f67fc16426860198c8a95b0a307a89d99a37edcd8",
+      "size_bytes": 16611
     },
     {
       "path": "crates/broker-host/src/binding.rs",
@@ -215,13 +215,13 @@
     },
     {
       "path": "crates/broker-host/src/executor.rs",
-      "sha256": "502ada8c3e94ef3edd624aaef0eb0f818f6a77bda354a718ce27f850249eea33",
-      "size_bytes": 34298
+      "sha256": "b798911316995c4b7a7241b56bd35e9b008ed51bcb0509d85d3682599af417bc",
+      "size_bytes": 33170
     },
     {
       "path": "crates/broker-host/src/lib.rs",
-      "sha256": "a965391e2aa871c72249cac8226e4eb8133e4dbc056a5617ab525ad3c935e117",
-      "size_bytes": 2837
+      "sha256": "0b4eee11386c3c99270d7d7a50bfa5fb0738568a2118b1cdd8f7c73ad645f4fe",
+      "size_bytes": 3929
     },
     {
       "path": "crates/broker-host/src/manifest.rs",
@@ -229,9 +229,24 @@
       "size_bytes": 16591
     },
     {
+      "path": "crates/broker-host/src/policy.rs",
+      "sha256": "4d396feec875120b776e0716308f7032ac3bd915e67d63e1f3e2744c350eb4bc",
+      "size_bytes": 7557
+    },
+    {
       "path": "crates/broker-host/src/scope.rs",
-      "sha256": "138e616dddf7cc980cb9a7a73ab88e8b13e88acaa1e1ce692a1d741b1cef6a98",
-      "size_bytes": 6901
+      "sha256": "f09a7b3cea829d785f0ae4c9a5508c804b9df83f28e8fea1ecbe20887b87f98c",
+      "size_bytes": 7513
+    },
+    {
+      "path": "crates/broker-host/src/v2_executor.rs",
+      "sha256": "41da81dfa4f90a4c4ebe041b03a0e808f4276e2bc94764b766ef9f0f9c49efec",
+      "size_bytes": 13962
+    },
+    {
+      "path": "crates/broker-host/src/v2.rs",
+      "sha256": "bd635923db618dcab2979c6e4dbc42072d52af97a857e76ffe1cc9306803112b",
+      "size_bytes": 32438
     },
     {
       "path": "crates/broker-workers/.gitignore",
@@ -245,8 +260,8 @@
     },
     {
       "path": "crates/broker-workers/build/index_bg.wasm",
-      "sha256": "ae763e43538c8d6ce58f5c2670668f753ef6e3e2a3e2177ad0495eeca6f219d0",
-      "size_bytes": 5214039
+      "sha256": "e1d99cb40467377246a4abbea39de094a443d0cfa1be453bb63191bf377d69ab",
+      "size_bytes": 5253755
     },
     {
       "path": "crates/broker-workers/build/index.js",
@@ -369,9 +384,14 @@
       "size_bytes": 18971
     },
     {
+      "path": "crates/broker-workers/src/host_integration.rs",
+      "sha256": "095a3191b865878b6da80302465de2842702a110b9711f1e08488ed3d5f5b437",
+      "size_bytes": 4170
+    },
+    {
       "path": "crates/broker-workers/src/lib.rs",
-      "sha256": "4b3dc36c626201ce38c5b4ce3bdc4e96bef8cf592063502482bc0e35ab5b8fd8",
-      "size_bytes": 368
+      "sha256": "476161d808ea42924ef0a3751ad2e2500ffd7c8f203b5974cab8c5fb6470e9e2",
+      "size_bytes": 439
     },
     {
       "path": "crates/broker-workers/src/management.rs",
@@ -395,8 +415,8 @@
     },
     {
       "path": "crates/broker-workers/src/wasm.rs",
-      "sha256": "e521e4587608fe1b85491b57b314ed89f512dee6959f55d71066395bb81721f6",
-      "size_bytes": 146162
+      "sha256": "3dcc6e88cebb327c79cf29121afbac1623aaef48bc549e57156703360f1804d6",
+      "size_bytes": 146324
     },
     {
       "path": "crates/broker-workers/src/wasm/v2_test.rs",
@@ -715,18 +735,18 @@
     },
     {
       "path": "crates/provider-google/Cargo.toml",
-      "sha256": "0f02472ed2e874b1c752a2c170b7ce7751780f043b24661f397602405c7ee14f",
-      "size_bytes": 588
+      "sha256": "437cb25f3ebf07834056432b270edebb81d19191f5105f4cc55f47f22500b669",
+      "size_bytes": 568
     },
     {
       "path": "crates/provider-google/src/lib.rs",
-      "sha256": "281fbdf918fea7be037c029bab161093d587614be25b78265f65f2bedab72dcc",
-      "size_bytes": 15342
+      "sha256": "6f53c4960bdacf695eba6d570f7b00770412a11e49cc94c79a29c7300bcd2521",
+      "size_bytes": 24238
     },
     {
       "path": "crates/provider-google/src/signed_registry.rs",
-      "sha256": "da729782a0f6205e8c27ff01bea0121bd2b446acf9d30df42c06c2bf503d5473",
-      "size_bytes": 12411
+      "sha256": "8f9159cfdd7c9d8d04e30ffc710b2f2e8326b79aef4e2396707f7f4f1736d282",
+      "size_bytes": 12864
     },
     {
       "path": "impl-docs/spec/credential-plane-protocol.schema.json",

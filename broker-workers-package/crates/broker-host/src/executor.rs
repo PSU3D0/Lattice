@@ -550,37 +550,12 @@ pub fn descriptor_response_projection(
         .as_object()
         .ok_or(BrokerHostError::ResponsePolicyExceeded)?;
     let mut projection = serde_json::Map::new();
-    match descriptor.contract.contract_id.as_str() {
-        "connector.google.sheets.append_row@1" => {
-            let source = object
-                .get("updates")
-                .and_then(serde_json::Value::as_object)
-                .unwrap_or(object);
-            for (field, provider_field) in [
-                ("updated_cells", "updatedCells"),
-                ("updated_columns", "updatedColumns"),
-                ("updated_range", "updatedRange"),
-                ("updated_rows", "updatedRows"),
-            ] {
-                let value = source
-                    .get(provider_field)
-                    .or_else(|| source.get(field))
-                    .filter(|value| !value.is_null())
-                    .ok_or(BrokerHostError::ResponsePolicyExceeded)?;
-                projection.insert(field.into(), value.clone());
-            }
-        }
-        "connector.google.gmail.send_message@1" => {
-            for (field, provider_field) in [("id", "id"), ("thread_id", "threadId")] {
-                let value = object
-                    .get(provider_field)
-                    .or_else(|| object.get(field))
-                    .filter(|value| !value.is_null())
-                    .ok_or(BrokerHostError::ResponsePolicyExceeded)?;
-                projection.insert(field.into(), value.clone());
-            }
-        }
-        _ => return Err(BrokerHostError::DescriptorMismatch),
+    for field in &descriptor.response_data_policy.fields {
+        let value = object
+            .get(field)
+            .filter(|value| !value.is_null())
+            .ok_or(BrokerHostError::ResponsePolicyExceeded)?;
+        projection.insert(field.clone(), value.clone());
     }
     if projection
         .keys()
@@ -647,7 +622,7 @@ pub fn descriptor_plan_template(
     let facts: serde_json::Value = serde_json::from_slice(authority_facts)
         .map_err(|_| BrokerHostError::Broker(BrokerError::Brk301))?;
     let object = match &descriptor.request_plan.trusted_adapter {
-        Some(pin) => adapters.adapt(pin, &input, &facts)?,
+        Some(pin) => adapters.adapt(pin, &input, &facts, now)?,
         None => input
             .as_object()
             .cloned()

@@ -305,7 +305,7 @@ fn build(
     };
     let host = host();
     let adapters = if install_adapters {
-        broker_host::TrustedAdapterRegistry::google_v1()
+        provider_google::host_registry("2026-07-21T00:00:00Z").unwrap()
     } else {
         broker_host::TrustedAdapterRegistry::empty()
     };

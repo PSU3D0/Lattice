@@ -2,7 +2,10 @@
 
 pub mod signed_registry;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use broker_auth::{
     ActivationKind, ApprovedRegistry, AuthProfile, AuthScheme, NormalizedClaims, PrivateMaterial,
@@ -273,8 +276,13 @@ pub fn verified_google_v1(now: &str) -> Result<GoogleComposition, BrokerError> {
         .cloned()
         .ok_or(BrokerError::Brk004)?;
     for adapter in &mut composition.adapters {
+        let planner_entry = match adapter.contract_id {
+            GMAIL_CONTRACT_ID => connector_google_platform::broker::GMAIL_RFC822_ADAPTER_ID,
+            SHEETS_CONTRACT_ID => connector_google_platform::broker::SHEETS_APPEND_ROW_ADAPTER_ID,
+            _ => return Err(BrokerError::Brk004),
+        };
         adapter.planner = pins
-            .get(&format!("planner.{}", adapter.contract_id))
+            .get(planner_entry)
             .cloned()
             .ok_or(BrokerError::Brk004)?;
         adapter.projector = pins
@@ -284,6 +292,172 @@ pub fn verified_google_v1(now: &str) -> Result<GoogleComposition, BrokerError> {
         adapter.response_firewall = composition.profile.response_firewall.clone();
     }
     Ok(composition)
+}
+
+struct GooglePlanner(&'static str);
+impl broker_host::CredentialBlindPlannerImplementation for GooglePlanner {
+    fn plan(
+        &self,
+        input: &serde_json::Value,
+        authority: &serde_json::Value,
+    ) -> Result<serde_json::Map<String, serde_json::Value>, BrokerError> {
+        match self.0 {
+            GMAIL_CONTRACT_ID => {
+                connector_google_platform::broker::adapt_gmail_rfc822_message(input)
+                    .map_err(|_| BrokerError::Brk301)
+            }
+            SHEETS_CONTRACT_ID => {
+                connector_google_platform::broker::adapt_sheets_append_row(input, authority)
+                    .map_err(|_| BrokerError::Brk301)
+            }
+            _ => Err(BrokerError::Brk108),
+        }
+    }
+}
+
+struct GoogleProjector(&'static str);
+impl broker_host::ResponseProjectorImplementation for GoogleProjector {
+    fn project(
+        &self,
+        response: &serde_json::Value,
+    ) -> Result<serde_json::Map<String, serde_json::Value>, BrokerError> {
+        let object = response.as_object().ok_or(BrokerError::Brk305)?;
+        let mut projected = serde_json::Map::new();
+        match self.0 {
+            GMAIL_CONTRACT_ID => {
+                for (field, wire) in [("id", "id"), ("thread_id", "threadId")] {
+                    projected.insert(
+                        field.into(),
+                        object.get(wire).cloned().ok_or(BrokerError::Brk305)?,
+                    );
+                }
+            }
+            SHEETS_CONTRACT_ID => {
+                let source = object
+                    .get("updates")
+                    .and_then(serde_json::Value::as_object)
+                    .unwrap_or(object);
+                for (field, wire) in [
+                    ("updated_cells", "updatedCells"),
+                    ("updated_columns", "updatedColumns"),
+                    ("updated_range", "updatedRange"),
+                    ("updated_rows", "updatedRows"),
+                ] {
+                    projected.insert(
+                        field.into(),
+                        source.get(wire).cloned().ok_or(BrokerError::Brk305)?,
+                    );
+                }
+            }
+            _ => return Err(BrokerError::Brk108),
+        }
+        Ok(projected)
+    }
+}
+
+struct GoogleCredentialFirewall;
+impl broker_host::ResponseFirewallImplementation for GoogleCredentialFirewall {
+    fn scrub(&self, bounded_response: &[u8]) -> Result<serde_json::Value, BrokerError> {
+        if bounded_response.len() > 65_536 {
+            return Err(BrokerError::Brk305);
+        }
+        let value: serde_json::Value =
+            serde_json::from_slice(bounded_response).map_err(|_| BrokerError::Brk305)?;
+        fn contains_credential(value: &serde_json::Value) -> bool {
+            match value {
+                serde_json::Value::Array(values) => values.iter().any(contains_credential),
+                serde_json::Value::Object(object) => object.iter().any(|(key, value)| {
+                    matches!(
+                        key.to_ascii_lowercase().as_str(),
+                        "access_token"
+                            | "refresh_token"
+                            | "id_token"
+                            | "client_secret"
+                            | "authorization"
+                            | "proxy-authorization"
+                    ) || contains_credential(value)
+                }),
+                _ => false,
+            }
+        }
+        if contains_credential(&value) {
+            return Err(BrokerError::Brk302);
+        }
+        Ok(value)
+    }
+}
+
+/// Application-root composition of signed registry evidence and concrete
+/// implementations. `broker-host` remains provider-neutral.
+pub fn host_registry(now: &str) -> Result<broker_host::TrustedAdapterRegistry, BrokerError> {
+    let bundle = signed_registry::deterministic_signed_registry()?;
+    let composition = verified_google_v1(now)?;
+    let publisher = bundle
+        .publisher_roots
+        .values()
+        .next()
+        .ok_or(BrokerError::Brk004)?;
+    let decision_key = bundle
+        .decision_roots
+        .values()
+        .next()
+        .ok_or(BrokerError::Brk004)?;
+    let find = |entry_ref: &str| -> Result<(&[u8], &[u8]), BrokerError> {
+        bundle
+            .seeds
+            .iter()
+            .find_map(|(definition, decision)| {
+                let parsed = parse::<RegistryDefinitionV2>(definition).ok()?;
+                (parsed
+                    .view
+                    .as_value()
+                    .get("entry_ref")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(entry_ref))
+                .then_some((definition.as_slice(), decision.as_slice()))
+            })
+            .ok_or(BrokerError::Brk004)
+    };
+    let mut registry = broker_host::TrustedAdapterRegistry::empty();
+    for adapter in &composition.adapters {
+        let (definition, decision) = find(&adapter.planner.entry_ref)?;
+        registry
+            .install_planner(
+                definition,
+                decision,
+                publisher,
+                decision_key,
+                now,
+                adapter.contract_hash,
+                Arc::new(GooglePlanner(adapter.contract_id)),
+            )
+            .map_err(|_| BrokerError::Brk106)?;
+        let (definition, decision) = find(&adapter.projector.entry_ref)?;
+        registry
+            .install_projector(
+                definition,
+                decision,
+                publisher,
+                decision_key,
+                now,
+                adapter.contract_hash,
+                Arc::new(GoogleProjector(adapter.contract_id)),
+            )
+            .map_err(|_| BrokerError::Brk106)?;
+    }
+    let (definition, decision) = find("firewall.google.oauth-token")?;
+    registry
+        .install_firewall(
+            definition,
+            decision,
+            publisher,
+            decision_key,
+            now,
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            Arc::new(GoogleCredentialFirewall),
+        )
+        .map_err(|_| BrokerError::Brk106)?;
+    Ok(registry)
 }
 
 pub fn adapter(contract_id: &str) -> Result<AdapterRegistration, BrokerError> {
@@ -371,6 +545,62 @@ mod tests {
         assert!(!c.profile.lifecycle.contains("device_authorization"));
         assert_eq!(c.profile.endpoint("token").unwrap(), TOKEN_ENDPOINT);
     }
+    #[test]
+    fn generic_host_registry_composes_exact_signed_implementations() {
+        let registry = host_registry("2026-07-21T00:00:00Z").unwrap();
+        let gmail = adapter(GMAIL_CONTRACT_ID).unwrap();
+        let descriptor: connector_spec::BrokerDispatchDescriptor =
+            serde_json::from_slice(gmail.descriptor).unwrap();
+        let planned = broker_host::descriptor_plan_template(
+            &descriptor,
+            br#"{"bcc":null,"cc":null,"subject":"subject","text_body":"body","to":"to@example.com"}"#,
+            gmail.authority_facts_jcs,
+            &registry,
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "2026-07-21T00:00:00Z",
+        ).unwrap();
+        assert!(String::from_utf8(planned).unwrap().contains("raw"));
+        let projected = registry
+            .project(
+                gmail.contract_hash,
+                &serde_json::json!({"id":"message-1","threadId":"thread-1"}),
+            )
+            .unwrap();
+        assert_eq!(projected["thread_id"], "thread-1");
+    }
+
+    #[test]
+    fn generic_host_registry_applies_signed_revocation_without_fallback() {
+        let now = "2026-07-21T00:00:00Z";
+        let mut registry = host_registry(now).unwrap();
+        let composition = verified_google_v1(now).unwrap();
+        let planner = &composition.adapters[0].planner;
+        let revoked = signed_registry::deterministic_decision(
+            &planner.entry_ref,
+            &planner.definition_hash,
+            "approved",
+            "revoked",
+        )
+        .unwrap();
+        let roots = signed_registry::deterministic_signed_registry().unwrap();
+        registry
+            .apply_decision(&revoked, roots.decision_roots.values().next().unwrap(), now)
+            .unwrap();
+        let descriptor: connector_spec::BrokerDispatchDescriptor =
+            serde_json::from_slice(composition.adapters[0].descriptor).unwrap();
+        assert!(matches!(
+            broker_host::descriptor_plan_template(
+                &descriptor,
+                br#"{"subject":"s","text_body":"b","to":"to@example.com"}"#,
+                composition.adapters[0].authority_facts_jcs,
+                &registry,
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                now,
+            ),
+            Err(broker_host::BrokerHostError::RegistryRejected)
+        ));
+    }
+
     #[test]
     fn scope_normalization_and_discovery_are_profile_pinned_and_private() {
         let expected = NormalizedClaims {

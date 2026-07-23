@@ -26,6 +26,7 @@ zeroize = "1"
 broker-host = { path = "../broker-host" }
 connector-spec = { path = "../connector-spec" }
 connector_google_platform = { path = "../connectors/google/platform" }
+provider-google = { path = "../provider-google" }
 hex.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

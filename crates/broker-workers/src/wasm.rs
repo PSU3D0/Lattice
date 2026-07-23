@@ -2761,11 +2761,15 @@ async fn invoke(request: &mut Request, env: &Env) -> worker::Result<Response> {
     ) {
         return json(&PublicError::broker(error), 403);
     }
+    let host_registry = match provider_google::host_registry("2026-07-21T00:00:00Z") {
+        Ok(registry) => registry,
+        Err(error) => return json(&PublicError::broker(error), 503),
+    };
     let template = match broker_host::descriptor_plan_template(
         &descriptor,
         &canonical_input,
         authority_facts,
-        &broker_host::TrustedAdapterRegistry::google_v1(),
+        &host_registry,
         &body.logical_effect_id,
         &now_rfc3339(),
     ) {
