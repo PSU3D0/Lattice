@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { cp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 
@@ -13,6 +13,7 @@ const workspacePackages = [
   "crates/provider-google", "crates/jcs-canonical", "crates/connector-spec", "crates/dag-core",
   "crates/kernel-plan", "crates/connectors/google/platform", "crates/custodian-google",
 ];
+const providerGoogleWorkers = "crates/provider-google-workers";
 const descriptors = [
   "crates/connectors/google/sheets/broker/operations/append_row.json",
   "crates/connectors/google/gmail/broker/operations/send_message.json",
@@ -33,11 +34,13 @@ const excluded = (source) => {
   return !normalized.includes("/target/") && !normalized.endsWith("/target")
     && !normalized.includes("/node_modules/") && !normalized.includes("/workerd-tests/")
     && !/(^|\/)(build-test|build-production|build-production-tmp)(\/|$)/.test(normalized)
+    && !normalized.includes("/.dry-run/") && !normalized.endsWith("/.dry-run")
     && !normalized.includes("/deploy/package/") && !normalized.endsWith("/deploy/package")
     && !normalized.includes("/crates/broker-workers/build/")
     && !normalized.endsWith("/crates/broker-workers/build")
     && !normalized.endsWith("/crates/broker-workers/src/wasm/test_fixtures.rs")
-    && !normalized.includes("/tests/") && !normalized.endsWith("/tests");
+    && !normalized.includes("/tests/") && !normalized.endsWith("/tests")
+    && !normalized.includes("/test/") && !normalized.endsWith("/test");
 };
 async function sha(path) {
   return createHash("sha256").update(await readFile(path)).digest("hex");
@@ -77,6 +80,10 @@ for (const packagePath of workspacePackages) {
       .replace(/\n\[\[test\]\][\s\S]*?(?=\n\[|$)/g, ""),
   );
 }
+await cp(join(workspace, providerGoogleWorkers), join(output, providerGoogleWorkers), {
+  recursive: true,
+  filter: excluded,
+});
 for (const descriptor of descriptors) {
   await mkdir(dirname(join(output, descriptor)), { recursive: true });
   await cp(join(workspace, descriptor), join(output, descriptor));
@@ -109,10 +116,17 @@ const requirements = {
   feature_flags: { production: [], workerd_tests_separate_artifact: ["test-fixtures"] },
   required_secret_bindings: [
     "AI_GATEWAY_AUTHORIZATION", "BINDING_SIGNING_SEED", "COMMITMENT_KEY", "CUSTODY_ROOT_KEY",
-    "DEPLOYMENT_BOOTSTRAP_AUTH", "INVOKE_SERVICE_AUTH", "KEY_HASH_PEPPER", "RECEIPT_SIGNING_SEED",
+    "DEPLOYMENT_BOOTSTRAP_AUTH", "GOOGLE_EGRESS_SERVICE_AUTH", "INVOKE_SERVICE_AUTH",
+    "KEY_HASH_PEPPER", "RECEIPT_SIGNING_SEED",
   ],
-  required_variable_bindings: ["GOOGLE_AUTHORIZE_ENDPOINT", "GOOGLE_OAUTH_CLIENT_ID", "OAUTH_REDIRECT_URI", "PUBLIC_CALLBACK_BASE"],
+  required_variable_bindings: ["OAUTH_REDIRECT_URI", "PUBLIC_CALLBACK_BASE"],
   required_service_bindings: ["GOOGLE_PROVIDER_SERVICE", "GOOGLE_TOKEN_SERVICE"],
+  owned_private_egress: {
+    token: "crates/provider-google-workers/src/token-worker.mjs",
+    provider: "crates/provider-google-workers/src/provider-worker.mjs",
+    token_config: "crates/provider-google-workers/wrangler.token.jsonc",
+    provider_config: "crates/provider-google-workers/wrangler.provider.jsonc",
+  },
   static_registry_seed: "crates/broker-workers/deploy/credential-registry-seed.json",
   ai_gateway_policy: { payload_logging: "disabled", spend_limit_usd: "required-at-deploy", rate_limit_per_minute: "required-at-deploy", applied_locally: false },
 };
@@ -146,7 +160,9 @@ async function walk(directory) {
   }
   return files;
 }
-const files = (await walk(output)).filter((path) => basename(path) !== "build-manifest.json").sort((a, b) => a.localeCompare(b));
+const files = (await walk(output))
+  .filter((path) => path !== join(output, "build-manifest.json"))
+  .sort((a, b) => a.localeCompare(b));
 const manifestFiles = [];
 for (const path of files) {
   const bytes = await readFile(path);

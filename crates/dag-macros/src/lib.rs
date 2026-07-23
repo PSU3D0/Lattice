@@ -1166,11 +1166,7 @@ fn write_hint_for_namespace(namespace: &str) -> Option<&'static str> {
     Some(hint.as_str())
 }
 
-fn classify_read_hint(
-    alias_lower: &str,
-    cap_lower: &str,
-    namespace: &str,
-) -> Option<&'static str> {
+fn classify_read_hint(alias_lower: &str, cap_lower: &str, namespace: &str) -> Option<&'static str> {
     const TOKENS: &[&str] = &["read", "fetch", "load", "get"];
     if TOKENS
         .iter()
@@ -2128,6 +2124,7 @@ struct WorkflowInput {
     spills: Vec<SpillEntry>,
     ifs: Vec<IfEntry>,
     switches: Vec<SwitchEntry>,
+    broker_authorities: Vec<BrokerAuthorityEntry>,
 }
 
 struct WorkflowBundleInput {
@@ -2143,6 +2140,7 @@ struct WorkflowBundleInput {
     spills: Vec<SpillEntry>,
     ifs: Vec<IfEntry>,
     switches: Vec<SwitchEntry>,
+    broker_authorities: Vec<BrokerAuthorityEntry>,
     entrypoints: Vec<EntrypointEntry>,
 }
 
@@ -2154,6 +2152,25 @@ struct Binding {
 struct ConnectEntry {
     from: Ident,
     to: Ident,
+}
+
+struct BrokerAuthorityEntry {
+    node: Ident,
+    authority: Expr,
+}
+
+struct BrokerAuthorityArgs {
+    node: Ident,
+    authority: Expr,
+}
+
+impl Parse for BrokerAuthorityArgs {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let node = input.parse()?;
+        input.parse::<Token![,]>()?;
+        let authority = input.parse()?;
+        Ok(Self { node, authority })
+    }
 }
 
 struct TimeoutEntry {
@@ -2939,6 +2956,7 @@ impl Parse for WorkflowInput {
         let mut spills = Vec::new();
         let mut ifs = Vec::new();
         let mut switches = Vec::new();
+        let mut broker_authorities = Vec::new();
 
         while !input.is_empty() {
             let key: Ident = input.parse()?;
@@ -3009,6 +3027,16 @@ impl Parse for WorkflowInput {
             }
 
             let mac: Macro = input.parse()?;
+
+            if mac.path.is_ident("broker_authority") {
+                let args = syn::parse2::<BrokerAuthorityArgs>(mac.tokens)?;
+                input.parse::<Token![;]>()?;
+                broker_authorities.push(BrokerAuthorityEntry {
+                    node: args.node,
+                    authority: args.authority,
+                });
+                continue;
+            }
 
             if mac.path.is_ident("connect") {
                 let args = syn::parse2::<ConnectArgs>(mac.tokens)?;
@@ -3174,6 +3202,7 @@ impl Parse for WorkflowInput {
             spills,
             ifs,
             switches,
+            broker_authorities,
         })
     }
 }
@@ -3192,6 +3221,7 @@ impl Parse for WorkflowBundleInput {
         let mut spills = Vec::new();
         let mut ifs = Vec::new();
         let mut switches = Vec::new();
+        let mut broker_authorities = Vec::new();
         let mut entrypoints = Vec::new();
 
         while !input.is_empty() {
@@ -3263,6 +3293,16 @@ impl Parse for WorkflowBundleInput {
             }
 
             let mac: Macro = input.parse()?;
+
+            if mac.path.is_ident("broker_authority") {
+                let args = syn::parse2::<BrokerAuthorityArgs>(mac.tokens)?;
+                input.parse::<Token![;]>()?;
+                broker_authorities.push(BrokerAuthorityEntry {
+                    node: args.node,
+                    authority: args.authority,
+                });
+                continue;
+            }
 
             if mac.path.is_ident("connect") {
                 let args = syn::parse2::<ConnectArgs>(mac.tokens)?;
@@ -3440,6 +3480,7 @@ impl Parse for WorkflowBundleInput {
             spills,
             ifs,
             switches,
+            broker_authorities,
             entrypoints,
         })
     }
@@ -3831,7 +3872,16 @@ impl WorkflowInput {
             }
         });
 
-        let connect_statements = self.connects.iter().map(|connect| {
+        let broker_authority_statements = self.broker_authorities.iter().map(|entry| {
+            let node = &entry.node;
+            let authority = &entry.authority;
+            quote! {
+                builder.set_broker_authority(&#node, #authority)
+                    .expect("flow!: invalid broker authority");
+            }
+        });
+
+        let workflow_connect_statements = self.connects.iter().map(|connect| {
             let from = &connect.from;
             let to = &connect.to;
             let from_info = type_map
@@ -4083,7 +4133,8 @@ impl WorkflowInput {
 
                 #summary_stmt
                 #(#binding_statements)*
-                #(#connect_statements)*
+                #(#broker_authority_statements)*
+                #(#workflow_connect_statements)*
                 #(#delivery_statements)*
                 #(#buffer_statements)*
                 #(#spill_statements)*
@@ -4503,6 +4554,15 @@ impl WorkflowBundleInput {
                         stringify!(#alias),
                         "`"
                 ));
+            }
+        });
+
+        let broker_authority_statements = self.broker_authorities.iter().map(|entry| {
+            let node = &entry.node;
+            let authority = &entry.authority;
+            quote! {
+                builder.set_broker_authority(&#node, #authority)
+                    .expect("flow!: invalid broker authority");
             }
         });
 
@@ -5371,6 +5431,7 @@ impl WorkflowBundleInput {
 
                 #summary_stmt
                 #(#binding_statements)*
+                #(#broker_authority_statements)*
                 #(#connect_statements)*
                 #(#delivery_statements)*
                 #(#buffer_statements)*

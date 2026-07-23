@@ -14,6 +14,7 @@ default = []
 test-fixtures = ["broker-core/test_fixtures"]
 
 [dependencies]
+aes = "0.8"
 base64 = "0.22"
 broker-auth = { path = "../broker-auth" }
 broker-core = { path = "../broker-core" }
@@ -26,11 +27,13 @@ futures.workspace = true
 getrandom = { version = "0.2", features = ["js"] }
 hex.workspace = true
 hmac = "0.12"
+hkdf = "0.12"
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 subtle = "2"
 thiserror.workspace = true
+x25519-dalek = { version = "2", features = ["static_secrets"] }
 worker = { version = "=0.8.1", default-features = false, features = ["d1"] }
 zeroize = "1"
 

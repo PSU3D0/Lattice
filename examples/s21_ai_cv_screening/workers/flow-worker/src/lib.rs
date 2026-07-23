@@ -1,3 +1,5 @@
+mod broker_transport;
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -30,6 +32,10 @@ unsafe impl Sync for ServiceFetcher {}
 enum S21HttpBackend {
     AmbientHttps(cap_http_workers::WorkersHttpClient),
     ServiceBinding(ServiceFetcher),
+    BrokerV2 {
+        llm: ServiceFetcher,
+        broker: Arc<broker_transport::WorkersBrokerTransport>,
+    },
 }
 
 struct S21HttpClient {
@@ -55,9 +61,18 @@ impl S21HttpClient {
                     )
                 })?,
             )),
+            "broker_v2" => S21HttpBackend::BrokerV2 {
+                llm: ServiceFetcher(env.service("LATTICE_S21_PROVIDER").map_err(|_| {
+                    worker::Error::RustError(
+                        "broker-v2 HTTP mode requires LATTICE_S21_PROVIDER for LLM egress".into(),
+                    )
+                })?),
+                broker: broker_transport::WorkersBrokerTransport::from_env(env)?,
+            },
             _ => {
                 return Err(worker::Error::RustError(
-                    "LATTICE_S21_HTTP_MODE must be ambient_https or service_binding".into(),
+                    "LATTICE_S21_HTTP_MODE must be ambient_https, service_binding, or broker_v2"
+                        .into(),
                 ));
             }
         };
@@ -66,6 +81,10 @@ impl S21HttpClient {
 
     fn uses_ambient_https(&self) -> bool {
         matches!(self.backend, S21HttpBackend::AmbientHttps(_))
+    }
+
+    fn uses_broker_v2(&self) -> bool {
+        matches!(self.backend, S21HttpBackend::BrokerV2 { .. })
     }
 
     async fn send_via_service(
@@ -137,6 +156,13 @@ impl HttpRead for S21HttpClient {
                 Self::send_via_service(service, request).await
             }
             S21HttpBackend::AmbientHttps(ambient) => HttpRead::send(ambient, request).await,
+            S21HttpBackend::BrokerV2 { llm, broker } => {
+                if request.url.contains("googleapis.com") {
+                    HttpRead::send(broker.as_ref(), request).await
+                } else {
+                    Self::send_via_service(llm, request).await
+                }
+            }
         }
     }
 }
@@ -149,6 +175,13 @@ impl HttpWrite for S21HttpClient {
                 Self::send_via_service(service, request).await
             }
             S21HttpBackend::AmbientHttps(ambient) => HttpWrite::send(ambient, request).await,
+            S21HttpBackend::BrokerV2 { llm, broker } => {
+                if request.url.contains("googleapis.com") {
+                    HttpWrite::send(broker.as_ref(), request).await
+                } else {
+                    Self::send_via_service(llm, request).await
+                }
+            }
         }
     }
 }
@@ -160,21 +193,24 @@ struct S21ConnectorRuntime {
 }
 
 impl S21ConnectorRuntime {
-    fn from_env(env: &Env, ambient_https: bool) -> Result<Self> {
+    fn from_env(env: &Env, ambient_https: bool, broker_v2: bool) -> Result<Self> {
         let mut secrets = BTreeMap::new();
         for name in [
             "LATTICE_CONNECTOR_AUTH_LLM_API_KEY",
             "LATTICE_CONNECTOR_AUTH_GOOGLE_WORKSPACE_AUTH",
         ] {
-            let value = env
-                .secret(name)
-                .map(|value| value.to_string())
-                .or_else(|_| env.var(name).map(|value| value.to_string()))
-                .map_err(|_| {
-                    worker::Error::RustError(format!(
-                        "required connector secret `{name}` is absent"
-                    ))
-                })?;
+            let value = if broker_v2 && name == "LATTICE_CONNECTOR_AUTH_GOOGLE_WORKSPACE_AUTH" {
+                "broker-mediated-non-credential".to_string()
+            } else {
+                env.secret(name)
+                    .map(|value| value.to_string())
+                    .or_else(|_| env.var(name).map(|value| value.to_string()))
+                    .map_err(|_| {
+                        worker::Error::RustError(format!(
+                            "required connector secret `{name}` is absent"
+                        ))
+                    })?
+            };
             secrets.insert(name.to_string(), value);
         }
 
@@ -262,12 +298,17 @@ fn configure_resources(env: &Env) -> Result<()> {
     );
     let http = Arc::new(S21HttpClient::from_env(env)?);
     let ambient_https = http.uses_ambient_https();
+    let broker_v2 = http.uses_broker_v2();
     let kv = Arc::new(cap_kv_workers::WorkersKv::new(env.kv("FLOW_KV")?));
     let transform = Arc::new(host_workers::WorkersTransformRuntime::from_env(
         env,
         host_workers::WorkersTransformPolicy::default(),
     )?);
-    let connectors = Arc::new(S21ConnectorRuntime::from_env(env, ambient_https)?);
+    let connectors = Arc::new(S21ConnectorRuntime::from_env(
+        env,
+        ambient_https,
+        broker_v2,
+    )?);
 
     host_workers::set_resource_bag(
         ResourceBag::new()

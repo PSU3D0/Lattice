@@ -175,7 +175,12 @@ impl ManagementState {
             .find(|record| constant_time_matches(&record.key_hash, &candidate))
             .filter(|record| !record.revoked && now < record.expires_at)
             .ok_or(ManagementError::Rejected)?;
-        let deployment_key_id = format!("sha256:{}", hex::encode(candidate));
+        let deployment_key_id = format!(
+            "sha256:{}",
+            hex::encode(Sha256::digest(
+                [b"deployment-key-id\0".as_slice(), key.expose()].concat()
+            ))
+        );
         let public_key = verify_exchange_request(&request, &deployment_key_id, now)?;
         let session = SessionRecord {
             session_ref: ids.opaque("session_")?,
@@ -473,11 +478,15 @@ mod tests {
         format!("lbk_{}", "a".repeat(64))
     }
 
-    fn session_request(pepper: &[u8], now: i64) -> SessionExchangeRequest {
+    fn session_request(_pepper: &[u8], now: i64) -> SessionExchangeRequest {
         let signing = SigningKey::from_bytes(&[7; 32]);
         let public = URL_SAFE_NO_PAD.encode(signing.verifying_key().to_bytes());
-        let candidate = keyed_hash(pepper, b"deployment-key", key().as_bytes());
-        let key_id = format!("sha256:{}", hex::encode(candidate));
+        let key_id = format!(
+            "sha256:{}",
+            hex::encode(Sha256::digest(
+                [b"deployment-key-id\0".as_slice(), key().as_bytes()].concat()
+            ))
+        );
         let nonce = "exchange-nonce-0000000000000001".to_string();
         let audience = crate::protocol::SESSION_EXCHANGE_AUDIENCE.to_string();
         let transcript = exchange_transcript(&key_id, &public, &nonce, now, &audience).unwrap();

@@ -16,6 +16,7 @@ use broker_core::{
     },
     signing::{BrokerSigner, BrokerVerifyingKey},
 };
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -337,6 +338,46 @@ pub struct NodeLeaseStoreV2 {
     state: Mutex<LeaseStoreState>,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeLeaseStoreSnapshotV2 {
+    leases: Vec<PersistedLeaseV2>,
+    flow_aggregates: Vec<PersistedAggregateV2>,
+    connection_aggregates: Vec<PersistedAggregateV2>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedLeaseV2 {
+    lease_ref: String,
+    canonical_lease: Vec<u8>,
+    standing_authority_ref: String,
+    standing_authority_hash: String,
+    contract_set_ref: String,
+    contract_set_hash: String,
+    remaining: u64,
+    cas_version: u64,
+    children: Vec<PersistedGrantV2>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedGrantV2 {
+    logical_effect_id: String,
+    input_hash: String,
+    grant_ref: String,
+    canonical_grant: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedAggregateV2 {
+    left: String,
+    run_id: String,
+    ceiling: u64,
+    remaining: u64,
+}
+
 /// Opaque exact child grant reference. It has no constructor and cannot hold a
 /// node lease ref supplied by flow/node code.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -365,6 +406,142 @@ impl std::fmt::Debug for DerivedGrantV2 {
 }
 
 impl NodeLeaseStoreV2 {
+    pub fn restore(snapshot: NodeLeaseStoreSnapshotV2) -> Result<Self, BrokerHostError> {
+        let mut state = LeaseStoreState::default();
+        for persisted in snapshot.leases {
+            let parsed = parse::<NodeLeaseV2>(&persisted.canonical_lease)?;
+            if parsed.canonical_bytes() != persisted.canonical_lease
+                || parsed
+                    .view
+                    .as_value()
+                    .get("node_lease_ref")
+                    .and_then(Value::as_str)
+                    != Some(persisted.lease_ref.as_str())
+            {
+                return Err(BrokerHostError::V2DerivationRejected);
+            }
+            let mut children = BTreeMap::new();
+            for child in persisted.children {
+                let grant = parse::<ExecutionGrantV2>(&child.canonical_grant)?;
+                if grant.canonical_bytes() != child.canonical_grant
+                    || grant
+                        .view
+                        .as_value()
+                        .pointer("/grant_scope/logical_effect_id")
+                        .and_then(Value::as_str)
+                        != Some(child.logical_effect_id.as_str())
+                    || grant
+                        .view
+                        .as_value()
+                        .get("grant_ref")
+                        .and_then(Value::as_str)
+                        != Some(child.grant_ref.as_str())
+                {
+                    return Err(BrokerHostError::V2DerivationRejected);
+                }
+                children.insert(
+                    child.logical_effect_id,
+                    StoredGrant {
+                        input_hash: child.input_hash,
+                        grant_ref: ExactGrantRefV2(child.grant_ref),
+                        canonical: child.canonical_grant,
+                    },
+                );
+            }
+            if state
+                .leases
+                .insert(
+                    persisted.lease_ref,
+                    LeaseRecord {
+                        parsed,
+                        canonical: persisted.canonical_lease,
+                        standing_authority_ref: persisted.standing_authority_ref,
+                        standing_authority_hash: persisted.standing_authority_hash,
+                        contract_set_ref: persisted.contract_set_ref,
+                        contract_set_hash: persisted.contract_set_hash,
+                        remaining: persisted.remaining,
+                        cas_version: persisted.cas_version,
+                        children,
+                    },
+                )
+                .is_some()
+            {
+                return Err(BrokerHostError::V2DerivationRejected);
+            }
+        }
+        for (source, target) in [
+            (snapshot.flow_aggregates, &mut state.flow_remaining),
+            (
+                snapshot.connection_aggregates,
+                &mut state.connection_remaining,
+            ),
+        ] {
+            for aggregate in source {
+                if aggregate.ceiling == 0
+                    || aggregate.remaining > aggregate.ceiling
+                    || target
+                        .insert(
+                            (aggregate.left, aggregate.run_id),
+                            AggregateState {
+                                ceiling: aggregate.ceiling,
+                                remaining: aggregate.remaining,
+                            },
+                        )
+                        .is_some()
+                {
+                    return Err(BrokerHostError::V2DerivationRejected);
+                }
+            }
+        }
+        Ok(Self {
+            state: Mutex::new(state),
+        })
+    }
+
+    pub fn snapshot(&self) -> Result<NodeLeaseStoreSnapshotV2, BrokerHostError> {
+        let state = self.state.lock().map_err(|_| BrokerError::Brk401)?;
+        let leases = state
+            .leases
+            .iter()
+            .map(|(lease_ref, lease)| PersistedLeaseV2 {
+                lease_ref: lease_ref.clone(),
+                canonical_lease: lease.canonical.clone(),
+                standing_authority_ref: lease.standing_authority_ref.clone(),
+                standing_authority_hash: lease.standing_authority_hash.clone(),
+                contract_set_ref: lease.contract_set_ref.clone(),
+                contract_set_hash: lease.contract_set_hash.clone(),
+                remaining: lease.remaining,
+                cas_version: lease.cas_version,
+                children: lease
+                    .children
+                    .iter()
+                    .map(|(effect, child)| PersistedGrantV2 {
+                        logical_effect_id: effect.clone(),
+                        input_hash: child.input_hash.clone(),
+                        grant_ref: child.grant_ref.0.clone(),
+                        canonical_grant: child.canonical.clone(),
+                    })
+                    .collect(),
+            })
+            .collect();
+        let aggregates = |values: &BTreeMap<(String, String), AggregateState>| {
+            values
+                .iter()
+                .map(|((left, run_id), value)| PersistedAggregateV2 {
+                    left: left.clone(),
+                    run_id: run_id.clone(),
+                    ceiling: value.ceiling,
+                    remaining: value.remaining,
+                })
+                .collect::<Vec<_>>()
+        };
+        Ok(NodeLeaseStoreSnapshotV2 {
+            leases,
+            flow_aggregates: aggregates(&state.flow_remaining),
+            connection_aggregates: aggregates(&state.connection_remaining),
+        })
+    }
+
     pub fn issue(
         &self,
         binding: &VerifiedBindingV2,

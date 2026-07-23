@@ -187,7 +187,7 @@ pub fn google_v1() -> GoogleComposition {
 }
 
 pub fn verified_google_v1(now: &str) -> Result<GoogleComposition, BrokerError> {
-    let bundle = signed_registry::deterministic_signed_registry()?;
+    let bundle = signed_registry::signed_registry_bundle()?;
     let mut composition = google_v1();
     let mut pins = BTreeMap::new();
     for (definition_bytes, decision_bytes) in &bundle.seeds {
@@ -390,7 +390,7 @@ impl broker_host::ResponseFirewallImplementation for GoogleCredentialFirewall {
 /// Application-root composition of signed registry evidence and concrete
 /// implementations. `broker-host` remains provider-neutral.
 pub fn host_registry(now: &str) -> Result<broker_host::TrustedAdapterRegistry, BrokerError> {
-    let bundle = signed_registry::deterministic_signed_registry()?;
+    let bundle = signed_registry::signed_registry_bundle()?;
     let composition = verified_google_v1(now)?;
     let publisher = bundle
         .publisher_roots
@@ -460,16 +460,32 @@ pub fn host_registry(now: &str) -> Result<broker_host::TrustedAdapterRegistry, B
     Ok(registry)
 }
 
-pub fn adapter(contract_id: &str) -> Result<AdapterRegistration, BrokerError> {
-    verified_google_v1("2026-07-21T00:00:00Z")?
+pub fn verified_provider_plane(now: &str) -> Result<GoogleComposition, BrokerError> {
+    verified_google_v1(now)
+}
+
+pub fn contract_registration(
+    contract_id: &str,
+    now: &str,
+) -> Result<AdapterRegistration, BrokerError> {
+    verified_provider_plane(now)?
         .adapters
         .into_iter()
-        .find(|adapter| adapter.contract_id == contract_id)
+        .find(|registration| registration.contract_id == contract_id)
         .ok_or(BrokerError::Brk108)
 }
 
-pub fn approved_registry() -> Result<ApprovedRegistry, BrokerError> {
-    ApprovedRegistry::load_static([verified_google_v1("2026-07-21T00:00:00Z")?.profile])
+pub fn contract_registrations(now: &str) -> Result<Vec<AdapterRegistration>, BrokerError> {
+    Ok(verified_provider_plane(now)?.adapters)
+}
+
+#[deprecated(note = "use contract_registration")]
+pub fn adapter(contract_id: &str, now: &str) -> Result<AdapterRegistration, BrokerError> {
+    contract_registration(contract_id, now)
+}
+
+pub fn approved_registry(now: &str) -> Result<ApprovedRegistry, BrokerError> {
+    ApprovedRegistry::load_static([verified_google_v1(now)?.profile])
 }
 pub fn auth_driver(
     clock: impl Fn() -> i64 + Send + Sync + 'static,
@@ -481,7 +497,7 @@ pub fn normalized_scopes(value: &str) -> Result<NormalizedClaims, BrokerError> {
         .split_ascii_whitespace()
         .map(str::to_owned)
         .collect::<BTreeSet<_>>();
-    if values.is_empty() || values.iter().any(|v| v != GMAIL_SCOPE && v != SHEETS_SCOPE) {
+    if values.len() != 2 || values.iter().any(|v| v != GMAIL_SCOPE && v != SHEETS_SCOPE) {
         return Err(BrokerError::Brk109);
     }
     Ok(NormalizedClaims { values })
@@ -490,8 +506,7 @@ pub fn normalized_scopes(value: &str) -> Result<NormalizedClaims, BrokerError> {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DiscoveryResponse {
-    sub: String,
-    #[serde(default)]
+    user_id: String,
     scope: String,
 }
 pub fn discover_account(
@@ -503,13 +518,13 @@ pub fn discover_account(
     }
     let discovered: DiscoveryResponse =
         serde_json::from_slice(response).map_err(|_| BrokerError::Brk109)?;
-    if discovered.sub.is_empty()
+    if discovered.user_id.is_empty()
         || normalized_scopes(&discovered.scope)?.compare(expected)
             != broker_auth::ClaimRelation::Equal
     {
         return Err(BrokerError::Brk109);
     }
-    PrivateMaterial::new(discovered.sub.into_bytes())
+    PrivateMaterial::new(discovered.user_id.into_bytes())
 }
 
 pub fn gmail_message(
@@ -548,7 +563,7 @@ mod tests {
     #[test]
     fn generic_host_registry_composes_exact_signed_implementations() {
         let registry = host_registry("2026-07-21T00:00:00Z").unwrap();
-        let gmail = adapter(GMAIL_CONTRACT_ID).unwrap();
+        let gmail = contract_registration(GMAIL_CONTRACT_ID, "2026-07-21T00:00:00Z").unwrap();
         let descriptor: connector_spec::BrokerDispatchDescriptor =
             serde_json::from_slice(gmail.descriptor).unwrap();
         let planned = broker_host::descriptor_plan_template(
@@ -582,7 +597,7 @@ mod tests {
             "revoked",
         )
         .unwrap();
-        let roots = signed_registry::deterministic_signed_registry().unwrap();
+        let roots = signed_registry::signed_registry_bundle().unwrap();
         registry
             .apply_decision(&revoked, roots.decision_roots.values().next().unwrap(), now)
             .unwrap();
@@ -615,7 +630,8 @@ mod tests {
             BrokerError::Brk109
         );
         let subject = discover_account(
-            format!(r#"{{"sub":"account-1","scope":"{GMAIL_SCOPE} {SHEETS_SCOPE}"}}"#).as_bytes(),
+            format!(r#"{{"user_id":"account-1","scope":"{GMAIL_SCOPE} {SHEETS_SCOPE}"}}"#)
+                .as_bytes(),
             &expected,
         )
         .unwrap();

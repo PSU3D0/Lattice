@@ -1,11 +1,15 @@
 import { createHash } from "node:crypto";
 
 export const REQUIRED_SECRET_NAMES = [
+  "ACTIVATION_SERVICE_AUTH",
   "AI_GATEWAY_AUTHORIZATION",
+  "AUTH_DRIVER_SERVICE_AUTH",
   "BINDING_SIGNING_SEED",
   "COMMITMENT_KEY",
   "CUSTODY_ROOT_KEY",
   "DEPLOYMENT_BOOTSTRAP_AUTH",
+  "GENERIC_ACTIVATION_RECIPIENT_PRIVATE_KEY_B64U",
+  "GOOGLE_EGRESS_SERVICE_AUTH",
   "INVOKE_SERVICE_AUTH",
   "KEY_HASH_PEPPER",
   "RECEIPT_SIGNING_SEED",
@@ -20,8 +24,8 @@ export function redactedPlan(context) {
       private_worker: context.privateName,
       public_worker: context.publicName,
       d1_database_id: context.d1Id,
-      durable_objects: ["BrokerLedgerDurableObject", "ConnectionRefreshDurableObject"],
-      approved_services: [context.googleProviderService, context.googleTokenService],
+      durable_objects: ["ConnectionRefreshDurableObject", "CredentialStateDurableObject", "V2AuthorityDurableObject"],
+      approved_services: [context.authDriverService, context.googleProviderService, context.googleTokenService],
     },
     callback_base: context.publicCallbackBase,
     required_secret_names: REQUIRED_SECRET_NAMES,
@@ -31,8 +35,8 @@ export function redactedPlan(context) {
       "prove_target_absent_or_owned",
       "verify_immutable_dependency_pins",
       "qualify_secret_names",
+      "deploy_fence_aware_private",
       "apply_checked_in_migrations",
-      "deploy_private",
       "deploy_public",
       "health_ready_callback_400_smoke",
       "write_sanitized_evidence",
@@ -121,6 +125,7 @@ export async function executeApply(context, runner) {
     evidence.checks.push("target_absence_or_ownership");
 
     const expectedServices = {
+      AUTH_DRIVER_SERVICE: context.authDriverService,
       GOOGLE_PROVIDER_SERVICE: context.googleProviderService,
       GOOGLE_TOKEN_SERVICE: context.googleTokenService,
     };
@@ -146,17 +151,19 @@ export async function executeApply(context, runner) {
     if (REQUIRED_SECRET_NAMES.some((name) => !names.has(name))) throw new Error("secret_missing");
     evidence.checks.push("secret_names");
 
-    await checked(runner, "migrations", [
-      "npx", "wrangler", "d1", "migrations", "apply", context.d1Name,
-      "--remote", "--config", context.privateConfigPath,
-    ]);
-    evidence.checks.push("migrations_applied");
-
     await checked(runner, "deploy_private", ["npx", "wrangler", "deploy", "--config", context.privateConfigPath]);
     if (!resources.private.existed) {
       resources.private.created = true;
       evidence.created_resources.push(context.privateName);
     }
+    evidence.checks.push("fence_aware_private_deployed");
+    evidence.migration_state = "attempting_forward_only";
+    await checked(runner, "migrations", [
+      "npx", "wrangler", "d1", "migrations", "apply", context.d1Name,
+      "--remote", "--config", context.privateConfigPath,
+    ]);
+    evidence.migration_state = "applied_forward_only";
+    evidence.checks.push("migrations_applied");
     await checked(runner, "deploy_public", ["npx", "wrangler", "deploy", "--config", context.publicConfigPath]);
     if (!resources.public.existed) {
       resources.public.created = true;
@@ -170,7 +177,7 @@ export async function executeApply(context, runner) {
     }
     const callback = await checked(runner, "readiness:oauth_callback_400", [
       "curl", "--silent", "--output", "/dev/null", "--write-out", "%{http_code}",
-      `${context.publicCallbackBase}/v1/oauth/callback`,
+      `${context.publicCallbackBase}/v0.2/credential-callback`,
     ]);
     if (callback.stdout.trim() !== "400") throw new Error("oauth_callback_status_mismatch");
     const smoke = parseJson(await runner.run("smoke", [
@@ -189,9 +196,14 @@ export async function executeApply(context, runner) {
       const result = await runner.run("cleanup_public", ["npx", "wrangler", "delete", "--name", context.publicName, "--force"]);
       evidence.cleanup.push({ resource: context.publicName, status: result.status });
     }
-    if (resources.private.created) {
+    if (resources.private.created && evidence.migration_state === undefined) {
       const result = await runner.run("cleanup_private", ["npx", "wrangler", "delete", "--name", context.privateName, "--force"]);
       evidence.cleanup.push({ resource: context.privateName, status: result.status });
+    }
+    if (evidence.migration_state !== undefined) {
+      evidence.migration_state = "forward_fix_required";
+      evidence.cleanup.push({ resource: context.d1Name, status: "preserved_forward_only" });
+      evidence.cleanup.push({ resource: context.privateName, status: "preserved_fence_authority" });
     }
     evidence.status = "failed";
     evidence.failure = error instanceof Error ? error.message : "unknown_failure";

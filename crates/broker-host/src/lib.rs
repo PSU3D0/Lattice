@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![recursion_limit = "256"]
 
 mod adapter;
 mod binding;
@@ -35,13 +36,14 @@ pub use scope::{
 };
 pub use v2::{
     BindingDerivationV2, BindingVerificationLockV2, DerivedGrantV2, ExactGrantRefV2,
-    InMemoryLiveConnectionAuthority, LiveConnectionAuthority, NodeLeaseLimitsV2, NodeLeaseStoreV2,
-    VerifiedBindingV2, issue_binding_v2, verify_binding_v2,
+    InMemoryLiveConnectionAuthority, LiveConnectionAuthority, NodeLeaseLimitsV2,
+    NodeLeaseStoreSnapshotV2, NodeLeaseStoreV2, VerifiedBindingV2, issue_binding_v2,
+    verify_binding_v2,
 };
 pub use v2_executor::{
     LocalV2ConnectorExecutor, RemoteV2ConnectorExecutor, V2AttemptStage, V2BrokerTransport,
-    V2ConnectorOutcome, V2DispatchEvidence, V2ReceiptTrustStore, V2RemoteInvokeRequest,
-    V2RemoteInvokeResponse,
+    V2ConnectorOutcome, V2DispatchEvidence, V2ReceiptIssue, V2ReceiptTrustStore,
+    V2RemoteInvokeRequest, V2RemoteInvokeResponse, issue_v2_receipt,
 };
 
 use broker_core::BrokerError;

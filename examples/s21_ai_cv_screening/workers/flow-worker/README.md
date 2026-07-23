@@ -12,6 +12,8 @@ The gate rebuilds and renders the package, verifies every `deploy-manifest.json`
 
 `backend-config.json` selects the exact typed `sandboxed_transform:lattice.pdf.extract_text.v1` implementation contract. The renderer independently pins and verifies the extraction sources, guest manifest, module hash/size, ABI, compatibility date, 64 MiB guest maximum, 30,000 ms platform CPU policy, bounded I/O, single-flight admission, and fresh-instance model. Configuration is not inferred from a node identifier.
 
+The production render selects `LATTICE_S21_HTTP_MODE=broker_v2`. Google header reads are resolved from hash-covered S21 authority, while Sheets/Gmail writes use the private `LATTICE_BROKER_PRIVATE` service binding for deployment-key session exchange, Ed25519 PoP, node leases, exact-effect grants, invocation/redelivery, and signed V2 receipt verification. The Worker requires host-only `LATTICE_BROKER_DEPLOYMENT_KEY`, `LATTICE_BROKER_POP_SEED_B64U`, and `LATTICE_BROKER_SERVICE_AUTH`; no Google bearer credential is configured in S21.
+
 ## Disposable Cloudflare proof
 
 The guarded script requires an explicitly approved account, a disposable name prefix, creation approval, cleanup approval, and an evidence directory:

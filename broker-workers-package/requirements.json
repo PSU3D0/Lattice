@@ -19,13 +19,12 @@
     "COMMITMENT_KEY",
     "CUSTODY_ROOT_KEY",
     "DEPLOYMENT_BOOTSTRAP_AUTH",
+    "GOOGLE_EGRESS_SERVICE_AUTH",
     "INVOKE_SERVICE_AUTH",
     "KEY_HASH_PEPPER",
     "RECEIPT_SIGNING_SEED"
   ],
   "required_variable_bindings": [
-    "GOOGLE_AUTHORIZE_ENDPOINT",
-    "GOOGLE_OAUTH_CLIENT_ID",
     "OAUTH_REDIRECT_URI",
     "PUBLIC_CALLBACK_BASE"
   ],
@@ -33,6 +32,12 @@
     "GOOGLE_PROVIDER_SERVICE",
     "GOOGLE_TOKEN_SERVICE"
   ],
+  "owned_private_egress": {
+    "token": "crates/provider-google-workers/src/token-worker.mjs",
+    "provider": "crates/provider-google-workers/src/provider-worker.mjs",
+    "token_config": "crates/provider-google-workers/wrangler.token.jsonc",
+    "provider_config": "crates/provider-google-workers/wrangler.provider.jsonc"
+  },
   "static_registry_seed": "crates/broker-workers/deploy/credential-registry-seed.json",
   "ai_gateway_policy": {
     "payload_logging": "disabled",

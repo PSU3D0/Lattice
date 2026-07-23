@@ -1,7 +1,9 @@
 import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { executeApply, redactedPlan } from "./deploy-lib.mjs";
+import { verifyBundle } from "./operator-artifacts.mjs";
 
 const args = new Map();
 for (let index = 2; index < process.argv.length; index += 2) {
@@ -11,8 +13,8 @@ for (let index = 2; index < process.argv.length; index += 2) {
 }
 const required = [
   "--account-id", "--prefix", "--evidence-dir", "--d1-id", "--approved-dependencies",
-  "--google-provider-service", "--google-token-service", "--public-callback-base",
-  "--google-oauth-client-id", "--spend-limit-usd", "--rate-limit-per-minute",
+  "--google-provider-service", "--google-token-service", "--auth-driver-service", "--public-callback-base",
+  "--spend-limit-usd", "--rate-limit-per-minute",
 ];
 for (const name of required) if (!args.has(name)) throw new Error(`missing ${name}`);
 const accountId = args.get("--account-id");
@@ -21,13 +23,12 @@ const evidenceInput = args.get("--evidence-dir");
 const d1Id = args.get("--d1-id");
 const dependencyPath = args.get("--approved-dependencies");
 if (!/^[0-9a-f]{32}$/.test(accountId)) throw new Error("account id must be exact 32 lowercase hex");
-if (!/^lattice-b5-[a-z0-9]{6,20}$/.test(prefix)) throw new Error("prefix is outside the disposable B5 namespace");
+if (!/^lattice-(?:b5|c5)-[a-z0-9]{6,20}$/.test(prefix)) throw new Error("prefix is outside the disposable broker namespace");
 if (!/^[0-9a-f]{32}$/.test(d1Id)) throw new Error("D1 id must be exact 32 lowercase hex");
 if (!isAbsolute(evidenceInput) || !isAbsolute(dependencyPath)) throw new Error("evidence and dependency paths must be absolute");
 if (!/^\d+(\.\d{1,2})?$/.test(args.get("--spend-limit-usd"))) throw new Error("invalid spend limit");
 if (!/^[1-9]\d{0,5}$/.test(args.get("--rate-limit-per-minute"))) throw new Error("invalid rate limit");
-if (!/^[A-Za-z0-9._-]{8,512}$/.test(args.get("--google-oauth-client-id"))) throw new Error("invalid OAuth client id");
-for (const name of [args.get("--google-provider-service"), args.get("--google-token-service")]) {
+for (const name of [args.get("--google-provider-service"), args.get("--google-token-service"), args.get("--auth-driver-service")]) {
   if (!/^[a-z0-9-]{6,63}$/.test(name)) throw new Error("invalid approved service name");
 }
 const apply = args.get("--mode") === "apply";
@@ -41,6 +42,29 @@ const evidenceDir = await realpath(evidenceInput);
 const root = resolve(new URL("../..", import.meta.url).pathname);
 if (evidenceDir.startsWith(`${root}/`)) throw new Error("evidence directory must be outside the repository");
 const approvedDependencies = JSON.parse(await readFile(dependencyPath, "utf8"));
+const artifacts = approvedDependencies.artifacts;
+const operatorBundleJcs=approvedDependencies.operator_bundle_jcs;
+const operatorTrustRoot=approvedDependencies.operator_trust_root;
+if(typeof operatorBundleJcs!=="string"||!operatorTrustRoot)throw new Error("operator signed bundle and trust root are required");
+const operatorBundle=JSON.parse(operatorBundleJcs);
+verifyBundle(operatorBundle,operatorTrustRoot);
+const operatorBundleHash=`sha256:${createHash("sha256").update(operatorBundleJcs).digest("hex")}`;
+if(approvedDependencies.operator_bundle_hash!==operatorBundleHash)throw new Error("operator bundle hash mismatch");
+const verifiedBundlePath=join(evidenceDir,"operator-artifact-bundle.json"),verifiedTrustPath=join(evidenceDir,"operator-trust-root.json");
+await writeFile(verifiedBundlePath,operatorBundleJcs,{mode:0o600});await writeFile(verifiedTrustPath,JSON.stringify(operatorTrustRoot),{mode:0o600});
+const rustVerification=spawnSync("cargo",["run","--quiet","--bin","broker-artifact-verifier","--","--bundle",verifiedBundlePath,"--trust-root",verifiedTrustPath,"--now",new Date().toISOString().replace(/\.\d{3}Z$/,"Z")],{cwd:root,encoding:"utf8"});
+if(rustVerification.status!==0)throw new Error("shared Rust operator artifact verification failed");
+const artifactNames = ["deployment_authority_key_id","deployment_authority_public_key_b64u","deployment_contract_set_jcs","deployment_standing_authority_jcs","historical_archive_authority_key_id","historical_archive_authority_public_key_b64u","legacy_cutover_authority_key_id","legacy_cutover_authority_public_key_b64u","generic_profile_authority_public_key_b64u","generic_profile_registry_jcs","generic_activation_recipient_key_id","generic_activation_recipient_public_key_b64u"];
+if (!artifacts || artifactNames.some((name) => typeof artifacts[name] !== "string" || artifacts[name].length === 0 || artifacts[name].includes("REPLACE_"))) throw new Error("signed artifact bundle missing or placeholder");
+if(artifacts.deployment_authority_key_id!==operatorTrustRoot.key_id||artifacts.deployment_authority_public_key_b64u!==operatorTrustRoot.public_key_b64u)throw new Error("deployment authority does not match operator bundle trust root");
+if(operatorBundle.activation_recipient?.key_id!==artifacts.generic_activation_recipient_key_id||operatorBundle.activation_recipient?.public_key_b64u!==artifacts.generic_activation_recipient_public_key_b64u)throw new Error("activation recipient pin does not match signed operator bundle");
+if(artifacts.generic_profile_registry_jcs!==operatorBundleJcs)throw new Error("installed registry bytes must be the exact verified operator bundle");
+for (const name of ["deployment_contract_set_jcs","deployment_standing_authority_jcs","generic_profile_registry_jcs"]) JSON.parse(artifacts[name]);
+const bundledStanding=operatorBundle.artifacts.deployment_standing_authority?.map(entry=>entry.canonical_jcs)??[];
+const bundledContracts=operatorBundle.artifacts.deployment_contract_set?.map(entry=>entry.canonical_jcs)??[];
+if(!bundledStanding.includes(artifacts.deployment_standing_authority_jcs)||!bundledContracts.includes(artifacts.deployment_contract_set_jcs))throw new Error("installed deployment authority is not the exact verified bundle artifact");
+const brokerManifest = JSON.parse(await readFile(resolve(root, "../../broker-workers-package/build-manifest.json"), "utf8"));
+if (!/^[0-9a-f]{64}$/.test(brokerManifest.wasm_sha256 ?? "")) throw new Error("broker WASM hash missing");
 const privateName = `${prefix}-broker-private`;
 const publicName = `${prefix}-broker-public`;
 const d1Name = `${prefix}-broker`;
@@ -52,16 +76,40 @@ let privateConfig = (await readFile(join(root, "wrangler.jsonc"), "utf8"))
   .replaceAll("lattice-broker-template-private", privateName)
   .replaceAll("lattice-broker-template-google-provider", args.get("--google-provider-service"))
   .replaceAll("lattice-broker-template-google-token", args.get("--google-token-service"))
+  .replaceAll("lattice-broker-template-auth-driver", args.get("--auth-driver-service"))
   .replaceAll("lattice-broker-template", d1Name)
   .replaceAll("00000000000000000000000000000000", d1Id)
   .replaceAll("https://invalid.example", publicCallbackBase)
-  .replaceAll("configure-at-deploy.invalid", args.get("--google-oauth-client-id"))
   .replace('"AI_GATEWAY_SPEND_LIMIT_USD": "0"', `"AI_GATEWAY_SPEND_LIMIT_USD": "${args.get("--spend-limit-usd")}"`)
   .replace('"AI_GATEWAY_RATE_LIMIT_PER_MINUTE": "0"', `"AI_GATEWAY_RATE_LIMIT_PER_MINUTE": "${args.get("--rate-limit-per-minute")}"`);
+const artifactReplacements = {
+  REPLACE_WITH_PACKAGED_PRODUCTION_WASM_SHA256: `sha256:${brokerManifest.wasm_sha256}`,
+  REPLACE_WITH_AUTH_DRIVER_SOURCE_SHA256: `sha256:${approvedDependencies.services?.AUTH_DRIVER_SERVICE?.source_hash ?? ""}`,
+  REPLACE_WITH_GOOGLE_TOKEN_SOURCE_SHA256: `sha256:${approvedDependencies.services?.GOOGLE_TOKEN_SERVICE?.source_hash ?? ""}`,
+  REPLACE_WITH_GOOGLE_PROVIDER_SOURCE_SHA256: `sha256:${approvedDependencies.services?.GOOGLE_PROVIDER_SERVICE?.source_hash ?? ""}`,
+  REPLACE_WITH_OPERATOR_KEY_ID: artifacts.deployment_authority_key_id,
+  REPLACE_WITH_OPERATOR_ED25519_KEY: artifacts.deployment_authority_public_key_b64u,
+  REPLACE_WITH_SIGNED_CANONICAL_CONTRACT_SET: artifacts.deployment_contract_set_jcs,
+  REPLACE_WITH_SIGNED_CANONICAL_STANDING_AUTHORITY: artifacts.deployment_standing_authority_jcs,
+  REPLACE_WITH_ARCHIVE_ROOT_KEY_ID: artifacts.historical_archive_authority_key_id,
+  REPLACE_WITH_ARCHIVE_ROOT_ED25519_KEY: artifacts.historical_archive_authority_public_key_b64u,
+  REPLACE_WITH_CUTOVER_ROOT_KEY_ID: artifacts.legacy_cutover_authority_key_id,
+  REPLACE_WITH_CUTOVER_ROOT_ED25519_KEY: artifacts.legacy_cutover_authority_public_key_b64u,
+  REPLACE_WITH_PROFILE_AUTHORITY_ED25519_KEY: artifacts.generic_profile_authority_public_key_b64u,
+  REPLACE_WITH_SIGNED_PROFILE_REGISTRY: artifacts.generic_profile_registry_jcs,
+  REPLACE_WITH_PRIVATE_CHANNEL_KEY_ID: artifacts.generic_activation_recipient_key_id,
+  REPLACE_WITH_PRIVATE_CHANNEL_X25519_PUBLIC_KEY: artifacts.generic_activation_recipient_public_key_b64u,
+  REPLACE_WITH_OPERATOR_ARTIFACT_BUNDLE: operatorBundleJcs,
+  REPLACE_WITH_OPERATOR_ARTIFACT_BUNDLE_HASH: operatorBundleHash,
+  REPLACE_WITH_OPERATOR_BUNDLE_KEY_ID: operatorTrustRoot.key_id,
+  REPLACE_WITH_OPERATOR_BUNDLE_PUBLIC_KEY: operatorTrustRoot.public_key_b64u,
+};
+for (const [placeholder,value] of Object.entries(artifactReplacements)) privateConfig=privateConfig.replaceAll(placeholder,JSON.stringify(value).slice(1,-1));
+if (privateConfig.includes("REPLACE_")) throw new Error("rendered private config retains a placeholder");
 if (privateConfig.includes("lattice-broker-template") || privateConfig.includes("invalid.example")) throw new Error("rendered private config retains a template value");
 for (const requiredBinding of [
-  '"BROKER_LEDGER_DO"', '"CONNECTION_REFRESH_DO"', '"BROKER_DB"',
-  `"${args.get("--google-provider-service")}"`, `"${args.get("--google-token-service")}"`,
+  '"CONNECTION_REFRESH_DO"', '"CREDENTIAL_STATE_V2_DO"', '"V2_AUTHORITY_DO"', '"BROKER_DB"',
+  `"${args.get("--google-provider-service")}"`, `"${args.get("--google-token-service")}"`, `"${args.get("--auth-driver-service")}"`,
 ]) {
   if (!privateConfig.includes(requiredBinding)) throw new Error("rendered private config is missing an exact required resource");
 }
@@ -78,6 +126,7 @@ const context = {
   accountId, prefix, d1Id, d1Name, privateName, publicName, publicCallbackBase,
   googleProviderService: args.get("--google-provider-service"),
   googleTokenService: args.get("--google-token-service"),
+  authDriverService: args.get("--auth-driver-service"),
   approvedDependencies, privateConfig, publicConfig, privateConfigPath, publicConfigPath,
 };
 if (!apply) {

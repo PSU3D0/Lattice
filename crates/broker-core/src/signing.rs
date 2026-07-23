@@ -68,6 +68,10 @@ pub struct BrokerVerifyingKey {
     key: VerifyingKey,
 }
 impl BrokerVerifyingKey {
+    pub fn to_bytes(&self) -> [u8; 32] {
+        self.key.to_bytes()
+    }
+
     pub fn from_bytes(key_id: impl Into<String>, bytes: [u8; 32]) -> Result<Self, BrokerError> {
         Ok(Self {
             key_id: key_id.into(),

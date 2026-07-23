@@ -23,12 +23,30 @@
   },
   "vars": {
     "PUBLIC_CALLBACK_BASE": "https://invalid.example",
-    "OAUTH_REDIRECT_URI": "https://invalid.example/v1/oauth/callback",
-    "GOOGLE_AUTHORIZE_ENDPOINT": "https://accounts.google.com/o/oauth2/v2/auth",
-    "GOOGLE_OAUTH_CLIENT_ID": "configure-at-deploy.invalid",
+    "OAUTH_REDIRECT_URI": "https://invalid.example/v0.2/credential-callback",
     "AI_GATEWAY_PAYLOAD_LOGGING": "disabled",
     "AI_GATEWAY_SPEND_LIMIT_USD": "0",
-    "AI_GATEWAY_RATE_LIMIT_PER_MINUTE": "0"
+    "AI_GATEWAY_RATE_LIMIT_PER_MINUTE": "0",
+    "BROKER_WORKER_WASM_SHA256": "REPLACE_WITH_PACKAGED_PRODUCTION_WASM_SHA256",
+    "AUTH_DRIVER_WORKER_SHA256": "REPLACE_WITH_AUTH_DRIVER_SOURCE_SHA256",
+    "GOOGLE_TOKEN_WORKER_SHA256": "REPLACE_WITH_GOOGLE_TOKEN_SOURCE_SHA256",
+    "GOOGLE_PROVIDER_WORKER_SHA256": "REPLACE_WITH_GOOGLE_PROVIDER_SOURCE_SHA256",
+    "GENERIC_PROFILE_REGISTRY_JCS": "REPLACE_WITH_SIGNED_PROFILE_REGISTRY",
+    "DEPLOYMENT_AUTHORITY_KEY_ID": "REPLACE_WITH_OPERATOR_KEY_ID",
+    "DEPLOYMENT_AUTHORITY_PUBLIC_KEY_B64U": "REPLACE_WITH_OPERATOR_ED25519_KEY",
+    "DEPLOYMENT_CONTRACT_SET_JCS": "REPLACE_WITH_SIGNED_CANONICAL_CONTRACT_SET",
+    "DEPLOYMENT_STANDING_AUTHORITY_JCS": "REPLACE_WITH_SIGNED_CANONICAL_STANDING_AUTHORITY",
+    "HISTORICAL_ARCHIVE_AUTHORITY_KEY_ID": "REPLACE_WITH_ARCHIVE_ROOT_KEY_ID",
+    "HISTORICAL_ARCHIVE_AUTHORITY_PUBLIC_KEY_B64U": "REPLACE_WITH_ARCHIVE_ROOT_ED25519_KEY",
+    "LEGACY_CUTOVER_AUTHORITY_KEY_ID": "REPLACE_WITH_CUTOVER_ROOT_KEY_ID",
+    "LEGACY_CUTOVER_AUTHORITY_PUBLIC_KEY_B64U": "REPLACE_WITH_CUTOVER_ROOT_ED25519_KEY",
+    "GENERIC_PROFILE_AUTHORITY_PUBLIC_KEY_B64U": "REPLACE_WITH_PROFILE_AUTHORITY_ED25519_KEY",
+    "GENERIC_ACTIVATION_RECIPIENT_KEY_ID": "REPLACE_WITH_PRIVATE_CHANNEL_KEY_ID",
+    "GENERIC_ACTIVATION_RECIPIENT_PUBLIC_KEY_B64U": "REPLACE_WITH_PRIVATE_CHANNEL_X25519_PUBLIC_KEY",
+    "OPERATOR_ARTIFACT_BUNDLE_JCS": "REPLACE_WITH_OPERATOR_ARTIFACT_BUNDLE",
+    "OPERATOR_ARTIFACT_BUNDLE_SHA256": "REPLACE_WITH_OPERATOR_ARTIFACT_BUNDLE_HASH",
+    "OPERATOR_BUNDLE_KEY_ID": "REPLACE_WITH_OPERATOR_BUNDLE_KEY_ID",
+    "OPERATOR_BUNDLE_PUBLIC_KEY_B64U": "REPLACE_WITH_OPERATOR_BUNDLE_PUBLIC_KEY"
   },
   "d1_databases": [
     {
@@ -41,16 +59,16 @@
   "durable_objects": {
     "bindings": [
       {
-        "name": "BROKER_LEDGER_DO",
-        "class_name": "BrokerLedgerDurableObject"
-      },
-      {
         "name": "CONNECTION_REFRESH_DO",
         "class_name": "ConnectionRefreshDurableObject"
       },
       {
         "name": "CREDENTIAL_STATE_V2_DO",
         "class_name": "CredentialStateDurableObject"
+      },
+      {
+        "name": "V2_AUTHORITY_DO",
+        "class_name": "V2AuthorityDurableObject"
       }
     ]
   },
@@ -67,6 +85,18 @@
       "new_sqlite_classes": [
         "CredentialStateDurableObject"
       ]
+    },
+    {
+      "tag": "v3-authority",
+      "new_sqlite_classes": [
+        "V2AuthorityDurableObject"
+      ]
+    },
+    {
+      "tag": "v4-delete-v1-ledger",
+      "deleted_classes": [
+        "BrokerLedgerDurableObject"
+      ]
     }
   ],
   "services": [
@@ -77,6 +107,10 @@
     {
       "binding": "GOOGLE_TOKEN_SERVICE",
       "service": "lattice-broker-template-google-token"
+    },
+    {
+      "binding": "AUTH_DRIVER_SERVICE",
+      "service": "lattice-broker-template-auth-driver"
     }
   ],
   "limits": {

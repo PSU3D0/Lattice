@@ -1,0 +1,19 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "lattice-google-token-egress-template-private",
+  "main": "src/token-worker.mjs",
+  "compatibility_date": "2026-07-15",
+  "workers_dev": false,
+  "preview_urls": false,
+  "send_metrics": false,
+  "observability": { "enabled": false },
+  "durable_objects": {
+    "bindings": [
+      { "name": "GOOGLE_TOKEN_IDEMPOTENCY", "class_name": "GoogleTokenIdempotency" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["GoogleTokenIdempotency"] }
+  ],
+  "limits": { "cpu_ms": 30000 }
+}

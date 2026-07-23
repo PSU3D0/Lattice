@@ -1,0 +1,19 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "lattice-google-provider-egress-template-private",
+  "main": "src/provider-worker.mjs",
+  "compatibility_date": "2026-07-15",
+  "workers_dev": false,
+  "preview_urls": false,
+  "send_metrics": false,
+  "observability": { "enabled": false },
+  "durable_objects": {
+    "bindings": [
+      { "name": "GOOGLE_PROVIDER_IDEMPOTENCY", "class_name": "GoogleProviderIdempotency" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["GoogleProviderIdempotency"] }
+  ],
+  "limits": { "cpu_ms": 30000 }
+}

@@ -980,6 +980,7 @@ dependencies = [
 name = "broker-workers"
 version = "0.1.0"
 dependencies = [
+ "aes",
  "base64 0.22.1",
  "broker-auth",
  "broker-core",
@@ -992,6 +993,7 @@ dependencies = [
  "getrandom 0.2.16",
  "getrandom 0.3.3",
  "hex",
+ "hkdf",
  "hmac",
  "js-sys",
  "provider-google",
@@ -1005,6 +1007,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "worker",
+ "x25519-dalek",
  "zeroize",
 ]
 

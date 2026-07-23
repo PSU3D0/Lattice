@@ -1,0 +1,55 @@
+{
+  "schema_version": "0.2",
+  "artifact": "c5-production-readiness",
+  "contains_credentials_or_pii": false,
+  "provisioning_order": [
+    "provision non-owned D1, KV, R2, AI Gateway, and immutable operator authority artifacts",
+    "deploy owned generic auth-driver, Google token, and provider egress Workers and pin exact deployment hashes",
+    "deploy fence-aware private broker Worker before any destructive D1 migration",
+    "apply checked-in forward-only D1 migrations; preserve private broker, egress, and D1 on failure",
+    "deploy public callback Worker and verify callback/health behavior",
+    "render S21 binding lock, authority manifest, Flow IR hash, receipt trust pin, and service bindings",
+    "deploy S21 Worker only after operator approval of every immutable hash"
+  ],
+  "oauth_application": {
+    "application_type": "web",
+    "authorization_endpoint": "https://accounts.google.com/o/oauth2/v2/auth",
+    "token_endpoint": "https://oauth2.googleapis.com/token",
+    "account_discovery_endpoint": "https://oauth2.googleapis.com/tokeninfo",
+    "revocation_endpoint": "https://oauth2.googleapis.com/revoke",
+    "callback_derivation": "${PUBLIC_CALLBACK_BASE}/v0.2/credential-callback",
+    "authorization_flow": "authorization_code_pkce_s256",
+    "token_endpoint_auth_method": "client_secret_post",
+    "exact_scopes": [
+      "https://www.googleapis.com/auth/gmail.send",
+      "https://www.googleapis.com/auth/spreadsheets"
+    ],
+    "account_discovery": "validate tokeninfo user_id and the exact two-scope set inside token egress; commit only the opaque subject"
+  },
+  "broker_private": {
+    "secrets": ["ACTIVATION_SERVICE_AUTH", "AI_GATEWAY_AUTHORIZATION", "AUTH_DRIVER_SERVICE_AUTH", "BINDING_SIGNING_SEED", "COMMITMENT_KEY", "CUSTODY_ROOT_KEY", "GENERIC_ACTIVATION_RECIPIENT_PRIVATE_KEY_B64U", "DEPLOYMENT_BOOTSTRAP_AUTH", "GOOGLE_EGRESS_SERVICE_AUTH", "INVOKE_SERVICE_AUTH", "KEY_HASH_PEPPER", "RECEIPT_SIGNING_SEED"],
+    "immutable_vars": ["AI_GATEWAY_PAYLOAD_LOGGING", "AI_GATEWAY_RATE_LIMIT_PER_MINUTE", "AI_GATEWAY_SPEND_LIMIT_USD", "BROKER_WORKER_WASM_SHA256", "AUTH_DRIVER_WORKER_SHA256", "GOOGLE_TOKEN_WORKER_SHA256", "GOOGLE_PROVIDER_WORKER_SHA256", "GENERIC_PROFILE_REGISTRY_JCS", "DEPLOYMENT_AUTHORITY_KEY_ID", "DEPLOYMENT_AUTHORITY_PUBLIC_KEY_B64U", "DEPLOYMENT_CONTRACT_SET_JCS", "DEPLOYMENT_STANDING_AUTHORITY_JCS", "HISTORICAL_ARCHIVE_AUTHORITY_KEY_ID", "HISTORICAL_ARCHIVE_AUTHORITY_PUBLIC_KEY_B64U", "LEGACY_CUTOVER_AUTHORITY_KEY_ID", "LEGACY_CUTOVER_AUTHORITY_PUBLIC_KEY_B64U", "GENERIC_ACTIVATION_RECIPIENT_KEY_ID", "GENERIC_ACTIVATION_RECIPIENT_PUBLIC_KEY_B64U", "OPERATOR_ARTIFACT_BUNDLE_JCS", "OPERATOR_ARTIFACT_BUNDLE_SHA256", "OPERATOR_BUNDLE_KEY_ID", "OPERATOR_BUNDLE_PUBLIC_KEY_B64U", "GENERIC_PROFILE_AUTHORITY_PUBLIC_KEY_B64U", "OAUTH_REDIRECT_URI", "PUBLIC_CALLBACK_BASE"],
+    "bindings": ["BROKER_DB:D1", "CREDENTIAL_STATE_V2_DO:DurableObject", "V2_AUTHORITY_DO:DurableObject", "GOOGLE_TOKEN_SERVICE:Service", "GOOGLE_PROVIDER_SERVICE:Service", "AUTH_DRIVER_SERVICE:Service"]
+  },
+  "broker_public": { "bindings": ["BROKER_PRIVATE:Service"] },
+  "generic_auth_driver": {
+    "secrets": ["AUTH_DRIVER_SERVICE_AUTH"],
+    "immutable_inputs": ["deployment-scoped signed profile descriptor", "signed exact driver endpoint configuration"],
+    "network_policy": "only the exact signed HTTPS endpoint; bounded response; credential placement by signed scheme"
+  },
+  "google_token_egress": {
+    "secrets": ["GOOGLE_EGRESS_SERVICE_AUTH", "GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_OAUTH_REDIRECT_URI", "GOOGLE_TOKEN_RESULT_KEY"],
+    "bindings": ["GOOGLE_TOKEN_IDEMPOTENCY:DurableObject", "GOOGLE_UPSTREAM:Service"]
+  },
+  "google_provider_egress": {
+    "secrets": ["GOOGLE_EGRESS_SERVICE_AUTH"],
+    "bindings": ["GOOGLE_PROVIDER_IDEMPOTENCY:DurableObject", "GOOGLE_UPSTREAM:Service"]
+  },
+  "s21_flow_worker": {
+    "secrets": ["LATTICE_BROKER_DEPLOYMENT_KEY", "LATTICE_BROKER_POP_SEED_B64U", "LATTICE_BROKER_SERVICE_AUTH", "LATTICE_CONNECTOR_AUTH_LLM_API_KEY"],
+    "immutable_vars": ["LATTICE_S21_HTTP_MODE", "LATTICE_BROKER_BINDING_REF", "LATTICE_BROKER_BUNDLE_ID", "LATTICE_BROKER_FLOW_IR_HASH", "LATTICE_BROKER_BINDING_LOCK_HASH", "LATTICE_BROKER_FLOW_ID", "LATTICE_BROKER_RECEIPT_PUBLIC_KEY_B64U", "LATTICE_BROKER_RECEIPT_PUBLIC_KEY_HASH", "LATTICE_CONNECTOR_ENDPOINT_LLM_DEFAULT_BASE_URL", "LATTICE_MULTIPART_ARTIFACT_FIELD", "LATTICE_MULTIPART_EXPECTED_CONTENT_TYPE", "LATTICE_MULTIPART_FILENAME_METADATA_FIELD", "LATTICE_MULTIPART_FILE_FIELD", "LATTICE_MULTIPART_MAX_FILE_BYTES", "LATTICE_MULTIPART_MAX_TEXT_BYTES", "LATTICE_MULTIPART_MAX_TOTAL_BYTES", "LATTICE_MULTIPART_REQUIRED_MAGIC"],
+    "bindings": ["LATTICE_BROKER_PRIVATE:Service", "LATTICE_EXTRACT_PDF:Service", "FLOW_DO:DurableObject", "WORKSPACE_DO:DurableObject", "FLOW_KV:KV", "WORKSPACE_BUCKET:R2"]
+  },
+  "failure_policy": "D1 migrations are irreversible. Once migration is attempted, emit forward_fix_required evidence and never delete or roll back migrated D1, the fence-aware private broker, or its owned egress dependencies.",
+  "external_readiness_blockers": ["Cloudflare resource provisioning and deployment", "Google OAuth registration, secrets, consent, and test-user approval", "AI Gateway provisioning", "operator-signed deployment authority and receipt-key approval", "user-gated live proof"]
+}

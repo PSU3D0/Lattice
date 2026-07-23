@@ -1,8 +1,6 @@
 use crate::{
     credential_state::{CredentialStateV2, PublicRecordSchema},
-    durable::{
-        LedgerAuthority, LedgerCommand, LedgerPersistence, LedgerReply, apply_persisted_command,
-    },
+    durable::{LedgerAuthority, LedgerCommand, LedgerPersistence, apply_persisted_command},
     management::{
         DeploymentKey, constant_time_matches, deployment_key_hash, fresh_timestamp, keyed_hash,
         public_key_thumbprint, request_transcript, validate_intent, verify_ed25519,
@@ -27,29 +25,33 @@ use chacha20poly1305::{
     aead::{Aead, Payload},
 };
 use js_sys::JsString;
-use provider_google::{
-    CONNECTOR_REF, CUSTODY_LOCATION as CUSTODY, EXECUTION_LANE, GMAIL_SCOPE,
-    LEGACY_PROFILE_REF as AUTH_PROFILE_REF, SHEETS_SCOPE,
-};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use wasm_bindgen::{JsValue, closure::Closure, prelude::wasm_bindgen};
-#[cfg(feature = "test-fixtures")]
-use worker::D1Database;
 use worker::{Context, Env, Method, Request, RequestInit, Response, State, durable_object, event};
 
-#[cfg(feature = "test-fixtures")]
-mod test_fixtures;
-#[cfg(feature = "test-fixtures")]
-mod v2_test;
+mod v2_production;
+pub use v2_production::V2AuthorityDurableObject;
 
 const LEDGER_SNAPSHOT_KEY: &str = "broker:ledger:snapshot:v1";
 const LEDGER_TAIL_KEY: &str = "broker:ledger:tail:v1";
 const REFRESH_STORAGE_KEY: &str = "broker:refresh:v1";
 const CREDENTIAL_STATE_V2_KEY: &str = "broker:credential-state:v2";
 const JSON_CONTENT_TYPE: &str = "application/json";
-const APPROVED_SCOPES: [&str; 2] = [GMAIL_SCOPE, SHEETS_SCOPE];
+fn installed_management_profile() -> Result<crate::management::ManagementProfile, BrokerError> {
+    crate::composition::management_profile(&now_rfc3339())
+}
+
+fn installed_claims() -> Result<Vec<String>, BrokerError> {
+    installed_management_profile().map(|profile| profile.normalized_claims)
+}
+
+fn installed_contract(
+    contract_id: &str,
+) -> Result<crate::composition::InstalledContract, BrokerError> {
+    crate::composition::installed_contract(contract_id, &now_rfc3339())
+}
 
 #[derive(Deserialize, Serialize)]
 struct LedgerEnvelope {
@@ -371,6 +373,22 @@ enum CredentialStateCommand {
     AdvanceFence {
         canonical_json: Vec<u8>,
     },
+    LeaseMaterialForDispatch {
+        generation: u64,
+    },
+    ReadMaterialForRevocation {
+        generation: u64,
+    },
+    DestroyMaterial {
+        expected_generation: u64,
+        evidence_hash: String,
+    },
+    BindRemoteCustodian {
+        binding_hash: String,
+    },
+    BeginRevocation {
+        fence_hash: String,
+    },
     #[cfg(feature = "test-fixtures")]
     ActivateV2ForTest {
         canonical_json: Vec<u8>,
@@ -402,6 +420,12 @@ struct CredentialStateReply {
     material_generations: Vec<(u64, String)>,
     fence_json: Vec<u8>,
     rotation_journal_json: Option<Vec<u8>>,
+    leased_material: Option<Vec<u8>>,
+    revocation_material: Option<Vec<u8>>,
+    destroyed_material_generations: Vec<u64>,
+    revocation_evidence_hash: Option<String>,
+    revocation_fence_hash: Option<String>,
+    remote_custodian_binding_hash: Option<String>,
     #[cfg(feature = "test-fixtures")]
     sealed_material_for_internal_test: Option<Vec<u8>>,
 }
@@ -463,6 +487,8 @@ impl worker::DurableObject for CredentialStateDurableObject {
             return do_error(BrokerError::Brk107);
         }
         let mut changed = matches!(envelope.command, CredentialStateCommand::Initialize { .. });
+        let mut leased_material = None;
+        let mut revocation_material = None;
         #[cfg(feature = "test-fixtures")]
         let mut sealed_material_for_internal_test = None;
         let result = match envelope.command {
@@ -494,6 +520,31 @@ impl worker::DurableObject for CredentialStateDurableObject {
                 .map(|_| {
                     changed = true;
                 }),
+            CredentialStateCommand::LeaseMaterialForDispatch { generation } => state
+                .lease_material_for_dispatch(&envelope.org_id, generation)
+                .map(|material| {
+                    leased_material = Some(material);
+                    changed = true;
+                }),
+            CredentialStateCommand::ReadMaterialForRevocation { generation } => state
+                .material_for_revocation(&envelope.org_id, generation)
+                .map(|material| {
+                    revocation_material = Some(material);
+                }),
+            CredentialStateCommand::DestroyMaterial {
+                expected_generation,
+                evidence_hash,
+            } => state
+                .destroy_material(&envelope.org_id, expected_generation, &evidence_hash)
+                .map(|()| {
+                    changed = true;
+                }),
+            CredentialStateCommand::BindRemoteCustodian { binding_hash } => state
+                .bind_remote_custodian(&envelope.org_id, &binding_hash)
+                .map(|()| changed = true),
+            CredentialStateCommand::BeginRevocation { fence_hash } => state
+                .begin_revocation(&envelope.org_id, &fence_hash)
+                .map(|()| changed = true),
             #[cfg(feature = "test-fixtures")]
             CredentialStateCommand::ActivateV2ForTest { canonical_json } => state
                 .activate_v2_for_test(&envelope.org_id, &canonical_json)
@@ -535,6 +586,12 @@ impl worker::DurableObject for CredentialStateDurableObject {
                 .collect(),
             fence_json: state.fence_json.clone(),
             rotation_journal_json: state.rotation_journal_json.clone(),
+            leased_material,
+            revocation_material,
+            destroyed_material_generations: state.destroyed_material_generations.clone(),
+            revocation_evidence_hash: state.revocation_evidence_hash.clone(),
+            revocation_fence_hash: state.revocation_fence_hash.clone(),
+            remote_custodian_binding_hash: state.remote_custodian_binding_hash.clone(),
             #[cfg(feature = "test-fixtures")]
             sealed_material_for_internal_test,
         })
@@ -550,32 +607,54 @@ async fn fetch(mut request: Request, env: Env, _context: Context) -> worker::Res
     {
         return json(&PublicError::invalid(), 400);
     }
-    match (method, path.as_str()) {
+    match (method.clone(), path.as_str()) {
         (Method::Get, "/health") => json(&serde_json::json!({"status":"ok"}), 200),
         (Method::Get, "/ready") => readiness(&env).await,
-        (Method::Post, "/v1/sessions") => create_session(&mut request, &env).await,
-        (Method::Post, "/v1/connection-intents") => {
+        (Method::Post, "/v0.2/sessions") => create_session(&mut request, &env).await,
+        (Method::Get, "/v0.2/trust/receipts") => v2_production::receipt_trust(&env),
+        (Method::Post, "/v0.2/connection-intents") => {
             create_connection_intent(&mut request, &env).await
         }
-        (Method::Get, "/v1/oauth/callback") => oauth_callback(&request, &env).await,
-        (Method::Post, "/v1/bindings") => install_binding(&mut request, &env).await,
-        (Method::Post, "/internal/v1/bootstrap") => bootstrap(&mut request, &env).await,
-        (Method::Post, "/internal/v1/grants") => issue_grant(&mut request, &env).await,
-        (Method::Post, "/internal/v1/invoke") => invoke(&mut request, &env).await,
-        #[cfg(feature = "test-fixtures")]
-        (Method::Post, concat!("/__", "test/fixtures")) => {
-            test_fixtures::provision_fixture(&mut request, &env).await
+        (Method::Get, "/v0.2/credential-callback") => oauth_callback(&request, &env).await,
+        (Method::Post, "/v0.2/bindings") => {
+            v2_production::install_binding(&mut request, &env).await
         }
-        #[cfg(feature = "test-fixtures")]
-        (Method::Post, concat!("/__", "test/credential-state-v2")) => {
-            test_fixtures::credential_state_v2(&mut request, &env).await
+        (Method::Post, "/internal/v0.2/bootstrap") => bootstrap(&mut request, &env).await,
+        (Method::Post, "/internal/v0.2/activations") => {
+            v2_production::create_generic_activation(&mut request, &env).await
         }
-        #[cfg(feature = "test-fixtures")]
-        (Method::Post, concat!("/__", "test/v2-activation")) => {
-            v2_test::route(&mut request, &env).await
+        _ if method == Method::Post
+            && path.starts_with("/internal/v0.2/activations/")
+            && path.ends_with("/submit") =>
+        {
+            let activation_ref = path
+                .trim_start_matches("/internal/v0.2/activations/")
+                .trim_end_matches("/submit")
+                .trim_end_matches('/');
+            v2_production::submit_generic_activation(&mut request, &env, activation_ref).await
         }
-        _ if path.starts_with("/v1/connections/") => connection_route(&request, &env).await,
-        _ if path.starts_with("/v1/receipts/") => receipt_route(&request, &env).await,
+        (Method::Post, "/internal/v0.2/node-leases") => {
+            v2_production::issue_node_lease(&mut request, &env).await
+        }
+        (Method::Post, "/internal/v0.2/grants") => {
+            v2_production::derive_grant(&mut request, &env).await
+        }
+        (Method::Post, "/internal/v0.2/invoke") => {
+            match v2_production::invoke(&mut request, &env).await {
+                Ok(response) => Ok(response),
+                Err(error) => {
+                    worker::console_error!("v2 invoke internal failure: {:?}", error);
+                    json(&PublicError::unavailable(), 503)
+                }
+            }
+        }
+        (Method::Post, "/internal/v0.2/cutover/reconcile") => {
+            v2_production::reconcile_legacy(&mut request, &env).await
+        }
+        _ if path.starts_with("/v0.2/connections/") => {
+            v2_production::connection_route(&request, &env).await
+        }
+        _ if path.starts_with("/v0.2/receipts/") => receipt_route(&request, &env).await,
         _ => json(&PublicError::invalid(), 404),
     }
 }
@@ -663,6 +742,7 @@ async fn bootstrap(request: &mut Request, env: &Env) -> worker::Result<Response>
     )
 }
 
+#[cfg(any())]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct InternalGrantRequest {
@@ -680,6 +760,7 @@ struct InternalGrantRequest {
     operation_contract: String,
 }
 
+#[cfg(any())]
 async fn issue_grant(request: &mut Request, env: &Env) -> worker::Result<Response> {
     if !header_secret_matches(
         request,
@@ -814,7 +895,7 @@ async fn issue_grant(request: &mut Request, env: &Env) -> worker::Result<Respons
         .iter()
         .find(|contract| contract.contract_id == body.operation_contract)
         .ok_or_else(|| worker_rust_error("authority"))?;
-    let required_scope = match provider_google::adapter(&body.operation_contract) {
+    let required_scope = match installed_contract(&body.operation_contract) {
         Ok(adapter) => adapter.required_claim,
         Err(_) => return json(&PublicError::broker(BrokerError::Brk108), 403),
     };
@@ -983,11 +1064,13 @@ async fn readiness(env: &Env) -> worker::Result<Response> {
         Err(_) => return json(&PublicError::unavailable(), 503),
     };
     match db
-        .prepare("SELECT version FROM broker_schema LIMIT 1")
+        .prepare("SELECT version FROM broker_schema_v2_cutover LIMIT 1")
         .first::<i64>(Some("version"))
         .await
     {
-        Ok(Some(1)) => json(&serde_json::json!({"status":"ready"}), 200),
+        Ok(Some(3)) if v2_production::configuration_ready(env) => {
+            json(&serde_json::json!({"status":"ready","protocol":"0.2"}), 200)
+        }
         _ => json(&PublicError::unavailable(), 503),
     }
 }
@@ -1043,11 +1126,31 @@ async fn create_session(request: &mut Request, env: &Env) -> worker::Result<Resp
     {
         return json(&PublicError::broker(BrokerError::Brk101), 401);
     }
-    let deployment_key_id = format!("sha256:{key_hash}");
+    let deployment_key_id = format!(
+        "sha256:{}",
+        hex::encode(Sha256::digest(
+            [
+                b"deployment-key-id\0".as_slice(),
+                body.deployment_key.as_bytes()
+            ]
+            .concat()
+        ))
+    );
     let public_key = match verify_exchange_request(&body, &deployment_key_id, now) {
         Ok(key) => key,
         Err(_) => return json(&PublicError::broker(BrokerError::Brk102), 401),
     };
+    let pop_key_thumbprint = public_key_thumbprint(&public_key);
+    #[derive(Deserialize)]
+    struct ExistingSession {
+        session_ref: String,
+        expires_at: i64,
+    }
+    if let Ok(Some(existing)) = db.prepare("SELECT session_ref,expires_at FROM sessions WHERE org_id=? AND deployment_id=? AND pop_key_thumbprint=? AND revoked=0 AND expires_at>? ORDER BY expires_at DESC LIMIT 1")
+        .bind(&[JsValue::from_str(&row.org_id),JsValue::from_str(&row.deployment_id),JsValue::from_str(&pop_key_thumbprint),JsValue::from_f64(now as f64)])?
+        .first::<ExistingSession>(None).await {
+        return json(&SessionExchangeResponse { session_ref: existing.session_ref, expires_at: existing.expires_at }, 200);
+    }
     // Reserving the exchange nonce before creating the session is intentional:
     // a storage failure may consume a nonce, but can never make it replayable.
     if db
@@ -1070,7 +1173,6 @@ async fn create_session(request: &mut Request, env: &Env) -> worker::Result<Resp
         Ok(value) => value,
         Err(_) => return json(&PublicError::unavailable(), 503),
     };
-    let pop_key_thumbprint = public_key_thumbprint(&public_key);
     let pop_public_key = URL_SAFE_NO_PAD.encode(public_key);
     let expires_at = now + SESSION_TTL_SECONDS;
     let statement = db
@@ -1100,43 +1202,28 @@ async fn create_session(request: &mut Request, env: &Env) -> worker::Result<Resp
 }
 
 struct OAuthProfile {
-    authorize_endpoint: String,
-    client_id: String,
     redirect_uri: String,
     scopes: Vec<String>,
 }
 
 fn oauth_profile(env: &Env, connector: &str, auth_profile: &str) -> worker::Result<OAuthProfile> {
-    if connector != CONNECTOR_REF || auth_profile != AUTH_PROFILE_REF {
+    let installed =
+        installed_management_profile().map_err(|_| worker_rust_error("oauth profile"))?;
+    if connector != installed.connector_ref || auth_profile != installed.auth_profile_ref {
         return Err(worker_rust_error("oauth profile"));
     }
-    let authorize_endpoint = env
-        .var(provider_google::AUTHORIZATION_ENDPOINT_BINDING)?
-        .to_string();
-    let parsed = worker::Url::parse(&authorize_endpoint)?;
-    if parsed.scheme() != "https" || parsed.host_str().is_none() || parsed.query().is_some() {
-        return Err(worker_rust_error("oauth profile"));
-    }
-    let client_id = env
-        .var(provider_google::OAUTH_CLIENT_ID_BINDING)?
-        .to_string();
     let redirect_uri = env.var("OAUTH_REDIRECT_URI")?.to_string();
     let redirect = worker::Url::parse(&redirect_uri)?;
-    if client_id.is_empty()
-        || client_id.len() > 512
-        || redirect.scheme() != "https"
-        || redirect.path() != "/v1/oauth/callback"
+    if redirect.scheme() != "https"
+        || redirect.path() != "/v0.2/credential-callback"
+        || redirect.query().is_some()
+        || redirect.fragment().is_some()
     {
         return Err(worker_rust_error("oauth profile"));
     }
     Ok(OAuthProfile {
-        authorize_endpoint,
-        client_id,
         redirect_uri,
-        scopes: APPROVED_SCOPES
-            .iter()
-            .map(|scope| (*scope).into())
-            .collect(),
+        scopes: installed.normalized_claims,
     })
 }
 
@@ -1173,7 +1260,7 @@ fn seal_activation_payload(
     let mut nonce = [0u8; 12];
     getrandom::getrandom(&mut nonce).map_err(|_| worker_rust_error("activation state"))?;
     let cipher = ChaCha20Poly1305::new((&key).into());
-    let aad = format!("{intent_ref}\0activation-v1");
+    let aad = format!("{intent_ref}\0activation-material");
     let ciphertext = cipher
         .encrypt(
             (&nonce).into(),
@@ -1210,7 +1297,7 @@ fn open_activation_payload(
         return Err(worker_rust_error("activation state"));
     }
     let key = secret_32(env, "CUSTODY_ROOT_KEY")?;
-    let aad = format!("{intent_ref}\0activation-v1");
+    let aad = format!("{intent_ref}\0activation-material");
     ChaCha20Poly1305::new((&key).into())
         .decrypt(
             (&nonce).into(),
@@ -1262,12 +1349,24 @@ async fn create_connection_intent(request: &mut Request, env: &Env) -> worker::R
         Ok(value) => value,
         Err(_) => return json(&PublicError::invalid(), 400),
     };
-    let management_profile = match crate::composition::legacy_management_profile() {
+    let management_profile = match installed_management_profile() {
         Ok(profile) => profile,
         Err(error) => return json(&PublicError::broker(error), 503),
     };
     if validate_intent(&body, &management_profile).is_err() {
         return json(&PublicError::broker(BrokerError::Brk109), 400);
+    }
+    let activation_dispatch = match crate::composition::activation_driver_dispatch(&now_rfc3339()) {
+        Ok(value) => value,
+        Err(error) => return json(&PublicError::broker(error), 503),
+    };
+    if activation_dispatch
+        != crate::composition::ActivationDriverDispatch::OAuthAuthorizationCodePkce
+    {
+        // Non-OAuth drivers are selected from the same signed profile plane,
+        // but must use their dedicated private-material/workload/custodian
+        // submission endpoint rather than entering the OAuth state machine.
+        return json(&PublicError::broker(BrokerError::Brk108), 409);
     }
     let profile = match oauth_profile(env, &body.connector_ref, &body.auth_profile_ref) {
         Ok(profile) => profile,
@@ -1275,7 +1374,7 @@ async fn create_connection_intent(request: &mut Request, env: &Env) -> worker::R
     };
     let intent_ref = opaque_id("intent_")?;
     let state = opaque_id("oauth_state_")?;
-    let verifier = opaque_id("pkce_")?;
+    let verifier = pkce_verifier()?;
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
     let (pkce_nonce, pkce_ciphertext) = seal_oauth_verifier(env, &intent_ref, verifier.as_bytes())?;
     let state_hash = hex::encode(Sha256::digest(state.as_bytes()));
@@ -1285,43 +1384,73 @@ async fn create_connection_intent(request: &mut Request, env: &Env) -> worker::R
         .prepare(
             "INSERT INTO connection_intents \
              (intent_ref, org_id, connector_ref, auth_profile_ref, execution_lane, custody, \
-              oauth_state_hash, pkce_nonce, pkce_ciphertext, expires_at, status) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')",
+              oauth_state_hash, pkce_nonce, pkce_ciphertext, expires_at, status, activation_deployment_id) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
         )
         .bind(&[
             JsValue::from_str(&intent_ref),
             JsValue::from_str(&session.org_id),
-            JsValue::from_str(CONNECTOR_REF),
-            JsValue::from_str(AUTH_PROFILE_REF),
-            JsValue::from_str(EXECUTION_LANE),
-            JsValue::from_str(CUSTODY),
+            JsValue::from_str(&management_profile.connector_ref),
+            JsValue::from_str(&management_profile.auth_profile_ref),
+            JsValue::from_str(&management_profile.execution_lane),
+            JsValue::from_str(&management_profile.custody),
             JsValue::from_str(&state_hash),
             JsValue::from_str(&pkce_nonce),
             JsValue::from_str(&pkce_ciphertext),
             JsValue::from_f64(expires_at as f64),
+            JsValue::from_str(&session.deployment_id),
         ])?
         .run()
         .await;
     if result.is_err() {
         return json(&PublicError::unavailable(), 503);
     }
-    let mut authorization_url = worker::Url::parse(&profile.authorize_endpoint)
-        .map_err(|_| worker_rust_error("oauth profile"))?;
+    let service = env
+        .service(
+            crate::composition::installed_provider_plane(&now_rfc3339())
+                .map_err(|_| worker_rust_error("composition"))?
+                .token_service_binding,
+        )
+        .map_err(|_| worker_rust_error("authorization service"))?;
+    let authorization_request = serde_json::json!({
+        "code_challenge": challenge,
+        "redirect_uri": profile.redirect_uri,
+        "response_type": "code",
+        "scopes": profile.scopes,
+        "state": state
+    });
+    let mut response = service_json_timeout(
+        env,
+        &service,
+        "http://token.internal/authorize",
+        &authorization_request,
+        &intent_ref,
+        &format!("{intent_ref}:authorize"),
+        10_000,
+    )
+    .await?;
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct AuthorizationAction {
+        authorization_url: String,
+        exact_scopes: Vec<String>,
+    }
+    let action: AuthorizationAction =
+        bounded_response_json(&mut response, crate::protocol::MAX_PROVIDER_RESPONSE).await?;
+    if response.status_code() != 200
+        || action.exact_scopes != installed_claims().map_err(|_| worker_rust_error("claims"))?
+        || !action
+            .authorization_url
+            .starts_with("https://accounts.google.com/")
     {
-        let mut query = authorization_url.query_pairs_mut();
-        query.append_pair("client_id", &profile.client_id);
-        query.append_pair("redirect_uri", &profile.redirect_uri);
-        query.append_pair("scope", &profile.scopes.join(" "));
-        query.append_pair("state", &state);
-        query.append_pair("response_type", "code");
-        query.append_pair("code_challenge", &challenge);
-        query.append_pair("code_challenge_method", "S256");
+        mark_intent_failed(&db, &intent_ref, "authorization_action_rejected").await;
+        return json(&PublicError::unavailable(), 503);
     }
     json(
         &ConnectionIntentResponse {
             intent_ref,
             next_action: NextAction::OpenUrl {
-                url: authorization_url.to_string(),
+                url: action.authorization_url,
             },
         },
         201,
@@ -1449,23 +1578,13 @@ async fn mark_intent_failed(db: &worker::D1Database, intent_ref: &str, code: &st
     }
 }
 
-fn valid_account_id(value: &str) -> bool {
-    if !(3..=512).contains(&value.len())
-        || value != value.trim()
-        || value != value.to_ascii_lowercase()
-        || !value.is_ascii()
-        || value.bytes().any(|byte| byte.is_ascii_control())
-    {
-        return false;
-    }
-    let mut parts = value.split('@');
-    let local = parts.next().unwrap_or_default();
-    let domain = parts.next().unwrap_or_default();
-    !local.is_empty()
-        && domain.contains('.')
-        && !domain.starts_with('.')
-        && !domain.ends_with('.')
-        && parts.next().is_none()
+fn valid_account_subject(value: &str) -> bool {
+    (3..=255).contains(&value.len())
+        && value == value.trim()
+        && value.is_ascii()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
 }
 
 async fn bounded_response_bytes(response: &mut Response, max: usize) -> worker::Result<Vec<u8>> {
@@ -1499,15 +1618,8 @@ async fn bounded_response_json<T: DeserializeOwned>(
 }
 
 fn inject_activation_crash(request: &Request, phase: &str) -> bool {
-    #[cfg(feature = "test-fixtures")]
-    {
-        return test_fixtures::inject_activation_crash(request, phase);
-    }
-    #[cfg(not(feature = "test-fixtures"))]
-    {
-        let _ = (request, phase);
-        false
-    }
+    let _ = (request, phase);
+    false
 }
 
 async fn oauth_callback(request: &Request, env: &Env) -> worker::Result<Response> {
@@ -1530,6 +1642,7 @@ async fn oauth_callback(request: &Request, env: &Env) -> worker::Result<Response
     struct IntentRow {
         intent_ref: String,
         org_id: String,
+        activation_deployment_id: String,
         connector_ref: String,
         auth_profile_ref: String,
         pkce_nonce: String,
@@ -1550,7 +1663,6 @@ async fn oauth_callback(request: &Request, env: &Env) -> worker::Result<Response
     struct ExchangePayload {
         code: String,
         code_verifier: String,
-        client_id: String,
         redirect_uri: String,
     }
     #[derive(Serialize, Deserialize)]
@@ -1566,7 +1678,7 @@ async fn oauth_callback(request: &Request, env: &Env) -> worker::Result<Response
     }
     let db = env.d1("BROKER_DB")?;
     let state_hash = hex::encode(Sha256::digest(state.as_bytes()));
-    const INTENT_COLUMNS: &str = "intent_ref, org_id, connector_ref, auth_profile_ref, pkce_nonce, pkce_ciphertext, status, activation_phase, exchange_nonce, exchange_ciphertext, activation_connection_ref, activation_route, activation_account_commitment, activation_scopes_json, activation_nonce, activation_ciphertext";
+    const INTENT_COLUMNS: &str = "intent_ref, org_id, activation_deployment_id, connector_ref, auth_profile_ref, pkce_nonce, pkce_ciphertext, status, activation_phase, exchange_nonce, exchange_ciphertext, activation_connection_ref, activation_route, activation_account_commitment, activation_scopes_json, activation_nonce, activation_ciphertext";
     let initial = db
         .prepare(&format!(
             "SELECT {INTENT_COLUMNS} FROM connection_intents \
@@ -1605,7 +1717,6 @@ async fn oauth_callback(request: &Request, env: &Env) -> worker::Result<Response
         let exchange = ExchangePayload {
             code: code.clone(),
             code_verifier,
-            client_id: profile.client_id,
             redirect_uri: profile.redirect_uri,
         };
         let exchange_bytes =
@@ -1745,24 +1856,29 @@ async fn oauth_callback(request: &Request, env: &Env) -> worker::Result<Response
         if inject_activation_crash(request, "exchange_inflight") {
             return json(&PublicError::unavailable(), 599);
         }
-        let service = match env.service(provider_google::TOKEN_SERVICE_BINDING) {
+        let service = match env.service(
+            crate::composition::installed_provider_plane(&now_rfc3339())
+                .map_err(|_| worker_rust_error("composition"))?
+                .token_service_binding,
+        ) {
             Ok(service) => service,
             Err(_) => return json(&PublicError::unavailable(), 503),
         };
-        // The pinned token service treats intent_ref as an idempotency key and
-        // returns the cached exchange result after a Worker crash.
+        // The pinned token service treats the authenticated idempotency header
+        // as its durable key and never accepts OAuth client credentials here.
         let exchange_request = serde_json::json!({
             "code": exchange.code,
-            "intent_ref": row.intent_ref,
             "grant_type": "authorization_code",
             "code_verifier": exchange.code_verifier,
-            "client_id": exchange.client_id,
             "redirect_uri": exchange.redirect_uri
         });
         let mut response = match service_json_timeout(
+            env,
             &service,
             "http://token.internal/exchange",
             &exchange_request,
+            &row.intent_ref,
+            &format!("{}:exchange", row.intent_ref),
             10_000,
         )
         .await
@@ -1780,7 +1896,7 @@ async fn oauth_callback(request: &Request, env: &Env) -> worker::Result<Response
             access_token: String,
             expires_in: u64,
             scopes: Vec<String>,
-            account_id: String,
+            account_subject: String,
         }
         let token: TokenExchange = match bounded_response_json(
             &mut response,
@@ -1797,9 +1913,9 @@ async fn oauth_callback(request: &Request, env: &Env) -> worker::Result<Response
         if inject_activation_crash(request, "before_route_reserved") {
             return json(&PublicError::unavailable(), 599);
         }
-        let expected_scopes = APPROVED_SCOPES
-            .iter()
-            .map(|scope| (*scope).to_string())
+        let expected_scopes = installed_claims()
+            .map_err(|_| worker_rust_error("claims"))?
+            .into_iter()
             .collect::<std::collections::BTreeSet<_>>();
         let scopes = token
             .scopes
@@ -1808,20 +1924,18 @@ async fn oauth_callback(request: &Request, env: &Env) -> worker::Result<Response
         if expected_scopes != scopes
             || token.refresh_token.is_empty()
             || token.access_token.is_empty()
-            || !valid_account_id(&token.account_id)
+            || !valid_account_subject(&token.account_subject)
         {
             mark_restart_required(&db, &row.intent_ref, "identity_or_scope_rejected").await;
             return json(&PublicError::broker(BrokerError::Brk109), 400);
         }
-        let normalized_account = token.account_id.trim().to_ascii_lowercase();
+        let account_subject = token.account_subject;
         let commitment_key = match secret_32(env, "COMMITMENT_KEY") {
             Ok(value) => value,
             Err(_) => return json(&PublicError::unavailable(), 503),
         };
-        let account_material = format!(
-            "{}\0{}\0{}",
-            row.org_id, row.connector_ref, normalized_account
-        );
+        let account_material =
+            format!("{}\0{}\0{}", row.org_id, row.connector_ref, account_subject);
         let account_commitment = format!(
             "hmac-sha256:{}",
             hex::encode(keyed_hash(
@@ -1865,59 +1979,8 @@ async fn oauth_callback(request: &Request, env: &Env) -> worker::Result<Response
     if inject_activation_crash(request, "route_reserved") {
         return json(&PublicError::unavailable(), 599);
     }
-    // The durable route and encrypted recovery payload are committed before
-    // this first external credential write. Register/revoke are idempotent.
-    let registration = ConnectionRegistration {
-        org_id: row.org_id.clone(),
-        connection_ref: payload.connection_ref.clone(),
-        account_commitment: payload.account_commitment.clone(),
-        granted_scopes: payload.scopes.clone(),
-        refresh_token: crate::refresh::SecretBytes::new(payload.refresh_token.as_bytes().to_vec()),
-        access_token: Some(crate::refresh::SecretBytes::new(
-            payload.access_token.as_bytes().to_vec(),
-        )),
-        access_expires_at: Some(payload.access_expires_at),
-        revocation_epoch: 0,
-    };
-    if do_request::<RefreshReply>(
-        env,
-        "CONNECTION_REFRESH_DO",
-        &payload.route,
-        &RefreshCommand::Register { registration },
-    )
-    .await
-    .is_err()
-    {
-        compensate_activation(
-            env,
-            &db,
-            &row.org_id,
-            &row.intent_ref,
-            &payload.connection_ref,
-            &payload.route,
-            "credential_store_failed",
-            inject_activation_crash(request, "revoke_failure"),
-        )
-        .await;
-        return json(&PublicError::unavailable(), 503);
-    }
-    if inject_activation_crash(request, "credential_registered_unrecorded") {
-        return json(&PublicError::unavailable(), 599);
-    }
-    if inject_activation_crash(request, "cleanup_revoke_failure") {
-        compensate_activation(
-            env,
-            &db,
-            &row.org_id,
-            &row.intent_ref,
-            &payload.connection_ref,
-            &payload.route,
-            "injected_activation_failure",
-            true,
-        )
-        .await;
-        return json(&PublicError::unavailable(), 503);
-    }
+    // V2 material is sealed only in the V2 custodian. Production activation
+    // never registers a second copy in the archived V1 refresh object.
     let phase = db.prepare(
         "UPDATE connection_intents SET activation_phase = 'credential_registered' \
          WHERE intent_ref = ? AND status = 'activating' AND activation_phase IN ('route_reserved', 'credential_registered')"
@@ -1939,23 +2002,36 @@ async fn oauth_callback(request: &Request, env: &Env) -> worker::Result<Response
     if inject_activation_crash(request, "credential_registered") {
         return json(&PublicError::unavailable(), 599);
     }
-    let scopes_json =
-        serde_json::to_string(&payload.scopes).map_err(|_| worker_rust_error("scopes"))?;
-    let inserted = db.prepare(
-        "INSERT OR IGNORE INTO connections \
-         (org_id, connection_ref, intent_ref, connector_ref, auth_profile_ref, execution_lane, custody, \
-          account_commitment, actual_scopes_json, refresh_do_route, revocation_epoch, status) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'activating')"
-    ).bind(&[
-        JsValue::from_str(&row.org_id), JsValue::from_str(&payload.connection_ref), JsValue::from_str(&row.intent_ref),
-        JsValue::from_str(CONNECTOR_REF), JsValue::from_str(AUTH_PROFILE_REF), JsValue::from_str(EXECUTION_LANE),
-        JsValue::from_str(CUSTODY), JsValue::from_str(&payload.account_commitment), JsValue::from_str(&scopes_json),
-        JsValue::from_str(&payload.route),
-    ])?.run().await;
-    if inserted
-        .as_ref()
-        .ok()
-        .is_none_or(|result| !result.success())
+    let material_plaintext =
+        serde_json::to_vec(&payload).map_err(|_| worker_rust_error("v2 activation material"))?;
+    let (material_nonce, material_ciphertext) = seal_activation_payload(
+        env,
+        &format!("{}\0v2-material", payload.connection_ref),
+        &material_plaintext,
+    )?;
+    let sealed_material = serde_json::to_vec(&serde_json::json!({
+        "nonce":material_nonce,"ciphertext":material_ciphertext
+    }))?;
+    let normalized_claims = payload.scopes.iter().cloned().collect::<Vec<_>>();
+    if v2_production::prepare_activated_connection(
+        &db,
+        env,
+        &row.org_id,
+        &row.activation_deployment_id,
+        &payload.connection_ref,
+        &row.auth_profile_ref,
+        &payload.account_commitment,
+        &normalized_claims,
+        &payload.route,
+        &sealed_material,
+        "local_sealed",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .is_err()
     {
         compensate_activation(
             env,
@@ -1964,8 +2040,8 @@ async fn oauth_callback(request: &Request, env: &Env) -> worker::Result<Response
             &row.intent_ref,
             &payload.connection_ref,
             &payload.route,
-            "connection_insert_failed",
-            inject_activation_crash(request, "revoke_failure"),
+            "v2_authority_prepare_failed",
+            false,
         )
         .await;
         return json(&PublicError::unavailable(), 503);
@@ -1973,77 +2049,14 @@ async fn oauth_callback(request: &Request, env: &Env) -> worker::Result<Response
     if inject_activation_crash(request, "connection_inserted") {
         return json(&PublicError::unavailable(), 599);
     }
-    #[derive(Deserialize)]
-    struct ActivationConnection {
-        intent_ref: String,
-        account_commitment: String,
-        actual_scopes_json: String,
-        refresh_do_route: String,
-        status: String,
-    }
-    let exact = db.prepare(
-        "SELECT intent_ref, account_commitment, actual_scopes_json, refresh_do_route, status FROM connections \
-         WHERE org_id = ? AND connection_ref = ? LIMIT 1"
-    ).bind(&[JsValue::from_str(&row.org_id), JsValue::from_str(&payload.connection_ref)])?
-      .first::<ActivationConnection>(None).await?;
-    if !exact.is_some_and(|value| {
-        value.intent_ref == row.intent_ref
-            && value.account_commitment == payload.account_commitment
-            && value.actual_scopes_json == scopes_json
-            && value.refresh_do_route == payload.route
-            && matches!(value.status.as_str(), "activating" | "active")
-    }) {
-        compensate_activation(
-            env,
-            &db,
-            &row.org_id,
-            &row.intent_ref,
-            &payload.connection_ref,
-            &payload.route,
-            "connection_mismatch",
-            inject_activation_crash(request, "revoke_failure"),
-        )
-        .await;
-        return json(&PublicError::unavailable(), 503);
-    }
-    let phase_statement = db
-        .prepare(
-            "UPDATE connection_intents SET activation_phase = 'connection_inserted' \
-         WHERE intent_ref = ? AND status = 'activating'",
-        )
-        .bind(&[JsValue::from_str(&row.intent_ref)])?;
-    let activate_connection = db.prepare(
-        "UPDATE connections SET status = 'active' WHERE org_id = ? AND connection_ref = ? AND status IN ('activating', 'active')"
-    ).bind(&[JsValue::from_str(&row.org_id), JsValue::from_str(&payload.connection_ref)])?;
-    let activate_intent = db
-        .prepare(
-            "UPDATE connection_intents SET status = 'ready', failure_code = NULL \
-         WHERE intent_ref = ? AND status = 'activating'",
-        )
-        .bind(&[JsValue::from_str(&row.intent_ref)])?;
-    let activated = db
-        .batch(vec![phase_statement, activate_connection, activate_intent])
-        .await;
-    if activated
-        .as_ref()
-        .ok()
-        .is_none_or(|results| results.len() != 3 || results.iter().any(|result| !result.success()))
-    {
-        compensate_activation(
-            env,
-            &db,
-            &row.org_id,
-            &row.intent_ref,
-            &payload.connection_ref,
-            &payload.route,
-            "activation_failed",
-            inject_activation_crash(request, "revoke_failure"),
-        )
-        .await;
-        return json(&PublicError::unavailable(), 503);
-    }
+    db.prepare(
+        "UPDATE connection_intents SET status='ready',activation_phase='connection_inserted',failure_code=NULL WHERE intent_ref=? AND status='activating'",
+    )
+    .bind(&[JsValue::from_str(&row.intent_ref)])?
+    .run()
+    .await?;
     json(
-        &serde_json::json!({"connection_ref": payload.connection_ref, "status": "active"}),
+        &serde_json::json!({"connection_ref":payload.connection_ref,"status":"v2_prepared"}),
         200,
     )
 }
@@ -2062,45 +2075,28 @@ async fn mark_restart_required(db: &worker::D1Database, intent_ref: &str, failur
 }
 
 async fn retry_activation_cleanup(
-    env: &Env,
+    _env: &Env,
     db: &worker::D1Database,
-    org_id: &str,
+    _org_id: &str,
     intent_ref: &str,
-    connection_ref: &str,
-    route: &str,
-    simulate_revoke_failure: bool,
+    _connection_ref: &str,
+    _route: &str,
+    _simulate_revoke_failure: bool,
 ) -> bool {
-    if simulate_revoke_failure {
-        return false;
-    }
-    if do_request::<RefreshReply>(env, "CONNECTION_REFRESH_DO", route, &RefreshCommand::Revoke)
-        .await
-        .is_err()
-    {
-        return false;
-    }
-    let delete = match db
-        .prepare("DELETE FROM connections WHERE org_id = ? AND connection_ref = ?")
-        .bind(&[JsValue::from_str(org_id), JsValue::from_str(connection_ref)])
-    {
+    // A V2 seal is irreversible. Recovery is forward-only and intentionally
+    // retains both the D1 authority row and custodian material for resume.
+    let statement = match db.prepare(
+        "UPDATE connection_intents SET status = 'forward_fix_required', failure_code = 'v2_activation_resume_required' \
+         WHERE intent_ref = ? AND status IN ('activating', 'cleanup_pending')",
+    ).bind(&[JsValue::from_str(intent_ref)]) {
         Ok(statement) => statement,
         Err(_) => return false,
     };
-    let finish = match db
-        .prepare(
-            "UPDATE connection_intents SET status = 'restart_required', failure_code = 'activation_cleanup_completed', \
-             exchange_nonce = NULL, exchange_ciphertext = NULL, activation_nonce = NULL, activation_ciphertext = NULL \
-             WHERE intent_ref = ? AND status = 'cleanup_pending'",
-        )
-        .bind(&[JsValue::from_str(intent_ref)])
-    {
-        Ok(statement) => statement,
-        Err(_) => return false,
-    };
-    db.batch(vec![delete, finish])
+    statement
+        .run()
         .await
         .ok()
-        .is_some_and(|results| results.len() == 2 && results.iter().all(|result| result.success()))
+        .is_some_and(|result| result.success())
 }
 
 async fn compensate_activation(
@@ -2142,6 +2138,7 @@ async fn compensate_activation(
     .await
 }
 
+#[cfg(any())]
 async fn connection_route(request: &Request, env: &Env) -> worker::Result<Response> {
     let session = match authenticate(request, env, &[]).await {
         Ok(session) => session,
@@ -2149,7 +2146,7 @@ async fn connection_route(request: &Request, env: &Env) -> worker::Result<Respon
     };
     let connection_ref = request
         .path()
-        .trim_start_matches("/v1/connections/")
+        .trim_start_matches("/v0.2/connections/")
         .to_string();
     if connection_ref.is_empty() || connection_ref.len() > 128 {
         return json(&PublicError::invalid(), 400);
@@ -2216,6 +2213,7 @@ async fn connection_route(request: &Request, env: &Env) -> worker::Result<Respon
     }
 }
 
+#[cfg(any())]
 async fn install_binding(request: &mut Request, env: &Env) -> worker::Result<Response> {
     let exact_body = match bounded_body(request, MAX_MANAGEMENT_BODY).await {
         Ok(value) => value,
@@ -2244,7 +2242,7 @@ async fn install_binding(request: &mut Request, env: &Env) -> worker::Result<Res
         || body
             .contracts
             .iter()
-            .any(|contract| provider_google::adapter(contract).is_err())
+            .any(|contract| installed_contract(contract).is_err())
         || !valid_sha256(&body.flow_ir_hash)
         || !valid_sha256(&body.binding_lock_hash)
         || body.flow_ir_json.len() > broker_core::artifacts::MANIFEST_MAX
@@ -2252,9 +2250,8 @@ async fn install_binding(request: &mut Request, env: &Env) -> worker::Result<Res
     {
         return json(&PublicError::broker(BrokerError::Brk109), 400);
     }
-    let composition = provider_google::google_v1();
-    let approved_contracts = composition
-        .adapters
+    let approved_contracts = crate::composition::installed_contracts(&now_rfc3339())
+        .map_err(|_| worker_rust_error("composition"))?
         .iter()
         .map(|adapter| broker_host::ApprovedAuthorityContract {
             contract_id: adapter.contract_id,
@@ -2367,7 +2364,7 @@ async fn install_binding(request: &mut Request, env: &Env) -> worker::Result<Res
     let mut supported_contracts = Vec::new();
     let mut origins = Vec::new();
     for contract in &body.contracts {
-        let adapter = match provider_google::adapter(contract) {
+        let adapter = match installed_contract(contract) {
             Ok(adapter) => adapter,
             Err(_) => return json(&PublicError::broker(BrokerError::Brk108), 400),
         };
@@ -2407,7 +2404,9 @@ async fn install_binding(request: &mut Request, env: &Env) -> worker::Result<Res
         },
         issuer: "broker-workers-v1".into(),
         broker_key_id: binding_signer.key_id().into(),
-        lane: EXECUTION_LANE.into(),
+        lane: installed_management_profile()
+            .map_err(|_| worker_rust_error("composition"))?
+            .execution_lane,
         authority_manifest_hash: Some(authority_manifest_hash.clone()),
         connection_ref: body.connection_ref.clone(),
         provider: "google".into(),
@@ -2515,6 +2514,7 @@ async fn install_binding(request: &mut Request, env: &Env) -> worker::Result<Res
     )
 }
 
+#[cfg(any())]
 async fn invoke(request: &mut Request, env: &Env) -> worker::Result<Response> {
     let service_auth = request
         .headers()
@@ -2682,7 +2682,7 @@ async fn invoke(request: &mut Request, env: &Env) -> worker::Result<Response> {
         Err(error) => return json(&PublicError::broker(error), 401),
     };
     let grant_view = grant.grant();
-    let adapter = match provider_google::adapter(&grant_view.operation_contract) {
+    let adapter = match installed_contract(&grant_view.operation_contract) {
         Ok(adapter) if adapter.contract_hash == grant_view.contract_hash => adapter,
         _ => return json(&PublicError::broker(BrokerError::Brk108), 403),
     };
@@ -2761,7 +2761,7 @@ async fn invoke(request: &mut Request, env: &Env) -> worker::Result<Response> {
     ) {
         return json(&PublicError::broker(error), 403);
     }
-    let host_registry = match provider_google::host_registry("2026-07-21T00:00:00Z") {
+    let host_registry = match crate::composition::trusted_host_registry(&now_rfc3339()) {
         Ok(registry) => registry,
         Err(error) => return json(&PublicError::broker(error), 503),
     };
@@ -3211,20 +3211,27 @@ async fn invoke(request: &mut Request, env: &Env) -> worker::Result<Response> {
     let dispatched_snapshot = dispatched
         .snapshot
         .ok_or_else(|| worker_rust_error("ledger"))?;
-    let (response_projection, provider_request_id, outcome) =
-        match dispatch_provider(env, &template, &descriptor, &access).await {
-            Ok((projection, request_id)) => (
-                projection,
-                request_id,
-                broker_core::artifacts::Outcome::Confirmed,
-            ),
-            Err(ProviderDispatchFailure::Definite) => {
-                (Vec::new(), None, broker_core::artifacts::Outcome::Failed)
-            }
-            Err(ProviderDispatchFailure::Ambiguous) => {
-                (Vec::new(), None, broker_core::artifacts::Outcome::Ambiguous)
-            }
-        };
+    let (response_projection, provider_request_id, outcome) = match dispatch_provider(
+        env,
+        &template,
+        &descriptor,
+        &access,
+        &body.logical_effect_id,
+    )
+    .await
+    {
+        Ok((projection, request_id, durable_proven)) => (
+            projection,
+            request_id,
+            broker_core::artifacts::Outcome::Confirmed,
+        ),
+        Err(ProviderDispatchFailure::Definite) => {
+            (Vec::new(), None, broker_core::artifacts::Outcome::Failed)
+        }
+        Err(ProviderDispatchFailure::Ambiguous) => {
+            (Vec::new(), None, broker_core::artifacts::Outcome::Ambiguous)
+        }
+    };
     let issued = build_receipt(
         env,
         &grant,
@@ -3317,29 +3324,75 @@ async fn receipt_route(request: &Request, env: &Env) -> worker::Result<Response>
     }
     let receipt_ref = request
         .path()
-        .trim_start_matches("/v1/receipts/")
+        .trim_start_matches("/v0.2/receipts/")
         .to_string();
     #[derive(Deserialize)]
-    struct ReceiptRow {
+    struct V2ReceiptRow {
+        canonical_artifact_json: String,
+    }
+    let db = env.d1("BROKER_DB")?;
+    let v2 = db.prepare(
+        "SELECT canonical_artifact_json FROM v2_host_records WHERE org_id=? AND deployment_id=? AND artifact_ref=? AND artifact_kind='invocation_receipt' LIMIT 1",
+    ).bind(&[
+        JsValue::from_str(&session.org_id),
+        JsValue::from_str(&session.deployment_id),
+        JsValue::from_str(&receipt_ref),
+    ])?.first::<V2ReceiptRow>(None).await?;
+    if let Some(row) = v2 {
+        let parsed = match broker_core::credential::parse::<
+            broker_core::credential::receipt::InvocationReceiptV2,
+        >(row.canonical_artifact_json.as_bytes())
+        {
+            Ok(value) => value,
+            Err(_) => return json(&PublicError::unavailable(), 503),
+        };
+        let signature: broker_core::artifacts::SignatureEnvelope =
+            match serde_json::from_value(parsed.view.as_value()["signature"].clone()) {
+                Ok(value) => value,
+                Err(_) => return json(&PublicError::unavailable(), 503),
+            };
+        let verifier = broker_core::signing::BrokerSigner::from_seed(
+            "broker-v2-receipt",
+            secret_32(env, "RECEIPT_SIGNING_SEED")?,
+        )
+        .verifying_key();
+        if verifier
+            .verify_json(
+                broker_core::credential::signing::INVOCATION_RECEIPT_DOMAIN,
+                parsed.canonical_bytes(),
+                &signature,
+            )
+            .is_err()
+        {
+            return json(&PublicError::unavailable(), 503);
+        }
+        return json(
+            &serde_json::json!({"receipt_ref":receipt_ref,"receipt":parsed.view.as_value()}),
+            200,
+        );
+    }
+    #[derive(Deserialize)]
+    struct HistoricalReceiptRow {
         receipt_json: String,
     }
-    let row = env
-        .d1("BROKER_DB")?
-        .prepare(
-            "SELECT receipt_json FROM receipts \
-             WHERE org_id = ? AND deployment_id = ? AND receipt_ref = ? LIMIT 1",
+    let historical = db.prepare(
+        "SELECT receipt_json FROM receipts_v1_history WHERE org_id=? AND deployment_id=? AND receipt_ref=? LIMIT 1",
+    ).bind(&[
+        JsValue::from_str(&session.org_id),
+        JsValue::from_str(&session.deployment_id),
+        JsValue::from_str(&receipt_ref),
+    ])?.first::<HistoricalReceiptRow>(None).await?;
+    match historical {
+        Some(row) => match verified_historical_receipt_value(
+            env,
+            &db,
+            &session.org_id,
+            row.receipt_json.as_bytes(),
         )
-        .bind(&[
-            JsValue::from_str(&session.org_id),
-            JsValue::from_str(&session.deployment_id),
-            JsValue::from_str(&receipt_ref),
-        ])?
-        .first::<ReceiptRow>(None)
-        .await?;
-    match row {
-        Some(row) => match verified_receipt_value(env, row.receipt_json.as_bytes()) {
+        .await
+        {
             Ok(receipt) => json(
-                &serde_json::json!({"receipt_ref":receipt_ref,"receipt":receipt}),
+                &serde_json::json!({"receipt_ref":receipt_ref,"receipt":receipt,"historical_protocol":"0.1"}),
                 200,
             ),
             Err(_) => json(&PublicError::unavailable(), 503),
@@ -3348,8 +3401,10 @@ async fn receipt_route(request: &Request, env: &Env) -> worker::Result<Response>
     }
 }
 
+#[cfg(any())]
 struct WorkerClock;
 
+#[cfg(any())]
 impl broker_core::grant::Clock for WorkerClock {
     fn now_rfc3339(&self) -> String {
         now_rfc3339()
@@ -3379,120 +3434,6 @@ async fn sleep_ms(milliseconds: i32) -> worker::Result<()> {
         .map_err(|_| worker_rust_error("refresh wait"))
 }
 
-async fn acquire_access_token(
-    env: &Env,
-    route: &str,
-) -> Result<(crate::refresh::SecretBytes, u64), BrokerError> {
-    for _ in 0..32 {
-        let reply: RefreshReply = do_request(
-            env,
-            "CONNECTION_REFRESH_DO",
-            route,
-            &RefreshCommand::Acquire {
-                now: now_seconds(),
-                lease_id: opaque_id("refresh_lease_").map_err(|_| BrokerError::Brk401)?,
-            },
-        )
-        .await
-        .map_err(|_| BrokerError::Brk401)?;
-        match reply {
-            RefreshReply::Acquired {
-                result:
-                    AcquireResult::Ready {
-                        access_token,
-                        revocation_epoch,
-                    },
-            } => return Ok((access_token, revocation_epoch)),
-            RefreshReply::Acquired {
-                result:
-                    AcquireResult::Refresh {
-                        lease_id,
-                        expected_epoch,
-                        refresh_token,
-                    },
-            } => {
-                let service = env
-                    .service(provider_google::TOKEN_SERVICE_BINDING)
-                    .map_err(|_| BrokerError::Brk401)?;
-                let payload = serde_json::json!({
-                    "grant_type": "refresh_token",
-                    "refresh_token": URL_SAFE_NO_PAD.encode(refresh_token.expose_to_internal_binding())
-                });
-                // Ten seconds is a hard bound and is strictly shorter than
-                // the fifteen-second refresh lease.
-                let result = match service_json_timeout(
-                    &service,
-                    "http://token.internal/refresh",
-                    &payload,
-                    10_000,
-                )
-                .await
-                {
-                    Ok(mut response) if response.status_code() == 200 => {
-                        #[derive(Deserialize)]
-                        #[serde(deny_unknown_fields)]
-                        struct TokenRefresh {
-                            access_token: String,
-                            expires_in: u64,
-                            scopes: Vec<String>,
-                        }
-                        match bounded_response_json::<TokenRefresh>(
-                            &mut response,
-                            crate::protocol::MAX_PROVIDER_RESPONSE,
-                        )
-                        .await
-                        {
-                            Ok(value) if !value.access_token.is_empty() => RefreshResult::Success {
-                                access_token: crate::refresh::SecretBytes::new(
-                                    value.access_token.into_bytes(),
-                                ),
-                                expires_in: value.expires_in,
-                                scopes: value.scopes.into_iter().collect(),
-                            },
-                            _ => RefreshResult::Unavailable,
-                        }
-                    }
-                    Ok(response) if response.status_code() == 400 => RefreshResult::InvalidGrant,
-                    _ => RefreshResult::Unavailable,
-                };
-                let completed: RefreshReply = do_request(
-                    env,
-                    "CONNECTION_REFRESH_DO",
-                    route,
-                    &RefreshCommand::Complete {
-                        lease_id,
-                        expected_epoch,
-                        now: now_seconds(),
-                        result,
-                    },
-                )
-                .await
-                .map_err(|_| BrokerError::Brk401)?;
-                match completed {
-                    RefreshReply::Completed {
-                        result: CompleteResult::Ready { .. },
-                    } => continue,
-                    RefreshReply::Completed {
-                        result: CompleteResult::Blocked { .. },
-                    } => return Err(BrokerError::Brk106),
-                    _ => return Err(BrokerError::Brk401),
-                }
-            }
-            RefreshReply::Acquired {
-                result: AcquireResult::Waiting { retry_after_ms },
-            } => {
-                sleep_ms(i32::try_from(retry_after_ms.min(100)).unwrap_or(100))
-                    .await
-                    .map_err(|_| BrokerError::Brk401)?;
-                continue;
-            }
-            RefreshReply::Error { code } if code == "BRK106" => return Err(BrokerError::Brk106),
-            _ => return Err(BrokerError::Brk401),
-        }
-    }
-    Err(BrokerError::Brk401)
-}
-
 enum ProviderDispatchFailure {
     Definite,
     Ambiguous,
@@ -3509,7 +3450,8 @@ async fn dispatch_provider(
     template: &[u8],
     descriptor: &connector_spec::BrokerDispatchDescriptor,
     access: &crate::refresh::SecretBytes,
-) -> Result<(Vec<u8>, Option<String>), ProviderDispatchFailure> {
+    logical_effect_id: &str,
+) -> Result<(Vec<u8>, Option<String>, bool), ProviderDispatchFailure> {
     let plan: serde_json::Value =
         serde_json::from_slice(template).map_err(|_| worker_rust_error("plan"))?;
     let path = plan
@@ -3567,12 +3509,41 @@ async fn dispatch_provider(
             String::from_utf8_lossy(access.expose_to_internal_binding())
         ),
     )?;
-    let service = env.service(provider_google::PROVIDER_SERVICE_BINDING)?;
+    request.headers_mut()?.set(
+        "x-lattice-egress-auth",
+        &env.secret("GOOGLE_EGRESS_SERVICE_AUTH")?.to_string(),
+    )?;
+    request
+        .headers_mut()?
+        .set("x-lattice-correlation-id", logical_effect_id)?;
+    request
+        .headers_mut()?
+        .set("x-lattice-idempotency-key", logical_effect_id)?;
+    let service = env.service(
+        crate::composition::installed_provider_plane(&now_rfc3339())
+            .map_err(|_| worker_rust_error("composition"))?
+            .provider_service_binding,
+    )?;
     let mut response = service.fetch_request(request).await?;
-    let request_id = response
+    let provider_request_id = response
         .headers()
         .get("x-request-id")?
         .filter(|value| value.len() <= 128 && value.is_ascii());
+    let durable_proof = response
+        .headers()
+        .get("x-lattice-remote-dispatch-proof")?
+        .filter(|value| {
+            value.len() == 71
+                && value.starts_with("sha256:")
+                && value[7..]
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        });
+    if durable_proof.is_none() {
+        return Err(ProviderDispatchFailure::Ambiguous);
+    }
+    let durable_proven = true;
+    let request_id = provider_request_id;
     if !(200..300).contains(&response.status_code()) {
         return Err(if (400..500).contains(&response.status_code()) {
             ProviderDispatchFailure::Definite
@@ -3584,7 +3555,7 @@ async fn dispatch_provider(
         bounded_response_bytes(&mut response, crate::protocol::MAX_PROVIDER_RESPONSE).await?;
     let projection = broker_host::descriptor_response_projection(descriptor, &bytes)
         .map_err(|_| worker_rust_error("provider"))?;
-    Ok((projection, request_id))
+    Ok((projection, request_id, durable_proven))
 }
 
 fn secret_32(env: &Env, binding: &str) -> worker::Result<[u8; 32]> {
@@ -3594,6 +3565,7 @@ fn secret_32(env: &Env, binding: &str) -> worker::Result<[u8; 32]> {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(any())]
 fn build_receipt(
     env: &Env,
     grant: &broker_core::grant::ExecutionGrantRecord,
@@ -3644,6 +3616,7 @@ fn build_receipt(
     .map_err(|_| worker_rust_error("receipt"))
 }
 
+#[cfg(any())]
 async fn project_receipt_index(
     db: &worker::D1Database,
     env: &Env,
@@ -3704,15 +3677,76 @@ fn constant_time_bytes_equal(left: &[u8], right: &[u8]) -> bool {
     left.len() == right.len() && bool::from(left.ct_eq(right))
 }
 
-fn verified_receipt_value(env: &Env, bytes: &[u8]) -> worker::Result<serde_json::Value> {
+async fn verified_historical_receipt_value(
+    env: &Env,
+    db: &worker::D1Database,
+    org_id: &str,
+    bytes: &[u8],
+) -> worker::Result<serde_json::Value> {
     let parsed: broker_core::artifacts::ParsedArtifact<broker_core::artifacts::InvocationReceipt> =
         broker_core::artifacts::parse(bytes).map_err(|_| worker_rust_error("receipt"))?;
-    let signer = broker_core::signing::BrokerSigner::from_seed(
-        "broker-receipt-v1",
-        secret_32(env, "RECEIPT_SIGNING_SEED")?,
-    );
-    signer
-        .verifying_key()
+    #[derive(Deserialize)]
+    struct ArchiveRow {
+        canonical_archive_json: String,
+    }
+    let archive = db.prepare("SELECT canonical_archive_json FROM historical_verification_keys_v2 WHERE org_id=? AND key_id=?")
+        .bind(&[JsValue::from_str(org_id), JsValue::from_str(&parsed.view.broker_key_id)])?
+        .first::<ArchiveRow>(None).await?
+        .ok_or_else(|| worker_rust_error("historical key archive"))?;
+    let archive = broker_core::credential::parse::<
+        broker_core::credential::legacy::HistoricalVerificationKeyArchiveV2,
+    >(archive.canonical_archive_json.as_bytes())
+    .map_err(|_| worker_rust_error("historical key archive"))?;
+    let root_bytes = URL_SAFE_NO_PAD
+        .decode(
+            env.var("HISTORICAL_ARCHIVE_AUTHORITY_PUBLIC_KEY_B64U")?
+                .to_string(),
+        )
+        .map_err(|_| worker_rust_error("historical archive root"))?;
+    let root_bytes: [u8; 32] = root_bytes
+        .try_into()
+        .map_err(|_| worker_rust_error("historical archive root"))?;
+    let root = broker_core::signing::BrokerVerifyingKey::from_bytes(
+        env.var("HISTORICAL_ARCHIVE_AUTHORITY_KEY_ID")?.to_string(),
+        root_bytes,
+    )
+    .map_err(|_| worker_rust_error("historical archive root"))?;
+    broker_core::credential::legacy::verify_historical_archive(&archive, &root, &root)
+        .map_err(|_| worker_rust_error("historical archive signature"))?;
+    let value = archive.view.as_value();
+    let issued_at = parsed.view.issued_at.as_str();
+    if value["key_id"] != parsed.view.broker_key_id
+        || value["algorithm"] != "ed25519"
+        || value["public_key_encoding"] != "raw_base64url"
+        || value["valid_from"]
+            .as_str()
+            .is_none_or(|start| start > issued_at)
+        || value["valid_until"]
+            .as_str()
+            .is_none_or(|end| end < issued_at)
+        || value
+            .pointer("/revocation_evidence/status")
+            .and_then(serde_json::Value::as_str)
+            != Some("not_revoked_through")
+        || value
+            .pointer("/revocation_evidence/observed_through")
+            .and_then(serde_json::Value::as_str)
+            .is_none_or(|end| end < issued_at)
+    {
+        return Err(worker_rust_error("historical key validity"));
+    }
+    let key_bytes = URL_SAFE_NO_PAD
+        .decode(value["public_key_base64url"].as_str().unwrap_or_default())
+        .map_err(|_| worker_rust_error("historical key"))?;
+    let key_bytes: [u8; 32] = key_bytes
+        .try_into()
+        .map_err(|_| worker_rust_error("historical key"))?;
+    let verifier = broker_core::signing::BrokerVerifyingKey::from_bytes(
+        parsed.view.broker_key_id.clone(),
+        key_bytes,
+    )
+    .map_err(|_| worker_rust_error("historical key"))?;
+    verifier
         .verify_json(
             broker_core::signing::RECEIPT_DOMAIN,
             bytes,
@@ -3726,6 +3760,7 @@ fn verified_receipt_value(env: &Env, bytes: &[u8]) -> worker::Result<serde_json:
     serde_json::to_value(parsed.view).map_err(|_| worker_rust_error("receipt"))
 }
 
+#[cfg(any())]
 fn reservation_identity_hash(
     reservation: &broker_core::ledger::ReservationKey,
 ) -> worker::Result<String> {
@@ -3740,6 +3775,7 @@ fn reservation_identity_hash(
     ))
 }
 
+#[cfg(any())]
 fn receipt_ref(
     org_id: &str,
     deployment_id: &str,
@@ -3831,13 +3867,23 @@ async fn bounded_json<T: DeserializeOwned>(request: &mut Request, max: usize) ->
 }
 
 async fn service_json_timeout(
+    env: &Env,
     fetcher: &worker::Fetcher,
     url: &str,
     value: &impl Serialize,
+    correlation_id: &str,
+    idempotency_key: &str,
     timeout_ms: i32,
 ) -> worker::Result<Response> {
     use futures::future::{Either, select};
-    let fetch = Box::pin(service_json(fetcher, url, value));
+    let fetch = Box::pin(service_json(
+        env,
+        fetcher,
+        url,
+        value,
+        correlation_id,
+        idempotency_key,
+    ));
     let timeout = Box::pin(sleep_ms(timeout_ms));
     match select(fetch, timeout).await {
         Either::Left((response, _)) => response,
@@ -3846,18 +3892,26 @@ async fn service_json_timeout(
 }
 
 async fn service_json(
+    env: &Env,
     fetcher: &worker::Fetcher,
     url: &str,
     value: &impl Serialize,
+    correlation_id: &str,
+    idempotency_key: &str,
 ) -> worker::Result<Response> {
     let text = serde_json::to_string(value).map_err(|_| worker_rust_error("json"))?;
     let mut init = RequestInit::new();
     init.with_method(Method::Post);
     init.with_body(Some(JsString::from(text).into()));
     let mut request = Request::new_with_init(url, &init)?;
-    request
-        .headers_mut()?
-        .set("content-type", JSON_CONTENT_TYPE)?;
+    let headers = request.headers_mut()?;
+    headers.set("content-type", JSON_CONTENT_TYPE)?;
+    headers.set(
+        "x-lattice-egress-auth",
+        &env.secret("GOOGLE_EGRESS_SERVICE_AUTH")?.to_string(),
+    )?;
+    headers.set("x-lattice-correlation-id", correlation_id)?;
+    headers.set("x-lattice-idempotency-key", idempotency_key)?;
     fetcher.fetch_request(request).await
 }
 
@@ -3895,12 +3949,19 @@ fn refresh_route(org_id: &str, connection_ref: &str) -> String {
     format!("connection-{}", hex::encode(hash.finalize()))
 }
 
+fn pkce_verifier() -> worker::Result<String> {
+    let mut bytes = [0u8; 32];
+    getrandom::getrandom(&mut bytes).map_err(|_| worker_rust_error("random"))?;
+    Ok(URL_SAFE_NO_PAD.encode(bytes))
+}
+
 fn opaque_id(prefix: &str) -> worker::Result<String> {
     let mut bytes = [0u8; 24];
     getrandom::getrandom(&mut bytes).map_err(|_| worker_rust_error("random"))?;
     Ok(format!("{prefix}{}", URL_SAFE_NO_PAD.encode(bytes)))
 }
 
+#[cfg(any())]
 fn valid_sha256(value: &str) -> bool {
     value
         .strip_prefix("sha256:")
@@ -3921,6 +3982,6 @@ fn json_value(value: &impl Serialize, status: u16) -> Response {
         .unwrap_or_else(|_| Response::error("broker unavailable", 503).expect("static response"))
 }
 
-fn worker_rust_error(_context: &str) -> worker::Error {
-    worker::Error::RustError("broker unavailable".into())
+fn worker_rust_error(context: &str) -> worker::Error {
+    worker::Error::RustError(format!("broker unavailable ({context})"))
 }

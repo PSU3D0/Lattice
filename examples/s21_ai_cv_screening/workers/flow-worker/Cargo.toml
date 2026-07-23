@@ -12,6 +12,11 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 async-trait = "0.1"
+base64 = "0.22"
+broker-core = { path = "../../../../crates/broker-core" }
+ed25519-dalek = "2"
+hmac = "0.12"
+sha2 = "0.10"
 cap-do-workers = { path = "../../../../crates/cap-do-workers" }
 cap-http-workers = { path = "../../../../crates/cap-http-workers" }
 cap-kv-workers = { path = "../../../../crates/cap-kv-workers" }
@@ -20,7 +25,9 @@ capabilities = { path = "../../../../crates/capabilities" }
 dag-core = { path = "../../../../crates/dag-core" }
 example-s21-ai-cv-screening = { path = "../.." }
 futures = "0.3"
+getrandom = { version = "0.3", features = ["wasm_js"] }
 host-inproc = { path = "../../../../crates/host-inproc" }
 host-workers = { path = "../../../../crates/host-workers", default-features = false }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 worker = { version = "=0.8.1", default-features = false, features = ["http"] }

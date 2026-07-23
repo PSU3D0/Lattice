@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "bash ../../../../scripts/ensure-worker-build.sh --release",
-    "render": "rm -rf deploy && cargo run --quiet --manifest-path ../../../../Cargo.toml -p flows-cli -- deploy render --example s21_ai_cv_screening --name s21-w4-flow --backend-config backend-config.json --worker-build-dir build --paid --out deploy",
+    "render": "rm -rf deploy && cargo run --quiet --manifest-path ../../../../Cargo.toml -p flows-cli -- deploy render --example s21_ai_cv_screening --name s21-w4-flow --backend-config backend-config.json --worker-build-dir build --paid --out deploy && node scripts/render-broker-config.mjs",
     "package": "npm run build && npm run render",
     "package:verify": "node scripts/verify-package.mjs",
     "test": "npm run package && vitest run",
@@ -19,5 +19,8 @@
     "undici": "7.28.0",
     "vitest": "3.2.7",
     "wrangler": "4.110.0"
+  },
+  "overrides": {
+    "sharp": "0.35.3"
   }
 }

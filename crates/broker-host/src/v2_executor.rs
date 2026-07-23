@@ -4,10 +4,10 @@ use broker_core::{
     BrokerError,
     artifacts::SignatureEnvelope,
     credential::{
-        ParsedV2, grant::ExecutionGrantV2, parse, receipt::InvocationReceiptV2,
+        ParsedV2, SchemaType, grant::ExecutionGrantV2, parse, receipt::InvocationReceiptV2,
         signing::INVOCATION_RECEIPT_DOMAIN,
     },
-    signing::BrokerVerifyingKey,
+    signing::{BrokerSigner, BrokerVerifyingKey},
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -35,6 +35,106 @@ pub struct V2DispatchEvidence {
 }
 
 #[derive(Clone)]
+pub struct V2ReceiptIssue {
+    pub evidence: V2DispatchEvidence,
+    pub connection_commitment: Value,
+    pub request_plan_hash: Value,
+    pub authority_facts_hash: Value,
+    pub response_firewall_evidence_hash: Value,
+    pub budget_before: u64,
+    pub budget_after: u64,
+    pub provider_request_id: Option<String>,
+    pub response_commitment: Value,
+    pub outcome: String,
+    pub assurance_evidence: Vec<Value>,
+    pub issued_at: String,
+}
+
+pub fn issue_v2_receipt(
+    input: V2ReceiptIssue,
+    signer: &BrokerSigner,
+) -> Result<V2ConnectorOutcome, BrokerHostError> {
+    let grant = input.evidence.grant.view.as_value();
+    if input.evidence.canonical_grant != input.evidence.grant.canonical_bytes()
+        || input.evidence.implementations.len() != 6
+        || ![
+            "planner",
+            "projector",
+            "auth_driver",
+            "custodian",
+            "transport",
+            "privileged_response_firewall",
+        ]
+        .iter()
+        .all(|key| input.evidence.implementations.contains_key(*key))
+        || input.evidence.evaluator_implementations.len()
+            != input.evidence.evaluator_output_hashes.len()
+    {
+        return Err(BrokerHostError::ReceiptVerificationFailed);
+    }
+    let dispatch_attempt = match input.evidence.attempt_stage {
+        V2AttemptStage::PrePlanning | V2AttemptStage::PostPlanningPreDispatch => 0,
+        V2AttemptStage::Dispatch(attempt) if attempt > 0 => attempt,
+        V2AttemptStage::Dispatch(_) => return Err(BrokerHostError::ReceiptVerificationFailed),
+    };
+    let leased_material_generation = match input.evidence.attempt_stage {
+        V2AttemptStage::Dispatch(_) => serde_json::json!({
+            "kind":"leased",
+            "generation":input.evidence.exact_material_generation.ok_or(BrokerHostError::ReceiptVerificationFailed)?
+        }),
+        _ => serde_json::json!({"kind":"not_leased"}),
+    };
+    let pre_dispatch_stage = match input.evidence.attempt_stage {
+        V2AttemptStage::PrePlanning => Some("pre_planning"),
+        V2AttemptStage::PostPlanningPreDispatch => Some("post_planning_pre_dispatch"),
+        V2AttemptStage::Dispatch(_) => None,
+    };
+    let derivation_evidence_hash =
+        broker_core::canonical::from_serde(&grant["derivation_evidence"], 64 * 1024)?.sha256();
+    let mut value = serde_json::json!({
+        "schema_version":"0.2","critical_fields":[],"extensions":{},
+        "org_id":grant["org_id"],"principal":grant["principal"],"issuer":grant["issuer"],
+        "broker_key_id":signer.key_id(),"deployment_id":grant["deployment_id"],
+        "grant_hash":hash(&input.evidence.canonical_grant),"contract_hash":grant["contract_hash"],
+        "subject":grant["subject"],"grant_scope":grant["grant_scope"],
+        "dispatch_attempt":dispatch_attempt,"leased_material_generation":leased_material_generation,
+        "connection_commitment":input.connection_commitment,"authority_view_hash":grant["authority_view_hash"],
+        "authority_epoch":grant["authority_epoch"],"auth_profile_ref":grant["auth_profile_ref"],
+        "auth_profile_pin":grant["auth_profile_pin"],
+        "authorization_claims_commitment":grant["authorization_claims_commitment"],
+        "principal_commitments":grant["principal_commitments"],
+        "broker_instance_commitment":grant["broker_instance_commitment"],
+        "derivation_evidence_hash":derivation_evidence_hash,
+        "policy_instance_hashes":grant["policy_instance_hashes"],
+        "evaluator_output_hashes":input.evidence.evaluator_output_hashes,
+        "implementations":input.evidence.implementations,
+        "evaluator_implementations":input.evidence.evaluator_implementations,
+        "canonical_input_commitment":input.evidence.canonical_input_commitment,
+        "request_plan_hash":input.request_plan_hash,"authority_facts_hash":input.authority_facts_hash,
+        "response_firewall_evidence_hash":input.response_firewall_evidence_hash,
+        "budget_before":input.budget_before,"budget_after":input.budget_after,
+        "provider_request_id":input.provider_request_id,"response_commitment":input.response_commitment,
+        "outcome":input.outcome,"assurance_evidence":input.assurance_evidence,
+        "claims":input.evidence.claims,"issued_at":input.issued_at,
+        "custodian":grant["custodian"],"transport":grant["transport"],
+        "execution_lane":grant["execution_lane"],"custody_location":grant["custody_location"],
+        "signature":{"alg":"Ed25519","key_id":signer.key_id(),"value":"placeholder"}
+    });
+    if let Some(stage) = pre_dispatch_stage {
+        value["pre_dispatch_stage"] = Value::String(stage.into());
+    }
+    let bytes = serde_json::to_vec(&value).map_err(|_| BrokerError::Brk401)?;
+    value["signature"] = serde_json::to_value(signer.sign_json(INVOCATION_RECEIPT_DOMAIN, &bytes)?)
+        .map_err(|_| BrokerError::Brk401)?;
+    let canonical = broker_core::canonical::from_serde(&value, InvocationReceiptV2::MAX_BYTES)?;
+    let receipt = parse::<InvocationReceiptV2>(canonical.as_bytes())?;
+    Ok(V2ConnectorOutcome {
+        receipt,
+        canonical_receipt: canonical.into_bytes(),
+        redelivery: false,
+    })
+}
+
 pub struct V2ConnectorOutcome {
     pub receipt: ParsedV2<InvocationReceiptV2>,
     pub canonical_receipt: Vec<u8>,

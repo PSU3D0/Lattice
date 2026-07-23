@@ -39,6 +39,7 @@ pub enum PublicRecordSchema {
     PolicyInstance,
     NodeLease,
     ExecutionGrant,
+    BindingAttestation,
     InvocationReceipt,
     LegacyAdmissionInventory,
     LegacyInventoryDecision,
@@ -74,6 +75,9 @@ impl PublicRecordSchema {
             Self::ExecutionGrant => {
                 parse_public!(broker_core::credential::grant::ExecutionGrantV2)
             }
+            Self::BindingAttestation => {
+                parse_public!(broker_core::credential::receipt::BindingAttestationV2)
+            }
             Self::InvocationReceipt => {
                 parse_public!(broker_core::credential::receipt::InvocationReceiptV2)
             }
@@ -99,6 +103,14 @@ pub struct CredentialStateV2 {
     pub public_records: BTreeMap<String, PublicV2Record>,
     pub sealed_material: BTreeMap<u64, SealedMaterialGeneration>,
     pub rotation_journal_json: Option<Vec<u8>>,
+    #[serde(default)]
+    pub destroyed_material_generations: Vec<u64>,
+    #[serde(default)]
+    pub revocation_evidence_hash: Option<String>,
+    #[serde(default)]
+    pub revocation_fence_hash: Option<String>,
+    #[serde(default)]
+    pub remote_custodian_binding_hash: Option<String>,
 }
 
 impl CredentialStateV2 {
@@ -121,6 +133,10 @@ impl CredentialStateV2 {
             public_records: BTreeMap::new(),
             sealed_material: BTreeMap::new(),
             rotation_journal_json: None,
+            destroyed_material_generations: vec![],
+            revocation_evidence_hash: None,
+            revocation_fence_hash: None,
+            remote_custodian_binding_hash: None,
         })
     }
 
@@ -159,7 +175,7 @@ impl CredentialStateV2 {
         sealed_envelope: Vec<u8>,
     ) -> Result<&SealedMaterialGeneration, BrokerError> {
         self.require_tenant(org_id)?;
-        self.require_v1_authoritative()?;
+        self.require_material_write_allowed()?;
         if generation == 0 || sealed_envelope.is_empty() || sealed_envelope.len() > MAX_SEALED_BYTES
         {
             return Err(BrokerError::Brk001);
@@ -191,13 +207,175 @@ impl CredentialStateV2 {
             .expect("stored material"))
     }
 
+    pub fn lease_material_for_dispatch(
+        &mut self,
+        org_id: &str,
+        generation: u64,
+    ) -> Result<Vec<u8>, BrokerError> {
+        self.require_tenant(org_id)?;
+        if self.revocation_fence_hash.is_some()
+            || self.revocation_evidence_hash.is_some()
+            || self.remote_custodian_binding_hash.is_some()
+            || self.destroyed_material_generations.contains(&generation)
+        {
+            return Err(BrokerError::Brk106);
+        }
+        let current = parse::<CrossVersionCredentialFenceV2>(&self.fence_json)?;
+        let current_value = current.view.as_value();
+        if current_value
+            .get("phase")
+            .and_then(serde_json::Value::as_str)
+            != Some("v2_authoritative")
+            || current_value
+                .get("v1_leasing_disabled")
+                .and_then(serde_json::Value::as_bool)
+                != Some(true)
+            || current_value
+                .get("active_v2_generation")
+                .and_then(serde_json::Value::as_u64)
+                != Some(generation)
+        {
+            return Err(BrokerError::Brk106);
+        }
+        let sealed = self
+            .sealed_material
+            .get(&generation)
+            .ok_or(BrokerError::Brk103)?
+            .clone();
+        if format!(
+            "sha256:{}",
+            hex::encode(Sha256::digest(&sealed.sealed_envelope))
+        ) != sealed.envelope_hash
+        {
+            return Err(BrokerError::Brk106);
+        }
+        if current_value
+            .get("v2_lease_ever_issued")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        {
+            let mut next = current_value.clone();
+            next["v2_lease_ever_issued"] = true.into();
+            next["cas_version"] = current_value
+                .get("cas_version")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|value| value.checked_add(1))
+                .ok_or(BrokerError::Brk401)?
+                .into();
+            let canonical = broker_core::canonical::from_serde(&next, 64 * 1024)?;
+            let next = parse::<CrossVersionCredentialFenceV2>(canonical.as_bytes())?;
+            verify_fence_successor(&current.view, &next.view)?;
+            self.verify_authoritative_cutover(next.view.as_value())?;
+            self.fence_json = next.canonical_bytes().to_vec();
+        }
+        Ok(sealed.sealed_envelope)
+    }
+
+    pub fn bind_remote_custodian(
+        &mut self,
+        org_id: &str,
+        binding_hash: &str,
+    ) -> Result<(), BrokerError> {
+        self.require_tenant(org_id)?;
+        self.require_material_write_allowed()?;
+        if !binding_hash.starts_with("sha256:") || binding_hash.len() != 71 {
+            return Err(BrokerError::Brk001);
+        }
+        if !self.sealed_material.is_empty() {
+            return Err(BrokerError::Brk106);
+        }
+        match &self.remote_custodian_binding_hash {
+            Some(existing) if existing == binding_hash => Ok(()),
+            Some(_) => Err(BrokerError::Brk203),
+            None => {
+                self.remote_custodian_binding_hash = Some(binding_hash.to_owned());
+                Ok(())
+            }
+        }
+    }
+
+    pub fn begin_revocation(&mut self, org_id: &str, fence_hash: &str) -> Result<(), BrokerError> {
+        self.require_tenant(org_id)?;
+        if !fence_hash.starts_with("sha256:") || fence_hash.len() != 71 {
+            return Err(BrokerError::Brk001);
+        }
+        match &self.revocation_fence_hash {
+            Some(existing) if existing == fence_hash => Ok(()),
+            Some(_) => Err(BrokerError::Brk203),
+            None => {
+                self.revocation_fence_hash = Some(fence_hash.to_owned());
+                Ok(())
+            }
+        }
+    }
+
+    pub fn material_for_revocation(
+        &self,
+        org_id: &str,
+        generation: u64,
+    ) -> Result<Vec<u8>, BrokerError> {
+        self.require_tenant(org_id)?;
+        if self.revocation_evidence_hash.is_some() {
+            return Err(BrokerError::Brk203);
+        }
+        let fence = parse::<CrossVersionCredentialFenceV2>(&self.fence_json)?;
+        let phase = fence.view.as_value()["phase"].as_str();
+        if !matches!(phase, Some("v2_prepared" | "v2_authoritative"))
+            || (phase == Some("v2_authoritative")
+                && fence.view.as_value()["active_v2_generation"] != generation)
+        {
+            return Err(BrokerError::Brk106);
+        }
+        self.sealed_material
+            .get(&generation)
+            .map(|value| value.sealed_envelope.clone())
+            .ok_or(BrokerError::Brk103)
+    }
+
+    pub fn destroy_material(
+        &mut self,
+        org_id: &str,
+        expected_generation: u64,
+        evidence_hash: &str,
+    ) -> Result<(), BrokerError> {
+        self.require_tenant(org_id)?;
+        if !evidence_hash.starts_with("sha256:") || evidence_hash.len() != 71 {
+            return Err(BrokerError::Brk001);
+        }
+        if let Some(existing) = &self.revocation_evidence_hash {
+            return if existing == evidence_hash {
+                Ok(())
+            } else {
+                Err(BrokerError::Brk203)
+            };
+        }
+        let fence = parse::<CrossVersionCredentialFenceV2>(&self.fence_json)?;
+        let phase = fence.view.as_value()["phase"].as_str();
+        if !matches!(phase, Some("v2_prepared" | "v2_authoritative"))
+            || (phase == Some("v2_authoritative")
+                && fence.view.as_value()["active_v2_generation"] != expected_generation)
+            || (!self.sealed_material.contains_key(&expected_generation)
+                && self.remote_custodian_binding_hash.is_none())
+        {
+            return Err(BrokerError::Brk106);
+        }
+        self.destroyed_material_generations = if self.remote_custodian_binding_hash.is_some() {
+            vec![expected_generation]
+        } else {
+            self.sealed_material.keys().copied().collect()
+        };
+        self.sealed_material.clear();
+        self.revocation_evidence_hash = Some(evidence_hash.to_owned());
+        Ok(())
+    }
+
     pub fn put_rotation_journal(
         &mut self,
         org_id: &str,
         source: &[u8],
     ) -> Result<Vec<u8>, BrokerError> {
         self.require_tenant(org_id)?;
-        self.require_v1_authoritative()?;
+        self.require_material_write_allowed()?;
         let next = parse::<rotation::RotationRecordV2>(source)?;
         match &self.rotation_journal_json {
             None => {
@@ -223,10 +401,50 @@ impl CredentialStateV2 {
         let current = parse::<CrossVersionCredentialFenceV2>(&self.fence_json)?;
         let next = parse::<CrossVersionCredentialFenceV2>(source)?;
         verify_fence_successor(&current.view, &next.view)?;
-        // Production remains pre-use through C3. Tests exercise the irreversible
-        // transition with `activate_v2_for_test` only after sealed readback.
-        require_pre_use_fence(&next.view)?;
+        let value = next.view.as_value();
+        match value.get("phase").and_then(serde_json::Value::as_str) {
+            Some("v1_authoritative" | "v2_prepared") => require_pre_use_fence(&next.view)?,
+            Some("v2_authoritative") => self.verify_authoritative_cutover(value)?,
+            _ => return Err(BrokerError::Brk106),
+        }
         self.fence_json = next.canonical_bytes().to_vec();
+        Ok(())
+    }
+
+    fn verify_authoritative_cutover(&self, fence: &serde_json::Value) -> Result<(), BrokerError> {
+        let generation = fence
+            .get("active_v2_generation")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or(BrokerError::Brk106)?;
+        let local_sealed_valid = self.sealed_material.get(&generation).is_some_and(|sealed| {
+            format!(
+                "sha256:{}",
+                hex::encode(Sha256::digest(&sealed.sealed_envelope))
+            ) == sealed.envelope_hash
+        });
+        let remote_valid =
+            self.remote_custodian_binding_hash.is_some() && self.sealed_material.is_empty();
+        if (!local_sealed_valid && !remote_valid)
+            || fence
+                .get("v1_leasing_disabled")
+                .and_then(serde_json::Value::as_bool)
+                != Some(true)
+        {
+            return Err(BrokerError::Brk106);
+        }
+        for required in [
+            PublicRecordSchema::AuthProfileDescriptor,
+            PublicRecordSchema::ConnectionAuthorityView,
+            PublicRecordSchema::BindingAttestation,
+        ] {
+            if !self
+                .public_records
+                .values()
+                .any(|record| record.schema == required)
+            {
+                return Err(BrokerError::Brk106);
+            }
+        }
         Ok(())
     }
 
@@ -332,9 +550,23 @@ impl CredentialStateV2 {
         }
     }
 
-    fn require_v1_authoritative(&self) -> Result<(), BrokerError> {
+    fn require_material_write_allowed(&self) -> Result<(), BrokerError> {
         let fence = parse::<CrossVersionCredentialFenceV2>(&self.fence_json)?;
-        require_pre_use_fence(&fence.view)
+        let value = fence.view.as_value();
+        if value.get("phase").and_then(serde_json::Value::as_str) == Some("v2_authoritative")
+            && value
+                .get("v1_leasing_disabled")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+            && value
+                .get("active_v2_generation")
+                .and_then(serde_json::Value::as_u64)
+                .is_some()
+        {
+            Ok(())
+        } else {
+            require_pre_use_fence(&fence.view)
+        }
     }
 }
 

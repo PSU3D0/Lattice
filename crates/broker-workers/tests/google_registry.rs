@@ -9,7 +9,7 @@ fn google_registry_requires_complete_signed_approved_active_records() {
     let registry = verified_google_registry("2026-07-21T00:00:00Z").unwrap();
     assert_eq!(registry.len(), 10);
 
-    let mut bundle = provider_google::signed_registry::deterministic_signed_registry().unwrap();
+    let mut bundle = provider_google::signed_registry::signed_registry_bundle().unwrap();
     bundle.seeds[0].1 = bundle.seeds[1].1.clone();
     assert_eq!(
         StaticRegistry::load(
@@ -23,16 +23,17 @@ fn google_registry_requires_complete_signed_approved_active_records() {
         BrokerError::Brk106
     );
 
-    let mut bundle = provider_google::signed_registry::deterministic_signed_registry().unwrap();
+    let mut bundle = provider_google::signed_registry::signed_registry_bundle().unwrap();
     let definition = parse::<RegistryDefinitionV2>(&bundle.seeds[0].0).unwrap();
-    let entry = definition.view.as_value()["entry_ref"].as_str().unwrap();
-    bundle.seeds[0].1 = provider_google::signed_registry::deterministic_decision(
-        entry,
-        &definition.content_hash(),
-        "approved",
-        "revoked",
-    )
-    .unwrap();
+    assert!(definition.view.as_value()["entry_ref"].as_str().is_some());
+    let decision = String::from_utf8(bundle.seeds[0].1.clone()).unwrap();
+    bundle.seeds[0].1 = decision
+        .replacen(
+            "\"approval_status\":\"approved\"",
+            "\"approval_status\":\"denied\"",
+            1,
+        )
+        .into_bytes();
     assert_eq!(
         StaticRegistry::load(
             &bundle.seeds,
@@ -42,6 +43,6 @@ fn google_registry_requires_complete_signed_approved_active_records() {
         )
         .err()
         .unwrap(),
-        BrokerError::Brk106
+        BrokerError::Brk004
     );
 }

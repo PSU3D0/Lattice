@@ -13,6 +13,8 @@ const service = (flowToml.services as Array<Record<string, string>>).find(
   (entry) => entry.binding === "LATTICE_EXTRACT_PDF",
 );
 if (service === undefined) throw new Error("rendered extraction service binding is absent");
+const providerService = (flowToml.services as Array<Record<string, string>>).find((entry) => entry.binding === "LATTICE_S21_PROVIDER");
+if (providerService?.service !== "REPLACE_WITH_S21_PROVIDER_SERVICE") throw new Error("rendered exact provider service binding is absent");
 
 const vars = Object.fromEntries(
   Object.entries(flowToml.vars ?? {}).map(([key, value]) => [key, String(value)]),

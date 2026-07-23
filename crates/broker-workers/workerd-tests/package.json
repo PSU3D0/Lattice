@@ -11,11 +11,14 @@
     "package": "node scripts/package.mjs",
     "package:verify": "node scripts/verify-package.mjs",
     "package:test": "node --test scripts/package.test.mjs",
-    "deploy:test": "node --test ../deploy/scripts/deploy.test.mjs ../deploy/scripts/cleanup.test.mjs"
+    "deploy:test": "node --test ../deploy/scripts/deploy.test.mjs ../deploy/scripts/cleanup.test.mjs ../deploy/scripts/operator-artifacts.test.mjs"
   },
   "devDependencies": {
     "miniflare": "4.20260708.1",
     "vitest": "3.2.7",
     "wrangler": "4.110.0"
+  },
+  "overrides": {
+    "sharp": "0.35.3"
   }
 }

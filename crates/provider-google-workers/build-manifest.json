@@ -1,0 +1,73 @@
+{
+  "schema_version": "0.2",
+  "package": "provider-google-workers",
+  "package_version": "0.1.0",
+  "services": {
+    "token": {
+      "entrypoint": "src/token-worker.mjs",
+      "wrangler": "wrangler.token.jsonc"
+    },
+    "provider": {
+      "entrypoint": "src/provider-worker.mjs",
+      "wrangler": "wrangler.provider.jsonc"
+    }
+  },
+  "source_hash": "a29b905974501450dc88f2abbef851fbf62663a044b284e0022284050a45f8b7",
+  "files": [
+    {
+      "path": "README.md",
+      "sha256": "0c2cd1a5a46fbe2a53c7cf351e55278107bc8c896acf0086073999fc79640e6d",
+      "size_bytes": 1386
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "178ec74de7c67c4a5aac6ee617375f47f905d2b175d53847f7b14d4022dc983b",
+      "size_bytes": 86198
+    },
+    {
+      "path": "package.json",
+      "sha256": "cf9870d8252193c2b933e031fdba2cbd99dec71021e1f2f60b3abb93fcf97a14",
+      "size_bytes": 647
+    },
+    {
+      "path": "scripts/cleanup.mjs",
+      "sha256": "6f23a673b0dd4038c033627d57da32f1221d8203baf9d83ef1d76d5fdfcd1636",
+      "size_bytes": 2505
+    },
+    {
+      "path": "scripts/deploy.mjs",
+      "sha256": "76214d225366d5d416ff967178b50788ccfb62b94f3966b10f41355b0d5efe22",
+      "size_bytes": 4002
+    },
+    {
+      "path": "scripts/package.mjs",
+      "sha256": "14fe4fbe6e364210dea7cbbdbd64a235e6d867e00044faf181f579e12fd87987",
+      "size_bytes": 1220
+    },
+    {
+      "path": "src/provider-worker.mjs",
+      "sha256": "5038ef82f472804b68ace4301d7de34bcd1c525f3a86f342747796fcbb7f3f33",
+      "size_bytes": 8594
+    },
+    {
+      "path": "src/shared.mjs",
+      "sha256": "37f32ee1b673370b7005c164a743983d131b76ddf2fff74e10dece2ae76ea7d7",
+      "size_bytes": 4836
+    },
+    {
+      "path": "src/token-worker.mjs",
+      "sha256": "2a130967505f7404e745ee655c147f6e5ed2e37928e2e2186ec2c4b928715420",
+      "size_bytes": 12337
+    },
+    {
+      "path": "wrangler.provider.jsonc",
+      "sha256": "9e32185a6b9192bc9c9135a44d9f36a593d3744655157ea5a709cb9cc5ede806",
+      "size_bytes": 585
+    },
+    {
+      "path": "wrangler.token.jsonc",
+      "sha256": "4abfdf7be19c22e14fe2bb0b9619d412fea341f1a9e7987a9152fc9038723213",
+      "size_bytes": 570
+    }
+  ]
+}

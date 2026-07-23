@@ -3,10 +3,13 @@
 pub mod activation;
 pub mod composition;
 pub mod credential_state;
+pub mod cutover;
 pub mod durable;
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod host_integration;
+pub mod hpke;
 pub mod management;
+pub mod operator_bundle;
 pub mod protocol;
 pub mod refresh;
 pub mod registry;
@@ -16,5 +19,8 @@ mod wasm;
 
 #[cfg(target_arch = "wasm32")]
 pub use wasm::{
-    BrokerLedgerDurableObject, ConnectionRefreshDurableObject, CredentialStateDurableObject,
+    ConnectionRefreshDurableObject, CredentialStateDurableObject, V2AuthorityDurableObject,
 };
+
+#[cfg(all(target_arch = "wasm32", feature = "test-fixtures"))]
+pub use wasm::BrokerLedgerDurableObject;

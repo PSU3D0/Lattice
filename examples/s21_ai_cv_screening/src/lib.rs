@@ -43,7 +43,7 @@ use connector_google_sheets::GoogleSheetsAppendRowInput;
 use connector_google_sheets::ops::GoogleSheetsAppendRow;
 use connector_llm::ops::LlmComplete;
 use connector_llm::{LlmCompleteInput, LlmProvider};
-use dag_core::{NodeError, NodeResult};
+use dag_core::{BrokerAuthority, BrokerOperationBudget, NodeError, NodeResult};
 use dag_macros::{def_node, node};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -476,6 +476,21 @@ async fn capture(record: ScreeningRecord) -> NodeResult<ScreeningRecord> {
     Ok(record)
 }
 
+fn broker_authority(contract_id: &str, slot: &str) -> BrokerAuthority {
+    BrokerAuthority::new(
+        vec![BrokerOperationBudget {
+            contract_id: contract_id.to_string(),
+            semantic_effect_slots: vec![slot.to_string()],
+            max_logical_calls: 1,
+            max_dispatch_attempts_per_call: 1,
+            connection_aggregate_key: Some("google-workspace".to_string()),
+        }],
+        Some(3),
+        std::collections::BTreeMap::from([("google-workspace".to_string(), 3)]),
+    )
+    .expect("valid S21 broker authority")
+}
+
 dag_macros::flow! {
     name: s21_ai_cv_screening_flow,
     version: "1.0.0",
@@ -492,6 +507,10 @@ dag_macros::flow! {
     let notify_hr = node!(notify_hr);
     let record_screening = node!(record_screening);
     let capture = node!(capture);
+
+    broker_authority!(record_candidate, broker_authority("connector.google.sheets.append_row@1", "append_row"));
+    broker_authority!(confirm_candidate, broker_authority("connector.google.gmail.send_message@1", "send_message"));
+    broker_authority!(notify_hr, broker_authority("connector.google.gmail.send_message@1", "send_message"));
 
     connect!(screening_trigger -> extract_cv_text);
     connect!(extract_cv_text -> check_redelivery);

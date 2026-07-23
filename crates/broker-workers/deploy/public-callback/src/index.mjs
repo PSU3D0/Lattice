@@ -1,19 +1,20 @@
 const ALLOWED_EXACT = new Map([
   ["GET /health", true],
   ["GET /ready", true],
-  ["POST /v1/sessions", true],
-  ["POST /v1/connection-intents", true],
-  ["GET /v1/oauth/callback", true],
-  ["POST /v1/bindings", true],
+  ["POST /v0.2/sessions", true],
+  ["GET /v0.2/trust/receipts", true],
+  ["POST /v0.2/connection-intents", true],
+  ["GET /v0.2/credential-callback", true],
+  ["POST /v0.2/bindings", true],
 ]);
 
 function allowed(request) {
   const path = new URL(request.url).pathname;
   if (ALLOWED_EXACT.has(`${request.method} ${path}`)) return true;
-  if (["GET", "DELETE"].includes(request.method) && path.startsWith("/v1/connections/")) {
+  if (["GET", "DELETE"].includes(request.method) && path.startsWith("/v0.2/connections/")) {
     return true;
   }
-  return request.method === "GET" && path.startsWith("/v1/receipts/");
+  return request.method === "GET" && path.startsWith("/v0.2/receipts/");
 }
 
 export default {
