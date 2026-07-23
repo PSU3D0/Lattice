@@ -926,6 +926,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "broker-auth"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "broker-core",
+ "chacha20poly1305",
+ "hmac",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "thiserror 1.0.69",
+ "zeroize",
+]
+
+[[package]]
 name = "broker-core"
 version = "0.1.0"
 dependencies = [
@@ -966,11 +982,11 @@ name = "broker-workers"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "broker-auth",
  "broker-core",
  "broker-host",
  "chacha20poly1305",
  "connector-spec",
- "connector_google_platform",
  "custodian-google",
  "ed25519-dalek",
  "futures",
@@ -979,6 +995,7 @@ dependencies = [
  "hex",
  "hmac",
  "js-sys",
+ "provider-google",
  "rusqlite",
  "serde",
  "serde-wasm-bindgen",
@@ -2105,6 +2122,8 @@ dependencies = [
 name = "custodian-google"
 version = "0.1.0"
 dependencies = [
+ "aes",
+ "base64 0.22.1",
  "broker-core",
  "broker-host",
  "chacha20poly1305",
@@ -2112,9 +2131,14 @@ dependencies = [
  "connector_google_platform",
  "getrandom 0.3.3",
  "hex",
+ "hkdf",
+ "hmac",
+ "serde",
  "serde_json",
  "sha2",
+ "subtle",
  "thiserror 1.0.69",
+ "x25519-dalek",
  "zeroize",
 ]
 
@@ -4173,6 +4197,15 @@ dependencies = [
  "thiserror 2.0.17",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "hkdf"
+version = "0.12.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b5f8eb2ad728638ea2c7d47a21db23b7b58a72ed6a38256b8a1849f15fbbdf7"
+dependencies = [
+ "hmac",
 ]
 
 [[package]]
@@ -6375,6 +6408,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3e36c2f31e0a47f9280fb347ef5e461ffcd2c52dd520d8e216b52f93b0b0d7d6"
 dependencies = [
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "provider-google"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "broker-auth",
+ "broker-core",
+ "connector_google_platform",
+ "custodian-google",
+ "serde",
+ "serde_json",
+ "sha2",
+ "zeroize",
 ]
 
 [[package]]
@@ -9556,6 +9604,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea2f10b9bb0928dfb1b42b65e1f9e36f7f54dbdf08457afefb38afcdec4fa2bb"
 
 [[package]]
+name = "x25519-dalek"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c7e468321c81fb07fa7f4c636c3972b9100f0346e5b6a9f2bd0603a52f7ed277"
+dependencies = [
+ "curve25519-dalek",
+ "rand_core 0.6.4",
+ "serde",
+ "zeroize",
+]
+
+[[package]]
 name = "yoke"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9625,6 +9685,20 @@ name = "zeroize"
 version = "1.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b97154e67e32c85465826e8bcc1c59429aaaf107c1e4a9e53c8d8ccd5eff88d0"
+dependencies = [
+ "zeroize_derive",
+]
+
+[[package]]
+name = "zeroize_derive"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c50655cbb0fe3fc43170059e702f1ce5e19b84cec58dc87b037a09935c2f328"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.106",
+]
 
 [[package]]
 name = "zerotrie"

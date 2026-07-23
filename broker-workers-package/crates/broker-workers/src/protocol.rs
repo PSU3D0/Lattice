@@ -12,13 +12,6 @@ pub const POP_CLOCK_SKEW_SECONDS: i64 = 60;
 pub const SESSION_EXCHANGE_AUDIENCE: &str = "lattice-broker-session";
 pub const BROKER_REQUEST_AUDIENCE: &str = "lattice-broker";
 
-pub const SHEETS_CONTRACT_ID: &str = "connector.google.sheets.append_row@1";
-pub const SHEETS_CONTRACT_HASH: &str =
-    "sha256:d02ed39536d396d66895f97672551a9eb443e701900112613865170bf157e999";
-pub const GMAIL_CONTRACT_ID: &str = "connector.google.gmail.send_message@1";
-pub const GMAIL_CONTRACT_HASH: &str =
-    "sha256:8fbdd2dbb63877b92004b7b5e6a7dc665a0ec5788850e4a466c0b6200639de2a";
-
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionExchangeRequest {

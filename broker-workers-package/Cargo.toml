@@ -5,9 +5,11 @@ exclude = [
   "crates/processing-context/guests/pdf-extract",
 ]
 members = [
+  "crates/broker-auth",
   "crates/broker-core",
   "crates/broker-host",
   "crates/broker-workers",
+  "crates/provider-google",
   "crates/jcs-canonical",
   "crates/connector-spec",
   "crates/dag-core",

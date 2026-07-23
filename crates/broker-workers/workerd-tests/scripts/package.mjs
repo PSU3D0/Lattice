@@ -9,8 +9,8 @@ const workspace = resolve(crate, "../..");
 const finalOutput = join(workspace, "broker-workers-package");
 const output = join(tmpdir(), `lattice-broker-package-${process.pid}`);
 const workspacePackages = [
-  "crates/broker-core", "crates/broker-host", "crates/broker-workers",
-  "crates/jcs-canonical", "crates/connector-spec", "crates/dag-core",
+  "crates/broker-auth", "crates/broker-core", "crates/broker-host", "crates/broker-workers",
+  "crates/provider-google", "crates/jcs-canonical", "crates/connector-spec", "crates/dag-core",
   "crates/kernel-plan", "crates/connectors/google/platform", "crates/custodian-google",
 ];
 const descriptors = [
@@ -72,7 +72,9 @@ for (const packagePath of workspacePackages) {
   const manifest = await readFile(manifestPath, "utf8");
   await writeFile(
     manifestPath,
-    manifest.replace(/\n\[dev-dependencies\][\s\S]*?(?=\n\[|$)/g, ""),
+    manifest
+      .replace(/\n\[dev-dependencies\][\s\S]*?(?=\n\[|$)/g, "")
+      .replace(/\n\[\[test\]\][\s\S]*?(?=\n\[|$)/g, ""),
   );
 }
 for (const descriptor of descriptors) {

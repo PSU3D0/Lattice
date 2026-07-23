@@ -37,4 +37,35 @@ fn credential_plane_migration_is_idempotent_and_keeps_v1_authoritative() {
         )
         .is_err()
     );
+
+    for table in [
+        "activation_intents_v2",
+        "activation_profiles_v2",
+        "activation_private_replay_v2",
+        "dispatch_outbox_v2",
+    ] {
+        let count: i64 = db
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "missing {table}");
+    }
+    let activation_columns = db
+        .prepare("PRAGMA table_info(activation_intents_v2)")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    for forbidden in ["secret", "token", "assertion", "material_ciphertext"] {
+        assert!(
+            activation_columns
+                .iter()
+                .all(|column| !column.contains(forbidden)),
+            "private activation column {forbidden}"
+        );
+    }
 }

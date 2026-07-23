@@ -4,8 +4,7 @@ use crate::{
         LedgerAuthority, LedgerCommand, LedgerPersistence, LedgerReply, apply_persisted_command,
     },
     management::{
-        AUTH_PROFILE_REF, CONNECTOR_REF, CUSTODY, DeploymentKey, EXECUTION_LANE, GOOGLE_SCOPES,
-        constant_time_matches, deployment_key_hash, fresh_timestamp, keyed_hash,
+        DeploymentKey, constant_time_matches, deployment_key_hash, fresh_timestamp, keyed_hash,
         public_key_thumbprint, request_transcript, validate_intent, verify_ed25519,
         verify_exchange_request,
     },
@@ -28,6 +27,10 @@ use chacha20poly1305::{
     aead::{Aead, Payload},
 };
 use js_sys::JsString;
+use provider_google::{
+    CONNECTOR_REF, CUSTODY_LOCATION as CUSTODY, EXECUTION_LANE, GMAIL_SCOPE,
+    LEGACY_PROFILE_REF as AUTH_PROFILE_REF, SHEETS_SCOPE,
+};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
@@ -38,12 +41,15 @@ use worker::{Context, Env, Method, Request, RequestInit, Response, State, durabl
 
 #[cfg(feature = "test-fixtures")]
 mod test_fixtures;
+#[cfg(feature = "test-fixtures")]
+mod v2_test;
 
 const LEDGER_SNAPSHOT_KEY: &str = "broker:ledger:snapshot:v1";
 const LEDGER_TAIL_KEY: &str = "broker:ledger:tail:v1";
 const REFRESH_STORAGE_KEY: &str = "broker:refresh:v1";
 const CREDENTIAL_STATE_V2_KEY: &str = "broker:credential-state:v2";
 const JSON_CONTENT_TYPE: &str = "application/json";
+const APPROVED_SCOPES: [&str; 2] = [GMAIL_SCOPE, SHEETS_SCOPE];
 
 #[derive(Deserialize, Serialize)]
 struct LedgerEnvelope {
@@ -365,6 +371,19 @@ enum CredentialStateCommand {
     AdvanceFence {
         canonical_json: Vec<u8>,
     },
+    #[cfg(feature = "test-fixtures")]
+    ActivateV2ForTest {
+        canonical_json: Vec<u8>,
+    },
+    #[cfg(feature = "test-fixtures")]
+    SealRotatedMaterialForTest {
+        generation: u64,
+        sealed_envelope: Vec<u8>,
+    },
+    #[cfg(feature = "test-fixtures")]
+    ReadMaterialForTest {
+        generation: u64,
+    },
     Read,
 }
 
@@ -383,6 +402,8 @@ struct CredentialStateReply {
     material_generations: Vec<(u64, String)>,
     fence_json: Vec<u8>,
     rotation_journal_json: Option<Vec<u8>>,
+    #[cfg(feature = "test-fixtures")]
+    sealed_material_for_internal_test: Option<Vec<u8>>,
 }
 
 #[durable_object]
@@ -442,6 +463,8 @@ impl worker::DurableObject for CredentialStateDurableObject {
             return do_error(BrokerError::Brk107);
         }
         let mut changed = matches!(envelope.command, CredentialStateCommand::Initialize { .. });
+        #[cfg(feature = "test-fixtures")]
+        let mut sealed_material_for_internal_test = None;
         let result = match envelope.command {
             CredentialStateCommand::Initialize { .. } | CredentialStateCommand::Read => Ok(()),
             CredentialStateCommand::PutPublic {
@@ -471,6 +494,27 @@ impl worker::DurableObject for CredentialStateDurableObject {
                 .map(|_| {
                     changed = true;
                 }),
+            #[cfg(feature = "test-fixtures")]
+            CredentialStateCommand::ActivateV2ForTest { canonical_json } => state
+                .activate_v2_for_test(&envelope.org_id, &canonical_json)
+                .map(|_| {
+                    changed = true;
+                }),
+            #[cfg(feature = "test-fixtures")]
+            CredentialStateCommand::SealRotatedMaterialForTest {
+                generation,
+                sealed_envelope,
+            } => state
+                .seal_rotated_material_for_test(&envelope.org_id, generation, sealed_envelope)
+                .map(|_| {
+                    changed = true;
+                }),
+            #[cfg(feature = "test-fixtures")]
+            CredentialStateCommand::ReadMaterialForTest { generation } => state
+                .material_for_internal_test(&envelope.org_id, generation)
+                .map(|material| {
+                    sealed_material_for_internal_test = Some(material);
+                }),
         };
         if let Err(error) = result {
             return do_error(error);
@@ -491,6 +535,8 @@ impl worker::DurableObject for CredentialStateDurableObject {
                 .collect(),
             fence_json: state.fence_json.clone(),
             rotation_journal_json: state.rotation_journal_json.clone(),
+            #[cfg(feature = "test-fixtures")]
+            sealed_material_for_internal_test,
         })
     }
 }
@@ -523,6 +569,10 @@ async fn fetch(mut request: Request, env: Env, _context: Context) -> worker::Res
         #[cfg(feature = "test-fixtures")]
         (Method::Post, concat!("/__", "test/credential-state-v2")) => {
             test_fixtures::credential_state_v2(&mut request, &env).await
+        }
+        #[cfg(feature = "test-fixtures")]
+        (Method::Post, concat!("/__", "test/v2-activation")) => {
+            v2_test::route(&mut request, &env).await
         }
         _ if path.starts_with("/v1/connections/") => connection_route(&request, &env).await,
         _ if path.starts_with("/v1/receipts/") => receipt_route(&request, &env).await,
@@ -764,10 +814,9 @@ async fn issue_grant(request: &mut Request, env: &Env) -> worker::Result<Respons
         .iter()
         .find(|contract| contract.contract_id == body.operation_contract)
         .ok_or_else(|| worker_rust_error("authority"))?;
-    let required_scope = match body.operation_contract.as_str() {
-        crate::protocol::SHEETS_CONTRACT_ID => GOOGLE_SCOPES[1],
-        crate::protocol::GMAIL_CONTRACT_ID => GOOGLE_SCOPES[0],
-        _ => return json(&PublicError::broker(BrokerError::Brk108), 403),
+    let required_scope = match provider_google::adapter(&body.operation_contract) {
+        Ok(adapter) => adapter.required_claim,
+        Err(_) => return json(&PublicError::broker(BrokerError::Brk108), 403),
     };
     if !binding
         .view
@@ -1061,12 +1110,16 @@ fn oauth_profile(env: &Env, connector: &str, auth_profile: &str) -> worker::Resu
     if connector != CONNECTOR_REF || auth_profile != AUTH_PROFILE_REF {
         return Err(worker_rust_error("oauth profile"));
     }
-    let authorize_endpoint = env.var("GOOGLE_AUTHORIZE_ENDPOINT")?.to_string();
+    let authorize_endpoint = env
+        .var(provider_google::AUTHORIZATION_ENDPOINT_BINDING)?
+        .to_string();
     let parsed = worker::Url::parse(&authorize_endpoint)?;
     if parsed.scheme() != "https" || parsed.host_str().is_none() || parsed.query().is_some() {
         return Err(worker_rust_error("oauth profile"));
     }
-    let client_id = env.var("GOOGLE_OAUTH_CLIENT_ID")?.to_string();
+    let client_id = env
+        .var(provider_google::OAUTH_CLIENT_ID_BINDING)?
+        .to_string();
     let redirect_uri = env.var("OAUTH_REDIRECT_URI")?.to_string();
     let redirect = worker::Url::parse(&redirect_uri)?;
     if client_id.is_empty()
@@ -1080,7 +1133,10 @@ fn oauth_profile(env: &Env, connector: &str, auth_profile: &str) -> worker::Resu
         authorize_endpoint,
         client_id,
         redirect_uri,
-        scopes: GOOGLE_SCOPES.iter().map(|scope| (*scope).into()).collect(),
+        scopes: APPROVED_SCOPES
+            .iter()
+            .map(|scope| (*scope).into())
+            .collect(),
     })
 }
 
@@ -1206,7 +1262,11 @@ async fn create_connection_intent(request: &mut Request, env: &Env) -> worker::R
         Ok(value) => value,
         Err(_) => return json(&PublicError::invalid(), 400),
     };
-    if validate_intent(&body).is_err() {
+    let management_profile = match crate::composition::legacy_management_profile() {
+        Ok(profile) => profile,
+        Err(error) => return json(&PublicError::broker(error), 503),
+    };
+    if validate_intent(&body, &management_profile).is_err() {
         return json(&PublicError::broker(BrokerError::Brk109), 400);
     }
     let profile = match oauth_profile(env, &body.connector_ref, &body.auth_profile_ref) {
@@ -1685,7 +1745,7 @@ async fn oauth_callback(request: &Request, env: &Env) -> worker::Result<Response
         if inject_activation_crash(request, "exchange_inflight") {
             return json(&PublicError::unavailable(), 599);
         }
-        let service = match env.service("GOOGLE_TOKEN_SERVICE") {
+        let service = match env.service(provider_google::TOKEN_SERVICE_BINDING) {
             Ok(service) => service,
             Err(_) => return json(&PublicError::unavailable(), 503),
         };
@@ -1737,7 +1797,7 @@ async fn oauth_callback(request: &Request, env: &Env) -> worker::Result<Response
         if inject_activation_crash(request, "before_route_reserved") {
             return json(&PublicError::unavailable(), 599);
         }
-        let expected_scopes = GOOGLE_SCOPES
+        let expected_scopes = APPROVED_SCOPES
             .iter()
             .map(|scope| (*scope).to_string())
             .collect::<std::collections::BTreeSet<_>>();
@@ -2181,10 +2241,10 @@ async fn install_binding(request: &mut Request, env: &Env) -> worker::Result<Res
         || [&body.bundle_id, &body.flow_id]
             .iter()
             .any(|value| value.is_empty() || value.len() > 256)
-        || body.contracts.iter().any(|contract| {
-            contract != crate::protocol::SHEETS_CONTRACT_ID
-                && contract != crate::protocol::GMAIL_CONTRACT_ID
-        })
+        || body
+            .contracts
+            .iter()
+            .any(|contract| provider_google::adapter(contract).is_err())
         || !valid_sha256(&body.flow_ir_hash)
         || !valid_sha256(&body.binding_lock_hash)
         || body.flow_ir_json.len() > broker_core::artifacts::MANIFEST_MAX
@@ -2192,16 +2252,15 @@ async fn install_binding(request: &mut Request, env: &Env) -> worker::Result<Res
     {
         return json(&PublicError::broker(BrokerError::Brk109), 400);
     }
-    let approved_contracts = [
-        broker_host::ApprovedAuthorityContract {
-            contract_id: crate::protocol::SHEETS_CONTRACT_ID,
-            contract_hash: crate::protocol::SHEETS_CONTRACT_HASH,
-        },
-        broker_host::ApprovedAuthorityContract {
-            contract_id: crate::protocol::GMAIL_CONTRACT_ID,
-            contract_hash: crate::protocol::GMAIL_CONTRACT_HASH,
-        },
-    ];
+    let composition = provider_google::google_v1();
+    let approved_contracts = composition
+        .adapters
+        .iter()
+        .map(|adapter| broker_host::ApprovedAuthorityContract {
+            contract_id: adapter.contract_id,
+            contract_hash: adapter.contract_hash,
+        })
+        .collect::<Vec<_>>();
     let verified_authority = match broker_host::verify_authority_manifest(
         body.flow_ir_json.as_bytes(),
         &body.flow_ir_hash,
@@ -2308,27 +2367,16 @@ async fn install_binding(request: &mut Request, env: &Env) -> worker::Result<Res
     let mut supported_contracts = Vec::new();
     let mut origins = Vec::new();
     for contract in &body.contracts {
-        let (hash, scope, origin, module_hash) = match contract.as_str() {
-            crate::protocol::SHEETS_CONTRACT_ID => (
-                crate::protocol::SHEETS_CONTRACT_HASH,
-                GOOGLE_SCOPES[1],
-                "https://sheets.googleapis.com",
-                "sha256:54db6603967e1ce4e46ef45ece7bfa947c129564e40a290989fa2ae901a23966",
-            ),
-            crate::protocol::GMAIL_CONTRACT_ID => (
-                crate::protocol::GMAIL_CONTRACT_HASH,
-                GOOGLE_SCOPES[0],
-                "https://gmail.googleapis.com",
-                "sha256:5a5de77f756b49aac0fb5339bf764f9e53a9437cdc41619c2c978aa5dbb4e3fc",
-            ),
-            _ => return json(&PublicError::broker(BrokerError::Brk108), 400),
+        let adapter = match provider_google::adapter(contract) {
+            Ok(adapter) => adapter,
+            Err(_) => return json(&PublicError::broker(BrokerError::Brk108), 400),
         };
-        required_scopes.push(scope.to_string());
-        origins.push(origin.to_string());
+        required_scopes.push(adapter.required_claim.to_string());
+        origins.push(adapter.origin.to_string());
         supported_contracts.push(broker_core::artifacts::SupportedContract {
             contract_id: contract.clone(),
-            contract_hash: hash.into(),
-            observed_plugin_module_sha256: Some(module_hash.into()),
+            contract_hash: adapter.contract_hash.into(),
+            observed_plugin_module_sha256: Some(adapter.implementation_hash.into()),
             attenuation_profiles: vec![],
             extensions: Default::default(),
         });
@@ -2634,34 +2682,14 @@ async fn invoke(request: &mut Request, env: &Env) -> worker::Result<Response> {
         Err(error) => return json(&PublicError::broker(error), 401),
     };
     let grant_view = grant.grant();
-    let (descriptor_bytes, semantic_slot, authority_facts, provider_origin) = match grant_view
-        .operation_contract
-        .as_str()
-    {
-        crate::protocol::SHEETS_CONTRACT_ID
-            if grant_view.contract_hash == crate::protocol::SHEETS_CONTRACT_HASH =>
-        {
-            (
-                include_bytes!("../../connectors/google/sheets/broker/operations/append_row.json")
-                    .as_slice(),
-                "append_row",
-                br#"{"google":{"sheets":{"headers":["column"]}}}"#.as_slice(),
-                "https://sheets.googleapis.com",
-            )
-        }
-        crate::protocol::GMAIL_CONTRACT_ID
-            if grant_view.contract_hash == crate::protocol::GMAIL_CONTRACT_HASH =>
-        {
-            (
-                include_bytes!("../../connectors/google/gmail/broker/operations/send_message.json")
-                    .as_slice(),
-                "send_message",
-                br#"{"allowed":true}"#.as_slice(),
-                "https://gmail.googleapis.com",
-            )
-        }
+    let adapter = match provider_google::adapter(&grant_view.operation_contract) {
+        Ok(adapter) if adapter.contract_hash == grant_view.contract_hash => adapter,
         _ => return json(&PublicError::broker(BrokerError::Brk108), 403),
     };
+    let descriptor_bytes = adapter.descriptor;
+    let semantic_slot = adapter.semantic_effect_slot;
+    let authority_facts = adapter.authority_facts_jcs;
+    let provider_origin = adapter.origin;
     let expected_effect = match broker_core::effect_id::derive(
         &body.run_id,
         &body.node_id,
@@ -3380,7 +3408,7 @@ async fn acquire_access_token(
                     },
             } => {
                 let service = env
-                    .service("GOOGLE_TOKEN_SERVICE")
+                    .service(provider_google::TOKEN_SERVICE_BINDING)
                     .map_err(|_| BrokerError::Brk401)?;
                 let payload = serde_json::json!({
                     "grant_type": "refresh_token",
@@ -3535,7 +3563,7 @@ async fn dispatch_provider(
             String::from_utf8_lossy(access.expose_to_internal_binding())
         ),
     )?;
-    let service = env.service("GOOGLE_PROVIDER_SERVICE")?;
+    let service = env.service(provider_google::PROVIDER_SERVICE_BINDING)?;
     let mut response = service.fetch_request(request).await?;
     let request_id = response
         .headers()

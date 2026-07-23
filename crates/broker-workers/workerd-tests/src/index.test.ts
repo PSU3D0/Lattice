@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Miniflare } from "miniflare";
 import { readFile } from "node:fs/promises";
-import { createHash, createHmac, generateKeyPairSync, randomBytes, sign } from "node:crypto";
+import { createCipheriv, createHash, createHmac, generateKeyPairSync, randomBytes, sign } from "node:crypto";
 
 const mf = new Miniflare({
   workers: [
@@ -136,6 +136,23 @@ async function jsonRequest(
     headers: { "content-type": "application/json", ...headers, ...pop },
     body: exactBody,
   });
+}
+
+function sealV2Submission(activationRef: string, jti: string, value: unknown) {
+  const key = Buffer.from("33".repeat(32), "hex");
+  const nonce = createHash("sha256").update(`${activationRef}\0${jti}`).digest().subarray(0, 12);
+  const cipher = createCipheriv("chacha20-poly1305", key, nonce, { authTagLength: 16 });
+  cipher.setAAD(Buffer.from(`${activationRef}\0${jti}\0private-material-v2`));
+  const ciphertext = Buffer.concat([cipher.update(JSON.stringify(value)), cipher.final(), cipher.getAuthTag()]);
+  return { nonce_b64u: nonce.toString("base64url"), ciphertext_b64u: ciphertext.toString("base64url") };
+}
+
+async function v2(body: unknown) {
+  const response = await jsonRequest(privateWorker, "/__test/v2-activation", body);
+  const text = await response.text();
+  let parsed: any = {};
+  try { parsed = text.length === 0 ? {} : JSON.parse(text); } catch { parsed = { raw: text }; }
+  return { response, body: parsed };
 }
 
 beforeAll(async () => {
@@ -327,6 +344,10 @@ describe("broker Worker management and topology", () => {
       { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
     );
     expect(credentialState.status).toBe(404);
+    const activation = await production.fetch("http://broker/__test/v2-activation", {
+      method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+    });
+    expect(activation.status).toBe(404);
   });
 
   it("seals and reads back V2 prepared state behind the fixture-only route", async () => {
@@ -354,6 +375,101 @@ describe("broker Worker management and topology", () => {
     });
     expect(readback.status).toBe(200);
     expect((await readback.json() as any).material_generations).toEqual(sealedBody.material_generations);
+
+    const prepared = { ...fence, phase: "v2_prepared", fence_generation: 1, cas_version: 1 };
+    expect((await jsonRequest(privateWorker, "/__test/credential-state-v2", {
+      ...base, command: { op: "advance_fence", canonical_json: [...Buffer.from(JSON.stringify(prepared))] },
+    })).status).toBe(200);
+    const authoritative = {
+      ...prepared, phase: "v2_authoritative", fence_generation: 2, cas_version: 2,
+      v2_lease_ever_issued: true, v2_rotation_ever_started: true,
+      v1_leasing_disabled: true, active_v2_generation: 1,
+    };
+    expect((await jsonRequest(privateWorker, "/__test/credential-state-v2", {
+      ...base, command: { op: "activate_v2_for_test", canonical_json: [...Buffer.from(JSON.stringify(authoritative))] },
+    })).status).toBe(200);
+    const rollback = { ...fence, fence_generation: 3, cas_version: 3 };
+    expect((await jsonRequest(privateWorker, "/__test/credential-state-v2", {
+      ...base, command: { op: "advance_fence", canonical_json: [...Buffer.from(JSON.stringify(rollback))] },
+    })).status).toBe(409);
+  });
+
+  it("persists and dispatches all generic V2 activation schemes behind the test fence", async () => {
+    let sequence = 0;
+    const externalPrivateKeys = new Map<string, any>();
+    const activate = async (profile: any, material?: unknown) => {
+      sequence += 1;
+      const org_id = "org-v2-generic";
+      const activation_ref = `activation-v2-${sequence}`;
+      expect((await v2({ op: "install_profile", org_id, profile, standing_authority_ref: `standing-${sequence}`, trusted_source_refs: ["source.trusted"] })).response.status).toBe(201);
+      const created = await v2({ op: "create", org_id, activation_ref, profile_ref: profile.profile_ref, request_jti: `create-${sequence}` });
+      expect(created.response.status).toBe(201);
+      if (profile.activation_kind === "oauth") {
+        const crashed = await v2({ op: "oauth_callback", org_id, activation_ref, state: created.body.action_nonce, code: "synthetic-code", crash_phase: "after_claim" });
+        expect(crashed.response.status).toBe(599);
+        expect((await v2({ op: "oauth_callback", org_id, activation_ref, state: created.body.action_nonce, code: "synthetic-code" })).body.kind).toBe("complete");
+      } else if (profile.activation_kind === "external") {
+        const privateKey = externalPrivateKeys.get(profile.profile_ref);
+        const challengeHash = `sha256:${createHash("sha256").update(created.body.action_nonce).digest("hex")}`;
+        const signature = sign(null, Buffer.from(challengeHash), privateKey).toString("base64url");
+        expect((await v2({ op: "external_bind", org_id, activation_ref, public_key_b64u: profile.external_public_key_b64u, signature_b64u: signature })).body.kind).toBe("complete");
+      } else {
+        const submitted = profile.activation_kind === "workload"
+          ? { iss: profile.workload_issuer, aud: profile.workload_audience, nonce: created.body.action_nonce }
+          : material;
+        const sealed = sealV2Submission(activation_ref, `submission-${sequence}`, submitted);
+        expect((await v2({ op: "submit_private", org_id, activation_ref, submission_jti: `submission-${sequence}`, ...sealed })).body.kind).toBe("complete");
+        expect((await v2({ op: "submit_private", org_id, activation_ref, submission_jti: `submission-${sequence}`, ...sealed })).response.status).toBe(409);
+      }
+      expect((await v2({ op: "activate_fence", org_id, activation_ref })).response.status).toBe(200);
+      const dispatched = await v2({ op: "dispatch", org_id, activation_ref, request_ref: `dispatch-${sequence}`, response: { ok: true } });
+      expect(dispatched.response.status).toBe(200);
+      expect(JSON.stringify(dispatched.body)).not.toMatch(/synthetic-code|static-secret|password-value|workload-token|custodian-reference/);
+      return { org_id, activation_ref, created, dispatched };
+    };
+
+    const oauth = await activate({ profile_ref: "auth.synthetic.oauth", activation_kind: "oauth", scheme_kind: "oauth", endpoint: "https://synthetic.invalid/api" });
+    expect(oauth.dispatched.body.auth_evidence.header_names).toContain("Authorization");
+    const staticCases = [
+      [{ profile_ref: "auth.synthetic.header", activation_kind: "secret", scheme_kind: "header", endpoint: "https://synthetic.invalid/api", placement_name: "x-api-key", prefix: "Key" }, { secret: "static-secret" }, "x-api-key", "header_names"],
+      [{ profile_ref: "auth.synthetic.query", activation_kind: "secret", scheme_kind: "query", endpoint: "https://synthetic.invalid/api", placement_name: "api_key" }, { secret: "static-secret" }, "api_key", "query_names"],
+      [{ profile_ref: "auth.synthetic.basic", activation_kind: "secret", scheme_kind: "basic", endpoint: "https://synthetic.invalid/api" }, { username: "user", password: "password-value" }, "Authorization", "header_names"],
+      [{ profile_ref: "auth.synthetic.bearer", activation_kind: "secret", scheme_kind: "bearer", endpoint: "https://synthetic.invalid/api" }, { access_token: "static-secret" }, "Authorization", "header_names"],
+    ] as const;
+    let rotating: any;
+    for (const [profile, material, placement, list] of staticCases) {
+      const active = await activate(profile, material);
+      expect(active.dispatched.body.auth_evidence[list]).toContain(placement);
+      rotating ??= active;
+    }
+    const workload = await activate({ profile_ref: "auth.synthetic.workload", activation_kind: "workload", scheme_kind: "workload", endpoint: "https://synthetic.invalid/api", workload_issuer: "https://issuer.invalid", workload_audience: "lattice" });
+    expect(workload.dispatched.body.auth_evidence.header_names).toContain("Authorization");
+    const externalKeys = generateKeyPairSync("ed25519");
+    const externalJwk = externalKeys.publicKey.export({ format: "jwk" }) as JsonWebKey;
+    externalPrivateKeys.set("auth.synthetic.external", externalKeys.privateKey);
+    const external = await activate({ profile_ref: "auth.synthetic.external", activation_kind: "external", scheme_kind: "external", endpoint: "https://synthetic.invalid/api", external_public_key_b64u: externalJwk.x });
+    expect(external.dispatched.body.auth_evidence.header_names).toContain("Authorization");
+
+    const read = await v2({ op: "read", org_id: rotating.org_id, activation_ref: rotating.activation_ref });
+    const rotationJti = "rotation-jti";
+    const rotated = sealV2Submission(rotating.activation_ref, rotationJti, { secret: "rotated-secret" });
+    expect((await v2({ op: "rotate", org_id: rotating.org_id, activation_ref: rotating.activation_ref, expected_cas: read.body.cas_version, submission_jti: rotationJti, ...rotated, crash_phase: "before_seal" })).response.status).toBe(599);
+    const completed = await v2({ op: "rotate", org_id: rotating.org_id, activation_ref: rotating.activation_ref, expected_cas: read.body.cas_version, submission_jti: rotationJti, ...rotated });
+    expect(completed.body.material_generation).toBe(2);
+    expect((await v2({ op: "rotate", org_id: rotating.org_id, activation_ref: rotating.activation_ref, expected_cas: read.body.cas_version, submission_jti: "stale", ...rotated })).response.status).toBe(409);
+
+    const ambiguous = await v2({ op: "dispatch", org_id: rotating.org_id, activation_ref: rotating.activation_ref, request_ref: "dispatch-ambiguous", response: { ok: true }, crash_phase: "after_dispatch" });
+    expect(ambiguous.response.status).toBe(599);
+    expect((await v2({ op: "dispatch", org_id: rotating.org_id, activation_ref: rotating.activation_ref, request_ref: "dispatch-ambiguous", response: { ok: true } })).body.outcome).toBe("ambiguous");
+    const smuggled = await v2({ op: "dispatch", org_id: rotating.org_id, activation_ref: rotating.activation_ref, request_ref: "dispatch-smuggled", response: { access_token: "must-not-project" } });
+    expect(smuggled.response.status).toBe(409);
+  });
+
+  it("fails trusted semantic policy references closed while retaining source records", async () => {
+    const org_id = "org-v2-policy";
+    const profile = { profile_ref: "auth.synthetic.policy", activation_kind: "secret", scheme_kind: "bearer", endpoint: "https://synthetic.invalid/api" };
+    expect((await v2({ op: "install_profile", org_id, profile, standing_authority_ref: "standing-policy", trusted_source_refs: ["source.trusted"], policy_refs: ["policy.unsupported"] })).response.status).toBe(201);
+    expect((await v2({ op: "create", org_id, activation_ref: "activation-policy", profile_ref: profile.profile_ref, request_jti: "policy-jti" })).response.status).toBe(409);
   });
 
   it("keeps fixture and invoke routes off the public facade", async () => {
@@ -361,6 +477,7 @@ describe("broker Worker management and topology", () => {
       fixture: "google-semantic-broker-v1",
     });
     expect(fixture.status).toBe(404);
+    expect((await jsonRequest(publicWorker, "/__test/v2-activation", {})).status).toBe(404);
     const invoke = await jsonRequest(publicWorker, "/internal/v1/invoke", {});
     expect(invoke.status).toBe(404);
   });

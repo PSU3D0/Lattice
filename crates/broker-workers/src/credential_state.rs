@@ -223,9 +223,103 @@ impl CredentialStateV2 {
         let current = parse::<CrossVersionCredentialFenceV2>(&self.fence_json)?;
         let next = parse::<CrossVersionCredentialFenceV2>(source)?;
         verify_fence_successor(&current.view, &next.view)?;
-        // C2 may prepare state but cannot make V2 authoritative, issue a V2
-        // lease, start a V2 rotation, or disable V1 leasing.
+        // Production remains pre-use through C3. Tests exercise the irreversible
+        // transition with `activate_v2_for_test` only after sealed readback.
         require_pre_use_fence(&next.view)?;
+        self.fence_json = next.canonical_bytes().to_vec();
+        Ok(())
+    }
+
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn seal_rotated_material_for_test(
+        &mut self,
+        org_id: &str,
+        generation: u64,
+        sealed_envelope: Vec<u8>,
+    ) -> Result<&SealedMaterialGeneration, BrokerError> {
+        self.require_tenant(org_id)?;
+        let fence = parse::<CrossVersionCredentialFenceV2>(&self.fence_json)?;
+        if fence
+            .view
+            .as_value()
+            .get("phase")
+            .and_then(|value| value.as_str())
+            != Some("v2_authoritative")
+            || generation == 0
+            || sealed_envelope.is_empty()
+            || sealed_envelope.len() > MAX_SEALED_BYTES
+            || self
+                .sealed_material
+                .keys()
+                .next_back()
+                .is_some_and(|last| generation <= *last)
+        {
+            return Err(BrokerError::Brk106);
+        }
+        let envelope_hash = format!("sha256:{}", hex::encode(Sha256::digest(&sealed_envelope)));
+        self.sealed_material.insert(
+            generation,
+            SealedMaterialGeneration {
+                generation,
+                envelope_hash,
+                sealed_envelope,
+            },
+        );
+        self.sealed_material
+            .get(&generation)
+            .ok_or(BrokerError::Brk401)
+    }
+
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn material_for_internal_test(
+        &self,
+        org_id: &str,
+        generation: u64,
+    ) -> Result<Vec<u8>, BrokerError> {
+        self.require_tenant(org_id)?;
+        self.sealed_material
+            .get(&generation)
+            .map(|material| material.sealed_envelope.clone())
+            .ok_or(BrokerError::Brk103)
+    }
+
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn activate_v2_for_test(&mut self, org_id: &str, source: &[u8]) -> Result<(), BrokerError> {
+        self.require_tenant(org_id)?;
+        let current = parse::<CrossVersionCredentialFenceV2>(&self.fence_json)?;
+        require_pre_use_fence(&current.view)?;
+        let next = parse::<CrossVersionCredentialFenceV2>(source)?;
+        verify_fence_successor(&current.view, &next.view)?;
+        let value = next.view.as_value();
+        let generation = value
+            .get("active_v2_generation")
+            .and_then(|value| value.as_u64())
+            .ok_or(BrokerError::Brk106)?;
+        let sealed = self
+            .sealed_material
+            .get(&generation)
+            .ok_or(BrokerError::Brk106)?;
+        let readback_hash = format!(
+            "sha256:{}",
+            hex::encode(Sha256::digest(&sealed.sealed_envelope))
+        );
+        if readback_hash != sealed.envelope_hash
+            || value.get("phase").and_then(|value| value.as_str()) != Some("v2_authoritative")
+            || value
+                .get("v1_leasing_disabled")
+                .and_then(|value| value.as_bool())
+                != Some(true)
+            || (value
+                .get("v2_lease_ever_issued")
+                .and_then(|value| value.as_bool())
+                != Some(true)
+                && value
+                    .get("v2_rotation_ever_started")
+                    .and_then(|value| value.as_bool())
+                    != Some(true))
+        {
+            return Err(BrokerError::Brk106);
+        }
         self.fence_json = next.canonical_bytes().to_vec();
         Ok(())
     }
@@ -246,8 +340,10 @@ impl CredentialStateV2 {
 
 fn require_pre_use_fence(fence: &CrossVersionCredentialFenceV2) -> Result<(), BrokerError> {
     let value = fence.as_value();
-    if value.get("phase").and_then(|v| v.as_str()) == Some("v1_authoritative")
-        && value.get("v2_lease_ever_issued").and_then(|v| v.as_bool()) == Some(false)
+    if matches!(
+        value.get("phase").and_then(|v| v.as_str()),
+        Some("v1_authoritative" | "v2_prepared")
+    ) && value.get("v2_lease_ever_issued").and_then(|v| v.as_bool()) == Some(false)
         && value
             .get("v2_rotation_ever_started")
             .and_then(|v| v.as_bool())
@@ -328,6 +424,44 @@ mod tests {
                 .unwrap_err(),
             BrokerError::Brk004 | BrokerError::Brk106
         ));
+    }
+
+    #[test]
+    fn v2_fence_requires_sealed_readback_and_never_rolls_back_after_use() {
+        let mut state =
+            CredentialStateV2::initialize("org-a", "connection-a", &fence(0, 0)).unwrap();
+        state
+            .seal_material("org-a", 1, b"sealed-v2".to_vec())
+            .unwrap();
+        let mut prepared: serde_json::Value = serde_json::from_slice(&fence(1, 1)).unwrap();
+        prepared["phase"] = "v2_prepared".into();
+        state
+            .advance_fence("org-a", &serde_json::to_vec(&prepared).unwrap())
+            .unwrap();
+        let mut active = prepared.clone();
+        active["phase"] = "v2_authoritative".into();
+        active["cas_version"] = 2.into();
+        active["v2_lease_ever_issued"] = true.into();
+        active["v1_leasing_disabled"] = true.into();
+        active["active_v2_generation"] = 1.into();
+        state
+            .activate_v2_for_test("org-a", &serde_json::to_vec(&active).unwrap())
+            .unwrap();
+        assert_eq!(
+            state.advance_fence("org-a", &fence(3, 2)).unwrap_err(),
+            BrokerError::Brk106
+        );
+
+        let mut missing =
+            CredentialStateV2::initialize("org-a", "connection-b", &fence(0, 0)).unwrap();
+        let mut invalid = active;
+        invalid["cas_version"] = 1.into();
+        assert_eq!(
+            missing
+                .activate_v2_for_test("org-a", &serde_json::to_vec(&invalid).unwrap())
+                .unwrap_err(),
+            BrokerError::Brk106
+        );
     }
 
     #[test]

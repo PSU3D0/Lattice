@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 
+mod hpke;
+pub mod remote;
+
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     fmt,

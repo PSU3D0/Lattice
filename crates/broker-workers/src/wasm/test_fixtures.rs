@@ -94,7 +94,10 @@ pub(super) async fn provision_fixture(
         org_id: session.org_id.clone(),
         connection_ref: connection_ref.into(),
         account_commitment: account_commitment.into(),
-        granted_scopes: GOOGLE_SCOPES.iter().map(|scope| (*scope).into()).collect(),
+        granted_scopes: APPROVED_SCOPES
+            .iter()
+            .map(|scope| (*scope).into())
+            .collect(),
         refresh_token: crate::refresh::SecretBytes::new(
             concat!("fixture-refresh-", "never-log").as_bytes().to_vec(),
         ),
@@ -125,7 +128,7 @@ pub(super) async fn provision_fixture(
         JsValue::from_str(EXECUTION_LANE),
         JsValue::from_str(CUSTODY),
         JsValue::from_str(account_commitment),
-        JsValue::from_str(&serde_json::to_string(&GOOGLE_SCOPES).map_err(|_| worker_rust_error("scopes"))?),
+        JsValue::from_str(&serde_json::to_string(&APPROVED_SCOPES).map_err(|_| worker_rust_error("scopes"))?),
         JsValue::from_str(&refresh_route),
     ])?
     .run()
@@ -167,15 +170,21 @@ pub(super) async fn provision_fixture(
             "oauth2.access_token".into(),
         )]),
         scope_alignment: broker_core::artifacts::ScopeAlignment {
-            required_scopes: GOOGLE_SCOPES.iter().map(|scope| (*scope).into()).collect(),
-            actual_scopes: GOOGLE_SCOPES.iter().map(|scope| (*scope).into()).collect(),
+            required_scopes: APPROVED_SCOPES
+                .iter()
+                .map(|scope| (*scope).into())
+                .collect(),
+            actual_scopes: APPROVED_SCOPES
+                .iter()
+                .map(|scope| (*scope).into())
+                .collect(),
             satisfied: true,
             extensions: Default::default(),
         },
         supported_contracts: vec![
             broker_core::artifacts::SupportedContract {
-                contract_id: crate::protocol::SHEETS_CONTRACT_ID.into(),
-                contract_hash: crate::protocol::SHEETS_CONTRACT_HASH.into(),
+                contract_id: provider_google::SHEETS_CONTRACT_ID.into(),
+                contract_hash: provider_google::SHEETS_CONTRACT_HASH.into(),
                 observed_plugin_module_sha256: Some(
                     "sha256:54db6603967e1ce4e46ef45ece7bfa947c129564e40a290989fa2ae901a23966"
                         .into(),
@@ -184,8 +193,8 @@ pub(super) async fn provision_fixture(
                 extensions: Default::default(),
             },
             broker_core::artifacts::SupportedContract {
-                contract_id: crate::protocol::GMAIL_CONTRACT_ID.into(),
-                contract_hash: crate::protocol::GMAIL_CONTRACT_HASH.into(),
+                contract_id: provider_google::GMAIL_CONTRACT_ID.into(),
+                contract_hash: provider_google::GMAIL_CONTRACT_HASH.into(),
                 observed_plugin_module_sha256: Some(
                     "sha256:5a5de77f756b49aac0fb5339bf764f9e53a9437cdc41619c2c978aa5dbb4e3fc"
                         .into(),
@@ -258,8 +267,8 @@ pub(super) async fn provision_fixture(
         JsValue::from_str(&format!("sha256:{}", "3".repeat(64))),
         JsValue::from_str(
             &serde_json::to_string(&[
-                crate::protocol::SHEETS_CONTRACT_ID,
-                crate::protocol::GMAIL_CONTRACT_ID,
+                provider_google::SHEETS_CONTRACT_ID,
+                provider_google::GMAIL_CONTRACT_ID,
             ])
             .map_err(|_| worker_rust_error("fixture"))?,
         ),
@@ -273,18 +282,18 @@ pub(super) async fn provision_fixture(
     for (name, contract_id, contract_hash, scopes) in [
         (
             "sheets",
-            crate::protocol::SHEETS_CONTRACT_ID,
-            crate::protocol::SHEETS_CONTRACT_HASH,
-            GOOGLE_SCOPES
+            provider_google::SHEETS_CONTRACT_ID,
+            provider_google::SHEETS_CONTRACT_HASH,
+            APPROVED_SCOPES
                 .iter()
                 .map(|scope| (*scope).to_string())
                 .collect(),
         ),
         (
             "gmail",
-            crate::protocol::GMAIL_CONTRACT_ID,
-            crate::protocol::GMAIL_CONTRACT_HASH,
-            GOOGLE_SCOPES
+            provider_google::GMAIL_CONTRACT_ID,
+            provider_google::GMAIL_CONTRACT_HASH,
+            APPROVED_SCOPES
                 .iter()
                 .map(|scope| (*scope).to_string())
                 .collect(),

@@ -50,6 +50,13 @@ impl PrivateAuthenticatedRequest {
         }
         Ok(Self { bytes })
     }
+
+    /// Exposes authenticated bytes only to the selected privileged transport.
+    /// The closure keeps the request out of serializable planner and plugin
+    /// types while making the transport SPI implementable outside this crate.
+    pub fn with_transport_bytes<R>(&self, use_bytes: impl FnOnce(&[u8]) -> R) -> R {
+        use_bytes(&self.bytes)
+    }
 }
 impl Drop for PrivateAuthenticatedRequest {
     fn drop(&mut self) {

@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+pub mod activation;
+pub mod composition;
 pub mod credential_state;
 pub mod durable;
 pub mod management;

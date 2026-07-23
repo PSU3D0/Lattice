@@ -12,15 +12,15 @@ use zeroize::Zeroize;
 
 type HmacSha256 = Hmac<Sha256>;
 
-pub const CONNECTOR_REF: &str = "connector.google.workspace@1";
-pub const AUTH_PROFILE_REF: &str = "auth.google.workspace.oauth2@1";
-pub const EXECUTION_LANE: &str = "semantic_broker";
-pub const CUSTODY: &str = "hosted_broker";
-
-pub const GOOGLE_SCOPES: [&str; 2] = [
-    "https://www.googleapis.com/auth/gmail.send",
-    "https://www.googleapis.com/auth/spreadsheets",
-];
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ManagementProfile {
+    pub connector_ref: String,
+    pub auth_profile_ref: String,
+    pub execution_lane: String,
+    pub custody: String,
+    pub normalized_claims: Vec<String>,
+    pub token_service_binding: String,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ManagementError {
@@ -133,6 +133,7 @@ pub struct ManagementState {
     deployment_keys: Vec<DeploymentKeyRecord>,
     sessions: BTreeMap<String, SessionRecord>,
     intents: BTreeMap<String, IntentRecord>,
+    profiles: BTreeMap<(String, String), ManagementProfile>,
 }
 
 impl ManagementState {
@@ -201,6 +202,26 @@ impl ManagementState {
         Ok(session)
     }
 
+    pub fn install_profile(&mut self, profile: ManagementProfile) -> Result<(), ManagementError> {
+        if profile.connector_ref.is_empty()
+            || profile.auth_profile_ref.is_empty()
+            || profile.execution_lane.is_empty()
+            || profile.custody.is_empty()
+            || profile.normalized_claims.is_empty()
+            || profile.token_service_binding.is_empty()
+        {
+            return Err(ManagementError::Rejected);
+        }
+        let key = (
+            profile.connector_ref.clone(),
+            profile.auth_profile_ref.clone(),
+        );
+        if self.profiles.insert(key, profile).is_some() {
+            return Err(ManagementError::Rejected);
+        }
+        Ok(())
+    }
+
     pub fn create_intent(
         &mut self,
         request: ConnectionIntentRequest,
@@ -208,7 +229,14 @@ impl ManagementState {
         now: i64,
         ids: &mut dyn IdSource,
     ) -> Result<(IntentRecord, String), ManagementError> {
-        validate_intent(&request)?;
+        let profile = self
+            .profiles
+            .get(&(
+                request.connector_ref.clone(),
+                request.auth_profile_ref.clone(),
+            ))
+            .ok_or(ManagementError::Rejected)?;
+        validate_intent(&request, profile)?;
         let state = ids.opaque("oauth_state_")?;
         let intent = IntentRecord {
             intent_ref: ids.opaque("intent_")?,
@@ -241,22 +269,32 @@ impl ManagementState {
             .filter(|intent| !intent.consumed && now < intent.expires_at)
             .ok_or(ManagementError::Rejected)?;
         intent.consumed = true;
+        let profile = self
+            .profiles
+            .get(&(
+                intent.connector_ref.clone(),
+                intent.auth_profile_ref.clone(),
+            ))
+            .ok_or(ManagementError::Rejected)?;
         Ok(OAuthResolution {
             intent_ref: intent.intent_ref.clone(),
             org_id: intent.org_id.clone(),
             connector_ref: intent.connector_ref.clone(),
             auth_profile_ref: intent.auth_profile_ref.clone(),
-            scopes: GOOGLE_SCOPES.iter().map(|value| (*value).into()).collect(),
-            token_service_binding: "GOOGLE_TOKEN_SERVICE".into(),
+            scopes: profile.normalized_claims.clone(),
+            token_service_binding: profile.token_service_binding.clone(),
         })
     }
 }
 
-pub fn validate_intent(request: &ConnectionIntentRequest) -> Result<(), ManagementError> {
-    if request.connector_ref != CONNECTOR_REF
-        || request.auth_profile_ref != AUTH_PROFILE_REF
-        || request.execution_lane != EXECUTION_LANE
-        || request.custody != CUSTODY
+pub fn validate_intent(
+    request: &ConnectionIntentRequest,
+    profile: &ManagementProfile,
+) -> Result<(), ManagementError> {
+    if request.connector_ref != profile.connector_ref
+        || request.auth_profile_ref != profile.auth_profile_ref
+        || request.execution_lane != profile.execution_lane
+        || request.custody != profile.custody
     {
         return Err(ManagementError::Rejected);
     }
@@ -401,6 +439,28 @@ mod tests {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
 
+    const CONNECTOR_REF: &str = "connector.synthetic.oauth@1";
+    const AUTH_PROFILE_REF: &str = "auth.synthetic.oauth@1";
+    const EXECUTION_LANE: &str = "semantic_broker";
+    const CUSTODY: &str = "hosted_broker";
+    const SYNTHETIC_CLAIMS: [&str; 2] = ["mail.send", "table.write"];
+
+    fn install_profile(state: &mut ManagementState) {
+        state
+            .install_profile(ManagementProfile {
+                connector_ref: CONNECTOR_REF.into(),
+                auth_profile_ref: AUTH_PROFILE_REF.into(),
+                execution_lane: EXECUTION_LANE.into(),
+                custody: CUSTODY.into(),
+                normalized_claims: SYNTHETIC_CLAIMS
+                    .iter()
+                    .map(|value| (*value).into())
+                    .collect(),
+                token_service_binding: "SYNTHETIC_TOKEN_SERVICE".into(),
+            })
+            .unwrap();
+    }
+
     struct Sequence(u64);
     impl IdSource for Sequence {
         fn opaque(&mut self, prefix: &str) -> Result<String, ManagementError> {
@@ -463,6 +523,7 @@ mod tests {
     #[test]
     fn intents_fail_closed_and_oauth_state_is_single_use_and_expiring() {
         let mut state = ManagementState::default();
+        install_profile(&mut state);
         let mut ids = Sequence(0);
         let request = ConnectionIntentRequest {
             connector_ref: CONNECTOR_REF.into(),
@@ -475,7 +536,7 @@ mod tests {
             .unwrap();
         let resolved = state.consume_oauth_state(&oauth_state, 101).unwrap();
         assert_eq!(resolved.org_id, "org-1");
-        assert_eq!(resolved.scopes, GOOGLE_SCOPES);
+        assert_eq!(resolved.scopes, SYNTHETIC_CLAIMS);
         assert_eq!(
             state.consume_oauth_state(&oauth_state, 102).unwrap_err(),
             ManagementError::Rejected

@@ -172,6 +172,58 @@ CREATE TABLE IF NOT EXISTS historical_verification_keys_v2 (
   UNIQUE (org_id, archive_hash)
 );
 
+CREATE TABLE IF NOT EXISTS activation_intents_v2 (
+  org_id TEXT NOT NULL,
+  activation_ref TEXT NOT NULL,
+  profile_ref TEXT NOT NULL,
+  profile_version TEXT NOT NULL,
+  request_jti TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN (
+    'awaiting_action', 'action_claimed', 'restart_required', 'active', 'failed'
+  )),
+  action_nonce_hash TEXT NOT NULL,
+  standing_authority_ref TEXT NOT NULL,
+  trusted_source_refs_json TEXT NOT NULL,
+  policy_refs_json TEXT NOT NULL,
+  connection_ref TEXT,
+  authority_view_hash TEXT,
+  material_generation INTEGER,
+  cas_version INTEGER NOT NULL CHECK (cas_version >= 0),
+  PRIMARY KEY (org_id, activation_ref),
+  UNIQUE (org_id, request_jti)
+);
+
+CREATE TABLE IF NOT EXISTS activation_profiles_v2 (
+  org_id TEXT NOT NULL,
+  profile_ref TEXT NOT NULL,
+  profile_version TEXT NOT NULL,
+  registry_definition_hash TEXT NOT NULL,
+  canonical_profile_config_json TEXT NOT NULL,
+  standing_authority_ref TEXT NOT NULL,
+  trusted_source_refs_json TEXT NOT NULL,
+  policy_refs_json TEXT NOT NULL,
+  PRIMARY KEY (org_id, profile_ref, profile_version)
+);
+
+CREATE TABLE IF NOT EXISTS activation_private_replay_v2 (
+  org_id TEXT NOT NULL,
+  activation_ref TEXT NOT NULL,
+  submission_jti TEXT NOT NULL,
+  request_hash TEXT NOT NULL,
+  terminal_result_hash TEXT,
+  PRIMARY KEY (org_id, activation_ref, submission_jti)
+);
+
+CREATE TABLE IF NOT EXISTS dispatch_outbox_v2 (
+  org_id TEXT NOT NULL,
+  request_ref TEXT NOT NULL,
+  activation_ref TEXT NOT NULL,
+  phase TEXT NOT NULL CHECK (phase IN ('prepared', 'dispatched', 'terminal', 'ambiguous')),
+  request_hash TEXT NOT NULL,
+  result_json TEXT,
+  PRIMARY KEY (org_id, request_ref)
+);
+
 CREATE INDEX IF NOT EXISTS idx_registry_decisions_v2_hash
   ON registry_decisions_v2(org_id, definition_hash);
 CREATE INDEX IF NOT EXISTS idx_rotation_journal_v2_phase

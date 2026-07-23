@@ -15,11 +15,12 @@ test-fixtures = ["broker-core/test_fixtures"]
 
 [dependencies]
 base64 = "0.22"
+broker-auth = { path = "../broker-auth" }
 broker-core = { path = "../broker-core" }
 broker-host = { path = "../broker-host" }
 chacha20poly1305 = "0.10"
 connector-spec = { path = "../connector-spec" }
-connector_google_platform = { path = "../connectors/google/platform" }
+provider-google = { path = "../provider-google" }
 ed25519-dalek = "2"
 futures.workspace = true
 getrandom = { version = "0.2", features = ["js"] }
