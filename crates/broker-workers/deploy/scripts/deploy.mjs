@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { executeApply, redactedPlan } from "./deploy-lib.mjs";
 import { verifyBundle } from "./operator-artifacts.mjs";
+import { validatePublicCallbackBase, validateWorkersSubdomain } from "./workers-subdomain.mjs";
 
 const args = new Map();
 for (let index = 2; index < process.argv.length; index += 2) {
@@ -13,7 +14,7 @@ for (let index = 2; index < process.argv.length; index += 2) {
 }
 const required = [
   "--account-id", "--prefix", "--evidence-dir", "--d1-id", "--approved-dependencies",
-  "--google-provider-service", "--google-token-service", "--auth-driver-service", "--public-callback-base",
+  "--google-provider-service", "--google-token-service", "--auth-driver-service", "--workers-subdomain", "--public-callback-base",
   "--spend-limit-usd", "--rate-limit-per-minute",
 ];
 for (const name of required) if (!args.has(name)) throw new Error(`missing ${name}`);
@@ -22,6 +23,7 @@ const prefix = args.get("--prefix");
 const evidenceInput = args.get("--evidence-dir");
 const d1Id = args.get("--d1-id");
 const dependencyPath = args.get("--approved-dependencies");
+const workersSubdomain = validateWorkersSubdomain(args.get("--workers-subdomain"));
 if (!/^[0-9a-f]{32}$/.test(accountId)) throw new Error("account id must be exact 32 lowercase hex");
 if (!/^lattice-(?:b5|c5)-[a-z0-9]{6,20}$/.test(prefix)) throw new Error("prefix is outside the disposable broker namespace");
 if (!/^[0-9a-f]{32}$/.test(d1Id)) throw new Error("D1 id must be exact 32 lowercase hex");
@@ -68,10 +70,11 @@ if (!/^[0-9a-f]{64}$/.test(brokerManifest.wasm_sha256 ?? "")) throw new Error("b
 const privateName = `${prefix}-broker-private`;
 const publicName = `${prefix}-broker-public`;
 const d1Name = `${prefix}-broker`;
-const publicCallbackBase = args.get("--public-callback-base");
-if (publicCallbackBase !== `https://${publicName}.workers.dev`) {
-  throw new Error("public callback base must be the explicitly owned disposable workers.dev hostname");
-}
+const { publicCallbackBase, googleOauthRedirectUri } = validatePublicCallbackBase(
+  prefix,
+  workersSubdomain,
+  args.get("--public-callback-base"),
+);
 let privateConfig = (await readFile(join(root, "wrangler.jsonc"), "utf8"))
   .replaceAll("lattice-broker-template-private", privateName)
   .replaceAll("lattice-broker-template-google-provider", args.get("--google-provider-service"))
@@ -123,7 +126,9 @@ const publicConfigPath = join(evidenceDir, "wrangler.public.jsonc");
 await writeFile(privateConfigPath, privateConfig, { mode: 0o600 });
 await writeFile(publicConfigPath, publicConfig, { mode: 0o600 });
 const context = {
-  accountId, prefix, d1Id, d1Name, privateName, publicName, publicCallbackBase,
+  accountId, prefix, d1Id, d1Name, privateName, publicName, workersSubdomain,
+  publicCallbackBase, googleOauthRedirectUri,
+  cloudflareApiToken: process.env.CLOUDFLARE_API_TOKEN,
   googleProviderService: args.get("--google-provider-service"),
   googleTokenService: args.get("--google-token-service"),
   authDriverService: args.get("--auth-driver-service"),

@@ -2,17 +2,23 @@
 
 This runbook is intentionally offline until the final operator-gated proof. Do not place credentials, test-user addresses, provider responses, or account identifiers in repository or evidence files.
 
-Use `deploy/scripts/c5-orchestrate.mjs` for the fail-closed top-level reducer that owns the private generic auth-driver, both private Google egress Workers, and both broker Workers. Dry-run executes no remote command. Apply requires all explicit approvals, fresh disposable egress targets, exact post-deploy pins, and rolls egress back if broker qualification fails. Cleanup must use `deploy/scripts/c5-cleanup.mjs --ownership-state <absolute c5-ownership.json>`; it verifies all five live deployments before deleting any and preserves non-owned D1.
+Use `deploy/scripts/c5-orchestrate.mjs` for the fail-closed top-level reducer that owns the private generic auth-driver, both private Google egress Workers, and both broker Workers. Both it and `deploy/scripts/deploy.mjs` require `--workers-subdomain <account-subdomain>` and `--public-callback-base <exact-origin>`. Dry-run executes no remote command or API request. Apply requires all explicit approvals, fetches the account's live Workers subdomain from Cloudflare before any mutation, and fails closed unless it byte-for-byte equals `--workers-subdomain`. Apply also requires fresh disposable egress targets and exact post-deploy pins, and rolls egress back if broker qualification fails. Cleanup must use `deploy/scripts/c5-cleanup.mjs --ownership-state <absolute c5-ownership.json>`; it verifies all five live deployments before deleting any and preserves non-owned D1.
 
 ## 1. Fix the callback
 
-Choose the owned HTTPS origin for the public broker facade as `PUBLIC_CALLBACK_BASE`. It must be an origin only: no path, query, fragment, credentials, non-default port, or trailing slash. The sole redirect URI is:
+Supply the Cloudflare account's lowercase Workers subdomain label with `--workers-subdomain`; for example, an account subdomain of `account-label` is one label, not a dotted hostname. Choose the public broker origin as `PUBLIC_CALLBACK_BASE` in exactly this shape:
 
 ```text
-${PUBLIC_CALLBACK_BASE}/v0.2/credential-callback
+https://<prefix>-broker-public.<account-subdomain>.workers.dev
 ```
 
-The deployment renderer must derive this value; it must not accept an independent callback URI. Register exactly that byte string in Google Cloud. There are no provider-named callback routes.
+It must be an origin only: no path, query, fragment, credentials, port, or trailing slash. The old bare `https://<prefix>-broker-public.workers.dev` form is invalid. The sole redirect URI is:
+
+```text
+https://<prefix>-broker-public.<account-subdomain>.workers.dev/v0.2/credential-callback
+```
+
+The deployment renderer derives this single value and threads it to token egress as `GOOGLE_OAUTH_REDIRECT_URI`; it must not accept an independent callback URI. The plan, ownership, qualification, and readiness evidence report the same value. Register exactly that byte string in Google Cloud. Before apply performs any deployment, secret update, or migration, it verifies the supplied label against `GET /accounts/{account_id}/workers/subdomain` using `CLOUDFLARE_API_TOKEN`; mismatch, absence, or API error aborts apply. Dry-run performs no API request. There are no provider-named callback routes.
 
 ## 2. Register Google OAuth
 

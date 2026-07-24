@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { executeApply, redactedPlan, REQUIRED_SECRET_NAMES } from "./deploy-lib.mjs";
+import { validatePublicCallbackBase } from "./workers-subdomain.mjs";
 
 const hash = "c".repeat(64);
 const context = {
@@ -8,7 +9,11 @@ const context = {
   d1Name: "lattice-b5-test123-broker",
   privateName: "lattice-b5-test123-broker-private",
   publicName: "lattice-b5-test123-broker-public",
-  publicCallbackBase: "https://lattice-b5-test123-broker-public.workers.dev",
+  workersSubdomain: "frankie-colson",
+  publicCallbackBase: "https://lattice-b5-test123-broker-public.frankie-colson.workers.dev",
+  googleOauthRedirectUri: "https://lattice-b5-test123-broker-public.frankie-colson.workers.dev/v0.2/credential-callback",
+  cloudflareApiToken: "test-token-not-a-credential",
+  fetchImpl: async () => ({ ok: true, json: async () => ({ success: true, result: { subdomain: "frankie-colson" } }) }),
   authDriverService: "approved-auth-driver",
   googleProviderService: "approved-google-provider",
   googleTokenService: "approved-google-token",
@@ -64,14 +69,59 @@ function ownedContext(kind) {
 }
 const live = (kind) => ({ status: 0, stdout: JSON.stringify([{ id: `${kind}-deployment`, source_hash: hash }]) });
 
+test("valid Workers subdomain callback form is accepted", () => {
+  const callback = validatePublicCallbackBase(
+    context.prefix,
+    "frankie-colson",
+    context.publicCallbackBase,
+  );
+  assert.equal(callback.googleOauthRedirectUri, context.googleOauthRedirectUri);
+});
+test("bare workers.dev callback form is rejected explicitly", () => {
+  assert.throws(
+    () => validatePublicCallbackBase(context.prefix, "frankie-colson", `https://${context.publicName}.workers.dev`),
+    /missing the required account Workers subdomain label/,
+  );
+});
+test("malformed Workers subdomain labels are rejected", () => {
+  for (const label of ["Frankie", "two.labels", "-leading", "trailing-"]) {
+    assert.throws(() => validatePublicCallbackBase(context.prefix, label, context.publicCallbackBase), /lowercase DNS label/);
+  }
+});
+test("oversized Workers subdomain and total hostname are rejected", () => {
+  const oversizedLabel = "a".repeat(64);
+  assert.throws(() => validatePublicCallbackBase(context.prefix, oversizedLabel, context.publicCallbackBase), /lowercase DNS label/);
+  assert.throws(
+    () => validatePublicCallbackBase("a".repeat(240), "valid", `https://${"a".repeat(240)}-broker-public.valid.workers.dev`),
+    /DNS name limit|invalid DNS label/,
+  );
+});
 test("redacted dry-run performs no command and names the clean preflight", () => {
   const runner = new FakeRunner(); const plan = redactedPlan(context);
   assert.equal(runner.calls.length, 0); assert.deepEqual(plan.required_secret_names, REQUIRED_SECRET_NAMES);
   assert.equal(plan.steps[0], "clean_hermetic_production_preflight");
+  assert.equal(plan.workers_subdomain, "frankie-colson");
+  assert.equal(plan.google_oauth_redirect_uri, context.googleOauthRedirectUri);
 });
 test("hermetic preflight failure occurs before every remote command", async () => {
   const runner = new FakeRunner({ hermetic_preflight: { status: 1, stdout: "" } });
   await assert.rejects(executeApply(context, runner), /hermetic_preflight_failed/);
+  assert.deepEqual(runner.calls.map((call) => call.step), ["hermetic_preflight"]);
+});
+test("apply rejects a live Workers subdomain mismatch before any mutating command", async () => {
+  const fetchCalls = [];
+  const runner = new FakeRunner();
+  const mismatch = {
+    ...context,
+    fetchImpl: async (...request) => {
+      fetchCalls.push(request);
+      return { ok: true, json: async () => ({ success: true, result: { subdomain: "different-account" } }) };
+    },
+  };
+  await assert.rejects(executeApply(mismatch, runner), /does not match the live Cloudflare account/);
+  assert.equal(fetchCalls.length, 1);
+  assert.equal(fetchCalls[0][0], `https://api.cloudflare.com/client/v4/accounts/${context.accountId}/workers/subdomain`);
+  assert.equal(fetchCalls[0][1].method, "GET");
   assert.deepEqual(runner.calls.map((call) => call.step), ["hermetic_preflight"]);
 });
 test("pre-existing unowned target fails before mutation", async () => {

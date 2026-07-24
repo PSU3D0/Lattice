@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { spawnSync } from "node:child_process";
+import { validatePublicCallbackBase } from "../../broker-workers/deploy/scripts/workers-subdomain.mjs";
 
 const args = new Map();
 for (let index = 2; index < process.argv.length; index += 2) args.set(process.argv[index], process.argv[index + 1]);
@@ -12,6 +13,8 @@ if (state.schema_version !== "0.2" || state.owner !== "lattice-provider-google-w
     state.created_by_run !== true || state.source_hash !== manifest.source_hash ||
     !/^[0-9a-f]{32}$/.test(state.account_id ?? "") || !/^lattice-c5-[a-z0-9]{6,20}$/.test(state.prefix ?? "") ||
     !Array.isArray(state.workers) || state.workers.length !== 2) throw new Error("ownership state invalid");
+const callback = validatePublicCallbackBase(state.prefix, state.workers_subdomain, state.public_callback_base);
+if (state.callback_uri !== callback.googleOauthRedirectUri || state.installed_derived_secrets?.GOOGLE_OAUTH_REDIRECT_URI !== callback.googleOauthRedirectUri) throw new Error("ownership callback state invalid");
 const expected = new Map([
   ["token", `${state.prefix}-google-token-egress`],
   ["provider", `${state.prefix}-google-provider-egress`],

@@ -1,11 +1,13 @@
 import { readFile } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { spawnSync } from "node:child_process";
+import { validatePublicCallbackBase } from "./workers-subdomain.mjs";
 
 const args=new Map();for(let i=2;i<process.argv.length;i+=2)args.set(process.argv[i],process.argv[i+1]);
 const path=args.get("--ownership-state");if(!isAbsolute(path??""))throw new Error("ownership state must be absolute");
 const state=JSON.parse(await readFile(path,"utf8"));
 if(state.schema_version!=="0.2"||state.owner!=="lattice-c5-broker-plane"||state.status!=="deployed"||!/^lattice-c5-[a-z0-9]{6,20}$/.test(state.prefix??"")||!Array.isArray(state.deployments)||state.deployments.length!==5||state.d1_database?.owned!==false)throw new Error("C5 ownership state invalid");
+const callback=validatePublicCallbackBase(state.prefix,state.workers_subdomain,state.public_callback_base);if(state.google_oauth_redirect_uri!==callback.googleOauthRedirectUri)throw new Error("C5 ownership callback state invalid");
 const expected=[`${state.prefix}-auth-driver`,`${state.prefix}-google-token-egress`,`${state.prefix}-google-provider-egress`,`${state.prefix}-broker-private`,`${state.prefix}-broker-public`];
 if(expected.some((name,index)=>state.deployments[index]?.name!==name))throw new Error("C5 ownership target mismatch");
 const plan={schema_version:"0.2",account_id:state.account_id,verify_before_delete:expected,delete:[...expected].reverse(),preserve_d1:state.d1_database.id};

@@ -17,7 +17,10 @@
     "token_endpoint": "https://oauth2.googleapis.com/token",
     "account_discovery_endpoint": "https://oauth2.googleapis.com/tokeninfo",
     "revocation_endpoint": "https://oauth2.googleapis.com/revoke",
-    "callback_derivation": "${PUBLIC_CALLBACK_BASE}/v0.2/credential-callback",
+    "workers_subdomain_argument": "--workers-subdomain <account-subdomain>",
+    "public_callback_base_shape": "https://<prefix>-broker-public.<account-subdomain>.workers.dev",
+    "callback_derivation": "https://<prefix>-broker-public.<account-subdomain>.workers.dev/v0.2/credential-callback",
+    "apply_subdomain_verification": "Before any mutation, GET /accounts/{account_id}/workers/subdomain with CLOUDFLARE_API_TOKEN and require an exact byte-for-byte match; dry-run makes no remote calls",
     "authorization_flow": "authorization_code_pkce_s256",
     "token_endpoint_auth_method": "client_secret_post",
     "exact_scopes": [

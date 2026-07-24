@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { verifyLiveWorkersSubdomain } from "./workers-subdomain.mjs";
 
 export const REQUIRED_SECRET_NAMES = [
   "ACTIVATION_SERVICE_AUTH",
@@ -27,10 +28,13 @@ export function redactedPlan(context) {
       durable_objects: ["ConnectionRefreshDurableObject", "CredentialStateDurableObject", "V2AuthorityDurableObject"],
       approved_services: [context.authDriverService, context.googleProviderService, context.googleTokenService],
     },
+    workers_subdomain: context.workersSubdomain,
     callback_base: context.publicCallbackBase,
+    google_oauth_redirect_uri: context.googleOauthRedirectUri,
     required_secret_names: REQUIRED_SECRET_NAMES,
     steps: [
       "clean_hermetic_production_preflight",
+      "verify_live_workers_subdomain",
       "qualify_auth_account",
       "prove_target_absent_or_owned",
       "verify_immutable_dependency_pins",
@@ -98,6 +102,9 @@ export async function executeApply(context, runner) {
     schema_version: "2",
     account_id: context.accountId,
     prefix: context.prefix,
+    workers_subdomain: context.workersSubdomain,
+    callback_base: context.publicCallbackBase,
+    google_oauth_redirect_uri: context.googleOauthRedirectUri,
     checks: [],
     created_resources: [],
     cleanup: [],
@@ -109,6 +116,14 @@ export async function executeApply(context, runner) {
       "node", "workerd-tests/scripts/production-preflight.mjs",
     ]);
     evidence.checks.push("hermetic_production_preflight");
+
+    await verifyLiveWorkersSubdomain({
+      accountId: context.accountId,
+      workersSubdomain: context.workersSubdomain,
+      apiToken: context.cloudflareApiToken,
+      fetchImpl: context.fetchImpl,
+    });
+    evidence.checks.push("live_workers_subdomain");
 
     const whoami = parseJson(await runner.run("auth", ["npx", "wrangler", "whoami", "--json"]), "auth");
     if (whoami.account_id !== context.accountId) throw new Error("account_mismatch");
@@ -177,7 +192,7 @@ export async function executeApply(context, runner) {
     }
     const callback = await checked(runner, "readiness:oauth_callback_400", [
       "curl", "--silent", "--output", "/dev/null", "--write-out", "%{http_code}",
-      `${context.publicCallbackBase}/v0.2/credential-callback`,
+      context.googleOauthRedirectUri,
     ]);
     if (callback.stdout.trim() !== "400") throw new Error("oauth_callback_status_mismatch");
     const smoke = parseJson(await runner.run("smoke", [
