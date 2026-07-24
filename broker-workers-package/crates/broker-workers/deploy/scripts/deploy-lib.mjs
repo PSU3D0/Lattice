@@ -1,20 +1,12 @@
 import { createHash } from "node:crypto";
 import { verifyLiveWorkersSubdomain } from "./workers-subdomain.mjs";
+import {
+  BROKER_PRIVATE_SECRET_NAMES,
+  classifyDeploymentsListResult,
+  deployPrivateWorker,
+} from "./private-worker-deploy-lib.mjs";
 
-export const REQUIRED_SECRET_NAMES = [
-  "ACTIVATION_SERVICE_AUTH",
-  "AI_GATEWAY_AUTHORIZATION",
-  "AUTH_DRIVER_SERVICE_AUTH",
-  "BINDING_SIGNING_SEED",
-  "COMMITMENT_KEY",
-  "CUSTODY_ROOT_KEY",
-  "DEPLOYMENT_BOOTSTRAP_AUTH",
-  "GENERIC_ACTIVATION_RECIPIENT_PRIVATE_KEY_B64U",
-  "GOOGLE_EGRESS_SERVICE_AUTH",
-  "INVOKE_SERVICE_AUTH",
-  "KEY_HASH_PEPPER",
-  "RECEIPT_SIGNING_SEED",
-];
+export const REQUIRED_SECRET_NAMES = BROKER_PRIVATE_SECRET_NAMES;
 
 export function redactedPlan(context) {
   return {
@@ -32,16 +24,20 @@ export function redactedPlan(context) {
     callback_base: context.publicCallbackBase,
     google_oauth_redirect_uri: context.googleOauthRedirectUri,
     required_secret_names: REQUIRED_SECRET_NAMES,
+    worker_secrets: {
+      [context.privateName]: REQUIRED_SECRET_NAMES.map((name) => ({ name, install_status: "planned" })),
+      [context.publicName]: [],
+    },
     steps: [
       "clean_hermetic_production_preflight",
       "verify_live_workers_subdomain",
       "qualify_auth_account",
       "prove_target_absent_or_owned",
       "verify_immutable_dependency_pins",
-      "qualify_secret_names",
-      "deploy_fence_aware_private",
-      "apply_checked_in_migrations",
-      "deploy_public",
+      "qualify_exact_secrets_file_before_mutation",
+      "prove_deploy_install_verify_capture_fence_aware_private",
+      "apply_0003_production_v2_cutover",
+      "prove_deploy_verify_capture_public_last",
       "health_ready_callback_400_smoke",
       "write_sanitized_evidence",
     ],
@@ -79,12 +75,12 @@ function validateServicePin(binding, expectedName, pin, accountId) {
 }
 
 async function qualifyTarget(context, runner, kind, name) {
-  const deployments = parseJson(
+  const result = classifyDeploymentsListResult(
     await runner.run(`target:${kind}`, ["npx", "wrangler", "deployments", "list", "--name", name, "--json"]),
-    `target:${kind}`,
   );
-  if (!Array.isArray(deployments)) throw new Error(`target_${kind}_invalid`);
-  if (deployments.length === 0) return { existed: false, created: false };
+  if (result.state === "unknown") throw new Error(`target_${kind}_unknown`);
+  if (result.state === "absent") return { existed: false, created: false };
+  const deployments = result.deployments;
   const pin = context.approvedDependencies.workers?.[kind];
   if (
     pin?.name !== name || pin?.account_id !== context.accountId || pin?.prefix !== context.prefix ||
@@ -94,6 +90,10 @@ async function qualifyTarget(context, runner, kind, name) {
 }
 
 export async function executeApply(context, runner) {
+  if (
+    !context.privateConfig.includes('"workers_dev": false') ||
+    /"routes?"\s*:/.test(context.privateConfig)
+  ) throw new Error("private_worker_not_fail_closed");
   const resources = {
     private: { existed: false, created: false },
     public: { existed: false, created: false },
@@ -159,31 +159,49 @@ export async function executeApply(context, runner) {
     if (!Array.isArray(d1) || !d1.some((db) => db.uuid === context.d1Id)) throw new Error("d1_missing");
     evidence.checks.push("d1_qualified");
 
-    const secrets = parseJson(await runner.run("secrets", [
-      "npx", "wrangler", "secret", "list", "--name", context.privateName, "--format", "json",
-    ]), "secrets");
-    const names = new Set((Array.isArray(secrets) ? secrets : []).map((item) => item.name));
-    if (REQUIRED_SECRET_NAMES.some((name) => !names.has(name))) throw new Error("secret_missing");
-    evidence.checks.push("secret_names");
-
-    await checked(runner, "deploy_private", ["npx", "wrangler", "deploy", "--config", context.privateConfigPath]);
-    if (!resources.private.existed) {
-      resources.private.created = true;
-      evidence.created_resources.push(context.privateName);
-    }
-    evidence.checks.push("fence_aware_private_deployed");
+    const privateDeployment = await deployPrivateWorker({
+      runner,
+      step: "private_worker",
+      name: context.privateName,
+      accountId: context.accountId,
+      config: context.privateConfigPath,
+      secrets: context.privateSecrets,
+      ownedUpdate: resources.private.existed,
+      ownership: ownership.workers?.private,
+    });
+    resources.private = { existed: resources.private.existed, created: privateDeployment.created_by_run };
+    if (resources.private.created) evidence.created_resources.push(context.privateName);
+    evidence.worker_secrets = { [context.privateName]: privateDeployment.secrets };
+    evidence.deployments = { [context.privateName]: {
+      deployment_id: privateDeployment.deployment_id,
+      source_hash: privateDeployment.source_hash,
+    } };
+    evidence.checks.push("fence_aware_private_deployed_secrets_verified_and_captured");
     evidence.migration_state = "attempting_forward_only";
     await checked(runner, "migrations", [
       "npx", "wrangler", "d1", "migrations", "apply", context.d1Name,
       "--remote", "--config", context.privateConfigPath,
     ]);
     evidence.migration_state = "applied_forward_only";
-    evidence.checks.push("migrations_applied");
-    await checked(runner, "deploy_public", ["npx", "wrangler", "deploy", "--config", context.publicConfigPath]);
-    if (!resources.public.existed) {
-      resources.public.created = true;
-      evidence.created_resources.push(context.publicName);
-    }
+    evidence.checks.push("0003_production_v2_cutover_applied");
+    const publicDeployment = await deployPrivateWorker({
+      runner,
+      step: "public_worker",
+      name: context.publicName,
+      accountId: context.accountId,
+      config: context.publicConfigPath,
+      secrets: context.publicSecrets ?? {},
+      ownedUpdate: resources.public.existed,
+      ownership: ownership.workers?.public,
+    });
+    resources.public = { existed: resources.public.existed, created: publicDeployment.created_by_run };
+    if (resources.public.created) evidence.created_resources.push(context.publicName);
+    evidence.worker_secrets[context.publicName] = publicDeployment.secrets;
+    evidence.deployments[context.publicName] = {
+      deployment_id: publicDeployment.deployment_id,
+      source_hash: publicDeployment.source_hash,
+    };
+    evidence.checks.push("public_deployed_last_and_captured");
 
     for (const route of ["/health", "/ready"]) {
       await checked(runner, `readiness:${route}`, [
@@ -206,7 +224,8 @@ export async function executeApply(context, runner) {
     return evidence;
   } catch (error) {
     // Default rollback is creation-scoped. Updating an owned pre-existing
-    // Worker never makes it deletion-owned by this run.
+    // Worker never makes it deletion-owned by this run. After migration,
+    // preserve D1 and broker-private while removing only a created public facade.
     if (resources.public.created) {
       const result = await runner.run("cleanup_public", ["npx", "wrangler", "delete", "--name", context.publicName, "--force"]);
       evidence.cleanup.push({ resource: context.publicName, status: result.status });

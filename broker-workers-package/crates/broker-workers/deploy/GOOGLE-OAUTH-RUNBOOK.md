@@ -2,7 +2,7 @@
 
 This runbook is intentionally offline until the final operator-gated proof. Do not place credentials, test-user addresses, provider responses, or account identifiers in repository or evidence files.
 
-Use `deploy/scripts/c5-orchestrate.mjs` for the fail-closed top-level reducer that owns the private generic auth-driver, both private Google egress Workers, and both broker Workers. Both it and `deploy/scripts/deploy.mjs` require `--workers-subdomain <account-subdomain>` and `--public-callback-base <exact-origin>`. Dry-run executes no remote command or API request. Apply requires all explicit approvals, fetches the account's live Workers subdomain from Cloudflare before any mutation, and fails closed unless it byte-for-byte equals `--workers-subdomain`. Apply also requires fresh disposable egress targets and exact post-deploy pins, and rolls egress back if broker qualification fails. Cleanup must use `deploy/scripts/c5-cleanup.mjs --ownership-state <absolute c5-ownership.json>`; it verifies all five live deployments before deleting any and preserves non-owned D1.
+Use `deploy/scripts/c5-orchestrate.mjs` for the fail-closed top-level reducer that owns the private generic auth-driver, both private Google egress Workers, and both broker Workers. Both it and `deploy/scripts/deploy.mjs` require `--workers-subdomain <account-subdomain>`, `--public-callback-base <exact-origin>`, and `--secrets-file <absolute-path>`; the provider sub-deployer receives the same secrets file. Dry-run executes no remote command or API request. Apply requires all explicit approvals, fetches the account's live Workers subdomain from Cloudflare before any mutation, and fails closed unless it byte-for-byte equals `--workers-subdomain`. Apply classifies each `wrangler deployments list` result as absent, present, or unknown: only an explicit script-not-found response or an empty array proves absence, while malformed output and every other API error abort before mutation. A present target aborts unless an explicit owned-update flow verifies its exact ownership manifest. Cleanup must use `deploy/scripts/c5-cleanup.mjs --ownership-state <absolute c5-ownership.json>`; it verifies all five live deployments before deleting any and preserves non-owned D1.
 
 ## 1. Fix the callback
 
@@ -54,7 +54,41 @@ Generate the generic-activation X25519 recipient key offline. Install only its p
 
 ## 4. Install Worker secrets
 
-Qualify secret names, never values, against `google-oauth-readiness.json`. `GOOGLE_EGRESS_SERVICE_AUTH` must be the same independently generated value on broker private, token egress, and provider egress. `GOOGLE_TOKEN_RESULT_KEY` is 32 random bytes encoded as exactly 64 lowercase hexadecimal characters. `GOOGLE_OAUTH_REDIRECT_URI` is installed as a secret containing the exact derived callback.
+Qualify secret names, never values, against `google-oauth-readiness.json`. Supply private-Worker secret material through `--secrets-file <absolute-path>`. The file must be outside the repository, be a regular mode-0600 JSON file, and have exactly this structure (placeholders denote operator values):
+
+```json
+{
+  "auth-driver": {
+    "AUTH_DRIVER_SERVICE_AUTH": "<operator-value>"
+  },
+  "google-token-egress": {
+    "GOOGLE_EGRESS_SERVICE_AUTH": "<shared-operator-value>",
+    "GOOGLE_OAUTH_CLIENT_ID": "<operator-value>",
+    "GOOGLE_OAUTH_CLIENT_SECRET": "<operator-value>",
+    "GOOGLE_TOKEN_RESULT_KEY": "<64-lowercase-hex>"
+  },
+  "google-provider-egress": {
+    "GOOGLE_EGRESS_SERVICE_AUTH": "<same-shared-operator-value>"
+  },
+  "broker-private": {
+    "ACTIVATION_SERVICE_AUTH": "<operator-value>",
+    "AI_GATEWAY_AUTHORIZATION": "<operator-value>",
+    "AUTH_DRIVER_SERVICE_AUTH": "<same-auth-driver-value>",
+    "BINDING_SIGNING_SEED": "<64-lowercase-hex>",
+    "COMMITMENT_KEY": "<64-lowercase-hex>",
+    "CUSTODY_ROOT_KEY": "<64-lowercase-hex>",
+    "DEPLOYMENT_BOOTSTRAP_AUTH": "<operator-value>",
+    "GENERIC_ACTIVATION_RECIPIENT_PRIVATE_KEY_B64U": "<32-byte-canonical-unpadded-base64url>",
+    "GOOGLE_EGRESS_SERVICE_AUTH": "<same-shared-operator-value>",
+    "INVOKE_SERVICE_AUTH": "<operator-value>",
+    "KEY_HASH_PEPPER": "<operator-value>",
+    "RECEIPT_SIGNING_SEED": "<64-lowercase-hex>"
+  },
+  "broker-public": {}
+}
+```
+
+All five groups must be present even though `broker-public` has no secrets. Missing groups/names, extra groups/names, empty values, mismatched shared auth values, malformed 32-byte lowercase-hex keys, a malformed X25519 private key, or a malformed `GOOGLE_TOKEN_RESULT_KEY` abort locally before any remote mutation. `AUTH_DRIVER_SERVICE_AUTH` must match between auth-driver and broker-private; `GOOGLE_EGRESS_SERVICE_AUTH` must match across both egress Workers and broker-private. `GOOGLE_OAUTH_REDIRECT_URI` is deliberately absent from this file: deployment derives it from the verified callback origin and installs it on token egress. Every value is piped to `wrangler secret put` over standard input; values never appear in argv, logs, plans, ownership manifests, or evidence. Evidence records only secret names and `planned` or `installed_and_verified` status.
 
 Generic non-OAuth activation is available only on the private broker service. Install `ACTIVATION_SERVICE_AUTH` and `AUTH_DRIVER_SERVICE_AUTH`, pin `GENERIC_PROFILE_AUTHORITY_PUBLIC_KEY_B64U`, `GENERIC_ACTIVATION_RECIPIENT_KEY_ID`, and `GENERIC_ACTIVATION_RECIPIENT_PUBLIC_KEY_B64U`, install `GENERIC_ACTIVATION_RECIPIENT_PRIVATE_KEY_B64U` only as a secret, and bind the immutable registry-approved `AUTH_DRIVER_SERVICE`. Static-secret, workload-exchange, and external-custodian submission routes never pass through the public facade.
 
@@ -83,7 +117,9 @@ Also run focused Rust tests, formatting, the hint gate, normative vectors, packa
 
 ## 6. Deploy and cut over
 
-Deploy token egress and provider egress privately first and capture immutable source/deployment hashes. Deploy the fence-aware private broker Worker before applying D1 migrations through `0003_production_v2_cutover.sql`. A migration attempt is irreversible: on failure preserve D1, private broker, and egress and emit `forward_fix_required`; never deletion-roll back migrated state. Reconcile each connection forward through material seal/readback, signed registry/profile verification, V2 binding verification, authoritative fence switch, legacy ciphertext destruction, and completion. Every phase appends a cutover event. After a V2 lease or rotation, only a V2/fence-aware forward fix is permitted; never roll back to executable V1 admission.
+For every Worker role, use the strict sequence: prove the target absent, deploy it, install every required secret through stdin, list and verify the required secret names, then capture exactly one deployment ID and source hash. Apply it in this order: auth-driver; token egress (including the derived `GOOGLE_OAUTH_REDIRECT_URI`); provider egress; broker-private; and finally broker-public, whose required secret map is empty. The first four Workers have `workers_dev: false` and no routes, so none is publicly reachable while secrets are being installed. If secret installation, name verification, or deployment capture fails before migration, delete that just-created Worker and abort; broader rollback may delete only other Workers created by this run. The broker does not render or deploy a service binding until the corresponding dependency has completed secret verification and immutable capture.
+
+After all three private dependencies are verified, deploy broker-private, install and verify its 12 secrets, and capture it before applying D1 migrations through `0003_production_v2_cutover.sql`. Only after migration succeeds may broker-public be re-qualified, deployed, captured, and exposed for readiness checks. A migration attempt is irreversible: on any failure after the attempt begins, preserve D1, broker-private, and egress and emit `forward_fix_required`; creation-scoped rollback deletes only a broker-public Worker created by this run. Reconcile each connection forward through material seal/readback, signed registry/profile verification, V2 binding verification, authoritative fence switch, legacy ciphertext destruction, and completion. Every phase appends a cutover event. After a V2 lease or rotation, only a V2/fence-aware forward fix is permitted; never roll back to executable V1 admission.
 
 After migrations succeed, deploy broker public, then the S21 flow Worker. Qualify all required secrets by name, exact service bindings, Durable Object ownership, D1 identity, callback route, source hashes, and AI Gateway policy. V1 receipt material remains verification-only under archived signed keys; V1 grant, binding, and invoke admission stays disabled.
 

@@ -1,7 +1,8 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { validatePublicCallbackBase, verifyLiveWorkersSubdomain } from "../../broker-workers/deploy/scripts/workers-subdomain.mjs";
+import { deployPrivateWorker, loadPrivateWorkerSecrets } from "../../broker-workers/deploy/scripts/private-worker-deploy-lib.mjs";
 
 const args = new Map();
 for (let index = 2; index < process.argv.length; index += 2) {
@@ -9,7 +10,7 @@ for (let index = 2; index < process.argv.length; index += 2) {
   if (!name?.startsWith("--")) throw new Error("arguments must be explicit --name value pairs");
   args.set(name, process.argv[index + 1]);
 }
-for (const name of ["--account-id", "--prefix", "--workers-subdomain", "--callback-uri", "--evidence-dir"]) {
+for (const name of ["--account-id", "--prefix", "--workers-subdomain", "--callback-uri", "--evidence-dir", "--secrets-file"]) {
   if (!args.has(name)) throw new Error(`missing ${name}`);
 }
 const accountId = args.get("--account-id");
@@ -28,6 +29,8 @@ const expected = validatePublicCallbackBase(
 const obsoleteCallback = `https://${prefix}-broker-public.workers.dev/v0.2/credential-callback`;
 if (callbackUri === obsoleteCallback) throw new Error("callback URI is missing the required account Workers subdomain label");
 if (callbackUri !== expected.googleOauthRedirectUri) throw new Error("invalid exact callback URI");
+const repositoryRoot = resolve(new URL("../../..", import.meta.url).pathname);
+const secretValues = await loadPrivateWorkerSecrets(args.get("--secrets-file"), repositoryRoot);
 const manifest = JSON.parse(await readFile("build-manifest.json", "utf8"));
 if (!/^[0-9a-f]{64}$/.test(manifest.source_hash ?? "")) throw new Error("source manifest invalid");
 const tokenName = `${prefix}-google-token-egress`;
@@ -37,12 +40,16 @@ const plan = {
   workers_subdomain: workersSubdomain,
   public_callback_base: expected.publicCallbackBase,
   callback_uri: callbackUri,
-  installed_derived_secrets: { GOOGLE_OAUTH_REDIRECT_URI: callbackUri },
   workers: [
-    { kind: "token", name: tokenName, config: "wrangler.token.jsonc", required_secrets: ["GOOGLE_EGRESS_SERVICE_AUTH", "GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_OAUTH_REDIRECT_URI", "GOOGLE_TOKEN_RESULT_KEY"] },
-    { kind: "provider", name: providerName, config: "wrangler.provider.jsonc", required_secrets: ["GOOGLE_EGRESS_SERVICE_AUTH"] },
+    { kind: "token", name: tokenName, config: "wrangler.token.jsonc", secrets: [...Object.keys(secretValues["google-token-egress"]), "GOOGLE_OAUTH_REDIRECT_URI"].map((name) => ({ name, install_status: "planned" })) },
+    { kind: "provider", name: providerName, config: "wrangler.provider.jsonc", secrets: Object.keys(secretValues["google-provider-egress"]).map((name) => ({ name, install_status: "planned" })) },
   ],
-  steps: ["verify_live_workers_subdomain", "qualify_account", "qualify_secret_names", "install_google_oauth_redirect_uri", "deploy_token_private", "deploy_provider_private", "write_ownership_state"],
+  steps: [
+    "verify_live_workers_subdomain", "qualify_account",
+    "prove_token_absent", "deploy_token_private", "install_token_secrets", "verify_token_secret_names", "capture_token_deployment",
+    "prove_provider_absent", "deploy_provider_private", "install_provider_secrets", "verify_provider_secret_names", "capture_provider_deployment",
+    "write_ownership_state",
+  ],
 };
 await mkdir(evidenceDir, { recursive: true, mode: 0o700 });
 await writeFile(join(evidenceDir, "google-egress-plan.json"), `${JSON.stringify(plan, null, 2)}\n`, { mode: 0o600 });
@@ -53,27 +60,47 @@ if (args.get("--mode") !== "apply") {
 }
 if (args.get("--approve-private-deploy") !== "yes" || !process.env.CLOUDFLARE_API_TOKEN) throw new Error("apply approval and API token required");
 await verifyLiveWorkersSubdomain({ accountId, workersSubdomain, apiToken: process.env.CLOUDFLARE_API_TOKEN });
-const run = (command, input) => {
-  const result = spawnSync(command[0], command.slice(1), { encoding: "utf8", input, env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: accountId } });
-  if (result.status !== 0) throw new Error("remote command failed");
-  return result.stdout;
+const runner = {
+  async run(_step, command, options = {}) {
+    const result = spawnSync(command[0], command.slice(1), {
+      encoding: "utf8",
+      input: options.input,
+      env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: accountId },
+    });
+    return { status: result.status ?? 1, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+  },
 };
-const whoami = JSON.parse(run(["npx", "wrangler", "whoami", "--json"]));
-if (whoami.account_id !== accountId) throw new Error("account mismatch");
-for (const worker of plan.workers) {
-  const secrets = JSON.parse(run(["npx", "wrangler", "secret", "list", "--name", worker.name, "--format", "json"]));
-  const names = new Set(secrets.map((item) => item.name));
-  const externallyProvisioned = worker.required_secrets.filter((name) => name !== "GOOGLE_OAUTH_REDIRECT_URI");
-  if (externallyProvisioned.some((name) => !names.has(name))) throw new Error(`secret missing:${worker.kind}`);
-}
-run(["npx", "wrangler", "secret", "put", "GOOGLE_OAUTH_REDIRECT_URI", "--name", tokenName], `${callbackUri}\n`);
-run(["npx", "wrangler", "deploy", "--config", "wrangler.token.jsonc", "--name", tokenName]);
+const whoami = await runner.run("auth", ["npx", "wrangler", "whoami", "--json"]);
+let identity;
+try { identity = whoami.status === 0 ? JSON.parse(whoami.stdout) : null; } catch { identity = null; }
+if (identity?.account_id !== accountId) throw new Error("account mismatch");
+const created = [];
 try {
-  run(["npx", "wrangler", "deploy", "--config", "wrangler.provider.jsonc", "--name", providerName]);
+  const token = await deployPrivateWorker({
+    runner, step: "token", name: tokenName, accountId, config: "wrangler.token.jsonc",
+    secrets: secretValues["google-token-egress"],
+    derivedSecrets: { GOOGLE_OAUTH_REDIRECT_URI: callbackUri },
+  });
+  created.push(token);
+  const provider = await deployPrivateWorker({
+    runner, step: "provider", name: providerName, accountId, config: "wrangler.provider.jsonc",
+    secrets: secretValues["google-provider-egress"],
+  });
+  created.push(provider);
+  const workers = [
+    { ...plan.workers[0], deployment_id: token.deployment_id, source_hash: token.source_hash, secrets: token.secrets },
+    { ...plan.workers[1], deployment_id: provider.deployment_id, source_hash: provider.source_hash, secrets: provider.secrets },
+  ];
+  const state = { ...plan, owner: "lattice-provider-google-workers", created_by_run: true, workers };
+  await writeFile(join(evidenceDir, "google-egress-ownership.json"), `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+  console.log("private Google egress deployed");
 } catch (error) {
-  run(["npx", "wrangler", "delete", "--name", tokenName, "--force"]);
+  let cleanupFailed = false;
+  for (const worker of created.reverse()) {
+    if (!worker.created_by_run) continue;
+    const result = await runner.run(`${worker.name}:cleanup`, ["npx", "wrangler", "delete", "--name", worker.name, "--force"]);
+    cleanupFailed ||= result.status !== 0;
+  }
+  if (cleanupFailed) throw new Error("private_egress_failed_cleanup_failed");
   throw error;
 }
-const state = { ...plan, owner: "lattice-provider-google-workers", created_by_run: true };
-await writeFile(join(evidenceDir, "google-egress-ownership.json"), `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
-console.log("private Google egress deployed");

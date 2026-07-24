@@ -310,13 +310,13 @@
     },
     {
       "path": "crates/broker-workers/deploy/google-oauth-readiness.json",
-      "sha256": "9a8650d5b779e2c4e18c17d8166bb5631d445182eaa6f8df4ff10299e8d4f53b",
-      "size_bytes": 5785
+      "sha256": "a74ce1184aed21b8d0f7958e506f8a61ce0e83e3edd27391411d3bd27b027424",
+      "size_bytes": 9360
     },
     {
       "path": "crates/broker-workers/deploy/GOOGLE-OAUTH-RUNBOOK.md",
-      "sha256": "c8af6f44787a7233f1e938fb21004d7b2db3800190f349c3da9da4f9f9d41d2e",
-      "size_bytes": 9607
+      "sha256": "4b40462a82366d6484ede463fc907c0c6cad92c74d2b79a4652a081df378d1ac",
+      "size_bytes": 12889
     },
     {
       "path": "crates/broker-workers/deploy/public-callback/src/index.mjs",
@@ -335,8 +335,8 @@
     },
     {
       "path": "crates/broker-workers/deploy/scripts/c5-orchestrate.mjs",
-      "sha256": "8875b21629be41dca87ae997837186c5da15be89e48725a41532a6be0bfe897a",
-      "size_bytes": 9226
+      "sha256": "02a5402bd7fcb33e65882618159de8fd1d33f4f15001ee68332aef00583f8888",
+      "size_bytes": 11458
     },
     {
       "path": "crates/broker-workers/deploy/scripts/cleanup-lib.mjs",
@@ -355,18 +355,18 @@
     },
     {
       "path": "crates/broker-workers/deploy/scripts/deploy-lib.mjs",
-      "sha256": "a0dc95f08b8baa9517a0a1fe4fab7b2ffb05c593c4dd7201d44cb2e5fad0184d",
-      "size_bytes": 9778
+      "sha256": "c60b543256e661b049c4a30b7c838ee7f12d604ae069e85f2635e54310681eda",
+      "size_bytes": 10911
     },
     {
       "path": "crates/broker-workers/deploy/scripts/deploy.mjs",
-      "sha256": "b226f68c1198d943a361b287d41f393c4101e3f80474ba91e6e3ef92b188d4f8",
-      "size_bytes": 12533
+      "sha256": "d6c0ddf96a341ff18c63ffcca863dd934b39a8d4d1a150cf8a972fb0fe9bd904",
+      "size_bytes": 12870
     },
     {
       "path": "crates/broker-workers/deploy/scripts/deploy.test.mjs",
-      "sha256": "9759540bcd09dd4631982d850b105ea9cf1587da63a165175038aee47aa70fa8",
-      "size_bytes": 10087
+      "sha256": "c11fca654e9f2f059f46878e500528156a5009f7634e9b85bb42ffa306fe21aa",
+      "size_bytes": 22788
     },
     {
       "path": "crates/broker-workers/deploy/scripts/operator-artifacts.mjs",
@@ -377,6 +377,11 @@
       "path": "crates/broker-workers/deploy/scripts/operator-artifacts.test.mjs",
       "sha256": "d8435643a730edb1248974aee927f43b1e3176a2aba5253bcd77332045e50b96",
       "size_bytes": 3316
+    },
+    {
+      "path": "crates/broker-workers/deploy/scripts/private-worker-deploy-lib.mjs",
+      "sha256": "2bd69bd118b0b0e5d73fd5bcdc22fdd86de1822e71cb5672f5791421fc6e93b2",
+      "size_bytes": 8883
     },
     {
       "path": "crates/broker-workers/deploy/scripts/workers-subdomain.mjs",
@@ -835,13 +840,13 @@
     },
     {
       "path": "crates/provider-google-workers/scripts/cleanup.mjs",
-      "sha256": "38a443e83ecadbaa9da50287d48f6d4711aa2413e882ce9423736a152d96b1e2",
-      "size_bytes": 2932
+      "sha256": "cf459b3d1227872245fc898f97ed0c3736bece872d57145a543ff6ed5c313cb9",
+      "size_bytes": 2834
     },
     {
       "path": "crates/provider-google-workers/scripts/deploy.mjs",
-      "sha256": "12ff8e01902dbe29829525f6a479747e9571df6581fd312db2f4c1020ddd2562",
-      "size_bytes": 5012
+      "sha256": "fac5b0f55758cfba655e0fee576900b1d254edd34321185b14598966e9f0a74f",
+      "size_bytes": 6073
     },
     {
       "path": "crates/provider-google-workers/scripts/package.mjs",

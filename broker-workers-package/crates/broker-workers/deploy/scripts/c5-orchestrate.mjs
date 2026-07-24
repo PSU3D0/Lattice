@@ -4,10 +4,11 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { verifyBundle } from "./operator-artifacts.mjs";
 import { validatePublicCallbackBase, verifyLiveWorkersSubdomain } from "./workers-subdomain.mjs";
+import { deployPrivateWorker, loadPrivateWorkerSecrets } from "./private-worker-deploy-lib.mjs";
 
 const args = new Map();
 for (let i = 2; i < process.argv.length; i += 2) args.set(process.argv[i], process.argv[i + 1]);
-for (const name of ["--account-id","--prefix","--evidence-dir","--d1-id","--signed-artifacts","--workers-subdomain","--public-callback-base","--spend-limit-usd","--rate-limit-per-minute"]) {
+for (const name of ["--account-id","--prefix","--evidence-dir","--d1-id","--signed-artifacts","--secrets-file","--workers-subdomain","--public-callback-base","--spend-limit-usd","--rate-limit-per-minute"]) {
   if (!args.has(name)) throw new Error(`missing ${name}`);
 }
 const accountId=args.get("--account-id"), prefix=args.get("--prefix"), evidenceDir=args.get("--evidence-dir");
@@ -21,49 +22,53 @@ const signedBundle=JSON.parse(signedInputs.operator_bundle_jcs);verifyBundle(sig
 const signedBundleHash=`sha256:${createHash("sha256").update(signedInputs.operator_bundle_jcs).digest("hex")}`;
 if(signedInputs.operator_bundle_hash!==signedBundleHash)throw new Error("signed operator input hash mismatch");
 const brokerRoot=resolve(new URL("../..",import.meta.url).pathname);
+const repositoryRoot=resolve(brokerRoot,"../..");
+const secretValues=await loadPrivateWorkerSecrets(args.get("--secrets-file"),repositoryRoot);
 await mkdir(evidenceDir,{recursive:true,mode:0o700});const preflightBundle=join(evidenceDir,"operator-artifact-bundle.json"),preflightTrust=join(evidenceDir,"operator-trust-root.json");await writeFile(preflightBundle,signedInputs.operator_bundle_jcs,{mode:0o600});await writeFile(preflightTrust,JSON.stringify(signedInputs.operator_trust_root),{mode:0o600});
 const sharedVerification=spawnSync("cargo",["run","--quiet","--bin","broker-artifact-verifier","--","--bundle",preflightBundle,"--trust-root",preflightTrust,"--now",new Date().toISOString().replace(/\.\d{3}Z$/,"Z")],{cwd:brokerRoot,encoding:"utf8"});if(sharedVerification.status!==0)throw new Error("shared Rust operator artifact verification failed");
 const providerRoot=resolve(brokerRoot,"../provider-google-workers");
 const tokenName=`${prefix}-google-token-egress`, providerName=`${prefix}-google-provider-egress`, authDriverName=`${prefix}-auth-driver`;
-const plan={schema_version:"0.2",owner:"lattice-c5-broker-plane",account_id:accountId,prefix,workers_subdomain:workersSubdomain,public_callback_base:publicCallbackBase,google_oauth_redirect_uri:googleOauthRedirectUri,workers:[authDriverName,tokenName,providerName,`${prefix}-broker-private`,`${prefix}-broker-public`],steps:["local_preflight","verify_live_workers_subdomain","deploy_owned_auth_driver","deploy_owned_token_egress","deploy_owned_provider_egress","pin_exact_private_dependencies","deploy_v2_broker","write_combined_evidence"],rollback_order:[`${prefix}-broker-public`,`${prefix}-broker-private`,providerName,tokenName,authDriverName]};
+const plan={schema_version:"0.2",owner:"lattice-c5-broker-plane",account_id:accountId,prefix,workers_subdomain:workersSubdomain,public_callback_base:publicCallbackBase,google_oauth_redirect_uri:googleOauthRedirectUri,workers:[authDriverName,tokenName,providerName,`${prefix}-broker-private`,`${prefix}-broker-public`],private_worker_secrets:{[authDriverName]:Object.keys(secretValues["auth-driver"]).map(name=>({name,install_status:"planned"})),[tokenName]:[...Object.keys(secretValues["google-token-egress"]),"GOOGLE_OAUTH_REDIRECT_URI"].map(name=>({name,install_status:"planned"})),[providerName]:Object.keys(secretValues["google-provider-egress"]).map(name=>({name,install_status:"planned"})),[`${prefix}-broker-private`]:Object.keys(secretValues["broker-private"]).map(name=>({name,install_status:"planned"})),[`${prefix}-broker-public`]:[]},steps:["local_preflight_and_exact_secrets_file_validation","verify_live_workers_subdomain","prove_deploy_install_verify_capture_auth_driver","prove_deploy_install_verify_capture_token_egress","prove_deploy_install_verify_capture_provider_egress","pin_exact_dependency_deployment_ids_and_source_hashes","prove_deploy_install_verify_capture_fence_aware_broker_private","apply_0003_production_v2_cutover","prove_deploy_verify_capture_broker_public_last","verify_public_health_ready_and_callback","write_combined_evidence"],rollback_order:[`${prefix}-broker-public`,`${prefix}-broker-private`,providerName,tokenName,authDriverName]};
 await mkdir(evidenceDir,{recursive:true,mode:0o700});
 await writeFile(join(evidenceDir,"c5-plan.json"),`${JSON.stringify(plan,null,2)}\n`,{mode:0o600});
 if(args.get("--mode")!=="apply"){console.log(JSON.stringify(plan,null,2));console.log("dry-run complete; zero remote commands executed");process.exit(0);}
 if(args.get("--approve-create-disposable")!=="yes"||args.get("--approve-cleanup")!=="yes"||args.get("--approve-private-deploy")!=="yes"||!process.env.CLOUDFLARE_API_TOKEN)throw new Error("apply requires all exact approvals and CLOUDFLARE_API_TOKEN");
 await verifyLiveWorkersSubdomain({accountId,workersSubdomain,apiToken:process.env.CLOUDFLARE_API_TOKEN});
-const run=(cwd,command)=>{const result=spawnSync(command[0],command.slice(1),{cwd,encoding:"utf8",env:{...process.env,CLOUDFLARE_ACCOUNT_ID:accountId}});if(result.status!==0)throw new Error(`command failed:${command.slice(0,3).join(" ")}`);return result.stdout;};
+const runResult=(cwd,command,options={})=>{const result=spawnSync(command[0],command.slice(1),{cwd,encoding:"utf8",input:options.input,env:{...process.env,CLOUDFLARE_ACCOUNT_ID:accountId}});return {status:result.status??1,stdout:result.stdout??"",stderr:result.stderr??""};};
+const run=(cwd,command)=>{const result=runResult(cwd,command);if(result.status!==0)throw new Error(`command failed:${command.slice(0,3).join(" ")}`);return result.stdout;};
+const authRunner={async run(_step,command,options){return runResult(brokerRoot,command,options);}};
 const providerEvidence=join(evidenceDir,"google-egress");
 const providerState=join(providerEvidence,"google-egress-ownership.json");
-let providerApplied=false, authDriverApplied=false;
+let providerApplied=false, authDriverApplied=false, brokerApplyStarted=false, brokerApplyCompleted=false;
 try{
   const whoami=JSON.parse(run(providerRoot,["npx","wrangler","whoami","--json"]));
   if(whoami.account_id!==accountId)throw new Error("account mismatch");
-  for(const name of [authDriverName,tokenName,providerName]){
-    const existing=JSON.parse(run(providerRoot,["npx","wrangler","deployments","list","--name",name,"--json"]));
-    if(!Array.isArray(existing)||existing.length!==0)throw new Error(`owned egress target already exists:${name}`);
-  }
-  const authSecrets=JSON.parse(run(brokerRoot,["npx","wrangler","secret","list","--name",authDriverName,"--format","json"]));
-  if(!Array.isArray(authSecrets)||!authSecrets.some((value)=>value.name==="AUTH_DRIVER_SERVICE_AUTH"))throw new Error("secret missing:auth-driver");
-  run(brokerRoot,["npx","wrangler","deploy","--config","deploy/auth-driver/wrangler.jsonc","--name",authDriverName]);
-  authDriverApplied=true;
-  run(providerRoot,["node","scripts/deploy.mjs","--account-id",accountId,"--prefix",prefix,"--workers-subdomain",workersSubdomain,"--callback-uri",googleOauthRedirectUri,"--evidence-dir",providerEvidence,"--mode","apply","--approve-private-deploy","yes"]);
+  const authDriverDeployment=await deployPrivateWorker({runner:authRunner,step:"auth_driver",name:authDriverName,accountId,config:"deploy/auth-driver/wrangler.jsonc",secrets:secretValues["auth-driver"]});
+  authDriverApplied=authDriverDeployment.created_by_run;
+  run(providerRoot,["node","scripts/deploy.mjs","--account-id",accountId,"--prefix",prefix,"--workers-subdomain",workersSubdomain,"--callback-uri",googleOauthRedirectUri,"--evidence-dir",providerEvidence,"--secrets-file",args.get("--secrets-file"),"--mode","apply","--approve-private-deploy","yes"]);
   providerApplied=true;
-  const exactDeployment=(name)=>{const values=JSON.parse(run(providerRoot,["npx","wrangler","deployments","list","--name",name,"--json"]));if(!Array.isArray(values)||values.length!==1)throw new Error(`owned target is not an exact fresh deployment:${name}`);const value=values[0];const sourceHash=value.source_hash??value.metadata?.source_hash;if(!/^[0-9a-f]{64}$/.test(sourceHash??"")||!/^[A-Za-z0-9._:-]{6,256}$/.test(value.id??""))throw new Error(`deployment evidence invalid:${name}`);return {name,account_id:accountId,deployment_id:value.id,source_hash:sourceHash};};
-  const dependencies={schema_version:"2",account_id:accountId,prefix,d1_database_id:args.get("--d1-id"),artifacts:signedInputs.artifacts,operator_bundle_jcs:signedInputs.operator_bundle_jcs,operator_bundle_hash:signedInputs.operator_bundle_hash,operator_trust_root:signedInputs.operator_trust_root,workers:{},services:{AUTH_DRIVER_SERVICE:exactDeployment(authDriverName),GOOGLE_TOKEN_SERVICE:exactDeployment(tokenName),GOOGLE_PROVIDER_SERVICE:exactDeployment(providerName)}};
+  const providerOwnership=JSON.parse(await readFile(providerState,"utf8"));
+  const providerPins=new Map((providerOwnership.workers??[]).map(worker=>[worker.name,worker]));
+  const normalizedPin=(worker,name)=>{if(worker?.name!==name||!/^[0-9a-f]{64}$/.test(worker.source_hash??"")||!/^[A-Za-z0-9._:-]{6,256}$/.test(worker.deployment_id??"")||!Array.isArray(worker.secrets)||worker.secrets.some(secret=>secret.install_status!=="installed_and_verified"))throw new Error("private worker ownership evidence invalid");return {name,account_id:accountId,deployment_id:worker.deployment_id,source_hash:worker.source_hash};};
+  const authPin=normalizedPin(authDriverDeployment,authDriverName),tokenPin=normalizedPin(providerPins.get(tokenName),tokenName),providerPin=normalizedPin(providerPins.get(providerName),providerName);
+  const dependencies={schema_version:"2",account_id:accountId,prefix,d1_database_id:args.get("--d1-id"),artifacts:signedInputs.artifacts,operator_bundle_jcs:signedInputs.operator_bundle_jcs,operator_bundle_hash:signedInputs.operator_bundle_hash,operator_trust_root:signedInputs.operator_trust_root,workers:{},services:{AUTH_DRIVER_SERVICE:authPin,GOOGLE_TOKEN_SERVICE:tokenPin,GOOGLE_PROVIDER_SERVICE:providerPin}};
   const dependencyPath=join(evidenceDir,"approved-dependencies.generated.json");
   await writeFile(dependencyPath,`${JSON.stringify(dependencies,null,2)}\n`,{mode:0o600});
-  run(brokerRoot,["node","deploy/scripts/deploy.mjs","--account-id",accountId,"--prefix",prefix,"--evidence-dir",join(evidenceDir,"broker"),"--d1-id",args.get("--d1-id"),"--approved-dependencies",dependencyPath,"--google-provider-service",providerName,"--google-token-service",tokenName,"--auth-driver-service",authDriverName,"--workers-subdomain",workersSubdomain,"--public-callback-base",publicCallbackBase,"--spend-limit-usd",args.get("--spend-limit-usd"),"--rate-limit-per-minute",args.get("--rate-limit-per-minute"),"--mode","apply","--approve-create-disposable","yes","--approve-cleanup","yes"]);
-  const deployments=plan.workers.map((name)=>exactDeployment(name));
-  const state={...plan,status:"deployed",deployments,provider_ownership_state:providerState,approved_dependencies:dependencyPath,d1_database:{id:args.get("--d1-id"),owned:false}};
+  brokerApplyStarted=true;
+  run(brokerRoot,["node","deploy/scripts/deploy.mjs","--account-id",accountId,"--prefix",prefix,"--evidence-dir",join(evidenceDir,"broker"),"--d1-id",args.get("--d1-id"),"--approved-dependencies",dependencyPath,"--secrets-file",args.get("--secrets-file"),"--google-provider-service",providerName,"--google-token-service",tokenName,"--auth-driver-service",authDriverName,"--workers-subdomain",workersSubdomain,"--public-callback-base",publicCallbackBase,"--spend-limit-usd",args.get("--spend-limit-usd"),"--rate-limit-per-minute",args.get("--rate-limit-per-minute"),"--mode","apply","--approve-create-disposable","yes","--approve-cleanup","yes"]);
+  brokerApplyCompleted=true;
+  const brokerQualification=JSON.parse(await readFile(join(evidenceDir,"broker","qualification-evidence.json"),"utf8"));
+  const brokerDeployment=(name)=>{const value=brokerQualification.deployments?.[name];if(!/^[0-9a-f]{64}$/.test(value?.source_hash??"")||!/^[A-Za-z0-9._:-]{6,256}$/.test(value?.deployment_id??""))throw new Error(`broker deployment evidence invalid:${name}`);return {name,account_id:accountId,deployment_id:value.deployment_id,source_hash:value.source_hash};};
+  const deployments=[authPin,tokenPin,providerPin,brokerDeployment(`${prefix}-broker-private`),brokerDeployment(`${prefix}-broker-public`)];
+  const state={...plan,status:"deployed",private_worker_secrets:{[authDriverName]:authDriverDeployment.secrets,[tokenName]:providerPins.get(tokenName).secrets,[providerName]:providerPins.get(providerName).secrets,...brokerQualification.worker_secrets},deployments,provider_ownership_state:providerState,approved_dependencies:dependencyPath,d1_database:{id:args.get("--d1-id"),owned:false}};
   await writeFile(join(evidenceDir,"c5-ownership.json"),`${JSON.stringify(state,null,2)}\n`,{mode:0o600});
   console.log("C5 broker plane deployed with owned private egress");
 }catch(error){
-  let forwardFix=false;
-  try {
-    const brokerEvidence=JSON.parse(await readFile(join(evidenceDir,"broker","qualification-evidence.json"),"utf8"));
-    forwardFix=brokerEvidence.migration_state==="forward_fix_required";
-  } catch {}
-  if(forwardFix){
+  let brokerEvidence;
+  try {brokerEvidence=JSON.parse(await readFile(join(evidenceDir,"broker","qualification-evidence.json"),"utf8"));} catch {}
+  const forwardFix=brokerApplyCompleted||brokerEvidence?.migration_state==="forward_fix_required";
+  const safeCreationRollback=!brokerApplyStarted||(brokerEvidence?.status==="failed"&&brokerEvidence?.migration_state===undefined);
+  if(forwardFix||!safeCreationRollback){
     await writeFile(join(evidenceDir,"c5-forward-fix-required.json"),`${JSON.stringify({schema_version:"0.2",status:"forward_fix_required",d1_preserved:true,private_fence_worker_preserved:true,owned_egress_preserved:true},null,2)}\n`,{mode:0o600});
   } else {
     if(providerApplied){try{run(providerRoot,["node","scripts/cleanup.mjs","--ownership-state",providerState,"--mode","apply","--approve-cleanup","yes"]);}catch{throw new Error("broker deployment failed and owned egress cleanup also failed");}}

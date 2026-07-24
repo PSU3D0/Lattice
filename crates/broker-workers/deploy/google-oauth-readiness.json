@@ -4,13 +4,53 @@
   "contains_credentials_or_pii": false,
   "provisioning_order": [
     "provision non-owned D1, KV, R2, AI Gateway, and immutable operator authority artifacts",
-    "deploy owned generic auth-driver, Google token, and provider egress Workers and pin exact deployment hashes",
-    "deploy fence-aware private broker Worker before any destructive D1 migration",
+    "for auth-driver, then Google token egress, then provider egress: prove absent, deploy private, install secrets through stdin, verify secret names, and capture exactly one deployment id plus source hash",
+    "prove broker-private absent, deploy it unreachable, install and verify its 12 secrets, and capture its exact deployment before any destructive D1 migration",
     "apply checked-in forward-only D1 migrations; preserve private broker, egress, and D1 on failure",
-    "deploy public callback Worker and verify callback/health behavior",
+    "after migration, re-prove broker-public absent, deploy it last with no secrets, capture its exact deployment, and verify callback/health behavior",
     "render S21 binding lock, authority manifest, Flow IR hash, receipt trust pin, and service bindings",
     "deploy S21 Worker only after operator approval of every immutable hash"
   ],
+  "private_worker_apply": {
+    "secrets_file_argument": "--secrets-file <absolute-path>",
+    "secrets_file_schema": {
+      "auth-driver": {
+        "AUTH_DRIVER_SERVICE_AUTH": "non-empty string; exactly equals broker-private.AUTH_DRIVER_SERVICE_AUTH"
+      },
+      "google-token-egress": {
+        "GOOGLE_EGRESS_SERVICE_AUTH": "non-empty string; exactly equals provider egress and broker-private values",
+        "GOOGLE_OAUTH_CLIENT_ID": "non-empty string",
+        "GOOGLE_OAUTH_CLIENT_SECRET": "non-empty string",
+        "GOOGLE_TOKEN_RESULT_KEY": "exactly 64 lowercase hexadecimal characters"
+      },
+      "google-provider-egress": {
+        "GOOGLE_EGRESS_SERVICE_AUTH": "non-empty string; exactly equals token egress and broker-private values"
+      },
+      "broker-private": {
+        "ACTIVATION_SERVICE_AUTH": "non-empty string",
+        "AI_GATEWAY_AUTHORIZATION": "non-empty string",
+        "AUTH_DRIVER_SERVICE_AUTH": "non-empty string; exactly equals auth-driver value",
+        "BINDING_SIGNING_SEED": "exactly 64 lowercase hexadecimal characters",
+        "COMMITMENT_KEY": "exactly 64 lowercase hexadecimal characters",
+        "CUSTODY_ROOT_KEY": "exactly 64 lowercase hexadecimal characters",
+        "DEPLOYMENT_BOOTSTRAP_AUTH": "non-empty string",
+        "GENERIC_ACTIVATION_RECIPIENT_PRIVATE_KEY_B64U": "canonical unpadded base64url encoding of exactly 32 bytes",
+        "GOOGLE_EGRESS_SERVICE_AUTH": "non-empty string; exactly equals both egress values",
+        "INVOKE_SERVICE_AUTH": "non-empty string",
+        "KEY_HASH_PEPPER": "non-empty string",
+        "RECEIPT_SIGNING_SEED": "exactly 64 lowercase hexadecimal characters"
+      },
+      "broker-public": {}
+    },
+    "secrets_file_contract": "regular mode-0600 JSON outside the repository; exact auth-driver, google-token-egress, google-provider-egress, broker-private, and broker-public role groups and exact documented names; broker-public is an empty object; no extras or missing names",
+    "derived_secret": "GOOGLE_OAUTH_REDIRECT_URI is derived from the verified callback and must not appear in the secrets file",
+    "value_validation": "all values are non-empty strings; auth-driver and broker-private AUTH_DRIVER_SERVICE_AUTH match; token/provider/broker-private GOOGLE_EGRESS_SERVICE_AUTH match; GOOGLE_TOKEN_RESULT_KEY and documented broker keys have their exact lowercase-hex/base64url shapes",
+    "transport": "pipe each value to wrangler secret put over stdin; never place a value in argv, logs, plans, ownership manifests, or evidence",
+    "absence_classification": "explicit script-not-found or an empty deployment array is absent; one or more deployments is present; every other command error or parse failure is unknown and aborts before mutation",
+    "per_worker_order": ["prove absent", "deploy Worker (unreachable private Worker until the final public role)", "install required secrets", "verify required secret names", "capture exactly one deployment id and source hash"],
+    "secret_failure_rollback": "before migration, delete only the just-created failing Worker; once migration is attempted, perform no deletion rollback and require a forward fix",
+    "evidence": "secret names and planned or installed_and_verified status only"
+  },
   "oauth_application": {
     "application_type": "web",
     "authorization_endpoint": "https://accounts.google.com/o/oauth2/v2/auth",
@@ -34,7 +74,7 @@
     "immutable_vars": ["AI_GATEWAY_PAYLOAD_LOGGING", "AI_GATEWAY_RATE_LIMIT_PER_MINUTE", "AI_GATEWAY_SPEND_LIMIT_USD", "BROKER_WORKER_WASM_SHA256", "AUTH_DRIVER_WORKER_SHA256", "GOOGLE_TOKEN_WORKER_SHA256", "GOOGLE_PROVIDER_WORKER_SHA256", "GENERIC_PROFILE_REGISTRY_JCS", "DEPLOYMENT_AUTHORITY_KEY_ID", "DEPLOYMENT_AUTHORITY_PUBLIC_KEY_B64U", "DEPLOYMENT_CONTRACT_SET_JCS", "DEPLOYMENT_STANDING_AUTHORITY_JCS", "HISTORICAL_ARCHIVE_AUTHORITY_KEY_ID", "HISTORICAL_ARCHIVE_AUTHORITY_PUBLIC_KEY_B64U", "LEGACY_CUTOVER_AUTHORITY_KEY_ID", "LEGACY_CUTOVER_AUTHORITY_PUBLIC_KEY_B64U", "GENERIC_ACTIVATION_RECIPIENT_KEY_ID", "GENERIC_ACTIVATION_RECIPIENT_PUBLIC_KEY_B64U", "OPERATOR_ARTIFACT_BUNDLE_JCS", "OPERATOR_ARTIFACT_BUNDLE_SHA256", "OPERATOR_BUNDLE_KEY_ID", "OPERATOR_BUNDLE_PUBLIC_KEY_B64U", "GENERIC_PROFILE_AUTHORITY_PUBLIC_KEY_B64U", "OAUTH_REDIRECT_URI", "PUBLIC_CALLBACK_BASE"],
     "bindings": ["BROKER_DB:D1", "CREDENTIAL_STATE_V2_DO:DurableObject", "V2_AUTHORITY_DO:DurableObject", "GOOGLE_TOKEN_SERVICE:Service", "GOOGLE_PROVIDER_SERVICE:Service", "AUTH_DRIVER_SERVICE:Service"]
   },
-  "broker_public": { "bindings": ["BROKER_PRIVATE:Service"] },
+  "broker_public": { "secrets": [], "bindings": ["BROKER_PRIVATE:Service"] },
   "generic_auth_driver": {
     "secrets": ["AUTH_DRIVER_SERVICE_AUTH"],
     "immutable_inputs": ["deployment-scoped signed profile descriptor", "signed exact driver endpoint configuration"],
@@ -53,6 +93,6 @@
     "immutable_vars": ["LATTICE_S21_HTTP_MODE", "LATTICE_BROKER_BINDING_REF", "LATTICE_BROKER_BUNDLE_ID", "LATTICE_BROKER_FLOW_IR_HASH", "LATTICE_BROKER_BINDING_LOCK_HASH", "LATTICE_BROKER_FLOW_ID", "LATTICE_BROKER_RECEIPT_PUBLIC_KEY_B64U", "LATTICE_BROKER_RECEIPT_PUBLIC_KEY_HASH", "LATTICE_CONNECTOR_ENDPOINT_LLM_DEFAULT_BASE_URL", "LATTICE_MULTIPART_ARTIFACT_FIELD", "LATTICE_MULTIPART_EXPECTED_CONTENT_TYPE", "LATTICE_MULTIPART_FILENAME_METADATA_FIELD", "LATTICE_MULTIPART_FILE_FIELD", "LATTICE_MULTIPART_MAX_FILE_BYTES", "LATTICE_MULTIPART_MAX_TEXT_BYTES", "LATTICE_MULTIPART_MAX_TOTAL_BYTES", "LATTICE_MULTIPART_REQUIRED_MAGIC"],
     "bindings": ["LATTICE_BROKER_PRIVATE:Service", "LATTICE_EXTRACT_PDF:Service", "FLOW_DO:DurableObject", "WORKSPACE_DO:DurableObject", "FLOW_KV:KV", "WORKSPACE_BUCKET:R2"]
   },
-  "failure_policy": "D1 migrations are irreversible. Once migration is attempted, emit forward_fix_required evidence and never delete or roll back migrated D1, the fence-aware private broker, or its owned egress dependencies.",
+  "failure_policy": "D1 migrations are irreversible. Once migration is attempted, emit forward_fix_required evidence and preserve D1, broker-private, and its verified private dependencies; creation-scoped rollback may delete only a broker-public Worker created by this run.",
   "external_readiness_blockers": ["Cloudflare resource provisioning and deployment", "Google OAuth registration, secrets, consent, and test-user approval", "AI Gateway provisioning", "operator-signed deployment authority and receipt-key approval", "user-gated live proof"]
 }

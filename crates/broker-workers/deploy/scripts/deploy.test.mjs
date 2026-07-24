@@ -1,9 +1,42 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { executeApply, redactedPlan, REQUIRED_SECRET_NAMES } from "./deploy-lib.mjs";
+import {
+  classifyDeploymentsListResult,
+  deployPrivateWorker,
+  loadPrivateWorkerSecrets,
+} from "./private-worker-deploy-lib.mjs";
 import { validatePublicCallbackBase } from "./workers-subdomain.mjs";
 
 const hash = "c".repeat(64);
+const completeSecrets = {
+  "auth-driver": { AUTH_DRIVER_SERVICE_AUTH: "shared-auth-driver-value" },
+  "google-token-egress": {
+    GOOGLE_EGRESS_SERVICE_AUTH: "shared-egress-value",
+    GOOGLE_OAUTH_CLIENT_ID: "oauth-client-id",
+    GOOGLE_OAUTH_CLIENT_SECRET: "oauth-client-secret",
+    GOOGLE_TOKEN_RESULT_KEY: "1".repeat(64),
+  },
+  "google-provider-egress": { GOOGLE_EGRESS_SERVICE_AUTH: "shared-egress-value" },
+  "broker-private": {
+    ACTIVATION_SERVICE_AUTH: "activation-value",
+    AI_GATEWAY_AUTHORIZATION: "gateway-value",
+    AUTH_DRIVER_SERVICE_AUTH: "shared-auth-driver-value",
+    BINDING_SIGNING_SEED: "2".repeat(64),
+    COMMITMENT_KEY: "3".repeat(64),
+    CUSTODY_ROOT_KEY: "4".repeat(64),
+    DEPLOYMENT_BOOTSTRAP_AUTH: "bootstrap-value",
+    GENERIC_ACTIVATION_RECIPIENT_PRIVATE_KEY_B64U: Buffer.alloc(32, 5).toString("base64url"),
+    GOOGLE_EGRESS_SERVICE_AUTH: "shared-egress-value",
+    INVOKE_SERVICE_AUTH: "invoke-value",
+    KEY_HASH_PEPPER: "pepper-value",
+    RECEIPT_SIGNING_SEED: "6".repeat(64),
+  },
+  "broker-public": {},
+};
 const context = {
   accountId: "a".repeat(32), prefix: "lattice-b5-test123", d1Id: "b".repeat(32),
   d1Name: "lattice-b5-test123-broker",
@@ -35,22 +68,32 @@ const context = {
     },
     workers: {},
   },
-  privateConfig: "private-redacted", publicConfig: "public-redacted",
+  privateConfig: '{"workers_dev": false}', publicConfig: '{"workers_dev": true}',
   privateConfigPath: "/evidence/private.jsonc", publicConfigPath: "/evidence/public.jsonc",
+  privateSecrets: completeSecrets["broker-private"],
+  publicSecrets: completeSecrets["broker-public"],
 };
 
 class FakeRunner {
-  constructor(overrides = {}) { this.overrides = overrides; this.calls = []; }
-  async run(step, command) {
+  constructor(overrides = {}) { this.overrides = overrides; this.calls = []; this.inputs = []; }
+  async run(step, command, options = {}) {
     this.calls.push({ step, command });
+    if (options.input !== undefined) this.inputs.push({ step, input: options.input });
     if (this.overrides[step] !== undefined) return this.overrides[step];
+    if (step === "private_worker:deploy" && this.overrides.deploy_private !== undefined) return this.overrides.deploy_private;
+    if (step === "public_worker:deploy" && this.overrides.deploy_public !== undefined) return this.overrides.deploy_public;
     if (step === "auth") return { status: 0, stdout: JSON.stringify({ account_id: context.accountId }) };
     if (step.startsWith("target:")) return { status: 0, stdout: "[]" };
+    if (step === "private_worker:absence") return this.overrides["target:private"] ?? { status: 0, stdout: "[]" };
+    if (step === "public_worker:absence") return this.overrides["target:public"] ?? { status: 0, stdout: "[]" };
     if (step === "dependency:AUTH_DRIVER_SERVICE") return { status: 0, stdout: JSON.stringify([{ id: "auth-driver-deployment", source_hash: hash }]) };
     if (step === "dependency:GOOGLE_PROVIDER_SERVICE") return { status: 0, stdout: JSON.stringify([{ id: "provider-deployment", source_hash: hash }]) };
     if (step === "dependency:GOOGLE_TOKEN_SERVICE") return { status: 0, stdout: JSON.stringify([{ id: "token-deployment", source_hash: hash }]) };
     if (step === "d1") return { status: 0, stdout: JSON.stringify([{ uuid: context.d1Id }]) };
-    if (step === "secrets") return { status: 0, stdout: JSON.stringify(REQUIRED_SECRET_NAMES.map((name) => ({ name }))) };
+    if (step === "private_worker:secrets") return { status: 0, stdout: JSON.stringify(REQUIRED_SECRET_NAMES.map((name) => ({ name }))) };
+    if (step === "public_worker:secrets") return { status: 0, stdout: "[]" };
+    if (step === "private_worker:capture") return { status: 0, stdout: JSON.stringify([{ id: "private-deployment", source_hash: hash }]) };
+    if (step === "public_worker:capture") return { status: 0, stdout: JSON.stringify([{ id: "public-deployment", source_hash: hash }]) };
     if (step === "readiness:oauth_callback_400") return { status: 0, stdout: "400" };
     if (step === "smoke") return { status: 0, stdout: JSON.stringify({ status: "ok" }) };
     return { status: 0, stdout: "{}" };
@@ -98,7 +141,8 @@ test("oversized Workers subdomain and total hostname are rejected", () => {
 });
 test("redacted dry-run performs no command and names the clean preflight", () => {
   const runner = new FakeRunner(); const plan = redactedPlan(context);
-  assert.equal(runner.calls.length, 0); assert.deepEqual(plan.required_secret_names, REQUIRED_SECRET_NAMES);
+  assert.equal(runner.calls.length, 0);
+  assert.deepEqual(plan.worker_secrets[context.privateName], REQUIRED_SECRET_NAMES.map((name) => ({ name, install_status: "planned" })));
   assert.equal(plan.steps[0], "clean_hermetic_production_preflight");
   assert.equal(plan.workers_subdomain, "frankie-colson");
   assert.equal(plan.google_oauth_redirect_uri, context.googleOauthRedirectUri);
@@ -132,18 +176,25 @@ test("pre-existing unowned target fails before mutation", async () => {
 test("pre-existing owned update is never deleted after later failure", async () => {
   const owned = ownedContext("private");
   const runner = new FakeRunner({ "target:private": live("private"), deploy_public: { status: 1, stdout: "" } });
-  await assert.rejects(executeApply(owned, runner), /deploy_public_failed/);
+  await assert.rejects(executeApply(owned, runner), /public_worker_deploy_failed/);
   assert.equal(runner.calls.some((call) => call.step === "cleanup_private"), false);
 });
 test("newly created fence-aware private resource is preserved after migrated public failure", async () => {
   const runner = new FakeRunner({ deploy_public: { status: 1, stdout: "" } });
-  await assert.rejects(executeApply(context, runner), /deploy_public_failed/);
+  await assert.rejects(executeApply(context, runner), /public_worker_deploy_failed/);
   assert.deepEqual(runner.calls.filter((call) => call.step.startsWith("cleanup_")).map((call) => call.step), []);
 });
-test("post-migration failure cleans public but preserves the fence authority", async () => {
+test("post-migration failure deletes only the created public facade and requires a forward fix", async () => {
   const runner = new FakeRunner({ "readiness:/ready": { status: 1, stdout: "" } });
-  await assert.rejects(executeApply(context, runner), /readiness:\/ready_failed/);
-  assert.deepEqual(runner.calls.filter((call) => call.step.startsWith("cleanup_")).map((call) => call.step), ["cleanup_public"]);
+  let failure;
+  await assert.rejects(executeApply(context, runner), (error) => {
+    failure = error;
+    return /readiness:\/ready_failed/.test(error.message);
+  });
+  assert.equal(failure.evidence.migration_state, "forward_fix_required");
+  assert.deepEqual(runner.calls.filter((call) => call.command.includes("delete")).map((call) => call.command), [
+    ["npx", "wrangler", "delete", "--name", context.publicName, "--force"],
+  ]);
 });
 test("immutable dependency hash mismatch fails before mutation", async () => {
   const runner = new FakeRunner({ "dependency:GOOGLE_PROVIDER_SERVICE": { status: 0, stdout: JSON.stringify([{ id: "provider-deployment", source_hash: "d".repeat(64) }]) } });
@@ -151,15 +202,198 @@ test("immutable dependency hash mismatch fails before mutation", async () => {
   assert.equal(runner.calls.some((call) => call.step === "migrations"), false);
 });
 test("missing secret and migration failures stop deploy", async () => {
-  const missing = new FakeRunner({ secrets: { status: 0, stdout: "[]" } });
-  await assert.rejects(executeApply(context, missing), /secret_missing/);
+  const missing = new FakeRunner({ "private_worker:secrets": { status: 0, stdout: "[]" } });
+  await assert.rejects(executeApply(context, missing), /private_worker_secret_verification_failed/);
   const migration = new FakeRunner({ migrations: { status: 1, stdout: "" } });
   await assert.rejects(executeApply(context, migration), /migrations_failed/);
-  assert.equal(migration.calls.some((call) => call.step === "deploy_private"), true);
+  assert.equal(migration.calls.some((call) => call.step === "private_worker:deploy"), true);
   assert.equal(migration.calls.some((call) => call.step === "cleanup_private"), false);
 });
+test("broker-private remains unreachable and is deleted if secret installation fails before migration", async () => {
+  const firstSecret = REQUIRED_SECRET_NAMES[0];
+  const runner = new FakeRunner({ [`private_worker:secret:${firstSecret}`]: { status: 1, stdout: "", stderr: "redacted" } });
+  await assert.rejects(executeApply(context, runner), /private_worker_secret_install_failed/);
+  const config = JSON.parse((await readFile(resolve(new URL("../../wrangler.jsonc", import.meta.url).pathname), "utf8")));
+  assert.equal(config.workers_dev, false);
+  assert.equal(Object.hasOwn(config, "routes"), false);
+  assert.equal(runner.calls.some((call) => call.step === "migrations" || call.step.startsWith("public_worker:")), false);
+  assert.deepEqual(runner.calls.filter((call) => call.step.endsWith(":cleanup")).map((call) => call.command), [
+    ["npx", "wrangler", "delete", "--name", context.privateName, "--force"],
+  ]);
+});
+
+test("broker-private deploy installs and verifies secrets before migration", async () => {
+  const runner = new FakeRunner();
+  await executeApply(context, runner);
+  const privateSteps = runner.calls
+    .map((call) => call.step)
+    .filter((step) => step.startsWith("private_worker:") || step === "migrations");
+  assert.deepEqual(privateSteps, [
+    "private_worker:absence",
+    "private_worker:deploy",
+    ...REQUIRED_SECRET_NAMES.map((name) => `private_worker:secret:${name}`),
+    "private_worker:secrets",
+    "private_worker:capture",
+    "migrations",
+  ]);
+});
+
+test("broker secret values use stdin and never enter argv or evidence", async () => {
+  const runner = new FakeRunner();
+  const evidence = await executeApply(context, runner);
+  const serializedCalls = JSON.stringify(runner.calls);
+  const serializedEvidence = JSON.stringify(evidence);
+  for (const value of Object.values(context.privateSecrets)) {
+    assert.equal(serializedCalls.includes(value), false);
+    assert.equal(serializedEvidence.includes(value), false);
+  }
+  assert.deepEqual(runner.inputs.map(({ step }) => step), REQUIRED_SECRET_NAMES.map((name) => `private_worker:secret:${name}`));
+});
+
 test("OAuth callback readiness requires exact safe 400", async () => {
   const runner = new FakeRunner({ "readiness:oauth_callback_400": { status: 0, stdout: "200" } });
   await assert.rejects(executeApply(context, runner), /oauth_callback_status_mismatch/);
-  assert.deepEqual(runner.calls.filter((call) => call.step.startsWith("cleanup_")).map((call) => call.step), ["cleanup_public"]);
+  assert.deepEqual(runner.calls.filter((call) => call.command.includes("delete")).map((call) => call.command), [
+    ["npx", "wrangler", "delete", "--name", context.publicName, "--force"],
+  ]);
+});
+
+const brokerPrivateSecrets = Object.fromEntries(REQUIRED_SECRET_NAMES.map((name) => [name, `broker-${name.toLowerCase()}`]));
+for (const name of ["BINDING_SIGNING_SEED", "COMMITMENT_KEY", "CUSTODY_ROOT_KEY", "RECEIPT_SIGNING_SEED"]) brokerPrivateSecrets[name] = "2".repeat(64);
+brokerPrivateSecrets.GENERIC_ACTIVATION_RECIPIENT_PRIVATE_KEY_B64U = Buffer.alloc(32, 3).toString("base64url");
+brokerPrivateSecrets.AUTH_DRIVER_SERVICE_AUTH = "auth-driver-value";
+brokerPrivateSecrets.GOOGLE_EGRESS_SERVICE_AUTH = "shared-egress-value";
+
+const privateSecrets = {
+  "auth-driver": { AUTH_DRIVER_SERVICE_AUTH: "auth-driver-value" },
+  "google-token-egress": {
+    GOOGLE_EGRESS_SERVICE_AUTH: "shared-egress-value",
+    GOOGLE_OAUTH_CLIENT_ID: "oauth-client-id",
+    GOOGLE_OAUTH_CLIENT_SECRET: "oauth-client-secret",
+    GOOGLE_TOKEN_RESULT_KEY: "1".repeat(64),
+  },
+  "google-provider-egress": { GOOGLE_EGRESS_SERVICE_AUTH: "shared-egress-value" },
+  "broker-private": brokerPrivateSecrets,
+  "broker-public": {},
+};
+
+class PrivateWorkerRunner {
+  constructor(overrides = {}) { this.overrides = overrides; this.calls = []; this.inputs = []; this.deployed = false; }
+  async run(step, command, options = {}) {
+    this.calls.push({ step, command });
+    if (options.input !== undefined) this.inputs.push({ step, input: options.input });
+    if (this.overrides[step] !== undefined) return this.overrides[step];
+    if (step.endsWith(":absence")) return { status: 1, stdout: "", stderr: "workers.api.error.script_not_found [code: 10007]" };
+    if (step.endsWith(":deploy")) { this.deployed = true; return { status: 0, stdout: "" }; }
+    if (step.endsWith(":secrets")) return { status: 0, stdout: JSON.stringify([{ name: "AUTH_DRIVER_SERVICE_AUTH" }]) };
+    if (step.endsWith(":capture")) return { status: 0, stdout: JSON.stringify([{ id: "deployment-123", source_hash: hash }]) };
+    return { status: 0, stdout: "" };
+  }
+}
+
+async function withSecretsFile(value, callback) {
+  const directory = await mkdtemp(join(tmpdir(), "lattice-private-secrets-"));
+  const path = join(directory, "secrets.json");
+  await writeFile(path, JSON.stringify(value), { mode: 0o600 });
+  await chmod(path, 0o600);
+  try { return await callback(path, directory); } finally { await rm(directory, { recursive: true, force: true }); }
+}
+
+test("deployments list classifies absent, present, and unknown without trusting ambiguous failures", () => {
+  assert.equal(classifyDeploymentsListResult({ status: 1, stderr: "workers.api.error.script_not_found (10007)" }).state, "absent");
+  assert.equal(classifyDeploymentsListResult({ status: 0, stdout: "[]" }).state, "absent");
+  assert.equal(classifyDeploymentsListResult({ status: 0, stdout: '[{"id":"one"}]' }).state, "present");
+  assert.equal(classifyDeploymentsListResult({ status: 1, stderr: "authentication failed" }).state, "unknown");
+  assert.equal(classifyDeploymentsListResult({ status: 0, stdout: "not-json" }).state, "unknown");
+});
+
+test("unknown private target state aborts before every mutation", async () => {
+  const runner = new PrivateWorkerRunner({
+    "auth_driver:absence": { status: 1, stdout: "", stderr: "ambiguous API failure" },
+  });
+  await assert.rejects(deployPrivateWorker({
+    runner, step: "auth_driver", name: "fresh-auth-driver", accountId: context.accountId,
+    config: "auth-driver.jsonc", secrets: privateSecrets["auth-driver"],
+  }), /target_unknown/);
+  assert.deepEqual(runner.calls.map((call) => call.step), ["auth_driver:absence"]);
+});
+
+test("private Worker apply proves absence, deploys, installs and verifies secrets, then captures", async () => {
+  const runner = new PrivateWorkerRunner();
+  const evidence = await deployPrivateWorker({
+    runner, step: "auth_driver", name: "fresh-auth-driver", accountId: context.accountId,
+    config: "auth-driver.jsonc", secrets: privateSecrets["auth-driver"],
+  });
+  assert.deepEqual(runner.calls.map((call) => call.step), [
+    "auth_driver:absence", "auth_driver:deploy", "auth_driver:secret:AUTH_DRIVER_SERVICE_AUTH",
+    "auth_driver:secrets", "auth_driver:capture",
+  ]);
+  assert.deepEqual(evidence.secrets, [{ name: "AUTH_DRIVER_SERVICE_AUTH", install_status: "installed_and_verified" }]);
+});
+
+test("missing or extra secrets-file names abort during local validation", async () => {
+  for (const invalid of [
+    { ...privateSecrets, "auth-driver": {} },
+    { ...privateSecrets, "auth-driver": { ...privateSecrets["auth-driver"], EXTRA: "not-allowed" } },
+  ]) {
+    await withSecretsFile(invalid, async (path) => {
+      await assert.rejects(loadPrivateWorkerSecrets(path, resolve(new URL("../../../..", import.meta.url).pathname)), /secrets_file_names_invalid/);
+    });
+  }
+});
+
+test("malformed GOOGLE_TOKEN_RESULT_KEY aborts during local validation", async () => {
+  const invalid = structuredClone(privateSecrets);
+  invalid["google-token-egress"].GOOGLE_TOKEN_RESULT_KEY = "A".repeat(64);
+  await withSecretsFile(invalid, async (path) => {
+    await assert.rejects(loadPrivateWorkerSecrets(path, resolve(new URL("../../../..", import.meta.url).pathname)), /secrets_file_value_invalid/);
+  });
+});
+
+test("malformed broker key shapes and mismatched shared auth abort locally", async () => {
+  const invalidValues = [];
+  const malformedHex = structuredClone(privateSecrets);
+  malformedHex["broker-private"].CUSTODY_ROOT_KEY = "F".repeat(64);
+  invalidValues.push(malformedHex);
+  const malformedB64u = structuredClone(privateSecrets);
+  malformedB64u["broker-private"].GENERIC_ACTIVATION_RECIPIENT_PRIVATE_KEY_B64U = "not-a-32-byte-key";
+  invalidValues.push(malformedB64u);
+  const mismatchedAuth = structuredClone(privateSecrets);
+  mismatchedAuth["broker-private"].AUTH_DRIVER_SERVICE_AUTH = "different";
+  invalidValues.push(mismatchedAuth);
+  for (const invalid of invalidValues) {
+    await withSecretsFile(invalid, async (path) => {
+      await assert.rejects(loadPrivateWorkerSecrets(path, resolve(new URL("../../../..", import.meta.url).pathname)), /secrets_file_value_invalid/);
+    });
+  }
+});
+
+test("secret-install failure deletes exactly the Worker created by this run", async () => {
+  const runner = new PrivateWorkerRunner({
+    "auth_driver:secret:AUTH_DRIVER_SERVICE_AUTH": { status: 1, stdout: "", stderr: "redacted" },
+  });
+  await assert.rejects(deployPrivateWorker({
+    runner, step: "auth_driver", name: "fresh-auth-driver", accountId: context.accountId,
+    config: "auth-driver.jsonc", secrets: privateSecrets["auth-driver"],
+  }), /secret_install_failed/);
+  assert.deepEqual(runner.calls.filter((call) => call.step.endsWith(":cleanup")).map((call) => call.command), [
+    ["npx", "wrangler", "delete", "--name", "fresh-auth-driver", "--force"],
+  ]);
+});
+
+test("secret values travel only over stdin and never appear in argv or evidence", async () => {
+  const runner = new PrivateWorkerRunner();
+  const evidence = await deployPrivateWorker({
+    runner, step: "auth_driver", name: "fresh-auth-driver", accountId: context.accountId,
+    config: "auth-driver.jsonc", secrets: privateSecrets["auth-driver"],
+  });
+  const secretValue = privateSecrets["auth-driver"].AUTH_DRIVER_SERVICE_AUTH;
+  assert.equal(JSON.stringify(runner.calls).includes(secretValue), false);
+  assert.equal(JSON.stringify(evidence).includes(secretValue), false);
+  assert.deepEqual(runner.inputs, [{ step: "auth_driver:secret:AUTH_DRIVER_SERVICE_AUTH", input: `${secretValue}\n` }]);
+  await withSecretsFile(privateSecrets, async (path, directory) => {
+    const evidencePath = join(directory, "evidence.json");
+    await writeFile(evidencePath, JSON.stringify(evidence), { mode: 0o600 });
+    assert.equal((await readFile(evidencePath, "utf8")).includes(secretValue), false);
+  });
 });

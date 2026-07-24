@@ -14,7 +14,7 @@ if (state.schema_version !== "0.2" || state.owner !== "lattice-provider-google-w
     !/^[0-9a-f]{32}$/.test(state.account_id ?? "") || !/^lattice-c5-[a-z0-9]{6,20}$/.test(state.prefix ?? "") ||
     !Array.isArray(state.workers) || state.workers.length !== 2) throw new Error("ownership state invalid");
 const callback = validatePublicCallbackBase(state.prefix, state.workers_subdomain, state.public_callback_base);
-if (state.callback_uri !== callback.googleOauthRedirectUri || state.installed_derived_secrets?.GOOGLE_OAUTH_REDIRECT_URI !== callback.googleOauthRedirectUri) throw new Error("ownership callback state invalid");
+if (state.callback_uri !== callback.googleOauthRedirectUri) throw new Error("ownership callback state invalid");
 const expected = new Map([
   ["token", `${state.prefix}-google-token-egress`],
   ["provider", `${state.prefix}-google-provider-egress`],

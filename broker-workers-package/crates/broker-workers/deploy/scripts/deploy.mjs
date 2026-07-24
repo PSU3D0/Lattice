@@ -3,6 +3,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { executeApply, redactedPlan } from "./deploy-lib.mjs";
+import { loadPrivateWorkerSecrets } from "./private-worker-deploy-lib.mjs";
 import { verifyBundle } from "./operator-artifacts.mjs";
 import { validatePublicCallbackBase, validateWorkersSubdomain } from "./workers-subdomain.mjs";
 
@@ -13,7 +14,7 @@ for (let index = 2; index < process.argv.length; index += 2) {
   args.set(name, process.argv[index + 1]);
 }
 const required = [
-  "--account-id", "--prefix", "--evidence-dir", "--d1-id", "--approved-dependencies",
+  "--account-id", "--prefix", "--evidence-dir", "--d1-id", "--approved-dependencies", "--secrets-file",
   "--google-provider-service", "--google-token-service", "--auth-driver-service", "--workers-subdomain", "--public-callback-base",
   "--spend-limit-usd", "--rate-limit-per-minute",
 ];
@@ -43,6 +44,7 @@ await mkdir(evidenceInput, { recursive: true, mode: 0o700 });
 const evidenceDir = await realpath(evidenceInput);
 const root = resolve(new URL("../..", import.meta.url).pathname);
 if (evidenceDir.startsWith(`${root}/`)) throw new Error("evidence directory must be outside the repository");
+const secretValues = await loadPrivateWorkerSecrets(args.get("--secrets-file"), resolve(root, "../.."));
 const approvedDependencies = JSON.parse(await readFile(dependencyPath, "utf8"));
 const artifacts = approvedDependencies.artifacts;
 const operatorBundleJcs=approvedDependencies.operator_bundle_jcs;
@@ -133,6 +135,7 @@ const context = {
   googleTokenService: args.get("--google-token-service"),
   authDriverService: args.get("--auth-driver-service"),
   approvedDependencies, privateConfig, publicConfig, privateConfigPath, publicConfigPath,
+  privateSecrets: secretValues["broker-private"], publicSecrets: secretValues["broker-public"],
 };
 if (!apply) {
   const plan = redactedPlan(context);
@@ -142,10 +145,11 @@ if (!apply) {
   process.exit(0);
 }
 const runner = {
-  async run(_step, command) {
+  async run(_step, command, options = {}) {
     const result = spawnSync(command[0], command.slice(1), {
       cwd: root,
       encoding: "utf8",
+      input: options.input,
       env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: accountId },
     });
     return { status: result.status ?? 1, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
