@@ -370,8 +370,8 @@
     },
     {
       "path": "crates/broker-workers/deploy/scripts/deploy.test.mjs",
-      "sha256": "5bfa68bd15831beb694dcbf804e6ee4cf40a743b9e23d662fdbdf20ac8a91277",
-      "size_bytes": 40258
+      "sha256": "76a21a420dad4c2977636b409dc8b5378f2e9e62ae008a948734342b92de8071",
+      "size_bytes": 40429
     },
     {
       "path": "crates/broker-workers/deploy/scripts/operator-artifacts.mjs",

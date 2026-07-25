@@ -676,7 +676,7 @@ test("nonzero delete with verified absence is successful rollback and preserves 
     uploadedSourceSha256: hash, runStartedAt,
   }), (error) => {
     failure = error;
-    return error.message === "auth_driver_secret_install_failed";
+    return error.message.startsWith("auth_driver_secret_install_failed:AUTH_DRIVER_SERVICE_AUTH");
   });
   assert.deepEqual(failure.cleanupEvidence, {
     resource: "fresh-auth-driver", delete_exit_status: 1, post_delete_state: "absent", status: "deleted",
@@ -700,7 +700,8 @@ test("zero delete with target still present reports cleanup failure", async () =
     uploadedSourceSha256: hash, runStartedAt,
   }), (error) => {
     failure = error;
-    return error.message === "auth_driver_secret_install_failed; auth_driver_cleanup_failed";
+    return error.message.startsWith("auth_driver_secret_install_failed:AUTH_DRIVER_SERVICE_AUTH")
+      && error.message.endsWith("; auth_driver_cleanup_failed");
   });
   assert.equal(failure.cleanupEvidence.post_delete_state, "present");
   assert.equal(failure.cleanupEvidence.delete_exit_status, 0);
@@ -721,7 +722,8 @@ test("nonzero delete with unknown post-check fails closed without extra deletion
     uploadedSourceSha256: hash, runStartedAt,
   }), (error) => {
     failure = error;
-    return error.message === "auth_driver_secret_install_failed; auth_driver_cleanup_failed";
+    return error.message.startsWith("auth_driver_secret_install_failed:AUTH_DRIVER_SERVICE_AUTH")
+      && error.message.endsWith("; auth_driver_cleanup_failed");
   });
   assert.equal(failure.cleanupEvidence.post_delete_state, "unknown");
   assert.equal(failure.cleanupEvidence.status, "cleanup_failed");
