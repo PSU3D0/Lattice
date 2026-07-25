@@ -1,4 +1,6 @@
 .wrangler/
+/.wrangler.private.generated-*.jsonc
+/deploy/public-callback/.wrangler.public.generated-*.jsonc
 build/
 deploy/public-callback/.wrangler/
 workerd-tests/build/

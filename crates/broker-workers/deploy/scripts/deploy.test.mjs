@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { executeApply, redactedPlan, REQUIRED_SECRET_NAMES } from "./deploy-lib.mjs";
 import {
   D1_ID_SENTINEL,
@@ -14,6 +15,14 @@ import {
   deployPrivateWorker,
   loadPrivateWorkerSecrets,
 } from "./private-worker-deploy-lib.mjs";
+import {
+  PRIVATE_DIGEST_VARS,
+  replaceJsonStringPlaceholdersOnce,
+  replacePlaceholdersOnce,
+  validateRenderedConfig,
+  withRenderedDeployConfigs,
+  writeRenderedConfigEvidence,
+} from "./rendered-config.mjs";
 import { validatePublicCallbackBase } from "./workers-subdomain.mjs";
 import { renderWorkerUploadedSourceDigests } from "./uploaded-source.mjs";
 
@@ -162,6 +171,26 @@ function mutatingCalls(runner) {
   );
 }
 
+function validRenderedPrivateConfig() {
+  const bundleJcs = '{"schema_version":"1","artifact":"operator"}';
+  const bundleHash = `sha256:${createHash("sha256").update(bundleJcs).digest("hex")}`;
+  return JSON.stringify({
+    workers_dev: false,
+    vars: {
+      BROKER_WORKER_WASM_SHA256: `sha256:${hash}`,
+      AUTH_DRIVER_WORKER_SHA256: `sha256:${hash}`,
+      GOOGLE_TOKEN_WORKER_SHA256: `sha256:${hash}`,
+      GOOGLE_PROVIDER_WORKER_SHA256: `sha256:${hash}`,
+      OPERATOR_ARTIFACT_BUNDLE_JCS: bundleJcs,
+      OPERATOR_ARTIFACT_BUNDLE_SHA256: bundleHash,
+    },
+  });
+}
+
+async function assertFileMissing(path) {
+  await assert.rejects(access(path), (error) => error?.code === "ENOENT");
+}
+
 async function withCloudflareAccountId(value, callback) {
   const previous = process.env.CLOUDFLARE_ACCOUNT_ID;
   if (value === undefined) delete process.env.CLOUDFLARE_ACCOUNT_ID;
@@ -207,6 +236,58 @@ test("D1 config rendering installs the exact UUID and removes the sentinel", asy
   assert.equal(rendered.includes(D1_ID_SENTINEL), false);
 });
 
+test("prefix-overlapping operator bundle placeholders render exactly and preserve the bundle hash invariant", () => {
+  const bundleJcs = '{"schema_version":"1","artifact":"operator"}';
+  const bundleHash = `sha256:${createHash("sha256").update(bundleJcs).digest("hex")}`;
+  const template = JSON.stringify({
+    vars: {
+      BROKER_WORKER_WASM_SHA256: `sha256:${hash}`,
+      AUTH_DRIVER_WORKER_SHA256: `sha256:${hash}`,
+      GOOGLE_TOKEN_WORKER_SHA256: `sha256:${hash}`,
+      GOOGLE_PROVIDER_WORKER_SHA256: `sha256:${hash}`,
+      OPERATOR_ARTIFACT_BUNDLE_JCS: "REPLACE_WITH_OPERATOR_ARTIFACT_BUNDLE",
+      OPERATOR_ARTIFACT_BUNDLE_SHA256: "REPLACE_WITH_OPERATOR_ARTIFACT_BUNDLE_HASH",
+    },
+  });
+  const rendered = replaceJsonStringPlaceholdersOnce(template, {
+    REPLACE_WITH_OPERATOR_ARTIFACT_BUNDLE: bundleJcs,
+    REPLACE_WITH_OPERATOR_ARTIFACT_BUNDLE_HASH: bundleHash,
+  });
+  const parsed = validateRenderedConfig(rendered, {
+    requiredDigestVars: PRIVATE_DIGEST_VARS,
+    requireBundleHashInvariant: true,
+  });
+  assert.equal(parsed.vars.OPERATOR_ARTIFACT_BUNDLE_JCS, bundleJcs);
+  assert.equal(parsed.vars.OPERATOR_ARTIFACT_BUNDLE_SHA256, bundleHash);
+});
+
+test("single-pass substitution neither truncates a longer token nor rescans replacement values", () => {
+  const rendered = replacePlaceholdersOnce(
+    "REPLACE_WITH_COLLISION_LONG|REPLACE_WITH_COLLISION",
+    {
+      REPLACE_WITH_COLLISION: "short:REPLACE_WITH_COLLISION_LONG",
+      REPLACE_WITH_COLLISION_LONG: "long",
+    },
+  );
+  assert.equal(rendered, "long|short:REPLACE_WITH_COLLISION_LONG");
+});
+
+test("post-render validation fails closed before mutation", () => {
+  const fixtures = [
+    [validRenderedPrivateConfig().replace('"workers_dev":false', '"leftover":"REPLACE_WITH_VALUE","workers_dev":false'), /REPLACE_WITH placeholder/],
+    [validRenderedPrivateConfig().replace(`sha256:${hash}`, "not-a-digest"), /digest invalid/],
+    [validRenderedPrivateConfig().replace(/"OPERATOR_ARTIFACT_BUNDLE_SHA256":"sha256:[0-9a-f]{64}"/, `"OPERATOR_ARTIFACT_BUNDLE_SHA256":"sha256:${"d".repeat(64)}"`), /bundle hash mismatch/],
+  ];
+  for (const [fixture, expected] of fixtures) {
+    const runner = new FakeRunner();
+    assert.throws(() => validateRenderedConfig(fixture, {
+      requiredDigestVars: PRIVATE_DIGEST_VARS,
+      requireBundleHashInvariant: true,
+    }), expected);
+    assert.equal(mutatingCalls(runner).length, 0);
+  }
+});
+
 test("valid Workers subdomain callback form is accepted", () => {
   const callback = validatePublicCallbackBase(
     context.prefix,
@@ -242,6 +323,75 @@ test("redacted dry-run performs no command and names the clean preflight", () =>
   assert.equal(plan.workers_subdomain, "frankie-colson");
   assert.equal(plan.google_oauth_redirect_uri, context.googleOauthRedirectUri);
 });
+test("rendered configs deploy from template sibling paths, leave evidence copies, and are removed", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "lattice-rendered-config-"));
+  const publicDirectory = join(directory, "deploy", "public-callback");
+  const evidenceDir = join(directory, "evidence");
+  const privateTemplatePath = join(directory, "wrangler.jsonc");
+  const publicTemplatePath = join(publicDirectory, "wrangler.jsonc");
+  await mkdir(publicDirectory, { recursive: true });
+  await mkdir(evidenceDir);
+  await writeFile(privateTemplatePath, "{}\n");
+  await writeFile(publicTemplatePath, "{}\n");
+  const privateConfig = validRenderedPrivateConfig();
+  const publicConfig = '{"workers_dev":true}';
+  try {
+    await writeRenderedConfigEvidence({ evidenceDir, privateConfig, publicConfig });
+    let deployedPaths;
+    await withRenderedDeployConfigs({
+      privateTemplatePath, publicTemplatePath, privateConfig, publicConfig,
+    }, async (paths) => {
+      deployedPaths = paths;
+      const runner = new FakeRunner();
+      await executeApply({ ...context, ...paths }, runner);
+      const privateDeploy = runner.calls.find(({ step }) => step === "private_worker:deploy");
+      const publicDeploy = runner.calls.find(({ step }) => step === "public_worker:deploy");
+      const migrations = runner.calls.find(({ step }) => step === "migrations");
+      assert.equal(privateDeploy.command[privateDeploy.command.indexOf("--config") + 1], paths.privateConfigPath);
+      assert.equal(publicDeploy.command[publicDeploy.command.indexOf("--config") + 1], paths.publicConfigPath);
+      assert.equal(migrations.command[migrations.command.indexOf("--config") + 1], paths.privateConfigPath);
+      assert.equal(dirname(paths.privateConfigPath), dirname(privateTemplatePath));
+      assert.equal(dirname(paths.publicConfigPath), dirname(publicTemplatePath));
+      await access(paths.privateConfigPath);
+      await access(paths.publicConfigPath);
+    });
+    await assertFileMissing(deployedPaths.privateConfigPath);
+    await assertFileMissing(deployedPaths.publicConfigPath);
+    assert.equal(await readFile(join(evidenceDir, "wrangler.private.jsonc"), "utf8"), privateConfig);
+    assert.equal(await readFile(join(evidenceDir, "wrangler.public.jsonc"), "utf8"), publicConfig);
+    const record = JSON.parse(await readFile(join(evidenceDir, "rendered-config-record.json"), "utf8"));
+    assert.equal(record.private.purpose, "evidence_record_only_not_deployed");
+    assert.equal(record.public.purpose, "evidence_record_only_not_deployed");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("rendered sibling configs are removed when deployment fails", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "lattice-rendered-config-failure-"));
+  const publicDirectory = join(directory, "public");
+  const privateTemplatePath = join(directory, "wrangler.jsonc");
+  const publicTemplatePath = join(publicDirectory, "wrangler.jsonc");
+  await mkdir(publicDirectory);
+  let deployedPaths;
+  try {
+    await assert.rejects(withRenderedDeployConfigs({
+      privateTemplatePath,
+      publicTemplatePath,
+      privateConfig: validRenderedPrivateConfig(),
+      publicConfig: '{"workers_dev":true}',
+    }, async (paths) => {
+      deployedPaths = paths;
+      const runner = new FakeRunner({ deploy_private: { status: 1, stdout: "", stderr: "synthetic" } });
+      await executeApply({ ...context, ...paths }, runner);
+    }), /private_worker_deploy_failed/);
+    await assertFileMissing(deployedPaths.privateConfigPath);
+    await assertFileMissing(deployedPaths.publicConfigPath);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("hermetic preflight failure occurs before every remote command", async () => {
   const runner = new FakeRunner({ hermetic_preflight: { status: 1, stdout: "" } });
   await assert.rejects(executeApply(context, runner), /hermetic_preflight_failed/);

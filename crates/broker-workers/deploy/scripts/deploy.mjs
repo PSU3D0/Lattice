@@ -6,8 +6,15 @@ import { executeApply, redactedPlan } from "./deploy-lib.mjs";
 import { renderD1DatabaseId, validateD1Id } from "./cloudflare-identifiers.mjs";
 import { loadPrivateWorkerSecrets } from "./private-worker-deploy-lib.mjs";
 import { verifyBundle } from "./operator-artifacts.mjs";
+import {
+  PRIVATE_DIGEST_VARS,
+  replaceJsonStringPlaceholdersOnce,
+  validateRenderedConfig,
+  withRenderedDeployConfigs,
+  writeRenderedConfigEvidence,
+} from "./rendered-config.mjs";
 import { validatePublicCallbackBase, validateWorkersSubdomain } from "./workers-subdomain.mjs";
-import { computeUploadedSourceSha256, renderWorkerUploadedSourceDigests } from "./uploaded-source.mjs";
+import { computeUploadedSourceSha256 } from "./uploaded-source.mjs";
 
 const args = new Map();
 for (let index = 2; index < process.argv.length; index += 2) {
@@ -83,16 +90,6 @@ const { publicCallbackBase, googleOauthRedirectUri } = validatePublicCallbackBas
   workersSubdomain,
   args.get("--public-callback-base"),
 );
-let privateConfig = renderD1DatabaseId((await readFile(join(root, "wrangler.jsonc"), "utf8"))
-  .replaceAll("lattice-broker-template-private", privateName)
-  .replaceAll("lattice-broker-template-google-provider", args.get("--google-provider-service"))
-  .replaceAll("lattice-broker-template-google-token", args.get("--google-token-service"))
-  .replaceAll("lattice-broker-template-auth-driver", args.get("--auth-driver-service"))
-  .replaceAll("lattice-broker-template", d1Name), d1Id)
-  .replaceAll("https://invalid.example", publicCallbackBase)
-  .replace('"AI_GATEWAY_SPEND_LIMIT_USD": "0"', `"AI_GATEWAY_SPEND_LIMIT_USD": "${args.get("--spend-limit-usd")}"`)
-  .replace('"AI_GATEWAY_RATE_LIMIT_PER_MINUTE": "0"', `"AI_GATEWAY_RATE_LIMIT_PER_MINUTE": "${args.get("--rate-limit-per-minute")}"`);
-privateConfig = renderWorkerUploadedSourceDigests(privateConfig, approvedDependencies.services);
 const artifactReplacements = {
   REPLACE_WITH_PACKAGED_PRODUCTION_WASM_SHA256: `sha256:${brokerManifest.wasm_sha256}`,
   REPLACE_WITH_OPERATOR_KEY_ID: artifacts.deployment_authority_key_id,
@@ -112,8 +109,33 @@ const artifactReplacements = {
   REPLACE_WITH_OPERATOR_BUNDLE_KEY_ID: operatorTrustRoot.key_id,
   REPLACE_WITH_OPERATOR_BUNDLE_PUBLIC_KEY: operatorTrustRoot.public_key_b64u,
 };
-for (const [placeholder,value] of Object.entries(artifactReplacements)) privateConfig=privateConfig.replaceAll(placeholder,JSON.stringify(value).slice(1,-1));
-if (privateConfig.includes("REPLACE_")) throw new Error("rendered private config retains a placeholder");
+const uploadedSourceReplacements = {
+  REPLACE_WITH_AUTH_DRIVER_SOURCE_SHA256: approvedDependencies.services?.AUTH_DRIVER_SERVICE?.uploaded_source_sha256,
+  REPLACE_WITH_GOOGLE_TOKEN_SOURCE_SHA256: approvedDependencies.services?.GOOGLE_TOKEN_SERVICE?.uploaded_source_sha256,
+  REPLACE_WITH_GOOGLE_PROVIDER_SOURCE_SHA256: approvedDependencies.services?.GOOGLE_PROVIDER_SERVICE?.uploaded_source_sha256,
+};
+for (const [placeholder, digest] of Object.entries(uploadedSourceReplacements)) {
+  if (!/^[0-9a-f]{64}$/.test(digest ?? "")) throw new Error(`approved dependency uploaded source digest invalid:${placeholder}`);
+  uploadedSourceReplacements[placeholder] = `sha256:${digest}`;
+}
+const privateTemplatePath = join(root, "wrangler.jsonc");
+let privateConfig = renderD1DatabaseId(await readFile(privateTemplatePath, "utf8"), d1Id);
+privateConfig = replaceJsonStringPlaceholdersOnce(privateConfig, {
+  "lattice-broker-template-google-provider": args.get("--google-provider-service"),
+  "lattice-broker-template-google-token": args.get("--google-token-service"),
+  "lattice-broker-template-auth-driver": args.get("--auth-driver-service"),
+  "lattice-broker-template-private": privateName,
+  "lattice-broker-template": d1Name,
+  "https://invalid.example": publicCallbackBase,
+  ...uploadedSourceReplacements,
+  ...artifactReplacements,
+})
+  .replace('"AI_GATEWAY_SPEND_LIMIT_USD": "0"', `"AI_GATEWAY_SPEND_LIMIT_USD": "${args.get("--spend-limit-usd")}"`)
+  .replace('"AI_GATEWAY_RATE_LIMIT_PER_MINUTE": "0"', `"AI_GATEWAY_RATE_LIMIT_PER_MINUTE": "${args.get("--rate-limit-per-minute")}"`);
+validateRenderedConfig(privateConfig, {
+  requiredDigestVars: PRIVATE_DIGEST_VARS,
+  requireBundleHashInvariant: true,
+});
 if (privateConfig.includes("lattice-broker-template") || privateConfig.includes("invalid.example")) throw new Error("rendered private config retains a template value");
 for (const requiredBinding of [
   '"CONNECTION_REFRESH_DO"', '"CREDENTIAL_STATE_V2_DO"', '"V2_AUTHORITY_DO"', '"BROKER_DB"',
@@ -121,29 +143,29 @@ for (const requiredBinding of [
 ]) {
   if (!privateConfig.includes(requiredBinding)) throw new Error("rendered private config is missing an exact required resource");
 }
-let publicConfig = (await readFile(join(root, "deploy/public-callback/wrangler.jsonc"), "utf8"))
-  .replaceAll("lattice-broker-template-public", publicName)
-  .replaceAll("lattice-broker-template-private", privateName)
+const publicTemplatePath = join(root, "deploy/public-callback/wrangler.jsonc");
+let publicConfig = replaceJsonStringPlaceholdersOnce(await readFile(publicTemplatePath, "utf8"), {
+  "lattice-broker-template-public": publicName,
+  "lattice-broker-template-private": privateName,
+})
   .replace('"workers_dev": false', '"workers_dev": true');
+validateRenderedConfig(publicConfig);
 if (publicConfig.includes("lattice-broker-template")) throw new Error("rendered public config retains a template value");
-const privateConfigPath = join(evidenceDir, "wrangler.private.jsonc");
-const publicConfigPath = join(evidenceDir, "wrangler.public.jsonc");
-await writeFile(privateConfigPath, privateConfig, { mode: 0o600 });
-await writeFile(publicConfigPath, publicConfig, { mode: 0o600 });
-const context = {
+await writeRenderedConfigEvidence({ evidenceDir, privateConfig, publicConfig });
+const baseContext = {
   accountId, prefix, d1Id, d1Name, privateName, publicName, workersSubdomain,
   publicCallbackBase, googleOauthRedirectUri,
   cloudflareApiToken: process.env.CLOUDFLARE_API_TOKEN,
   googleProviderService: args.get("--google-provider-service"),
   googleTokenService: args.get("--google-token-service"),
   authDriverService: args.get("--auth-driver-service"),
-  approvedDependencies, privateConfig, publicConfig, privateConfigPath, publicConfigPath,
+  approvedDependencies, privateConfig, publicConfig,
   privateUploadedSourceSha256: brokerManifest.wasm_sha256,
   publicUploadedSourceSha256,
   privateSecrets: secretValues["broker-private"], publicSecrets: secretValues["broker-public"],
 };
 if (!apply) {
-  const plan = redactedPlan(context);
+  const plan = redactedPlan(baseContext);
   await writeFile(join(evidenceDir, "dry-run-plan.json"), `${JSON.stringify(plan, null, 2)}\n`, { mode: 0o600 });
   console.log(JSON.stringify(plan, null, 2));
   console.log("dry-run complete; zero remote commands executed");
@@ -160,12 +182,20 @@ const runner = {
     return { status: result.status ?? 1, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
   },
 };
-try {
-  const evidence = await executeApply(context, runner);
-  await writeFile(join(evidenceDir, "qualification-evidence.json"), `${JSON.stringify(evidence, null, 2)}\n`, { mode: 0o600 });
-  console.log("B5 approved resources qualified and deployed");
-} catch (error) {
-  const evidence = error?.evidence ?? { schema_version: "1", status: "failed", failure: "qualification_failed" };
-  await writeFile(join(evidenceDir, "qualification-evidence.json"), `${JSON.stringify(evidence, null, 2)}\n`, { mode: 0o600 });
-  throw error;
-}
+await withRenderedDeployConfigs({
+  privateTemplatePath,
+  publicTemplatePath,
+  privateConfig,
+  publicConfig,
+}, async ({ privateConfigPath, publicConfigPath }) => {
+  const context = { ...baseContext, privateConfigPath, publicConfigPath };
+  try {
+    const evidence = await executeApply(context, runner);
+    await writeFile(join(evidenceDir, "qualification-evidence.json"), `${JSON.stringify(evidence, null, 2)}\n`, { mode: 0o600 });
+    console.log("B5 approved resources qualified and deployed");
+  } catch (error) {
+    const evidence = error?.evidence ?? { schema_version: "1", status: "failed", failure: "qualification_failed" };
+    await writeFile(join(evidenceDir, "qualification-evidence.json"), `${JSON.stringify(evidence, null, 2)}\n`, { mode: 0o600 });
+    throw error;
+  }
+});
