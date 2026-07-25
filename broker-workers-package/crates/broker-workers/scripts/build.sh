@@ -11,7 +11,8 @@ if ! grep -q '^version = "0.8.1"$' "$tool_manifest"; then
   exit 1
 fi
 # getrandom 0.3 requires both the wasm_js feature (enabled by broker-workers)
-# and an explicit backend cfg for wasm32-unknown-unknown.
-export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS="${CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS:+$CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS }--cfg getrandom_backend=\"wasm_js\""
+# and the canonical wasm32 backend cfg shared with the production preflight.
+wasm_rustflags=$(<"$root/scripts/wasm32-unknown-unknown-rustflags.txt")
+export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS="${CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS:+$CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS }$wasm_rustflags"
 exec cargo run --locked --offline --manifest-path "$tool_manifest" \
   --bin worker-build -- --release "$root" "$@"

@@ -4,6 +4,7 @@ import { verifyLiveWorkersSubdomain } from "./workers-subdomain.mjs";
 import {
   BROKER_PRIVATE_SECRET_NAMES,
   classifyDeploymentsListResult,
+  deleteWorkerAndVerifyAbsent,
   deployPrivateWorker,
   isCanonicalUuid,
   isValidCloudflareDeployment,
@@ -251,13 +252,20 @@ export async function executeApply(context, runner) {
     // Default rollback is creation-scoped. Updating an owned pre-existing
     // Worker never makes it deletion-owned by this run. After migration,
     // preserve D1 and broker-private while removing only a created public facade.
-    if (resources.public.created) {
-      const result = await runner.run("cleanup_public", ["npx", "wrangler", "delete", "--name", context.publicName, "--force"]);
-      evidence.cleanup.push({ resource: context.publicName, status: result.status });
-    }
+    let cleanupFailure;
+    const cleanupCreatedWorker = async (name, step) => {
+      try {
+        evidence.cleanup.push(await deleteWorkerAndVerifyAbsent({
+          runner, name, deleteStep: step, failureMessage: `${step}_failed`,
+        }));
+      } catch (cleanupError) {
+        evidence.cleanup.push(cleanupError.cleanupEvidence);
+        cleanupFailure ??= cleanupError;
+      }
+    };
+    if (resources.public.created) await cleanupCreatedWorker(context.publicName, "cleanup_public");
     if (resources.private.created && evidence.migration_state === undefined) {
-      const result = await runner.run("cleanup_private", ["npx", "wrangler", "delete", "--name", context.privateName, "--force"]);
-      evidence.cleanup.push({ resource: context.privateName, status: result.status });
+      await cleanupCreatedWorker(context.privateName, "cleanup_private");
     }
     if (evidence.migration_state !== undefined) {
       evidence.migration_state = "forward_fix_required";
@@ -266,6 +274,11 @@ export async function executeApply(context, runner) {
     }
     evidence.status = "failed";
     evidence.failure = error instanceof Error ? error.message : "unknown_failure";
+    if (cleanupFailure) {
+      const combined = new Error(`${evidence.failure}; ${cleanupFailure.message}`, { cause: error });
+      combined.evidence = evidence;
+      throw combined;
+    }
     error.evidence = evidence;
     throw error;
   }

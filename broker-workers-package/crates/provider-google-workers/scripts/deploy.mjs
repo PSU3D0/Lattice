@@ -3,7 +3,11 @@ import { isAbsolute, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { assertAuthenticatedAccount } from "../../broker-workers/deploy/scripts/cloudflare-identifiers.mjs";
 import { validatePublicCallbackBase, verifyLiveWorkersSubdomain } from "../../broker-workers/deploy/scripts/workers-subdomain.mjs";
-import { deployPrivateWorker, loadPrivateWorkerSecrets } from "../../broker-workers/deploy/scripts/private-worker-deploy-lib.mjs";
+import {
+  deleteWorkerAndVerifyAbsent,
+  deployPrivateWorker,
+  loadPrivateWorkerSecrets,
+} from "../../broker-workers/deploy/scripts/private-worker-deploy-lib.mjs";
 
 const args = new Map();
 for (let index = 2; index < process.argv.length; index += 2) {
@@ -101,15 +105,29 @@ try {
   await writeFile(join(evidenceDir, "google-egress-ownership.json"), `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
   console.log("private Google egress deployed");
 } catch (error) {
-  let cleanupFailed = false;
+  let cleanupFailure;
+  const cleanup = [];
   for (const worker of created.reverse()) {
     if (!worker.created_by_run) continue;
-    const result = await runner.run(`${worker.name}:cleanup`, ["npx", "wrangler", "delete", "--name", worker.name, "--force"]);
-    cleanupFailed ||= result.status !== 0;
+    try {
+      cleanup.push(await deleteWorkerAndVerifyAbsent({
+        runner,
+        name: worker.name,
+        deleteStep: `${worker.name}:cleanup`,
+        failureMessage: "private_egress_cleanup_failed",
+      }));
+    } catch (cleanupError) {
+      cleanup.push(cleanupError.cleanupEvidence);
+      cleanupFailure = cleanupError;
+      break;
+    }
   }
-  if (cleanupFailed) {
+  if (cleanupFailure) {
     const original = error instanceof Error ? error.message : String(error);
-    throw new Error(`${original}; private_egress_cleanup_failed`, { cause: error });
+    const combined = new Error(`${original}; private_egress_cleanup_failed`, { cause: error });
+    combined.cleanupEvidence = cleanup;
+    throw combined;
   }
+  if (error && typeof error === "object") error.cleanupEvidence = cleanup;
   throw error;
 }

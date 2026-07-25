@@ -59,6 +59,28 @@ export function classifyDeploymentsListResult(result) {
   return { state: "unknown" };
 }
 
+export async function deleteWorkerAndVerifyAbsent({
+  runner, name, deleteStep, verifyStep = `${deleteStep}:verify`, failureMessage = `${deleteStep}_failed`,
+}) {
+  const deletion = await runner.run(deleteStep, ["npx", "wrangler", "delete", "--name", name, "--force"]);
+  const verified = classifyDeploymentsListResult(await runner.run(
+    verifyStep,
+    ["npx", "wrangler", "deployments", "list", "--name", name, "--json"],
+  ));
+  const evidence = {
+    resource: name,
+    delete_exit_status: deletion.status,
+    post_delete_state: verified.state,
+    status: verified.state === "absent" ? "deleted" : "cleanup_failed",
+  };
+  if (verified.state !== "absent") {
+    const error = new Error(failureMessage);
+    error.cleanupEvidence = evidence;
+    throw error;
+  }
+  return evidence;
+}
+
 function exactNames(actual, expected) {
   const left = [...actual].sort();
   const right = [...expected].sort();
@@ -238,10 +260,16 @@ export async function deployPrivateWorker({
     };
   } catch (error) {
     if (created && rollbackCreatedOnFailure && error?.creationOwnershipUncertain !== true) {
-      const cleanup = await runner.run(`${step}:cleanup`, ["npx", "wrangler", "delete", "--name", name, "--force"]);
-      if (cleanup.status !== 0) {
+      try {
+        const cleanupEvidence = await deleteWorkerAndVerifyAbsent({
+          runner, name, deleteStep: `${step}:cleanup`, failureMessage: `${step}_cleanup_failed`,
+        });
+        if (error && typeof error === "object") error.cleanupEvidence = cleanupEvidence;
+      } catch (cleanupError) {
         const original = error instanceof Error ? error.message : String(error);
-        throw new Error(`${original}; ${step}_cleanup_failed`, { cause: error });
+        const combined = new Error(`${original}; ${step}_cleanup_failed`, { cause: error });
+        combined.cleanupEvidence = cleanupError.cleanupEvidence;
+        throw combined;
       }
     }
     throw error;

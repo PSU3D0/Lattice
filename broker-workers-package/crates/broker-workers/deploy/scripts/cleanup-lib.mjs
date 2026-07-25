@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { deleteWorkerAndVerifyAbsent } from "./private-worker-deploy-lib.mjs";
 
 function canonical(value) {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -63,14 +64,24 @@ export async function executeStandaloneCleanup(state, runner) {
     verified.push(await verifyWorker(state, runner, matches[0]));
   }
   const deleted = [];
+  const cleanup = [];
   for (const name of [...verified].reverse()) {
-    const result = await runner.run(`cleanup:delete:${name}`, [
-      "npx", "wrangler", "delete", "--name", name, "--force",
-    ]);
-    if (result.status !== 0) throw new Error(`cleanup_delete_failed:${name}`);
-    deleted.push(name);
+    try {
+      cleanup.push(await deleteWorkerAndVerifyAbsent({
+        runner,
+        name,
+        deleteStep: `cleanup:delete:${name}`,
+        verifyStep: `cleanup:verify:${name}`,
+        failureMessage: `cleanup_delete_failed:${name}`,
+      }));
+      deleted.push(name);
+    } catch (error) {
+      cleanup.push(error.cleanupEvidence);
+      error.evidence = { schema_version: "0.3", account_id: state.account_id, deleted, cleanup };
+      throw error;
+    }
   }
-  return { schema_version: "0.3", account_id: state.account_id, deleted };
+  return { schema_version: "0.3", account_id: state.account_id, deleted, cleanup };
 }
 
 export { canonical, manifestHash };

@@ -18,6 +18,8 @@ import { validatePublicCallbackBase } from "./workers-subdomain.mjs";
 import { renderWorkerUploadedSourceDigests } from "./uploaded-source.mjs";
 
 const hash = "c".repeat(64);
+const kvNamespaceDeleteError = `✘ [ERROR] A request to the Cloudflare API (/accounts/<acct>/storage/kv/namespaces) failed.
+Authentication error [code: 10000]`;
 const d1Id = "c1a61a80-5d61-4500-aae8-4db034897753";
 const deploymentIds = {
   auth: "11111111-1111-4111-8111-111111111111",
@@ -129,6 +131,7 @@ class FakeRunner {
     if (step === "public_worker:capture") return { status: 0, stdout: JSON.stringify([cloudflareDeployment(deploymentIds.public, versionIds.public)]) };
     if (step === "readiness:oauth_callback_400") return { status: 0, stdout: "400" };
     if (step === "smoke") return { status: 0, stdout: JSON.stringify({ status: "ok" }) };
+    if (step.endsWith(":verify")) return { status: 0, stdout: "[]" };
     return { status: 0, stdout: "{}" };
   }
 }
@@ -380,9 +383,32 @@ test("post-migration failure deletes only the created public facade and requires
     return /readiness:\/ready_failed/.test(error.message);
   });
   assert.equal(failure.evidence.migration_state, "forward_fix_required");
+  assert.deepEqual(failure.evidence.cleanup[0], {
+    resource: context.publicName,
+    delete_exit_status: 0,
+    post_delete_state: "absent",
+    status: "deleted",
+  });
   assert.deepEqual(runner.calls.filter((call) => call.command.includes("delete")).map((call) => call.command), [
     ["npx", "wrangler", "delete", "--name", context.publicName, "--force"],
   ]);
+});
+test("apply rollback trusts verified absence after Wrangler KV auth failure", async () => {
+  const runner = new FakeRunner({
+    "readiness:/ready": { status: 1, stdout: "" },
+    cleanup_public: { status: 1, stdout: "", stderr: kvNamespaceDeleteError },
+    "cleanup_public:verify": { status: 0, stdout: "[]" },
+  });
+  let failure;
+  await assert.rejects(executeApply(context, runner), (error) => {
+    failure = error;
+    return error.message === "readiness:/ready_failed";
+  });
+  assert.deepEqual(failure.evidence.cleanup[0], {
+    resource: context.publicName, delete_exit_status: 1, post_delete_state: "absent", status: "deleted",
+  });
+  assert.equal(runner.calls.filter((call) => call.command[2] === "delete").length, 1);
+  assert.equal(runner.calls.filter((call) => call.command[2] === "delete")[0].step, "cleanup_public");
 });
 test("immutable dependency deployment mismatch fails before mutation", async () => {
   const runner = new FakeRunner({ "dependency:GOOGLE_PROVIDER_SERVICE": { status: 0, stdout: JSON.stringify([
@@ -480,6 +506,7 @@ class PrivateWorkerRunner {
       status: 0,
       stdout: JSON.stringify([cloudflareDeployment(deploymentIds.auth, versionIds.auth)]),
     };
+    if (step.endsWith(":verify")) return { status: 0, stdout: "[]" };
     return { status: 0, stdout: "" };
   }
 }
@@ -636,16 +663,70 @@ test("uploaded source digest is required lowercase SHA-256 and is recorded", asy
   assert.equal(evidence.uploaded_source_sha256, hash);
 });
 
-test("rollback failure preserves the original deployment error", async () => {
+test("nonzero delete with verified absence is successful rollback and preserves the original error", async () => {
   const runner = new PrivateWorkerRunner({
     "auth_driver:secret:AUTH_DRIVER_SERVICE_AUTH": { status: 1, stdout: "", stderr: "redacted" },
-    "auth_driver:cleanup": { status: 1, stdout: "", stderr: "redacted" },
+    "auth_driver:cleanup": { status: 1, stdout: "", stderr: kvNamespaceDeleteError },
+    "auth_driver:cleanup:verify": { status: 0, stdout: "[]", stderr: "" },
   });
+  let failure;
   await assert.rejects(deployPrivateWorker({
     runner, step: "auth_driver", name: "fresh-auth-driver", accountId: context.accountId,
     config: "auth-driver.jsonc", secrets: privateSecrets["auth-driver"],
     uploadedSourceSha256: hash, runStartedAt,
-  }), /auth_driver_secret_install_failed; auth_driver_cleanup_failed/);
+  }), (error) => {
+    failure = error;
+    return error.message === "auth_driver_secret_install_failed";
+  });
+  assert.deepEqual(failure.cleanupEvidence, {
+    resource: "fresh-auth-driver", delete_exit_status: 1, post_delete_state: "absent", status: "deleted",
+  });
+  assert.equal(runner.calls.filter((call) => call.command[2] === "delete").length, 1);
+  assert.equal(runner.calls.at(-1).step, "auth_driver:cleanup:verify");
+});
+
+test("zero delete with target still present reports cleanup failure", async () => {
+  const runner = new PrivateWorkerRunner({
+    "auth_driver:secret:AUTH_DRIVER_SERVICE_AUTH": { status: 1, stdout: "", stderr: "redacted" },
+    "auth_driver:cleanup": { status: 0, stdout: "", stderr: "" },
+    "auth_driver:cleanup:verify": { status: 0, stdout: JSON.stringify([
+      cloudflareDeployment(deploymentIds.auth, versionIds.auth),
+    ]) },
+  });
+  let failure;
+  await assert.rejects(deployPrivateWorker({
+    runner, step: "auth_driver", name: "fresh-auth-driver", accountId: context.accountId,
+    config: "auth-driver.jsonc", secrets: privateSecrets["auth-driver"],
+    uploadedSourceSha256: hash, runStartedAt,
+  }), (error) => {
+    failure = error;
+    return error.message === "auth_driver_secret_install_failed; auth_driver_cleanup_failed";
+  });
+  assert.equal(failure.cleanupEvidence.post_delete_state, "present");
+  assert.equal(failure.cleanupEvidence.delete_exit_status, 0);
+  assert.equal(runner.calls.filter((call) => call.command[2] === "delete").length, 1);
+  assert.equal(runner.calls.at(-1).step, "auth_driver:cleanup:verify");
+});
+
+test("nonzero delete with unknown post-check fails closed without extra deletion", async () => {
+  const runner = new PrivateWorkerRunner({
+    "auth_driver:secret:AUTH_DRIVER_SERVICE_AUTH": { status: 1, stdout: "", stderr: "redacted" },
+    "auth_driver:cleanup": { status: 1, stdout: "", stderr: kvNamespaceDeleteError },
+    "auth_driver:cleanup:verify": { status: 1, stdout: "", stderr: kvNamespaceDeleteError },
+  });
+  let failure;
+  await assert.rejects(deployPrivateWorker({
+    runner, step: "auth_driver", name: "fresh-auth-driver", accountId: context.accountId,
+    config: "auth-driver.jsonc", secrets: privateSecrets["auth-driver"],
+    uploadedSourceSha256: hash, runStartedAt,
+  }), (error) => {
+    failure = error;
+    return error.message === "auth_driver_secret_install_failed; auth_driver_cleanup_failed";
+  });
+  assert.equal(failure.cleanupEvidence.post_delete_state, "unknown");
+  assert.equal(failure.cleanupEvidence.status, "cleanup_failed");
+  assert.equal(runner.calls.filter((call) => call.command[2] === "delete").length, 1);
+  assert.equal(runner.calls.at(-1).step, "auth_driver:cleanup:verify");
 });
 
 test("missing or extra secrets-file names abort during local validation", async () => {

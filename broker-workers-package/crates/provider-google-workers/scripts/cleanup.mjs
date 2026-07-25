@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { spawnSync } from "node:child_process";
 import { assertAuthenticatedAccount } from "../../broker-workers/deploy/scripts/cloudflare-identifiers.mjs";
+import { deleteWorkerAndVerifyAbsent } from "../../broker-workers/deploy/scripts/private-worker-deploy-lib.mjs";
 import { validatePublicCallbackBase } from "../../broker-workers/deploy/scripts/workers-subdomain.mjs";
 
 const args = new Map();
@@ -10,10 +11,12 @@ const statePath = args.get("--ownership-state");
 if (!isAbsolute(statePath ?? "")) throw new Error("ownership state must be absolute");
 const state = JSON.parse(await readFile(statePath, "utf8"));
 const manifest = JSON.parse(await readFile("build-manifest.json", "utf8"));
-if (state.schema_version !== "0.3" || state.owner !== "lattice-provider-google-workers" ||
-    state.created_by_run !== true || state.operator_computed_uploaded_source_sha256 !== manifest.source_hash ||
-    !/^[0-9a-f]{32}$/.test(state.account_id ?? "") || !/^lattice-c5-[a-z0-9]{6,20}$/.test(state.prefix ?? "") ||
-    !Array.isArray(state.workers) || state.workers.length !== 2) throw new Error("ownership state invalid");
+if (
+  state.schema_version !== "0.3" || state.owner !== "lattice-provider-google-workers" ||
+  state.created_by_run !== true || state.operator_computed_uploaded_source_sha256 !== manifest.source_hash ||
+  !/^[0-9a-f]{32}$/.test(state.account_id ?? "") || !/^lattice-c5-[a-z0-9]{6,20}$/.test(state.prefix ?? "") ||
+  !Array.isArray(state.workers) || state.workers.length !== 2
+) throw new Error("ownership state invalid");
 const callback = validatePublicCallbackBase(state.prefix, state.workers_subdomain, state.public_callback_base);
 if (state.callback_uri !== callback.googleOauthRedirectUri) throw new Error("ownership callback state invalid");
 const expected = new Map([
@@ -39,20 +42,44 @@ if (args.get("--mode") !== "apply") {
   console.log("cleanup dry-run complete; zero remote commands executed");
   process.exit(0);
 }
-if (args.get("--approve-cleanup") !== "yes" || !process.env.CLOUDFLARE_API_TOKEN) throw new Error("cleanup approval and API token required");
-const run = (command) => {
-  const result = spawnSync(command[0], command.slice(1), { encoding: "utf8", env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: state.account_id } });
+if (args.get("--approve-cleanup") !== "yes" || !process.env.CLOUDFLARE_API_TOKEN) {
+  throw new Error("cleanup approval and API token required");
+}
+const runner = {
+  async run(_step, command) {
+    const result = spawnSync(command[0], command.slice(1), {
+      encoding: "utf8",
+      env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: state.account_id },
+    });
+    return { status: result.status ?? 1, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+  },
+};
+const checked = async (step, command) => {
+  const result = await runner.run(step, command);
   if (result.status !== 0) throw new Error("remote command failed");
   return result.stdout;
 };
-assertAuthenticatedAccount(run(["npx", "wrangler", "whoami", "--json"]), state.account_id);
+assertAuthenticatedAccount(await checked("cleanup:auth", ["npx", "wrangler", "whoami", "--json"]), state.account_id);
 for (const name of plan.delete) {
   const worker = state.workers.find((candidate) => candidate.name === name);
-  const deployments = JSON.parse(run(["npx", "wrangler", "deployments", "list", "--name", name, "--json"]));
+  const deployments = JSON.parse(await checked(
+    `cleanup:deployments:${name}`,
+    ["npx", "wrangler", "deployments", "list", "--name", name, "--json"],
+  ));
   if (!Array.isArray(deployments) || !deployments.some((deployment) =>
     deployment?.source === "wrangler" && deployment.id === worker.deployment_id &&
     deployment.versions?.some((version) => version?.version_id === worker.version_id)
   )) throw new Error("owned deployment missing");
 }
-for (const name of plan.delete) run(["npx", "wrangler", "delete", "--name", name, "--force"]);
+const cleanup = [];
+for (const name of plan.delete) {
+  cleanup.push(await deleteWorkerAndVerifyAbsent({
+    runner,
+    name,
+    deleteStep: `cleanup:delete:${name}`,
+    verifyStep: `cleanup:verify:${name}`,
+    failureMessage: `cleanup delete failed:${name}`,
+  }));
+}
+console.log(JSON.stringify({ ...plan, cleanup }, null, 2));
 console.log("private Google egress cleanup complete");

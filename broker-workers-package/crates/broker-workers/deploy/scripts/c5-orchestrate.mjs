@@ -5,7 +5,12 @@ import { createHash } from "node:crypto";
 import { verifyBundle } from "./operator-artifacts.mjs";
 import { assertAuthenticatedAccount, validateD1Id } from "./cloudflare-identifiers.mjs";
 import { validatePublicCallbackBase, verifyLiveWorkersSubdomain } from "./workers-subdomain.mjs";
-import { deployPrivateWorker, isCanonicalUuid, loadPrivateWorkerSecrets } from "./private-worker-deploy-lib.mjs";
+import {
+  deleteWorkerAndVerifyAbsent,
+  deployPrivateWorker,
+  isCanonicalUuid,
+  loadPrivateWorkerSecrets,
+} from "./private-worker-deploy-lib.mjs";
 import { computeUploadedSourceSha256 } from "./uploaded-source.mjs";
 
 const args = new Map();
@@ -76,7 +81,7 @@ try{
     await writeFile(join(evidenceDir,"c5-forward-fix-required.json"),`${JSON.stringify({schema_version:"0.3",status:"forward_fix_required",d1_preserved:true,private_fence_worker_preserved:true,owned_egress_preserved:true},null,2)}\n`,{mode:0o600});
   } else {
     if(providerApplied){try{run(providerRoot,["node","scripts/cleanup.mjs","--ownership-state",providerState,"--mode","apply","--approve-cleanup","yes"]);}catch(cleanupError){throw new Error(`${error instanceof Error?error.message:String(error)}; owned egress cleanup failed`,{cause:cleanupError});}}
-    if(authDriverApplied){try{run(brokerRoot,["npx","wrangler","delete","--name",authDriverName,"--force"]);}catch(cleanupError){throw new Error(`${error instanceof Error?error.message:String(error)}; owned auth-driver cleanup failed`,{cause:cleanupError});}}
+    if(authDriverApplied){try{const cleanupEvidence=await deleteWorkerAndVerifyAbsent({runner:authRunner,name:authDriverName,deleteStep:"auth_driver:orchestrator_cleanup",failureMessage:"owned auth-driver cleanup failed"});if(error&&typeof error==="object")error.cleanupEvidence=cleanupEvidence;}catch(cleanupError){const combined=new Error(`${error instanceof Error?error.message:String(error)}; owned auth-driver cleanup failed`,{cause:cleanupError});combined.cleanupEvidence=cleanupError.cleanupEvidence;throw combined;}}
   }
   throw error;
 }

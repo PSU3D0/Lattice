@@ -330,18 +330,18 @@
     },
     {
       "path": "crates/broker-workers/deploy/scripts/c5-cleanup.mjs",
-      "sha256": "136b3f7de56f3e2291b4311523b6a47bc716886537ad698a95e5735ecfdd03df",
-      "size_bytes": 3100
+      "sha256": "bf43305d8a5f91d83752f15c12d2b6bc320882764d8a34b660c4c47279dd454b",
+      "size_bytes": 4038
     },
     {
       "path": "crates/broker-workers/deploy/scripts/c5-orchestrate.mjs",
-      "sha256": "63dcb057e504d53ac02fb22948b89873d0c50a673eb070f9d66b8283613e6cfd",
-      "size_bytes": 12425
+      "sha256": "ed33846fdf6c0fae48c6e257661492fb653ff13686d8062c19a5bcb7df5d308e",
+      "size_bytes": 12728
     },
     {
       "path": "crates/broker-workers/deploy/scripts/cleanup-lib.mjs",
-      "sha256": "d347d7436033923edeb95784c44f04f196dc4da8972e7328ba3b10f691876000",
-      "size_bytes": 3685
+      "sha256": "7c37ad9979658c3d099f7fbc2ff8e2c080342de84e99bce33fbc1489e3ae3d08",
+      "size_bytes": 4027
     },
     {
       "path": "crates/broker-workers/deploy/scripts/cleanup.mjs",
@@ -350,8 +350,8 @@
     },
     {
       "path": "crates/broker-workers/deploy/scripts/cleanup.test.mjs",
-      "sha256": "4c2b3c72a07554ad59a32545cee71eafcdf003593b670cced2405d7450430b26",
-      "size_bytes": 3988
+      "sha256": "3791c44be08118c05da8ff30445ff5f3bfe3486aa90620dd23665e96faf19d1c",
+      "size_bytes": 7135
     },
     {
       "path": "crates/broker-workers/deploy/scripts/cloudflare-identifiers.mjs",
@@ -360,8 +360,8 @@
     },
     {
       "path": "crates/broker-workers/deploy/scripts/deploy-lib.mjs",
-      "sha256": "bee1240db3d9d39cb65d1f88ce30d31554a7e9d61795235eb2b95833344910e9",
-      "size_bytes": 12325
+      "sha256": "44ce0d865a0934e54f9f6aa7fb040b8e07267eafbc24edaf9be4dc5e41f54a76",
+      "size_bytes": 12643
     },
     {
       "path": "crates/broker-workers/deploy/scripts/deploy.mjs",
@@ -370,8 +370,8 @@
     },
     {
       "path": "crates/broker-workers/deploy/scripts/deploy.test.mjs",
-      "sha256": "17150b8a0c4944937659624051e84f2de6f9696f920b7fe89a752e7e9fd38bae",
-      "size_bytes": 36166
+      "sha256": "5bfa68bd15831beb694dcbf804e6ee4cf40a743b9e23d662fdbdf20ac8a91277",
+      "size_bytes": 40258
     },
     {
       "path": "crates/broker-workers/deploy/scripts/operator-artifacts.mjs",
@@ -395,8 +395,8 @@
     },
     {
       "path": "crates/broker-workers/deploy/scripts/private-worker-deploy-lib.mjs",
-      "sha256": "7bfe95d5a9006f2d7045bc33b46920408ad3755c84979b9b2e3fb54a62182d95",
-      "size_bytes": 11005
+      "sha256": "416d32e2e7feb2f1d4fe17e4fb4c8b3428770d4ffe602fc8098ea0706782d042",
+      "size_bytes": 12057
     },
     {
       "path": "crates/broker-workers/deploy/scripts/uploaded-source.mjs",
@@ -435,8 +435,13 @@
     },
     {
       "path": "crates/broker-workers/scripts/build.sh",
-      "sha256": "ec1e0bc8fea46c241bb88d122731fe672b3045014af6f1566a15a5256d10e1da",
-      "size_bytes": 893
+      "sha256": "aa417657cd049ca6d9eca8de5cdf3cf7c59820e1f161462e2aa63f1427d1c654",
+      "size_bytes": 964
+    },
+    {
+      "path": "crates/broker-workers/scripts/wasm32-unknown-unknown-rustflags.txt",
+      "sha256": "bf6771dee4a74f29b6d208a095ce85b8a1a6d3661ab502f2ebd637bc79368f78",
+      "size_bytes": 34
     },
     {
       "path": "crates/broker-workers/src/activation.rs",
@@ -860,13 +865,13 @@
     },
     {
       "path": "crates/provider-google-workers/scripts/cleanup.mjs",
-      "sha256": "591e8420da76f45c0cb068f7de218f4cb12b1475bd3906b74f3da0797308eb48",
-      "size_bytes": 3521
+      "sha256": "86b12498f87bf236ec959090c334cf7496879ee69e34e760a6782883c1e2703c",
+      "size_bytes": 4197
     },
     {
       "path": "crates/provider-google-workers/scripts/deploy.mjs",
-      "sha256": "f1934e13e903a00d7ca277911e39aec4a3b254e376ed6a9c134725694b34049d",
-      "size_bytes": 6356
+      "sha256": "4c497bdb477437d29693127522ed2b567a39a74a561401ad956928661afdf1e7",
+      "size_bytes": 6740
     },
     {
       "path": "crates/provider-google-workers/scripts/package.mjs",
