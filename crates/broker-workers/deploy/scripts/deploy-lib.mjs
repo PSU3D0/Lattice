@@ -40,7 +40,8 @@ export function redactedPlan(context) {
       "verify_immutable_dependency_pins",
       "qualify_exact_secrets_file_before_mutation",
       "prove_deploy_install_verify_capture_fence_aware_private",
-      "apply_0003_production_v2_cutover",
+      "apply_forward_only_d1_migrations_through_0004_operator_artifact_bundle",
+      "seed_operator_artifact_bundle_and_verify_byte_exact_readback",
       "prove_deploy_verify_capture_public_last",
       "health_ready_callback_400_smoke",
       "write_sanitized_evidence",
@@ -78,6 +79,48 @@ function validateServicePin(binding, expectedName, pin, accountId) {
     !isCanonicalUuid(pin?.version_id) ||
     !/^[0-9a-f]{64}$/.test(pin?.uploaded_source_sha256 ?? "")
   ) throw new Error(`dependency_pin_invalid:${binding}`);
+}
+
+function d1ResultRows(stdout) {
+  let parsed;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    throw new Error("operator_bundle_readback_invalid_json");
+  }
+  const statements = Array.isArray(parsed) ? parsed : [parsed];
+  if (statements.length === 0 || statements.some((entry) => entry?.success === false || !Array.isArray(entry?.results))) {
+    throw new Error("operator_bundle_readback_invalid");
+  }
+  return statements.flatMap((entry) => entry.results);
+}
+
+export async function seedOperatorBundle(context, runner) {
+  const seed = context.operatorBundleSeed;
+  if (
+    typeof seed?.deploymentId !== "string" || seed.deploymentId.length === 0 || seed.deploymentId.includes("\0") ||
+    !/^sha256:[0-9a-f]{64}$/.test(seed?.bundleHash ?? "") ||
+    typeof seed?.canonicalBundleJcs !== "string" || seed.canonicalBundleJcs.length === 0
+  ) throw new Error("operator_bundle_seed_invalid");
+  const actualHash = `sha256:${createHash("sha256").update(seed.canonicalBundleJcs).digest("hex")}`;
+  if (actualHash !== seed.bundleHash) throw new Error("operator_bundle_seed_hash_mismatch");
+  const deploymentId = seed.deploymentId.replaceAll("'", "''");
+  const bytesHex = Buffer.from(seed.canonicalBundleJcs).toString("hex").toUpperCase();
+  const insertSql = `INSERT OR IGNORE INTO operator_artifact_bundles(deployment_id,bundle_hash,canonical_bundle_jcs,seeded_at) VALUES('${deploymentId}','${seed.bundleHash}',X'${bytesHex}',unixepoch())`;
+  await checked(runner, "operator_bundle:seed", [
+    "npx", "wrangler", "d1", "execute", context.d1Name, "--remote", "--config", context.privateConfigPath,
+    "--command", insertSql, "--json",
+  ]);
+  const read = await checked(runner, "operator_bundle:readback", [
+    "npx", "wrangler", "d1", "execute", context.d1Name, "--remote", "--config", context.privateConfigPath,
+    "--command", `SELECT deployment_id,bundle_hash,hex(canonical_bundle_jcs) AS canonical_bundle_hex FROM operator_artifact_bundles WHERE bundle_hash='${seed.bundleHash}' ORDER BY deployment_id`, "--json",
+  ]);
+  const rows = d1ResultRows(read.stdout);
+  if (
+    rows.length !== 1 || rows[0]?.deployment_id !== seed.deploymentId ||
+    rows[0]?.bundle_hash !== seed.bundleHash || rows[0]?.canonical_bundle_hex !== bytesHex
+  ) throw new Error("operator_bundle_readback_mismatch");
+  return { deployment_id: seed.deploymentId, bundle_hash: seed.bundleHash, byte_length: Buffer.byteLength(seed.canonicalBundleJcs) };
 }
 
 async function qualifyTarget(context, runner, kind, name) {
@@ -203,7 +246,9 @@ export async function executeApply(context, runner) {
       "--remote", "--config", context.privateConfigPath,
     ]);
     evidence.migration_state = "applied_forward_only";
-    evidence.checks.push("0003_production_v2_cutover_applied");
+    evidence.checks.push("forward_only_d1_migrations_through_0004_applied");
+    evidence.operator_bundle = await seedOperatorBundle(context, runner);
+    evidence.checks.push("operator_bundle_seeded_and_byte_exact_readback_verified");
     const publicDeployment = await deployPrivateWorker({
       runner,
       step: "public_worker",

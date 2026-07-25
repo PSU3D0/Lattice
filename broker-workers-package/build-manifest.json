@@ -4,8 +4,8 @@
   "package_version": "0.1.0",
   "requirements_sha256": "912bfee6e786efc2506216a19737f21a2489134bf230cd828b80befc3e80fd03",
   "cargo_lock_sha256": "52700211f98b06aa893b5bc6c6f8576c518cf06f43a0fc0e84d148af21c8a5c9",
-  "wasm_sha256": "405c3618177d0c74807301e21749d1ad51ea0ebb55a00427c33b9b0b466e3e69",
-  "root_production_wasm_sha256": "405c3618177d0c74807301e21749d1ad51ea0ebb55a00427c33b9b0b466e3e69",
+  "wasm_sha256": "f67d9aeb45d9a137aa36da4eebb911dd49af605591b5c7bc5806e6e48471e51a",
+  "root_production_wasm_sha256": "f67d9aeb45d9a137aa36da4eebb911dd49af605591b5c7bc5806e6e48471e51a",
   "feature_flags": {
     "production": [],
     "workerd_tests_separate_artifact": [
@@ -260,13 +260,13 @@
     },
     {
       "path": "crates/broker-workers/build/index_bg.wasm",
-      "sha256": "405c3618177d0c74807301e21749d1ad51ea0ebb55a00427c33b9b0b466e3e69",
-      "size_bytes": 5725938
+      "sha256": "f67d9aeb45d9a137aa36da4eebb911dd49af605591b5c7bc5806e6e48471e51a",
+      "size_bytes": 5712063
     },
     {
       "path": "crates/broker-workers/build/index.js",
-      "sha256": "7fcf88895453e3b4e5b5f099247ec33bdf3df5ec837a2799a7603ed460f290aa",
-      "size_bytes": 35478
+      "sha256": "8d42ce1504965cb582739fef1da421acd848d3b7ce8eba0577324c3525db83ec",
+      "size_bytes": 35676
     },
     {
       "path": "crates/broker-workers/build/package.json",
@@ -310,13 +310,13 @@
     },
     {
       "path": "crates/broker-workers/deploy/google-oauth-readiness.json",
-      "sha256": "eac20649b1184c83ce4a73ca9518134490902c04c2c386d76885c1e440510cd9",
-      "size_bytes": 10990
+      "sha256": "9b041b68b24c0a53aec88cd8ebedfc2e025b43de8d43ab741b471ad7ab7b710b",
+      "size_bytes": 12270
     },
     {
       "path": "crates/broker-workers/deploy/GOOGLE-OAUTH-RUNBOOK.md",
-      "sha256": "8835e02b28c8c79037db140aa0fc8ead2ea0c8115fcc8ded6ba550a5c42cffd2",
-      "size_bytes": 16158
+      "sha256": "72400c3c953c8f417668973815470d13240a73c5fbc00249db44e3cd93012e25",
+      "size_bytes": 16919
     },
     {
       "path": "crates/broker-workers/deploy/public-callback/src/index.mjs",
@@ -335,8 +335,8 @@
     },
     {
       "path": "crates/broker-workers/deploy/scripts/c5-orchestrate.mjs",
-      "sha256": "ed743cb3e2a727e5c946361a1669f6110cd5f6bc4f364b497cd188f0b65b452c",
-      "size_bytes": 13047
+      "sha256": "c3aa269aa9ecd952cd0ac2a002109edc16d39f7d24dd63b69cc709eb23301237",
+      "size_bytes": 13139
     },
     {
       "path": "crates/broker-workers/deploy/scripts/cleanup-lib.mjs",
@@ -360,18 +360,18 @@
     },
     {
       "path": "crates/broker-workers/deploy/scripts/deploy-lib.mjs",
-      "sha256": "44ce0d865a0934e54f9f6aa7fb040b8e07267eafbc24edaf9be4dc5e41f54a76",
-      "size_bytes": 12643
+      "sha256": "5e3fe6cd9a64d9b3c59c63d4685d58bc62c0af1c444c491ee69719ea5c998ce8",
+      "size_bytes": 15366
     },
     {
       "path": "crates/broker-workers/deploy/scripts/deploy.mjs",
-      "sha256": "9201600fc6a7a70f539a538bef2c484f0c7ce79ae5fb7bc640325db5b1123136",
-      "size_bytes": 13783
+      "sha256": "bdd3f41e2421e92679af6a7deb9b9a74f9d0150c59e4b46d23f27eda49df87a1",
+      "size_bytes": 13767
     },
     {
       "path": "crates/broker-workers/deploy/scripts/deploy.test.mjs",
-      "sha256": "b55f5e643b660313b25f45e95cb9bc3ee3a1bc582a46e84beeb65bcde9b7eb6c",
-      "size_bytes": 47567
+      "sha256": "48067f3ffb5f0f42a2216c2b1e2d7c288c476d1aa5382e47d9dc7f1585687888",
+      "size_bytes": 49925
     },
     {
       "path": "crates/broker-workers/deploy/scripts/operator-artifacts.mjs",
@@ -400,8 +400,8 @@
     },
     {
       "path": "crates/broker-workers/deploy/scripts/rendered-config.mjs",
-      "sha256": "3a25d0819c0a0a34be3ca5c0d4372d32bb1ed501bdd734407d77cde1cc977690",
-      "size_bytes": 4861
+      "sha256": "938eeb8186aa5b6616b4ff5adc884d9ce47135b3b17a28880eb7527a55899054",
+      "size_bytes": 4673
     },
     {
       "path": "crates/broker-workers/deploy/scripts/uploaded-source.mjs",
@@ -427,6 +427,11 @@
       "path": "crates/broker-workers/migrations/0003_production_v2_cutover.sql",
       "sha256": "d19d428288ab24012d22039b6342d2038a3ba8849d1c6d6a9d993832f6aab399",
       "size_bytes": 9674
+    },
+    {
+      "path": "crates/broker-workers/migrations/0004_operator_artifact_bundle.sql",
+      "sha256": "594e3d97b3399703a31f723a3185d577554acf9c7dc878b136eca1511416e2c5",
+      "size_bytes": 493
     },
     {
       "path": "crates/broker-workers/REVIEW-REMEDIATION.md",
@@ -500,8 +505,8 @@
     },
     {
       "path": "crates/broker-workers/src/operator_bundle.rs",
-      "sha256": "2de7e46572d6f8a64294f2fa3985091937b68125b10a5e688c4afeabfa84c2ce",
-      "size_bytes": 11062
+      "sha256": "5b68c0430e7019d90a3b8b64d5a48ed9005525bbaaa68408f5110ba17f331722",
+      "size_bytes": 17782
     },
     {
       "path": "crates/broker-workers/src/protocol.rs",
@@ -520,13 +525,13 @@
     },
     {
       "path": "crates/broker-workers/src/wasm.rs",
-      "sha256": "5e09dc0a172d730f3e9e6a527fa9b85e0070d8c847b7312f09056d62a0c03118",
-      "size_bytes": 148728
+      "sha256": "7ee9ddc4c1c2f476b36ab2ecfcbb862a77b7134bfd332ee6b84d5c83bc66a0d4",
+      "size_bytes": 149192
     },
     {
       "path": "crates/broker-workers/src/wasm/v2_production.rs",
-      "sha256": "2ad2934bbad3fd75583f688559beb7038a908dee4fb542b3bd7fe1ef7081850e",
-      "size_bytes": 156442
+      "sha256": "a6732f4c3ab1ab42149f63de5c9a783a113c10a9184d5ccdc38cd4676fcee06c",
+      "size_bytes": 156786
     },
     {
       "path": "crates/broker-workers/src/wasm/v2_test.rs",
@@ -635,8 +640,8 @@
     },
     {
       "path": "crates/broker-workers/wrangler.jsonc",
-      "sha256": "86e0018e0137731d76a8713de4c925c2ef27b07cebefcbbab3af5bf95a4fa9d9",
-      "size_bytes": 4040
+      "sha256": "d7c98a45f8a859972f2ed662e0a61c82827e7ec947400a15741a78562469f808",
+      "size_bytes": 3887
     },
     {
       "path": "crates/connector-spec/Cargo.toml",

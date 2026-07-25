@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Miniflare } from "miniflare";
 import { readFile } from "node:fs/promises";
 import { createCipheriv, createHash, createHmac, createPrivateKey, createPublicKey, diffieHellman, generateKeyPairSync, randomBytes, sign, verify } from "node:crypto";
+import { makeOperatorBundleFixture } from "./operator-bundle-fixture";
 
 const DEPLOYMENT_AUTHORITY_PUBLIC_KEY_B64U = "G58A2khwWXCYU56xPu4z-vjh7zzLWW0mmoOVT6v27WA";
 const GENERIC_PROFILE_KEYS = generateKeyPairSync("ed25519");
@@ -13,7 +14,7 @@ const OPERATOR_BUNDLE_KEYS=generateKeyPairSync("ed25519");
 const OPERATOR_BUNDLE_KEY_ID="operator-bundle-fixture";
 const OPERATOR_BUNDLE_PUBLIC_KEY_B64U=(OPERATOR_BUNDLE_KEYS.publicKey.export({format:"jwk"}) as JsonWebKey).x!;
 const PROTOCOL_VECTORS=JSON.parse(await readFile(new URL("../../../../impl-docs/spec/credential-plane-protocol-vectors.json",import.meta.url),"utf8"));
-const OPERATOR_ARTIFACT_BUNDLE_JCS=makeOperatorBundle();
+const OPERATOR_ARTIFACT_BUNDLE_JCS=makeOperatorBundleFixture({protocolVectors:PROTOCOL_VECTORS,privateKey:OPERATOR_BUNDLE_KEYS.privateKey,keyId:OPERATOR_BUNDLE_KEY_ID,publicKeyB64u:OPERATOR_BUNDLE_PUBLIC_KEY_B64U,activationRecipientKeyId:"private-channel-fixture",activationRecipientPublicKeyB64u:GENERIC_ACTIVATION_RECIPIENT_PUBLIC_KEY_B64U});
 const OPERATOR_ARTIFACT_BUNDLE_SHA256=`sha256:${createHash("sha256").update(OPERATOR_ARTIFACT_BUNDLE_JCS).digest("hex")}`;
 const AUTH_DRIVER_SCRIPT = await readFile(new URL("../../deploy/auth-driver/src/index.mjs", import.meta.url), "utf8");
 const DEPLOYMENT_CONTRACT_SET_JCS = "{\"connector_ref\":\"connector.google.workspace@1\",\"contract_set_ref\":\"contract-set-fixture\",\"contracts\":[{\"claim_requirement_hash\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"contract_hash\":\"sha256:8fbdd2dbb63877b92004b7b5e6a7dc665a0ec5788850e4a466c0b6200639de2a\",\"contract_id\":\"connector.google.gmail.send_message@1\",\"credential_response_policy\":{\"kind\":\"forbidden\",\"sensitive_headers\":[],\"sensitive_json_pointers\":[]}},{\"claim_requirement_hash\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"contract_hash\":\"sha256:d02ed39536d396d66895f97672551a9eb443e701900112613865170bf157e999\",\"contract_id\":\"connector.google.sheets.append_row@1\",\"credential_response_policy\":{\"kind\":\"forbidden\",\"sensitive_headers\":[],\"sensitive_json_pointers\":[]}}],\"critical_fields\":[],\"deployment_id\":\"deployment-fixture\",\"extensions\":{},\"issuer\":\"operator-fixture\",\"key_id\":\"operator-authority-fixture\",\"org_id\":\"org-fixture\",\"schema_version\":\"0.2\",\"signature\":{\"alg\":\"Ed25519\",\"key_id\":\"operator-authority-fixture\",\"value\":\"SjqV-jvV1vRUR0XoBTfySXSfeMI7mXnPh4qwNOHQiUQUnGpVX3oMN7skullqE3ApcqyTrYeYOkupmFPEL3DyBQ\"}}";
@@ -38,7 +39,7 @@ const mf = new Miniflare({
         RECEIPT_SIGNING_SEED: "1111111111111111111111111111111111111111111111111111111111111111",
         COMMITMENT_KEY: "2222222222222222222222222222222222222222222222222222222222222222",
         BINDING_SIGNING_SEED: "4444444444444444444444444444444444444444444444444444444444444444",
-        BROKER_WORKER_WASM_SHA256: `sha256:${"e".repeat(64)}`, AUTH_DRIVER_WORKER_SHA256: `sha256:${"d".repeat(64)}`, GOOGLE_TOKEN_WORKER_SHA256: `sha256:${"c".repeat(64)}`, GOOGLE_PROVIDER_WORKER_SHA256: `sha256:${"b".repeat(64)}`, GENERIC_PROFILE_REGISTRY_JCS: "{}", OPERATOR_ARTIFACT_BUNDLE_JCS, OPERATOR_ARTIFACT_BUNDLE_SHA256, OPERATOR_BUNDLE_KEY_ID, OPERATOR_BUNDLE_PUBLIC_KEY_B64U,
+        BROKER_WORKER_WASM_SHA256: `sha256:${"e".repeat(64)}`, AUTH_DRIVER_WORKER_SHA256: `sha256:${"d".repeat(64)}`, GOOGLE_TOKEN_WORKER_SHA256: `sha256:${"c".repeat(64)}`, GOOGLE_PROVIDER_WORKER_SHA256: `sha256:${"b".repeat(64)}`, OPERATOR_ARTIFACT_BUNDLE_SHA256, OPERATOR_BUNDLE_KEY_ID, OPERATOR_BUNDLE_PUBLIC_KEY_B64U,
         CUSTODY_ROOT_KEY: "3333333333333333333333333333333333333333333333333333333333333333",
         LOCAL_TEST_MODE: "true",
         PUBLIC_CALLBACK_BASE: "https://broker-public.example",
@@ -60,6 +61,7 @@ const mf = new Miniflare({
         BROKER_LEDGER_DO: { className: "BrokerLedgerDurableObject", useSQLite: true },
         CONNECTION_REFRESH_DO: { className: "ConnectionRefreshDurableObject", useSQLite: true },
         CREDENTIAL_STATE_V2_DO: { className: "CredentialStateDurableObject", useSQLite: true },
+        V2_AUTHORITY_DO: { className: "V2AuthorityDurableObject", useSQLite: true },
       },
       serviceBindings: {
         GOOGLE_TOKEN_SERVICE: "mock-services",
@@ -95,7 +97,7 @@ const productionMf = new Miniflare({
       INVOKE_SERVICE_AUTH: "production-route-test-service-auth",
       GOOGLE_EGRESS_SERVICE_AUTH: "production-egress-service-auth-value-123456",
       RECEIPT_SIGNING_SEED: "1".repeat(64), COMMITMENT_KEY: "2".repeat(64),
-      BINDING_SIGNING_SEED: "4".repeat(64), BROKER_WORKER_WASM_SHA256: `sha256:${"e".repeat(64)}`, AUTH_DRIVER_WORKER_SHA256: `sha256:${"d".repeat(64)}`, GOOGLE_TOKEN_WORKER_SHA256: `sha256:${"c".repeat(64)}`, GOOGLE_PROVIDER_WORKER_SHA256: `sha256:${"b".repeat(64)}`, GENERIC_PROFILE_REGISTRY_JCS: "{}", OPERATOR_ARTIFACT_BUNDLE_JCS, OPERATOR_ARTIFACT_BUNDLE_SHA256, OPERATOR_BUNDLE_KEY_ID, OPERATOR_BUNDLE_PUBLIC_KEY_B64U, CUSTODY_ROOT_KEY: "3".repeat(64),
+      BINDING_SIGNING_SEED: "4".repeat(64), BROKER_WORKER_WASM_SHA256: `sha256:${"e".repeat(64)}`, AUTH_DRIVER_WORKER_SHA256: `sha256:${"d".repeat(64)}`, GOOGLE_TOKEN_WORKER_SHA256: `sha256:${"c".repeat(64)}`, GOOGLE_PROVIDER_WORKER_SHA256: `sha256:${"b".repeat(64)}`, OPERATOR_ARTIFACT_BUNDLE_SHA256, OPERATOR_BUNDLE_KEY_ID, OPERATOR_BUNDLE_PUBLIC_KEY_B64U, CUSTODY_ROOT_KEY: "3".repeat(64),
       PUBLIC_CALLBACK_BASE: "https://production.example",
       OAUTH_REDIRECT_URI: "https://production.example/v0.2/credential-callback",
       DEPLOYMENT_BOOTSTRAP_AUTH: "production-route-test-bootstrap",
@@ -221,12 +223,14 @@ beforeAll(async () => {
     [productionMf, "broker-production", "production-route-test-pepper"],
   ] as const) {
     const db = await runtime.getD1Database("BROKER_DB", workerName);
-    for (const name of ["0001_broker.sql", "0002_credential_plane_v2.sql", "0003_production_v2_cutover.sql"]) {
+    for (const name of ["0001_broker.sql", "0002_credential_plane_v2.sql", "0003_production_v2_cutover.sql", "0004_operator_artifact_bundle.sql"]) {
       const migration = await readFile(`../migrations/${name}`, "utf8");
       for (const statement of migration.split(";").map((value) => value.trim()).filter(Boolean)) {
         await db.prepare(statement).run();
       }
     }
+    await db.prepare("INSERT INTO operator_artifact_bundles(deployment_id,bundle_hash,canonical_bundle_jcs,seeded_at) VALUES(?,?,?,?)")
+      .bind("deployment-fixture", OPERATOR_ARTIFACT_BUNDLE_SHA256, Buffer.from(OPERATOR_ARTIFACT_BUNDLE_JCS), Math.floor(Date.now() / 1000)).run();
     const keyHash = createHmac("sha256", pepper)
       .update("deployment-key").update(Buffer.from([0])).update(fixtureKey).digest("hex");
     await db.prepare("INSERT INTO deployment_keys(org_id,deployment_id,key_hash,expires_at,revoked) VALUES(?,?,?,?,0)")
@@ -288,18 +292,6 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function makeOperatorBundle(){
- const domains:any={StandingAuthority:"lattice.standing-authority.v0.2",ContractSet:"lattice.contract-set.v0.2",RegistryDefinition:"lattice.registry-definition.v0.2",RegistryDecision:"lattice.registry-decision.v0.2",LegacyAdmissionInventory:"lattice.legacy-admission-inventory.v0.2",HistoricalKeyValidityEvidence:"lattice.historical-key-validity-evidence.v0.2",HistoricalKeyRevocationEvidence:"lattice.historical-key-revocation-evidence.v0.2",HistoricalVerificationKeyArchive:"lattice.historical-verification-key-archive.v0.2"};
- const signValue=(schema:string,value:any)=>{const v={...value,signature:{alg:"Ed25519",key_id:OPERATOR_BUNDLE_KEY_ID,value:"pending"}};v.signature.value=sign(null,Buffer.concat([Buffer.from(domains[schema]),Buffer.from([0]),Buffer.from(canonicalJson(Object.fromEntries(Object.entries(v).filter(([k])=>k!=="signature"))))]),OPERATOR_BUNDLE_KEYS.privateKey).toString("base64url");return v;};
- const source=(schema:string)=>structuredClone(PROTOCOL_VECTORS.signed_artifact_vectors.find((item:any)=>item.artifact_schema===schema).artifact);
- const archiveSource=source("HistoricalVerificationKeyArchive");archiveSource.validity_evidence=signValue("HistoricalKeyValidityEvidence",archiveSource.validity_evidence);archiveSource.revocation_evidence=signValue("HistoricalKeyRevocationEvidence",archiveSource.revocation_evidence);
- const archive=signValue("HistoricalVerificationKeyArchive",archiveSource);
- const entry=(schema:string,value:any=source(schema))=>{const canonical_jcs=canonicalJson(signValue(schema,value));return{schema,hash:`sha256:${createHash("sha256").update(canonical_jcs).digest("hex")}`,canonical_jcs};};
- const artifacts:any={deployment_standing_authority:[entry("StandingAuthority")],deployment_contract_set:[entry("ContractSet")],registry_definitions:[entry("RegistryDefinition")],registry_decisions:[entry("RegistryDecision")],historical_inventory:[entry("LegacyAdmissionInventory")],historical_key_evidence:[]};
- const archiveJcs=canonicalJson(archive);artifacts.historical_key_evidence.push({schema:"HistoricalVerificationKeyArchive",hash:`sha256:${createHash("sha256").update(archiveJcs).digest("hex")}`,canonical_jcs:archiveJcs});
- const bundle:any={schema_version:"1",key_id:OPERATOR_BUNDLE_KEY_ID,public_key_b64u:OPERATOR_BUNDLE_PUBLIC_KEY_B64U,not_before:"2026-01-01T00:00:00Z",expires_at:"2030-01-01T00:00:00Z",revoked_at:null,activation_recipient:{key_id:"private-channel-fixture",public_key_b64u:GENERIC_ACTIVATION_RECIPIENT_PUBLIC_KEY_B64U,suite:"DHKEM(X25519,HKDF-SHA256)/HKDF-SHA256/AES-256-GCM"},artifacts,signature:{alg:"Ed25519",key_id:OPERATOR_BUNDLE_KEY_ID,value:"pending"}};
- bundle.signature.value=sign(null,Buffer.concat([Buffer.from("lattice.operator-artifact-bundle.v1"),Buffer.from([0]),Buffer.from(canonicalJson(Object.fromEntries(Object.entries(bundle).filter(([k])=>k!=="signature"))))]),OPERATOR_BUNDLE_KEYS.privateKey).toString("base64url");return canonicalJson(bundle);
-}
 function hpkeExtract(salt: Buffer, ikm: Buffer) { return createHmac("sha256", salt).update(ikm).digest(); }
 function hpkeExpand(prk: Buffer, info: Buffer, length: number) { let out=Buffer.alloc(0),previous=Buffer.alloc(0); for(let i=1;out.length<length;i++){previous=createHmac("sha256",prk).update(Buffer.concat([previous,info,Buffer.from([i])])).digest();out=Buffer.concat([out,previous]);}return out.subarray(0,length); }
 function hpkeLabeledExtract(salt:Buffer,suite:Buffer,label:string,ikm:Buffer){return hpkeExtract(salt,Buffer.concat([Buffer.from("HPKE-v1"),suite,Buffer.from(label),ikm]));}

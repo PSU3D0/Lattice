@@ -607,6 +607,18 @@ async fn fetch(mut request: Request, env: Env, _context: Context) -> worker::Res
     {
         return json(&PublicError::invalid(), 400);
     }
+    let _verified_operator_bundle = if path == "/health" || path == "/ready" {
+        None
+    } else {
+        let db = match env.d1("BROKER_DB") {
+            Ok(db) => db,
+            Err(_) => return json(&PublicError::unavailable(), 503),
+        };
+        match v2_production::verified_configuration(&env, &db).await {
+            Some(bundle) => Some(bundle),
+            None => return json(&PublicError::unavailable(), 503),
+        }
+    };
     match (method.clone(), path.as_str()) {
         (Method::Get, "/health") => json(&serde_json::json!({"status":"ok"}), 200),
         (Method::Get, "/ready") => readiness(&env).await,
@@ -1068,7 +1080,7 @@ async fn readiness(env: &Env) -> worker::Result<Response> {
         .first::<i64>(Some("version"))
         .await
     {
-        Ok(Some(3)) if v2_production::configuration_ready(env) => {
+        Ok(Some(3)) if v2_production::configuration_ready(env, &db).await => {
             json(&serde_json::json!({"status":"ready","protocol":"0.2"}), 200)
         }
         _ => json(&PublicError::unavailable(), 503),

@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { executeApply, redactedPlan, REQUIRED_SECRET_NAMES } from "./deploy-lib.mjs";
+import { executeApply, redactedPlan, REQUIRED_SECRET_NAMES, seedOperatorBundle } from "./deploy-lib.mjs";
 import {
   D1_ID_SENTINEL,
   renderD1DatabaseId,
@@ -27,6 +27,8 @@ import { validatePublicCallbackBase } from "./workers-subdomain.mjs";
 import { renderWorkerUploadedSourceDigests } from "./uploaded-source.mjs";
 
 const hash = "c".repeat(64);
+const operatorBundleJcs = '{"artifact":"operator","schema_version":"1"}';
+const operatorBundleHash = `sha256:${createHash("sha256").update(operatorBundleJcs).digest("hex")}`;
 const kvNamespaceDeleteError = `✘ [ERROR] A request to the Cloudflare API (/accounts/<acct>/storage/kv/namespaces) failed.
 Authentication error [code: 10000]`;
 const d1Id = "c1a61a80-5d61-4500-aae8-4db034897753";
@@ -113,6 +115,11 @@ const context = {
   },
   privateConfig: '{"workers_dev": false}', publicConfig: '{"workers_dev": true}',
   privateConfigPath: "/evidence/private.jsonc", publicConfigPath: "/evidence/public.jsonc",
+  operatorBundleSeed: {
+    deploymentId: "deployment-fixture",
+    bundleHash: operatorBundleHash,
+    canonicalBundleJcs: operatorBundleJcs,
+  },
   privateUploadedSourceSha256: hash, publicUploadedSourceSha256: hash, runStartedAt,
   privateSecrets: completeSecrets["broker-private"],
   publicSecrets: completeSecrets["broker-public"],
@@ -134,6 +141,7 @@ class FakeRunner {
     if (step === "dependency:GOOGLE_PROVIDER_SERVICE") return { status: 0, stdout: JSON.stringify([cloudflareDeployment(deploymentIds.provider, versionIds.provider)]) };
     if (step === "dependency:GOOGLE_TOKEN_SERVICE") return { status: 0, stdout: JSON.stringify([cloudflareDeployment(deploymentIds.token, versionIds.token)]) };
     if (step === "d1") return { status: 0, stdout: JSON.stringify([{ uuid: context.d1Id }]) };
+    if (step === "operator_bundle:readback") return { status: 0, stdout: JSON.stringify([{ success: true, results: [{ deployment_id: context.operatorBundleSeed.deploymentId, bundle_hash: context.operatorBundleSeed.bundleHash, canonical_bundle_hex: Buffer.from(context.operatorBundleSeed.canonicalBundleJcs).toString("hex").toUpperCase() }] }]) };
     if (step === "private_worker:secrets") return { status: 0, stdout: JSON.stringify(REQUIRED_SECRET_NAMES.map((name) => ({ name }))) };
     if (step === "public_worker:secrets") return { status: 0, stdout: "[]" };
     if (step === "private_worker:capture") return { status: 0, stdout: JSON.stringify([cloudflareDeployment(deploymentIds.private, versionIds.private)]) };
@@ -166,14 +174,12 @@ function mutatingCalls(runner) {
   return runner.calls.filter(({ command }) =>
     command[0] === "npx" && command[1] === "wrangler" && (
       ["deploy", "delete", "secret"].includes(command[2]) ||
-      (command[2] === "d1" && command[3] === "migrations")
+      (command[2] === "d1" && ["migrations", "execute"].includes(command[3]))
     )
   );
 }
 
 function validRenderedPrivateConfig() {
-  const bundleJcs = '{"schema_version":"1","artifact":"operator"}';
-  const bundleHash = `sha256:${createHash("sha256").update(bundleJcs).digest("hex")}`;
   return JSON.stringify({
     workers_dev: false,
     vars: {
@@ -181,8 +187,9 @@ function validRenderedPrivateConfig() {
       AUTH_DRIVER_WORKER_SHA256: `sha256:${hash}`,
       GOOGLE_TOKEN_WORKER_SHA256: `sha256:${hash}`,
       GOOGLE_PROVIDER_WORKER_SHA256: `sha256:${hash}`,
-      OPERATOR_ARTIFACT_BUNDLE_JCS: bundleJcs,
-      OPERATOR_ARTIFACT_BUNDLE_SHA256: bundleHash,
+      OPERATOR_ARTIFACT_BUNDLE_SHA256: operatorBundleHash,
+      OPERATOR_BUNDLE_KEY_ID: "operator-key",
+      OPERATOR_BUNDLE_PUBLIC_KEY_B64U: "operator-public-key",
     },
   });
 }
@@ -236,29 +243,15 @@ test("D1 config rendering installs the exact UUID and removes the sentinel", asy
   assert.equal(rendered.includes(D1_ID_SENTINEL), false);
 });
 
-test("prefix-overlapping operator bundle placeholders render exactly and preserve the bundle hash invariant", () => {
-  const bundleJcs = '{"schema_version":"1","artifact":"operator"}';
-  const bundleHash = `sha256:${createHash("sha256").update(bundleJcs).digest("hex")}`;
-  const template = JSON.stringify({
-    vars: {
-      BROKER_WORKER_WASM_SHA256: `sha256:${hash}`,
-      AUTH_DRIVER_WORKER_SHA256: `sha256:${hash}`,
-      GOOGLE_TOKEN_WORKER_SHA256: `sha256:${hash}`,
-      GOOGLE_PROVIDER_WORKER_SHA256: `sha256:${hash}`,
-      OPERATOR_ARTIFACT_BUNDLE_JCS: "REPLACE_WITH_OPERATOR_ARTIFACT_BUNDLE",
-      OPERATOR_ARTIFACT_BUNDLE_SHA256: "REPLACE_WITH_OPERATOR_ARTIFACT_BUNDLE_HASH",
-    },
-  });
-  const rendered = replaceJsonStringPlaceholdersOnce(template, {
-    REPLACE_WITH_OPERATOR_ARTIFACT_BUNDLE: bundleJcs,
-    REPLACE_WITH_OPERATOR_ARTIFACT_BUNDLE_HASH: bundleHash,
-  });
-  const parsed = validateRenderedConfig(rendered, {
+test("rendered config omits oversized bundle vars and retains constant-size digest pins", () => {
+  const parsed = validateRenderedConfig(validRenderedPrivateConfig(), {
     requiredDigestVars: PRIVATE_DIGEST_VARS,
-    requireBundleHashInvariant: true,
   });
-  assert.equal(parsed.vars.OPERATOR_ARTIFACT_BUNDLE_JCS, bundleJcs);
-  assert.equal(parsed.vars.OPERATOR_ARTIFACT_BUNDLE_SHA256, bundleHash);
+  assert.equal(Object.hasOwn(parsed.vars, "OPERATOR_ARTIFACT_BUNDLE_JCS"), false);
+  assert.equal(Object.hasOwn(parsed.vars, "GENERIC_PROFILE_REGISTRY_JCS"), false);
+  assert.equal(parsed.vars.OPERATOR_ARTIFACT_BUNDLE_SHA256, operatorBundleHash);
+  assert.equal(parsed.vars.OPERATOR_BUNDLE_KEY_ID, "operator-key");
+  assert.equal(parsed.vars.OPERATOR_BUNDLE_PUBLIC_KEY_B64U, "operator-public-key");
 });
 
 test("single-pass substitution neither truncates a longer token nor rescans replacement values", () => {
@@ -273,16 +266,17 @@ test("single-pass substitution neither truncates a longer token nor rescans repl
 });
 
 test("post-render validation fails closed before mutation", () => {
+  const withRemovedBundle = JSON.parse(validRenderedPrivateConfig());
+  withRemovedBundle.vars.OPERATOR_ARTIFACT_BUNDLE_JCS = operatorBundleJcs;
   const fixtures = [
     [validRenderedPrivateConfig().replace('"workers_dev":false', '"leftover":"REPLACE_WITH_VALUE","workers_dev":false'), /REPLACE_WITH placeholder/],
     [validRenderedPrivateConfig().replace(`sha256:${hash}`, "not-a-digest"), /digest invalid/],
-    [validRenderedPrivateConfig().replace(/"OPERATOR_ARTIFACT_BUNDLE_SHA256":"sha256:[0-9a-f]{64}"/, `"OPERATOR_ARTIFACT_BUNDLE_SHA256":"sha256:${"d".repeat(64)}"`), /bundle hash mismatch/],
+    [JSON.stringify(withRemovedBundle), /removed oversized binding/],
   ];
   for (const [fixture, expected] of fixtures) {
     const runner = new FakeRunner();
     assert.throws(() => validateRenderedConfig(fixture, {
       requiredDigestVars: PRIVATE_DIGEST_VARS,
-      requireBundleHashInvariant: true,
     }), expected);
     assert.equal(mutatingCalls(runner).length, 0);
   }
@@ -602,6 +596,49 @@ test("broker-private deploy installs and verifies secrets before migration", asy
     "private_worker:capture",
     "migrations",
   ]);
+});
+
+test("operator bundle seeding is after migration and before public deployment", async () => {
+  const runner = new FakeRunner();
+  await executeApply(context, runner);
+  const steps = runner.calls.map((call) => call.step);
+  assert.equal(steps.indexOf("migrations") < steps.indexOf("operator_bundle:seed"), true);
+  assert.equal(steps.indexOf("operator_bundle:seed") < steps.indexOf("operator_bundle:readback"), true);
+  assert.equal(steps.indexOf("operator_bundle:readback") < steps.indexOf("public_worker:deploy"), true);
+});
+
+test("operator bundle re-seeding is idempotent", async () => {
+  const runner = new FakeRunner();
+  const first = await seedOperatorBundle(context, runner);
+  const second = await seedOperatorBundle(context, runner);
+  assert.deepEqual(second, first);
+  const inserts = runner.calls.filter((call) => call.step === "operator_bundle:seed");
+  assert.equal(inserts.length, 2);
+  assert.equal(inserts[0].command.some((value) => value.includes("INSERT OR IGNORE INTO operator_artifact_bundles")), true);
+  assert.equal(inserts[0].command.at(-2), inserts[1].command.at(-2));
+});
+
+test("operator bundle seeding verifies byte-exact readback", async () => {
+  const runner = new FakeRunner({
+    "operator_bundle:readback": { status: 0, stdout: JSON.stringify([{ success: true, results: [{
+      deployment_id: context.operatorBundleSeed.deploymentId,
+      bundle_hash: context.operatorBundleSeed.bundleHash,
+      canonical_bundle_hex: `${Buffer.from(context.operatorBundleSeed.canonicalBundleJcs).toString("hex").slice(0, -2)}00`.toUpperCase(),
+    }] }]) },
+  });
+  await assert.rejects(seedOperatorBundle(context, runner), /operator_bundle_readback_mismatch/);
+});
+
+test("post-migration seed failure preserves private and D1 and never deploys public", async () => {
+  const runner = new FakeRunner({ "operator_bundle:seed": { status: 1, stdout: "" } });
+  let failure;
+  await assert.rejects(executeApply(context, runner), (error) => {
+    failure = error;
+    return /operator_bundle:seed_failed/.test(error.message);
+  });
+  assert.equal(failure.evidence.migration_state, "forward_fix_required");
+  assert.equal(runner.calls.some((call) => call.step === "public_worker:deploy"), false);
+  assert.equal(runner.calls.some((call) => call.step === "cleanup_private"), false);
 });
 
 test("broker secret values use stdin and never enter argv or evidence", async () => {

@@ -1,13 +1,14 @@
 {
-  "schema_version": "0.3",
+  "schema_version": "0.4",
   "artifact": "c5-production-readiness",
   "contains_credentials_or_pii": false,
   "provisioning_order": [
     "provision non-owned D1, KV, R2, AI Gateway, and immutable operator authority artifacts",
     "for auth-driver, then Google token egress, then provider egress: prove absent, deploy private, install secrets through stdin, verify secret names, and capture the newest fresh Cloudflare deployment UUID and version UUID plus the operator-computed uploaded-source digest",
     "prove broker-private absent, deploy it unreachable, install and verify its 12 secrets, and capture its newest fresh deployment before any destructive D1 migration",
-    "apply checked-in forward-only D1 migrations; preserve private broker, egress, and D1 on failure",
-    "after migration, re-prove broker-public absent, deploy it last with no secrets, capture its exact deployment, and verify callback/health behavior",
+    "apply checked-in forward-only D1 migrations through 0004_operator_artifact_bundle.sql; preserve private broker, egress, and D1 on failure",
+    "seed the byte-exact canonical operator bundle into D1 idempotently and verify its byte-exact readback before exposing any public Worker",
+    "after migration and verified bundle seeding, re-prove broker-public absent, deploy it last with no secrets, capture its exact deployment, and verify callback/health behavior",
     "render S21 binding lock, authority manifest, Flow IR hash, receipt trust pin, and service bindings",
     "deploy S21 Worker only after operator approval of every immutable hash"
   ],
@@ -16,6 +17,16 @@
     "shape": "exact dashed lowercase UUID returned in the Cloudflare db.uuid field; no normalization",
     "existence_proof": "require a byte-exact db.uuid match from wrangler d1 list --json before any Worker deployment, secret mutation, or migration",
     "ownership": "operator-provisioned and never created or deleted by deploy or cleanup scripts; preserved on every failure"
+  },
+  "operator_bundle_storage": {
+    "table": "operator_artifact_bundles",
+    "key": ["deployment_id", "bundle_hash"],
+    "bytes": "canonical JCS stored verbatim as D1 BLOB data; never a Worker text binding and never generated into the Worker module",
+    "worker_configuration_size": "constant-size regardless of bundle size; only OPERATOR_BUNDLE_KEY_ID, OPERATOR_BUNDLE_PUBLIC_KEY_B64U, and OPERATOR_ARTIFACT_BUNDLE_SHA256 remain as bundle trust pins",
+    "seed_order": "after all D1 migrations and before broker-public deployment",
+    "seed_semantics": "INSERT OR IGNORE for idempotency followed by an exact deployment id, bundle hash, and hex(BLOB) readback comparison",
+    "runtime_verification": "before readiness or authority use, require exactly one row for the pinned hash, then verify canonical-JCS fixpoint, pinned SHA-256, pinned-key Ed25519 signature, validity window, revoked_at null, every nested artifact, and exact activation recipient pins",
+    "failure": "missing, duplicate, malformed, mismatched, expired, revoked, or signature-invalid data fails closed with readiness false and no authority derived"
   },
   "private_worker_apply": {
     "secrets_file_argument": "--secrets-file <absolute-path>",
@@ -80,7 +91,7 @@
   },
   "broker_private": {
     "secrets": ["ACTIVATION_SERVICE_AUTH", "AI_GATEWAY_AUTHORIZATION", "AUTH_DRIVER_SERVICE_AUTH", "BINDING_SIGNING_SEED", "COMMITMENT_KEY", "CUSTODY_ROOT_KEY", "GENERIC_ACTIVATION_RECIPIENT_PRIVATE_KEY_B64U", "DEPLOYMENT_BOOTSTRAP_AUTH", "GOOGLE_EGRESS_SERVICE_AUTH", "INVOKE_SERVICE_AUTH", "KEY_HASH_PEPPER", "RECEIPT_SIGNING_SEED"],
-    "immutable_vars": ["AI_GATEWAY_PAYLOAD_LOGGING", "AI_GATEWAY_RATE_LIMIT_PER_MINUTE", "AI_GATEWAY_SPEND_LIMIT_USD", "BROKER_WORKER_WASM_SHA256", "AUTH_DRIVER_WORKER_SHA256", "GOOGLE_TOKEN_WORKER_SHA256", "GOOGLE_PROVIDER_WORKER_SHA256", "GENERIC_PROFILE_REGISTRY_JCS", "DEPLOYMENT_AUTHORITY_KEY_ID", "DEPLOYMENT_AUTHORITY_PUBLIC_KEY_B64U", "DEPLOYMENT_CONTRACT_SET_JCS", "DEPLOYMENT_STANDING_AUTHORITY_JCS", "HISTORICAL_ARCHIVE_AUTHORITY_KEY_ID", "HISTORICAL_ARCHIVE_AUTHORITY_PUBLIC_KEY_B64U", "LEGACY_CUTOVER_AUTHORITY_KEY_ID", "LEGACY_CUTOVER_AUTHORITY_PUBLIC_KEY_B64U", "GENERIC_ACTIVATION_RECIPIENT_KEY_ID", "GENERIC_ACTIVATION_RECIPIENT_PUBLIC_KEY_B64U", "OPERATOR_ARTIFACT_BUNDLE_JCS", "OPERATOR_ARTIFACT_BUNDLE_SHA256", "OPERATOR_BUNDLE_KEY_ID", "OPERATOR_BUNDLE_PUBLIC_KEY_B64U", "GENERIC_PROFILE_AUTHORITY_PUBLIC_KEY_B64U", "OAUTH_REDIRECT_URI", "PUBLIC_CALLBACK_BASE"],
+    "immutable_vars": ["AI_GATEWAY_PAYLOAD_LOGGING", "AI_GATEWAY_RATE_LIMIT_PER_MINUTE", "AI_GATEWAY_SPEND_LIMIT_USD", "BROKER_WORKER_WASM_SHA256", "AUTH_DRIVER_WORKER_SHA256", "GOOGLE_TOKEN_WORKER_SHA256", "GOOGLE_PROVIDER_WORKER_SHA256", "DEPLOYMENT_AUTHORITY_KEY_ID", "DEPLOYMENT_AUTHORITY_PUBLIC_KEY_B64U", "DEPLOYMENT_CONTRACT_SET_JCS", "DEPLOYMENT_STANDING_AUTHORITY_JCS", "HISTORICAL_ARCHIVE_AUTHORITY_KEY_ID", "HISTORICAL_ARCHIVE_AUTHORITY_PUBLIC_KEY_B64U", "LEGACY_CUTOVER_AUTHORITY_KEY_ID", "LEGACY_CUTOVER_AUTHORITY_PUBLIC_KEY_B64U", "GENERIC_ACTIVATION_RECIPIENT_KEY_ID", "GENERIC_ACTIVATION_RECIPIENT_PUBLIC_KEY_B64U", "OPERATOR_ARTIFACT_BUNDLE_SHA256", "OPERATOR_BUNDLE_KEY_ID", "OPERATOR_BUNDLE_PUBLIC_KEY_B64U", "GENERIC_PROFILE_AUTHORITY_PUBLIC_KEY_B64U", "OAUTH_REDIRECT_URI", "PUBLIC_CALLBACK_BASE"],
     "bindings": ["BROKER_DB:D1", "CREDENTIAL_STATE_V2_DO:DurableObject", "V2_AUTHORITY_DO:DurableObject", "GOOGLE_TOKEN_SERVICE:Service", "GOOGLE_PROVIDER_SERVICE:Service", "AUTH_DRIVER_SERVICE:Service"]
   },
   "broker_public": { "secrets": [], "bindings": ["BROKER_PRIVATE:Service"] },

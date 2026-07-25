@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
@@ -43,7 +43,7 @@ function assertNoOrphanDigestFragments(value) {
   }
 }
 
-export function validateRenderedConfig(config, { requiredDigestVars = [], requireBundleHashInvariant = false } = {}) {
+export function validateRenderedConfig(config, { requiredDigestVars = [] } = {}) {
   if (/REPLACE_WITH_[A-Z0-9_]*/.test(config)) {
     throw new Error("rendered config retains a REPLACE_WITH placeholder");
   }
@@ -58,19 +58,16 @@ export function validateRenderedConfig(config, { requiredDigestVars = [], requir
   const digestVars = new Set([
     ...requiredDigestVars,
     ...PRIVATE_DIGEST_VARS.filter((name) => Object.hasOwn(vars, name)),
+    ...Object.keys(vars).filter((name) => /_(?:HASH|SHA256)$/.test(name)),
   ]);
   for (const name of digestVars) {
     if (!/^sha256:[0-9a-f]{64}$/.test(vars[name] ?? "")) {
       throw new Error(`rendered config digest invalid:${name}`);
     }
   }
-  if (requireBundleHashInvariant) {
-    if (typeof vars.OPERATOR_ARTIFACT_BUNDLE_JCS !== "string") {
-      throw new Error("rendered config operator artifact bundle missing");
-    }
-    const expected = `sha256:${createHash("sha256").update(vars.OPERATOR_ARTIFACT_BUNDLE_JCS).digest("hex")}`;
-    if (vars.OPERATOR_ARTIFACT_BUNDLE_SHA256 !== expected) {
-      throw new Error("rendered config operator artifact bundle hash mismatch");
+  for (const removed of ["OPERATOR_ARTIFACT_BUNDLE_JCS", "GENERIC_PROFILE_REGISTRY_JCS"]) {
+    if (Object.hasOwn(vars, removed)) {
+      throw new Error(`rendered config contains removed oversized binding:${removed}`);
     }
   }
   return parsed;

@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { FormData } from "undici";
 import { Log, LogLevel, Miniflare } from "miniflare";
+import { makeOperatorBundleFixture } from "../../../../../crates/broker-workers/workerd-tests/src/operator-bundle-fixture";
 
 const runtimeLogs: string[] = [];
 class MemoryLog extends Log { protected log(message: string) { runtimeLogs.push(message); } }
@@ -24,6 +25,14 @@ const receiptPublicKeyHash = `sha256:${createHash("sha256").update(receiptPublic
 const DEPLOYMENT_AUTHORITY_PUBLIC_KEY_B64U = "aFWAEo9WCNNHHWc-OD5cUfopZ5TpCUpsVay617fsa4A"
 const DEPLOYMENT_CONTRACT_SET_JCS = "{\"connector_ref\":\"connector.google.workspace@1\",\"contract_set_ref\":\"contract-set-fixture\",\"contracts\":[{\"claim_requirement_hash\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"contract_hash\":\"sha256:8fbdd2dbb63877b92004b7b5e6a7dc665a0ec5788850e4a466c0b6200639de2a\",\"contract_id\":\"connector.google.gmail.send_message@1\",\"credential_response_policy\":{\"kind\":\"forbidden\",\"sensitive_headers\":[],\"sensitive_json_pointers\":[]}},{\"claim_requirement_hash\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"contract_hash\":\"sha256:d02ed39536d396d66895f97672551a9eb443e701900112613865170bf157e999\",\"contract_id\":\"connector.google.sheets.append_row@1\",\"credential_response_policy\":{\"kind\":\"forbidden\",\"sensitive_headers\":[],\"sensitive_json_pointers\":[]}}],\"critical_fields\":[],\"deployment_id\":\"deployment-c5\",\"extensions\":{},\"issuer\":\"operator-fixture\",\"key_id\":\"operator-authority-fixture\",\"org_id\":\"org-c5\",\"schema_version\":\"0.2\",\"signature\":{\"alg\":\"Ed25519\",\"key_id\":\"operator-authority-fixture\",\"value\":\"CeS4FKTG1iZ7BeAzm5oZo4q2aLzVLeLW7goO8yoPvnZ6mUj0m3jgFYMSNEhaPVZgBD48VS1deYy0G2OkcdMoCw\"}}"
 const DEPLOYMENT_STANDING_AUTHORITY_JCS = "{\"connector_ref\":\"connector.google.workspace@1\",\"contract_set_hash\":\"sha256:f3a30b338c87daec46251145630938a0d2d0e96f5a77e571245133dc23bbfb88\",\"contract_set_ref\":\"contract-set-fixture\",\"critical_fields\":[],\"deployment_id\":\"deployment-c5\",\"expires_at\":\"2030-01-01T00:00:00Z\",\"extensions\":{},\"issuer\":\"operator-fixture\",\"key_id\":\"operator-authority-fixture\",\"maximum_budgets\":{\"connection_logical_calls\":3,\"dispatch_attempts_per_call\":1,\"flow_logical_calls\":3,\"logical_calls\":3,\"node_logical_calls\":1},\"not_before\":\"2026-01-01T00:00:00Z\",\"operator_policy_hash\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"org_id\":\"org-c5\",\"required_assurance_predicates\":[{\"kind\":\"brokered_count\",\"predicate_id\":\"brokered-count-v2\",\"required_kernel_controls\":[\"durable_before_dispatch\",\"exact_redelivery\",\"pop_bound\"]}],\"schema_version\":\"0.2\",\"signature\":{\"alg\":\"Ed25519\",\"key_id\":\"operator-authority-fixture\",\"value\":\"2me_J8x7uA8BA2TvwSov4HL6---2Nv5PskZKXUi_nZhrcjr5iieaCYWXae392EUoTrVrbgx3desnw5BLatfYDg\"},\"standing_authority_ref\":\"standing-fixture\"}"
+const OPERATOR_BUNDLE_KEYS = generateKeyPairSync("ed25519");
+const OPERATOR_BUNDLE_KEY_ID = "operator-bundle-c5";
+const OPERATOR_BUNDLE_PUBLIC_KEY_B64U = (OPERATOR_BUNDLE_KEYS.publicKey.export({ format: "jwk" }) as JsonWebKey).x!;
+const GENERIC_ACTIVATION_RECIPIENT_KEY_ID = "private-channel-c5";
+const GENERIC_ACTIVATION_RECIPIENT_PUBLIC_KEY_B64U = Buffer.alloc(32, 9).toString("base64url");
+const PROTOCOL_VECTORS = JSON.parse(await readFile("../../../../impl-docs/spec/credential-plane-protocol-vectors.json", "utf8"));
+const OPERATOR_ARTIFACT_BUNDLE_JCS = makeOperatorBundleFixture({ protocolVectors: PROTOCOL_VECTORS, privateKey: OPERATOR_BUNDLE_KEYS.privateKey, keyId: OPERATOR_BUNDLE_KEY_ID, publicKeyB64u: OPERATOR_BUNDLE_PUBLIC_KEY_B64U, activationRecipientKeyId: GENERIC_ACTIVATION_RECIPIENT_KEY_ID, activationRecipientPublicKeyB64u: GENERIC_ACTIVATION_RECIPIENT_PUBLIC_KEY_B64U });
+const OPERATOR_ARTIFACT_BUNDLE_SHA256 = `sha256:${createHash("sha256").update(OPERATOR_ARTIFACT_BUNDLE_JCS).digest("hex")}`;
 const flow = JSON.parse(await readFile("test/fixtures/s21-flow-ir.json", "utf8"));
 const brokerModules: any[] = [
   { type: "ESModule", path: "index.js", contents: await readFile("../../../../crates/broker-workers/workerd-tests/build-production/index.js", "utf8") },
@@ -73,13 +82,13 @@ function baseWorkers() {
   return [
     { name: "broker-c5", compatibilityDate: "2026-07-15", modules: brokerModules,
       bindings: { KEY_HASH_PEPPER: pepper, INVOKE_SERVICE_AUTH: serviceAuth, GOOGLE_EGRESS_SERVICE_AUTH: egressAuth,
-        RECEIPT_SIGNING_SEED: "1".repeat(64), COMMITMENT_KEY: "2".repeat(64), BINDING_SIGNING_SEED: "4".repeat(64), BROKER_WORKER_WASM_SHA256: `sha256:${"e".repeat(64)}`, AUTH_DRIVER_WORKER_SHA256: `sha256:${"d".repeat(64)}`, GOOGLE_TOKEN_WORKER_SHA256: `sha256:${"c".repeat(64)}`, GOOGLE_PROVIDER_WORKER_SHA256: `sha256:${"b".repeat(64)}`, GENERIC_PROFILE_REGISTRY_JCS: "{}", CUSTODY_ROOT_KEY: "3".repeat(64),
+        RECEIPT_SIGNING_SEED: "1".repeat(64), COMMITMENT_KEY: "2".repeat(64), BINDING_SIGNING_SEED: "4".repeat(64), BROKER_WORKER_WASM_SHA256: `sha256:${"e".repeat(64)}`, AUTH_DRIVER_WORKER_SHA256: `sha256:${"d".repeat(64)}`, GOOGLE_TOKEN_WORKER_SHA256: `sha256:${"c".repeat(64)}`, GOOGLE_PROVIDER_WORKER_SHA256: `sha256:${"b".repeat(64)}`, OPERATOR_ARTIFACT_BUNDLE_SHA256, OPERATOR_BUNDLE_KEY_ID, OPERATOR_BUNDLE_PUBLIC_KEY_B64U, GENERIC_ACTIVATION_RECIPIENT_KEY_ID, GENERIC_ACTIVATION_RECIPIENT_PUBLIC_KEY_B64U, CUSTODY_ROOT_KEY: "3".repeat(64),
         PUBLIC_CALLBACK_BASE: "https://c5.example", OAUTH_REDIRECT_URI: "https://c5.example/v0.2/credential-callback", DEPLOYMENT_BOOTSTRAP_AUTH: "unused-bootstrap", DEPLOYMENT_AUTHORITY_PUBLIC_KEY_B64U, DEPLOYMENT_AUTHORITY_KEY_ID: "operator-authority-fixture", DEPLOYMENT_CONTRACT_SET_JCS, DEPLOYMENT_STANDING_AUTHORITY_JCS },
       d1Databases: { BROKER_DB: "c5-combined-db" }, durableObjects: {
         CONNECTION_REFRESH_DO: { className: "ConnectionRefreshDurableObject", useSQLite: true },
         CREDENTIAL_STATE_V2_DO: { className: "CredentialStateDurableObject", useSQLite: true },
         V2_AUTHORITY_DO: { className: "V2AuthorityDurableObject", useSQLite: true },
-      }, serviceBindings: { GOOGLE_TOKEN_SERVICE: "token-egress-c5", GOOGLE_PROVIDER_SERVICE: "provider-egress-c5" } },
+      }, serviceBindings: { GOOGLE_TOKEN_SERVICE: "token-egress-c5", GOOGLE_PROVIDER_SERVICE: "provider-egress-c5", AUTH_DRIVER_SERVICE: "c5-upstream" } },
     { name: "token-egress-c5", compatibilityDate: "2026-07-15", modules: tokenModules,
       bindings: { GOOGLE_EGRESS_SERVICE_AUTH: egressAuth, GOOGLE_OAUTH_CLIENT_ID: "owned-client-id", GOOGLE_OAUTH_CLIENT_SECRET: "owned-client-secret-private", GOOGLE_OAUTH_REDIRECT_URI: "https://c5.example/v0.2/credential-callback", GOOGLE_TOKEN_RESULT_KEY: "6".repeat(64) },
       durableObjects: { GOOGLE_TOKEN_IDEMPOTENCY: { className: "GoogleTokenIdempotency", useSQLite: true } }, serviceBindings: { GOOGLE_UPSTREAM: "c5-upstream" } },
@@ -132,10 +141,12 @@ async function post(path: string, value: unknown, authenticated = true) {
 beforeAll(async () => {
   await mf.ready;
   const db = await mf.getD1Database("BROKER_DB", "broker-c5");
-  for (const name of ["0001_broker.sql", "0002_credential_plane_v2.sql", "0003_production_v2_cutover.sql"]) {
+  for (const name of ["0001_broker.sql", "0002_credential_plane_v2.sql", "0003_production_v2_cutover.sql", "0004_operator_artifact_bundle.sql"]) {
     const migration = await readFile(`../../../../crates/broker-workers/migrations/${name}`, "utf8");
     for (const statement of migration.split(";").map((item) => item.trim()).filter(Boolean)) await db.prepare(statement).run();
   }
+  await db.prepare("INSERT INTO operator_artifact_bundles(deployment_id,bundle_hash,canonical_bundle_jcs,seeded_at) VALUES(?,?,?,?)")
+    .bind("deployment-c5", OPERATOR_ARTIFACT_BUNDLE_SHA256, Buffer.from(OPERATOR_ARTIFACT_BUNDLE_JCS), Math.floor(Date.now() / 1000)).run();
   const keyHash = createHmac("sha256", pepper).update("deployment-key").update(Buffer.from([0])).update(deploymentKey).digest("hex");
   await db.prepare("INSERT INTO deployment_keys(org_id,deployment_id,key_hash,expires_at,revoked) VALUES(?,?,?,?,0)").bind("org-c5", "deployment-c5", keyHash, Math.floor(Date.now() / 1000) + 3600).run();
   const publicJwk = keys.publicKey.export({ format: "jwk" });

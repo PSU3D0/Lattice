@@ -46,6 +46,65 @@ struct Entry {
     canonical_jcs: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct OperatorBundlePins<'a> {
+    pub expected_hash: &'a str,
+    pub key_id: &'a str,
+    pub public_key_b64u: &'a str,
+    pub activation_recipient_key_id: &'a str,
+    pub activation_recipient_public_key_b64u: &'a str,
+}
+
+#[derive(Clone, Debug)]
+pub struct VerifiedOperatorBundle {
+    bundle_hash: String,
+    value: Value,
+}
+
+impl VerifiedOperatorBundle {
+    pub fn bundle_hash(&self) -> &str {
+        &self.bundle_hash
+    }
+
+    pub fn value(&self) -> &Value {
+        &self.value
+    }
+}
+
+pub fn verify_loaded_operator_bundle(
+    candidates: &[Vec<u8>],
+    pins: &OperatorBundlePins<'_>,
+    now: &str,
+) -> Result<VerifiedOperatorBundle, BrokerError> {
+    let [exact] = candidates else {
+        return Err(BrokerError::Brk109);
+    };
+    let actual_hash = format!("sha256:{}", hex::encode(Sha256::digest(exact)));
+    if actual_hash != pins.expected_hash {
+        return Err(BrokerError::Brk109);
+    }
+    let verified_hash = verify_operator_bundle(exact, pins.key_id, pins.public_key_b64u, now)?;
+    if verified_hash != pins.expected_hash {
+        return Err(BrokerError::Brk109);
+    }
+    let value: Value = serde_json::from_slice(exact).map_err(|_| BrokerError::Brk001)?;
+    if value
+        .pointer("/activation_recipient/key_id")
+        .and_then(Value::as_str)
+        != Some(pins.activation_recipient_key_id)
+        || value
+            .pointer("/activation_recipient/public_key_b64u")
+            .and_then(Value::as_str)
+            != Some(pins.activation_recipient_public_key_b64u)
+    {
+        return Err(BrokerError::Brk109);
+    }
+    Ok(VerifiedOperatorBundle {
+        bundle_hash: actual_hash,
+        value,
+    })
+}
+
 pub fn verify_operator_bundle(
     exact: &[u8],
     trust_key_id: &str,
@@ -229,6 +288,140 @@ mod tests {
         )
         .unwrap()
     }
+    fn fixture() -> (String, String) {
+        let mut seed = [0u8; 32];
+        for (index, byte) in seed.iter_mut().enumerate() {
+            *byte = index as u8;
+        }
+        let signer = BrokerSigner::from_seed("test-ed25519-1", seed);
+        (
+            bundle(&signer),
+            URL_SAFE_NO_PAD.encode(signer.verifying_key().to_bytes()),
+        )
+    }
+
+    fn pins<'a>(exact: &[u8], key: &'a str) -> (String, OperatorBundlePins<'a>) {
+        let expected = format!("sha256:{}", hex::encode(Sha256::digest(exact)));
+        let pins = OperatorBundlePins {
+            expected_hash: "",
+            key_id: "test-ed25519-1",
+            public_key_b64u: key,
+            activation_recipient_key_id: "activation-test",
+            activation_recipient_public_key_b64u: "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk",
+        };
+        (expected, pins)
+    }
+
+    fn verify_loaded(
+        exact: Vec<u8>,
+        key: &str,
+        expected: &str,
+        now: &str,
+    ) -> Result<VerifiedOperatorBundle, BrokerError> {
+        let (_, mut trust) = pins(&exact, key);
+        trust.expected_hash = expected;
+        verify_loaded_operator_bundle(&[exact], &trust, now)
+    }
+
+    #[test]
+    fn load_and_verify_accepts_one_valid_byte_exact_bundle() {
+        let (exact, key) = fixture();
+        let expected = format!("sha256:{}", hex::encode(Sha256::digest(exact.as_bytes())));
+        let verified =
+            verify_loaded(exact.into_bytes(), &key, &expected, "2026-01-01T00:00:00Z").unwrap();
+        assert_eq!(verified.bundle_hash(), expected);
+    }
+
+    #[test]
+    fn load_and_verify_fails_closed_on_wrong_pinned_hash() {
+        let (exact, key) = fixture();
+        assert!(
+            verify_loaded(
+                exact.into_bytes(),
+                &key,
+                &format!("sha256:{}", "0".repeat(64)),
+                "2026-01-01T00:00:00Z"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn load_and_verify_fails_closed_on_tampered_byte() {
+        let (exact, key) = fixture();
+        let expected = format!("sha256:{}", hex::encode(Sha256::digest(exact.as_bytes())));
+        let mut tampered = exact.into_bytes();
+        tampered[0] ^= 1;
+        assert!(verify_loaded(tampered, &key, &expected, "2026-01-01T00:00:00Z").is_err());
+    }
+
+    #[test]
+    fn load_and_verify_fails_closed_on_bad_signature() {
+        let (exact, key) = fixture();
+        let mut value: Value = serde_json::from_str(&exact).unwrap();
+        value["signature"]["value"] = Value::String(URL_SAFE_NO_PAD.encode([0u8; 64]));
+        let bad = canonical::from_serde(&value, usize::MAX)
+            .unwrap()
+            .as_bytes()
+            .to_vec();
+        let expected = format!("sha256:{}", hex::encode(Sha256::digest(&bad)));
+        assert!(verify_loaded(bad, &key, &expected, "2026-01-01T00:00:00Z").is_err());
+    }
+
+    #[test]
+    fn load_and_verify_fails_closed_on_expired_window() {
+        let (exact, key) = fixture();
+        let expected = format!("sha256:{}", hex::encode(Sha256::digest(exact.as_bytes())));
+        assert!(
+            verify_loaded(exact.into_bytes(), &key, &expected, "2031-01-01T00:00:00Z").is_err()
+        );
+    }
+
+    #[test]
+    fn load_and_verify_fails_closed_on_revocation() {
+        let (exact, key) = fixture();
+        let mut value: Value = serde_json::from_str(&exact).unwrap();
+        value["revoked_at"] = Value::String("2025-01-01T00:00:00Z".into());
+        let revoked = canonical::from_serde(&value, usize::MAX)
+            .unwrap()
+            .as_bytes()
+            .to_vec();
+        let expected = format!("sha256:{}", hex::encode(Sha256::digest(&revoked)));
+        assert!(verify_loaded(revoked, &key, &expected, "2026-01-01T00:00:00Z").is_err());
+    }
+
+    #[test]
+    fn load_and_verify_fails_closed_on_missing_row() {
+        let (_, key) = fixture();
+        let (_, mut trust) = pins(b"", &key);
+        trust.expected_hash =
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+        assert!(verify_loaded_operator_bundle(&[], &trust, "2026-01-01T00:00:00Z").is_err());
+    }
+
+    #[test]
+    fn load_and_verify_fails_closed_on_duplicate_rows() {
+        let (exact, key) = fixture();
+        let candidates = vec![exact.as_bytes().to_vec(), exact.as_bytes().to_vec()];
+        let (expected, mut trust) = pins(exact.as_bytes(), &key);
+        trust.expected_hash = &expected;
+        assert!(
+            verify_loaded_operator_bundle(&candidates, &trust, "2026-01-01T00:00:00Z").is_err()
+        );
+    }
+
+    #[test]
+    fn load_and_verify_fails_closed_on_activation_recipient_mismatch() {
+        let (exact, key) = fixture();
+        let (expected, mut trust) = pins(exact.as_bytes(), &key);
+        trust.expected_hash = &expected;
+        trust.activation_recipient_key_id = "other-recipient";
+        assert!(
+            verify_loaded_operator_bundle(&[exact.into_bytes()], &trust, "2026-01-01T00:00:00Z")
+                .is_err()
+        );
+    }
+
     #[test]
     fn valid_bundle_and_all_fail_closed_cases() {
         let mut seed = [0u8; 32];

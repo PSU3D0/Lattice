@@ -67,12 +67,13 @@ const verifiedBundlePath=join(evidenceDir,"operator-artifact-bundle.json"),verif
 await writeFile(verifiedBundlePath,operatorBundleJcs,{mode:0o600});await writeFile(verifiedTrustPath,JSON.stringify(operatorTrustRoot),{mode:0o600});
 const rustVerification=spawnSync("cargo",["run","--quiet","--bin","broker-artifact-verifier","--","--bundle",verifiedBundlePath,"--trust-root",verifiedTrustPath,"--now",new Date().toISOString().replace(/\.\d{3}Z$/,"Z")],{cwd:root,encoding:"utf8"});
 if(rustVerification.status!==0)throw new Error("shared Rust operator artifact verification failed");
-const artifactNames = ["deployment_authority_key_id","deployment_authority_public_key_b64u","deployment_contract_set_jcs","deployment_standing_authority_jcs","historical_archive_authority_key_id","historical_archive_authority_public_key_b64u","legacy_cutover_authority_key_id","legacy_cutover_authority_public_key_b64u","generic_profile_authority_public_key_b64u","generic_profile_registry_jcs","generic_activation_recipient_key_id","generic_activation_recipient_public_key_b64u"];
+const artifactNames = ["deployment_authority_key_id","deployment_authority_public_key_b64u","deployment_contract_set_jcs","deployment_standing_authority_jcs","historical_archive_authority_key_id","historical_archive_authority_public_key_b64u","legacy_cutover_authority_key_id","legacy_cutover_authority_public_key_b64u","generic_profile_authority_public_key_b64u","generic_activation_recipient_key_id","generic_activation_recipient_public_key_b64u"];
 if (!artifacts || artifactNames.some((name) => typeof artifacts[name] !== "string" || artifacts[name].length === 0 || artifacts[name].includes("REPLACE_"))) throw new Error("signed artifact bundle missing or placeholder");
 if(artifacts.deployment_authority_key_id!==operatorTrustRoot.key_id||artifacts.deployment_authority_public_key_b64u!==operatorTrustRoot.public_key_b64u)throw new Error("deployment authority does not match operator bundle trust root");
 if(operatorBundle.activation_recipient?.key_id!==artifacts.generic_activation_recipient_key_id||operatorBundle.activation_recipient?.public_key_b64u!==artifacts.generic_activation_recipient_public_key_b64u)throw new Error("activation recipient pin does not match signed operator bundle");
-if(artifacts.generic_profile_registry_jcs!==operatorBundleJcs)throw new Error("installed registry bytes must be the exact verified operator bundle");
-for (const name of ["deployment_contract_set_jcs","deployment_standing_authority_jcs","generic_profile_registry_jcs"]) JSON.parse(artifacts[name]);
+for (const name of ["deployment_contract_set_jcs","deployment_standing_authority_jcs"]) JSON.parse(artifacts[name]);
+const operatorDeploymentId=JSON.parse(artifacts.deployment_standing_authority_jcs).deployment_id;
+if(typeof operatorDeploymentId!=="string"||operatorDeploymentId.length===0)throw new Error("operator deployment id missing");
 const bundledStanding=operatorBundle.artifacts.deployment_standing_authority?.map(entry=>entry.canonical_jcs)??[];
 const bundledContracts=operatorBundle.artifacts.deployment_contract_set?.map(entry=>entry.canonical_jcs)??[];
 if(!bundledStanding.includes(artifacts.deployment_standing_authority_jcs)||!bundledContracts.includes(artifacts.deployment_contract_set_jcs))throw new Error("installed deployment authority is not the exact verified bundle artifact");
@@ -101,10 +102,8 @@ const artifactReplacements = {
   REPLACE_WITH_CUTOVER_ROOT_KEY_ID: artifacts.legacy_cutover_authority_key_id,
   REPLACE_WITH_CUTOVER_ROOT_ED25519_KEY: artifacts.legacy_cutover_authority_public_key_b64u,
   REPLACE_WITH_PROFILE_AUTHORITY_ED25519_KEY: artifacts.generic_profile_authority_public_key_b64u,
-  REPLACE_WITH_SIGNED_PROFILE_REGISTRY: artifacts.generic_profile_registry_jcs,
   REPLACE_WITH_PRIVATE_CHANNEL_KEY_ID: artifacts.generic_activation_recipient_key_id,
   REPLACE_WITH_PRIVATE_CHANNEL_X25519_PUBLIC_KEY: artifacts.generic_activation_recipient_public_key_b64u,
-  REPLACE_WITH_OPERATOR_ARTIFACT_BUNDLE: operatorBundleJcs,
   REPLACE_WITH_OPERATOR_ARTIFACT_BUNDLE_HASH: operatorBundleHash,
   REPLACE_WITH_OPERATOR_BUNDLE_KEY_ID: operatorTrustRoot.key_id,
   REPLACE_WITH_OPERATOR_BUNDLE_PUBLIC_KEY: operatorTrustRoot.public_key_b64u,
@@ -134,7 +133,6 @@ privateConfig = replaceJsonStringPlaceholdersOnce(privateConfig, {
   .replace('"AI_GATEWAY_RATE_LIMIT_PER_MINUTE": "0"', `"AI_GATEWAY_RATE_LIMIT_PER_MINUTE": "${args.get("--rate-limit-per-minute")}"`);
 validateRenderedConfig(privateConfig, {
   requiredDigestVars: PRIVATE_DIGEST_VARS,
-  requireBundleHashInvariant: true,
 });
 if (privateConfig.includes("lattice-broker-template") || privateConfig.includes("invalid.example")) throw new Error("rendered private config retains a template value");
 for (const requiredBinding of [
@@ -160,6 +158,11 @@ const baseContext = {
   googleTokenService: args.get("--google-token-service"),
   authDriverService: args.get("--auth-driver-service"),
   approvedDependencies, privateConfig, publicConfig,
+  operatorBundleSeed: {
+    deploymentId: operatorDeploymentId,
+    bundleHash: operatorBundleHash,
+    canonicalBundleJcs: operatorBundleJcs,
+  },
   privateUploadedSourceSha256: brokerManifest.wasm_sha256,
   publicUploadedSourceSha256,
   privateSecrets: secretValues["broker-private"], publicSecrets: secretValues["broker-public"],

@@ -660,68 +660,78 @@ struct HostRecordRow {
     cas_version: u64,
 }
 
-pub fn configuration_ready(env: &Env) -> bool {
+#[derive(Deserialize)]
+struct OperatorBundleRow {
+    canonical_bundle_hex: String,
+}
+
+async fn load_verified_operator_bundle(
+    db: &D1Database,
+    env: &Env,
+) -> worker::Result<crate::operator_bundle::VerifiedOperatorBundle> {
+    let expected_hash = env.var("OPERATOR_ARTIFACT_BUNDLE_SHA256")?.to_string();
+    if !valid_hash(&expected_hash) {
+        return Err(worker_rust_error("operator bundle hash"));
+    }
+    let result = db
+        .prepare(
+            "SELECT hex(canonical_bundle_jcs) AS canonical_bundle_hex \
+             FROM operator_artifact_bundles WHERE bundle_hash = ? \
+             ORDER BY deployment_id LIMIT 2",
+        )
+        .bind(&[JsValue::from_str(&expected_hash)])?
+        .all()
+        .await?;
+    let rows = result.results::<OperatorBundleRow>()?;
+    let candidates = rows
+        .into_iter()
+        .map(|row| {
+            hex::decode(row.canonical_bundle_hex)
+                .map_err(|_| worker_rust_error("operator bundle bytes"))
+        })
+        .collect::<worker::Result<Vec<_>>>()?;
+    let key_id = env.var("OPERATOR_BUNDLE_KEY_ID")?.to_string();
+    let public_key = env.var("OPERATOR_BUNDLE_PUBLIC_KEY_B64U")?.to_string();
+    let recipient_key_id = env.var("GENERIC_ACTIVATION_RECIPIENT_KEY_ID")?.to_string();
+    let recipient_public_key = env
+        .var("GENERIC_ACTIVATION_RECIPIENT_PUBLIC_KEY_B64U")?
+        .to_string();
+    crate::operator_bundle::verify_loaded_operator_bundle(
+        &candidates,
+        &crate::operator_bundle::OperatorBundlePins {
+            expected_hash: &expected_hash,
+            key_id: &key_id,
+            public_key_b64u: &public_key,
+            activation_recipient_key_id: &recipient_key_id,
+            activation_recipient_public_key_b64u: &recipient_public_key,
+        },
+        &now_rfc3339(),
+    )
+    .map_err(|_| worker_rust_error("operator bundle verification"))
+}
+
+pub async fn verified_configuration(
+    env: &Env,
+    db: &D1Database,
+) -> Option<crate::operator_bundle::VerifiedOperatorBundle> {
     let required = [
         "BROKER_WORKER_WASM_SHA256",
         "AUTH_DRIVER_WORKER_SHA256",
         "GOOGLE_TOKEN_WORKER_SHA256",
         "GOOGLE_PROVIDER_WORKER_SHA256",
+        "OPERATOR_ARTIFACT_BUNDLE_SHA256",
     ];
     if required.iter().any(|name| {
         env.var(name)
             .ok()
             .is_none_or(|value| !valid_hash(&value.to_string()))
     }) {
-        return false;
+        return None;
     }
-    let bundle = match (
-        env.var("OPERATOR_ARTIFACT_BUNDLE_JCS"),
-        env.var("OPERATOR_ARTIFACT_BUNDLE_SHA256"),
-        env.var("OPERATOR_BUNDLE_KEY_ID"),
-        env.var("OPERATOR_BUNDLE_PUBLIC_KEY_B64U"),
-    ) {
-        (Ok(bundle), Ok(expected), Ok(key_id), Ok(public_key)) => {
-            let exact = bundle.to_string();
-            let recipient_match = serde_json::from_str::<Value>(&exact)
-                .ok()
-                .is_some_and(|value| {
-                    value
-                        .pointer("/activation_recipient/key_id")
-                        .and_then(Value::as_str)
-                        == env
-                            .var("GENERIC_ACTIVATION_RECIPIENT_KEY_ID")
-                            .ok()
-                            .as_ref()
-                            .map(|v| v.to_string())
-                            .as_deref()
-                        && value
-                            .pointer("/activation_recipient/public_key_b64u")
-                            .and_then(Value::as_str)
-                            == env
-                                .var("GENERIC_ACTIVATION_RECIPIENT_PUBLIC_KEY_B64U")
-                                .ok()
-                                .as_ref()
-                                .map(|v| v.to_string())
-                                .as_deref()
-                });
-            recipient_match
-                && crate::operator_bundle::verify_operator_bundle(
-                    exact.as_bytes(),
-                    &key_id.to_string(),
-                    &public_key.to_string(),
-                    &now_rfc3339(),
-                )
-                .is_ok_and(|actual| actual == expected.to_string())
-        }
-        _ => false,
-    };
-    if !bundle {
-        return false;
-    }
+    let verified_bundle = load_verified_operator_bundle(db, env).await.ok()?;
     let artifacts = [
         "DEPLOYMENT_STANDING_AUTHORITY_JCS",
         "DEPLOYMENT_CONTRACT_SET_JCS",
-        "GENERIC_PROFILE_REGISTRY_JCS",
     ];
     if artifacts.iter().any(|name| {
         env.var(name).ok().is_none_or(|value| {
@@ -729,7 +739,7 @@ pub fn configuration_ready(env: &Env) -> bool {
             value.contains("REPLACE_") || serde_json::from_str::<Value>(&value).is_err()
         })
     }) {
-        return false;
+        return None;
     }
     if env.service("GOOGLE_TOKEN_SERVICE").is_err()
         || env.service("GOOGLE_PROVIDER_SERVICE").is_err()
@@ -737,24 +747,26 @@ pub fn configuration_ready(env: &Env) -> bool {
         || env.durable_object("CREDENTIAL_STATE_V2_DO").is_err()
         || env.durable_object("V2_AUTHORITY_DO").is_err()
     {
-        return false;
+        return None;
     }
     let standing = env
         .var("DEPLOYMENT_STANDING_AUTHORITY_JCS")
         .ok()
-        .and_then(|value| parse::<StandingAuthorityV2>(value.to_string().as_bytes()).ok());
-    let Some(standing) = standing else {
-        return false;
-    };
+        .and_then(|value| parse::<StandingAuthorityV2>(value.to_string().as_bytes()).ok())?;
     let value = standing.view.as_value();
     let (Some(org), Some(deployment), Some(connector)) = (
         value["org_id"].as_str(),
         value["deployment_id"].as_str(),
         value["connector_ref"].as_str(),
     ) else {
-        return false;
+        return None;
     };
-    load_deployment_authority(env, org, deployment, connector).is_ok()
+    load_deployment_authority(env, org, deployment, connector).ok()?;
+    Some(verified_bundle)
+}
+
+pub async fn configuration_ready(env: &Env, db: &D1Database) -> bool {
+    verified_configuration(env, db).await.is_some()
 }
 
 pub fn receipt_trust(env: &Env) -> worker::Result<Response> {
