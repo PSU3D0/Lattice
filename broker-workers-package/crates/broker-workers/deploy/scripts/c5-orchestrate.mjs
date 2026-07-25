@@ -3,7 +3,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { verifyBundle } from "./operator-artifacts.mjs";
-import { validateD1Id } from "./cloudflare-identifiers.mjs";
+import { assertAuthenticatedAccount, validateD1Id } from "./cloudflare-identifiers.mjs";
 import { validatePublicCallbackBase, verifyLiveWorkersSubdomain } from "./workers-subdomain.mjs";
 import { deployPrivateWorker, loadPrivateWorkerSecrets } from "./private-worker-deploy-lib.mjs";
 
@@ -43,8 +43,7 @@ const providerEvidence=join(evidenceDir,"google-egress");
 const providerState=join(providerEvidence,"google-egress-ownership.json");
 let providerApplied=false, authDriverApplied=false, brokerApplyStarted=false, brokerApplyCompleted=false;
 try{
-  const whoami=JSON.parse(run(providerRoot,["npx","wrangler","whoami","--json"]));
-  if(whoami.account_id!==accountId)throw new Error("account mismatch");
+  assertAuthenticatedAccount(run(providerRoot,["npx","wrangler","whoami","--json"]),accountId);
   const authDriverDeployment=await deployPrivateWorker({runner:authRunner,step:"auth_driver",name:authDriverName,accountId,config:"deploy/auth-driver/wrangler.jsonc",secrets:secretValues["auth-driver"]});
   authDriverApplied=authDriverDeployment.created_by_run;
   run(providerRoot,["node","scripts/deploy.mjs","--account-id",accountId,"--prefix",prefix,"--workers-subdomain",workersSubdomain,"--callback-uri",googleOauthRedirectUri,"--evidence-dir",providerEvidence,"--secrets-file",args.get("--secrets-file"),"--mode","apply","--approve-private-deploy","yes"]);

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { assertAuthenticatedAccount } from "./cloudflare-identifiers.mjs";
 import { verifyLiveWorkersSubdomain } from "./workers-subdomain.mjs";
 import {
   BROKER_PRIVATE_SECRET_NAMES,
@@ -125,8 +126,9 @@ export async function executeApply(context, runner) {
     });
     evidence.checks.push("live_workers_subdomain");
 
-    const whoami = parseJson(await runner.run("auth", ["npx", "wrangler", "whoami", "--json"]), "auth");
-    if (whoami.account_id !== context.accountId) throw new Error("account_mismatch");
+    const whoami = await runner.run("auth", ["npx", "wrangler", "whoami", "--json"]);
+    if (whoami.status !== 0) throw new Error("auth_failed");
+    assertAuthenticatedAccount(whoami.stdout, context.accountId);
     evidence.checks.push("auth_account");
 
     const ownership = context.approvedDependencies;

@@ -88,7 +88,7 @@ class FakeRunner {
     if (this.overrides[step] !== undefined) return this.overrides[step];
     if (step === "private_worker:deploy" && this.overrides.deploy_private !== undefined) return this.overrides.deploy_private;
     if (step === "public_worker:deploy" && this.overrides.deploy_public !== undefined) return this.overrides.deploy_public;
-    if (step === "auth") return { status: 0, stdout: JSON.stringify({ account_id: context.accountId }) };
+    if (step === "auth") return { status: 0, stdout: JSON.stringify({ loggedIn: true, account_id: context.accountId }) };
     if (step.startsWith("target:")) return { status: 0, stdout: "[]" };
     if (step === "private_worker:absence") return this.overrides["target:private"] ?? { status: 0, stdout: "[]" };
     if (step === "public_worker:absence") return this.overrides["target:public"] ?? { status: 0, stdout: "[]" };
@@ -117,6 +117,35 @@ function ownedContext(kind) {
   };
 }
 const live = (kind) => ({ status: 0, stdout: JSON.stringify([{ id: `${kind}-deployment`, source_hash: hash }]) });
+
+function mutatingCalls(runner) {
+  return runner.calls.filter(({ command }) =>
+    command[0] === "npx" && command[1] === "wrangler" && (
+      ["deploy", "delete", "secret"].includes(command[2]) ||
+      (command[2] === "d1" && command[3] === "migrations")
+    )
+  );
+}
+
+async function withCloudflareAccountId(value, callback) {
+  const previous = process.env.CLOUDFLARE_ACCOUNT_ID;
+  if (value === undefined) delete process.env.CLOUDFLARE_ACCOUNT_ID;
+  else process.env.CLOUDFLARE_ACCOUNT_ID = value;
+  try {
+    return await callback();
+  } finally {
+    if (previous === undefined) delete process.env.CLOUDFLARE_ACCOUNT_ID;
+    else process.env.CLOUDFLARE_ACCOUNT_ID = previous;
+  }
+}
+
+async function assertAccountRejected(stdout, expectedError, cloudflareAccountId) {
+  await withCloudflareAccountId(cloudflareAccountId, async () => {
+    const runner = new FakeRunner({ auth: { status: 0, stdout } });
+    await assert.rejects(executeApply(context, runner), expectedError);
+    assert.equal(mutatingCalls(runner).length, 0);
+  });
+}
 
 test("canonical lowercase dashed D1 UUID is accepted", () => {
   assert.equal(validateD1Id(d1Id), d1Id);
@@ -199,6 +228,91 @@ test("apply rejects a live Workers subdomain mismatch before any mutating comman
   assert.equal(fetchCalls[0][1].method, "GET");
   assert.deepEqual(runner.calls.map((call) => call.step), ["hermetic_preflight"]);
 });
+test("OAuth whoami shape is accepted", async () => {
+  await withCloudflareAccountId(undefined, async () => {
+    const runner = new FakeRunner({
+      auth: { status: 0, stdout: JSON.stringify({ loggedIn: true, account_id: context.accountId }) },
+    });
+    const evidence = await executeApply(context, runner);
+    assert.equal(evidence.status, "qualified");
+    assert.equal(mutatingCalls(runner).length > 0, true);
+  });
+});
+
+test("API-token single-account whoami shape is accepted", async () => {
+  await withCloudflareAccountId(undefined, async () => {
+    const runner = new FakeRunner({
+      auth: { status: 0, stdout: JSON.stringify({ loggedIn: true, accounts: [{ id: context.accountId }] }) },
+    });
+    const evidence = await executeApply(context, runner);
+    assert.equal(evidence.status, "qualified");
+    assert.equal(mutatingCalls(runner).length > 0, true);
+  });
+});
+
+test("multi-account identity without CLOUDFLARE_ACCOUNT_ID aborts before mutation", async () => {
+  await assertAccountRejected(
+    JSON.stringify({ loggedIn: true, accounts: [{ id: context.accountId }, { id: "b".repeat(32) }] }),
+    /multiple_accounts_require_matching_CLOUDFLARE_ACCOUNT_ID/,
+    undefined,
+  );
+});
+
+test("multi-account identity with matching CLOUDFLARE_ACCOUNT_ID is accepted", async () => {
+  await withCloudflareAccountId(context.accountId, async () => {
+    const runner = new FakeRunner({
+      auth: { status: 0, stdout: JSON.stringify({ loggedIn: true, accounts: [{ id: "b".repeat(32) }, { id: context.accountId }] }) },
+    });
+    const evidence = await executeApply(context, runner);
+    assert.equal(evidence.status, "qualified");
+    assert.equal(mutatingCalls(runner).length > 0, true);
+  });
+});
+
+test("multi-account identity with mismatched CLOUDFLARE_ACCOUNT_ID aborts before mutation", async () => {
+  await assertAccountRejected(
+    JSON.stringify({ loggedIn: true, accounts: [{ id: context.accountId }, { id: "b".repeat(32) }] }),
+    /multiple_accounts_require_matching_CLOUDFLARE_ACCOUNT_ID/,
+    "b".repeat(32),
+  );
+});
+
+test("accounts not containing the expected account abort before mutation", async () => {
+  await assertAccountRejected(
+    JSON.stringify({ loggedIn: true, accounts: [{ id: "b".repeat(32) }] }),
+    /account_mismatch/,
+    undefined,
+  );
+});
+
+test("empty accounts array aborts before mutation", async () => {
+  await assertAccountRejected(
+    JSON.stringify({ loggedIn: true, accounts: [] }),
+    /account_accounts_empty/,
+    undefined,
+  );
+});
+
+test("malformed whoami JSON aborts before mutation", async () => {
+  await assertAccountRejected("{not-json", /account_identity_invalid_json/, undefined);
+});
+
+test("logged-out whoami identity aborts before mutation", async () => {
+  await assertAccountRejected(
+    JSON.stringify({ loggedIn: false, accounts: [{ id: context.accountId }] }),
+    /account_not_authenticated/,
+    undefined,
+  );
+});
+
+test("whoami identity missing loggedIn aborts before mutation", async () => {
+  await assertAccountRejected(
+    JSON.stringify({ accounts: [{ id: context.accountId }] }),
+    /account_not_authenticated/,
+    undefined,
+  );
+});
+
 test("D1 existence proof requires a byte-exact UUID and aborts before mutation", async () => {
   for (const listed of [[], [{ uuid: d1Id.toUpperCase() }]]) {
     const runner = new FakeRunner({ d1: { status: 0, stdout: JSON.stringify(listed) } });

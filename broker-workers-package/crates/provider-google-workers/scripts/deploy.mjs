@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { assertAuthenticatedAccount } from "../../broker-workers/deploy/scripts/cloudflare-identifiers.mjs";
 import { validatePublicCallbackBase, verifyLiveWorkersSubdomain } from "../../broker-workers/deploy/scripts/workers-subdomain.mjs";
 import { deployPrivateWorker, loadPrivateWorkerSecrets } from "../../broker-workers/deploy/scripts/private-worker-deploy-lib.mjs";
 
@@ -71,9 +72,8 @@ const runner = {
   },
 };
 const whoami = await runner.run("auth", ["npx", "wrangler", "whoami", "--json"]);
-let identity;
-try { identity = whoami.status === 0 ? JSON.parse(whoami.stdout) : null; } catch { identity = null; }
-if (identity?.account_id !== accountId) throw new Error("account mismatch");
+if (whoami.status !== 0) throw new Error("account authentication failed");
+assertAuthenticatedAccount(whoami.stdout, accountId);
 const created = [];
 try {
   const token = await deployPrivateWorker({

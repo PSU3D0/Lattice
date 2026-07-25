@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { spawnSync } from "node:child_process";
+import { assertAuthenticatedAccount } from "../../broker-workers/deploy/scripts/cloudflare-identifiers.mjs";
 import { validatePublicCallbackBase } from "../../broker-workers/deploy/scripts/workers-subdomain.mjs";
 
 const args = new Map();
@@ -32,8 +33,7 @@ const run = (command) => {
   if (result.status !== 0) throw new Error("remote command failed");
   return result.stdout;
 };
-const whoami = JSON.parse(run(["npx", "wrangler", "whoami", "--json"]));
-if (whoami.account_id !== state.account_id) throw new Error("account mismatch");
+assertAuthenticatedAccount(run(["npx", "wrangler", "whoami", "--json"]), state.account_id);
 for (const name of plan.delete) {
   const deployments = JSON.parse(run(["npx", "wrangler", "deployments", "list", "--name", name, "--json"]));
   if (!Array.isArray(deployments) || deployments.length === 0) throw new Error("owned deployment missing");
