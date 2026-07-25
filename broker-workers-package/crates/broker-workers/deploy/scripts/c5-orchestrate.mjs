@@ -3,6 +3,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { verifyBundle } from "./operator-artifacts.mjs";
+import { validateD1Id } from "./cloudflare-identifiers.mjs";
 import { validatePublicCallbackBase, verifyLiveWorkersSubdomain } from "./workers-subdomain.mjs";
 import { deployPrivateWorker, loadPrivateWorkerSecrets } from "./private-worker-deploy-lib.mjs";
 
@@ -12,7 +13,8 @@ for (const name of ["--account-id","--prefix","--evidence-dir","--d1-id","--sign
   if (!args.has(name)) throw new Error(`missing ${name}`);
 }
 const accountId=args.get("--account-id"), prefix=args.get("--prefix"), evidenceDir=args.get("--evidence-dir");
-if (!/^[0-9a-f]{32}$/.test(accountId) || !/^lattice-c5-[a-z0-9]{6,20}$/.test(prefix) || !isAbsolute(evidenceDir) || !isAbsolute(args.get("--signed-artifacts")) || !/^[0-9a-f]{32}$/.test(args.get("--d1-id"))) throw new Error("invalid C5 ownership inputs");
+if (!/^[0-9a-f]{32}$/.test(accountId) || !/^lattice-c5-[a-z0-9]{6,20}$/.test(prefix) || !isAbsolute(evidenceDir) || !isAbsolute(args.get("--signed-artifacts"))) throw new Error("invalid C5 ownership inputs");
+validateD1Id(args.get("--d1-id"));
 const workersSubdomain=args.get("--workers-subdomain");
 const {publicCallbackBase,googleOauthRedirectUri}=validatePublicCallbackBase(prefix,workersSubdomain,args.get("--public-callback-base"));
 if(!/^[1-9]\d{0,5}$/.test(args.get("--rate-limit-per-minute"))||!/^\d+(\.\d{1,2})?$/.test(args.get("--spend-limit-usd")))throw new Error("invalid budget inputs");

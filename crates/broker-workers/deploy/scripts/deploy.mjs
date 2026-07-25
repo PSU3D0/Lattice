@@ -3,6 +3,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { executeApply, redactedPlan } from "./deploy-lib.mjs";
+import { renderD1DatabaseId, validateD1Id } from "./cloudflare-identifiers.mjs";
 import { loadPrivateWorkerSecrets } from "./private-worker-deploy-lib.mjs";
 import { verifyBundle } from "./operator-artifacts.mjs";
 import { validatePublicCallbackBase, validateWorkersSubdomain } from "./workers-subdomain.mjs";
@@ -27,7 +28,7 @@ const dependencyPath = args.get("--approved-dependencies");
 const workersSubdomain = validateWorkersSubdomain(args.get("--workers-subdomain"));
 if (!/^[0-9a-f]{32}$/.test(accountId)) throw new Error("account id must be exact 32 lowercase hex");
 if (!/^lattice-(?:b5|c5)-[a-z0-9]{6,20}$/.test(prefix)) throw new Error("prefix is outside the disposable broker namespace");
-if (!/^[0-9a-f]{32}$/.test(d1Id)) throw new Error("D1 id must be exact 32 lowercase hex");
+validateD1Id(d1Id);
 if (!isAbsolute(evidenceInput) || !isAbsolute(dependencyPath)) throw new Error("evidence and dependency paths must be absolute");
 if (!/^\d+(\.\d{1,2})?$/.test(args.get("--spend-limit-usd"))) throw new Error("invalid spend limit");
 if (!/^[1-9]\d{0,5}$/.test(args.get("--rate-limit-per-minute"))) throw new Error("invalid rate limit");
@@ -77,13 +78,12 @@ const { publicCallbackBase, googleOauthRedirectUri } = validatePublicCallbackBas
   workersSubdomain,
   args.get("--public-callback-base"),
 );
-let privateConfig = (await readFile(join(root, "wrangler.jsonc"), "utf8"))
+let privateConfig = renderD1DatabaseId((await readFile(join(root, "wrangler.jsonc"), "utf8"))
   .replaceAll("lattice-broker-template-private", privateName)
   .replaceAll("lattice-broker-template-google-provider", args.get("--google-provider-service"))
   .replaceAll("lattice-broker-template-google-token", args.get("--google-token-service"))
   .replaceAll("lattice-broker-template-auth-driver", args.get("--auth-driver-service"))
-  .replaceAll("lattice-broker-template", d1Name)
-  .replaceAll("00000000000000000000000000000000", d1Id)
+  .replaceAll("lattice-broker-template", d1Name), d1Id)
   .replaceAll("https://invalid.example", publicCallbackBase)
   .replace('"AI_GATEWAY_SPEND_LIMIT_USD": "0"', `"AI_GATEWAY_SPEND_LIMIT_USD": "${args.get("--spend-limit-usd")}"`)
   .replace('"AI_GATEWAY_RATE_LIMIT_PER_MINUTE": "0"', `"AI_GATEWAY_RATE_LIMIT_PER_MINUTE": "${args.get("--rate-limit-per-minute")}"`);

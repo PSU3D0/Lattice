@@ -5,6 +5,11 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { executeApply, redactedPlan, REQUIRED_SECRET_NAMES } from "./deploy-lib.mjs";
 import {
+  D1_ID_SENTINEL,
+  renderD1DatabaseId,
+  validateD1Id,
+} from "./cloudflare-identifiers.mjs";
+import {
   classifyDeploymentsListResult,
   deployPrivateWorker,
   loadPrivateWorkerSecrets,
@@ -12,6 +17,7 @@ import {
 import { validatePublicCallbackBase } from "./workers-subdomain.mjs";
 
 const hash = "c".repeat(64);
+const d1Id = "c1a61a80-5d61-4500-aae8-4db034897753";
 const completeSecrets = {
   "auth-driver": { AUTH_DRIVER_SERVICE_AUTH: "shared-auth-driver-value" },
   "google-token-egress": {
@@ -38,7 +44,7 @@ const completeSecrets = {
   "broker-public": {},
 };
 const context = {
-  accountId: "a".repeat(32), prefix: "lattice-b5-test123", d1Id: "b".repeat(32),
+  accountId: "a".repeat(32), prefix: "lattice-b5-test123", d1Id,
   d1Name: "lattice-b5-test123-broker",
   privateName: "lattice-b5-test123-broker-private",
   publicName: "lattice-b5-test123-broker-public",
@@ -52,7 +58,7 @@ const context = {
   googleTokenService: "approved-google-token",
   approvedDependencies: {
     schema_version: "2", account_id: "a".repeat(32), prefix: "lattice-b5-test123",
-    d1_database_id: "b".repeat(32),
+    d1_database_id: d1Id,
     artifacts: {
       deployment_authority_key_id: "operator-key", deployment_authority_public_key_b64u: "operator-public-key",
       deployment_contract_set_jcs: "{}", deployment_standing_authority_jcs: "{}",
@@ -112,6 +118,31 @@ function ownedContext(kind) {
 }
 const live = (kind) => ({ status: 0, stdout: JSON.stringify([{ id: `${kind}-deployment`, source_hash: hash }]) });
 
+test("canonical lowercase dashed D1 UUID is accepted", () => {
+  assert.equal(validateD1Id(d1Id), d1Id);
+});
+
+test("undashed and uppercase D1 ids are rejected", () => {
+  assert.throws(() => validateD1Id(d1Id.replaceAll("-", "")), /canonical lowercase UUID with dashes/);
+  assert.throws(() => validateD1Id(d1Id.toUpperCase()), /canonical lowercase UUID with dashes/);
+});
+
+test("malformed, short, and long D1 ids are rejected", () => {
+  for (const invalid of [
+    `{${d1Id}}`, ` ${d1Id}`, `${d1Id} `,
+    d1Id.slice(0, -1), `${d1Id}0`, "not-a-d1-id",
+  ]) {
+    assert.throws(() => validateD1Id(invalid), /canonical lowercase UUID with dashes/);
+  }
+});
+
+test("D1 config rendering installs the exact UUID and removes the sentinel", async () => {
+  const template = await readFile(resolve(new URL("../../wrangler.jsonc", import.meta.url).pathname), "utf8");
+  const rendered = renderD1DatabaseId(template, d1Id);
+  assert.equal(rendered.includes(`"database_id": "${d1Id}"`), true);
+  assert.equal(rendered.includes(D1_ID_SENTINEL), false);
+});
+
 test("valid Workers subdomain callback form is accepted", () => {
   const callback = validatePublicCallbackBase(
     context.prefix,
@@ -168,6 +199,17 @@ test("apply rejects a live Workers subdomain mismatch before any mutating comman
   assert.equal(fetchCalls[0][1].method, "GET");
   assert.deepEqual(runner.calls.map((call) => call.step), ["hermetic_preflight"]);
 });
+test("D1 existence proof requires a byte-exact UUID and aborts before mutation", async () => {
+  for (const listed of [[], [{ uuid: d1Id.toUpperCase() }]]) {
+    const runner = new FakeRunner({ d1: { status: 0, stdout: JSON.stringify(listed) } });
+    await assert.rejects(executeApply(context, runner), /d1_missing/);
+    assert.equal(runner.calls.at(-1).step, "d1");
+    assert.equal(runner.calls.some((call) =>
+      call.step.startsWith("private_worker:") || call.step.startsWith("public_worker:") || call.step === "migrations"
+    ), false);
+  }
+});
+
 test("pre-existing unowned target fails before mutation", async () => {
   const runner = new FakeRunner({ "target:private": { status: 0, stdout: JSON.stringify([{ id: "foreign", source_hash: hash }]) } });
   await assert.rejects(executeApply(context, runner), /target_private_unowned/);

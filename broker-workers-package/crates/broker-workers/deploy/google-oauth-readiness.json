@@ -11,6 +11,12 @@
     "render S21 binding lock, authority manifest, Flow IR hash, receipt trust pin, and service bindings",
     "deploy S21 Worker only after operator approval of every immutable hash"
   ],
+  "d1_input": {
+    "argument": "--d1-id <canonical-lowercase-UUID>",
+    "shape": "exact dashed lowercase UUID returned in the Cloudflare db.uuid field; no normalization",
+    "existence_proof": "require a byte-exact db.uuid match from wrangler d1 list --json before any Worker deployment, secret mutation, or migration",
+    "ownership": "operator-provisioned and never created or deleted by deploy or cleanup scripts; preserved on every failure"
+  },
   "private_worker_apply": {
     "secrets_file_argument": "--secrets-file <absolute-path>",
     "secrets_file_schema": {
