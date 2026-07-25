@@ -360,8 +360,8 @@
     },
     {
       "path": "crates/broker-workers/deploy/scripts/deploy-lib.mjs",
-      "sha256": "5e3fe6cd9a64d9b3c59c63d4685d58bc62c0af1c444c491ee69719ea5c998ce8",
-      "size_bytes": 15366
+      "sha256": "e40ce72e9af5ab9bb76d89b7f877f90e2ccc39803a4100e9db701b8b2bc486c2",
+      "size_bytes": 16251
     },
     {
       "path": "crates/broker-workers/deploy/scripts/deploy.mjs",
@@ -370,8 +370,8 @@
     },
     {
       "path": "crates/broker-workers/deploy/scripts/deploy.test.mjs",
-      "sha256": "48067f3ffb5f0f42a2216c2b1e2d7c288c476d1aa5382e47d9dc7f1585687888",
-      "size_bytes": 49925
+      "sha256": "5bfca589e4668b1f2de297e4f4f1973e2a4a003f8718c063f0ac1e245da0dd89",
+      "size_bytes": 51590
     },
     {
       "path": "crates/broker-workers/deploy/scripts/operator-artifacts.mjs",

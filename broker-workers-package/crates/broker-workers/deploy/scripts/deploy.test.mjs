@@ -83,6 +83,8 @@ const completeSecrets = {
   "broker-public": {},
 };
 const context = {
+  // Deterministic tests must not wait on the real propagation backoff.
+  readinessSleep: async () => {},
   accountId: "a".repeat(32), prefix: "lattice-b5-test123", d1Id,
   d1Name: "lattice-b5-test123-broker",
   privateName: "lattice-b5-test123-broker-private",
@@ -985,4 +987,41 @@ test("secret values travel only over stdin and never appear in argv or evidence"
     await writeFile(evidencePath, JSON.stringify(evidence), { mode: 0o600 });
     assert.equal((await readFile(evidencePath, "utf8")).includes(secretValue), false);
   });
+});
+
+test("readiness tolerates workers.dev propagation delay then succeeds without rollback", async () => {
+  // A newly created workers.dev hostname is briefly unroutable. Transient probe
+  // failures must not tear down a healthy deployment.
+  let healthAttempts = 0;
+  class PropagationRunner extends FakeRunner {
+    async run(step, command, options) {
+      if (step === "readiness:/health") {
+        healthAttempts += 1;
+        if (healthAttempts < 3) return { status: 7, stdout: "", stderr: "curl: (7) Failed to connect" };
+        return { status: 0, stdout: "" };
+      }
+      return super.run(step, command, options);
+    }
+  }
+  const runner = new PropagationRunner({});
+  const evidence = await executeApply(context, runner);
+  assert.equal(evidence.status, "qualified");
+  assert.equal(healthAttempts, 3);
+  assert.deepEqual(runner.calls.filter((call) => call.step.startsWith("cleanup_")).map((call) => call.step), []);
+});
+
+test("readiness still fails closed once the propagation budget is exhausted", async () => {
+  let healthAttempts = 0;
+  class AlwaysDownRunner extends FakeRunner {
+    async run(step, command, options) {
+      if (step === "readiness:/health") {
+        healthAttempts += 1;
+        return { status: 7, stdout: "", stderr: "curl: (7) Failed to connect" };
+      }
+      return super.run(step, command, options);
+    }
+  }
+  const runner = new AlwaysDownRunner({});
+  await assert.rejects(executeApply(context, runner), /readiness:\/health_failed/);
+  assert.ok(healthAttempts > 1, "must retry before failing closed");
 });

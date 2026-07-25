@@ -64,6 +64,22 @@ async function checked(runner, step, command) {
   return result;
 }
 
+// A newly created *.workers.dev hostname is not immediately routable, so the
+// first readiness probes can fail purely from propagation rather than from a
+// genuinely unhealthy deployment. Retry on a bounded budget and still fail
+// closed once it is exhausted; no mutation happens in this window.
+const READINESS_ATTEMPTS = 10;
+const defaultReadinessSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+async function checkedWithPropagationRetry(runner, step, command, sleep = defaultReadinessSleep) {
+  let last;
+  for (let attempt = 0; attempt < READINESS_ATTEMPTS; attempt += 1) {
+    last = await runner.run(step, command);
+    if (last.status === 0) return last;
+    if (attempt < READINESS_ATTEMPTS - 1) await sleep(Math.min(2000 * 2 ** attempt, 8000));
+  }
+  throw new Error(`${step}_failed`);
+}
+
 function exactDeployment(deployments, pin) {
   return Array.isArray(deployments) && deployments.every(isValidCloudflareDeployment) && deployments.some((deployment) =>
     deployment?.source === "wrangler" &&
@@ -275,11 +291,11 @@ export async function executeApply(context, runner) {
     evidence.checks.push("public_deployed_last_and_captured");
 
     for (const route of ["/health", "/ready"]) {
-      await checked(runner, `readiness:${route}`, [
+      await checkedWithPropagationRetry(runner, `readiness:${route}`, [
         "curl", "--fail", "--silent", "--show-error", `${context.publicCallbackBase}${route}`,
-      ]);
+      ], context.readinessSleep);
     }
-    const callback = await checked(runner, "readiness:oauth_callback_400", [
+    const callback = await checkedWithPropagationRetry(runner, "readiness:oauth_callback_400", [
       "curl", "--silent", "--output", "/dev/null", "--write-out", "%{http_code}",
       context.googleOauthRedirectUri,
     ]);
