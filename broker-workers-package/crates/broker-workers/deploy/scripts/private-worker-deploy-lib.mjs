@@ -208,7 +208,7 @@ export async function deployPrivateWorker({
   let created = false;
   try {
     const deployed = await runner.run(`${step}:deploy`, ["npx", "wrangler", "deploy", "--config", config, "--name", name]);
-    if (deployed.status !== 0) throw new Error(`${step}_deploy_failed`);
+    if (deployed.status !== 0) throw new Error(`${step}_deploy_failed\n--- stderr ---\n${(deployed.stderr ?? "").slice(-4000)}`);
     created = !resource.existed;
     for (const [secretName, value] of [...Object.entries(secrets), ...Object.entries(derivedSecrets)]) {
       const installed = await runner.run(
@@ -216,7 +216,7 @@ export async function deployPrivateWorker({
         ["npx", "wrangler", "secret", "put", secretName, "--name", name],
         { input: `${value}\n` },
       );
-      if (installed.status !== 0) throw new Error(`${step}_secret_install_failed`);
+      if (installed.status !== 0) throw new Error(`${step}_secret_install_failed:${secretName}\n--- stderr ---\n${(installed.stderr ?? "").slice(-2000)}`);
     }
     const listed = await runner.run(`${step}:secrets`, ["npx", "wrangler", "secret", "list", "--name", name, "--format", "json"]);
     let installedSecretNames;

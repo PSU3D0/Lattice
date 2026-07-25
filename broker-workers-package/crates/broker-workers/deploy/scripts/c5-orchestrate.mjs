@@ -44,7 +44,10 @@ if(args.get("--mode")!=="apply"){console.log(JSON.stringify(plan,null,2));consol
 if(args.get("--approve-create-disposable")!=="yes"||args.get("--approve-cleanup")!=="yes"||args.get("--approve-private-deploy")!=="yes"||!process.env.CLOUDFLARE_API_TOKEN)throw new Error("apply requires all exact approvals and CLOUDFLARE_API_TOKEN");
 await verifyLiveWorkersSubdomain({accountId,workersSubdomain,apiToken:process.env.CLOUDFLARE_API_TOKEN});
 const runResult=(cwd,command,options={})=>{const result=spawnSync(command[0],command.slice(1),{cwd,encoding:"utf8",input:options.input,env:{...process.env,CLOUDFLARE_ACCOUNT_ID:accountId}});return {status:result.status??1,stdout:result.stdout??"",stderr:result.stderr??""};};
-const run=(cwd,command)=>{const result=runResult(cwd,command);if(result.status!==0)throw new Error(`command failed:${command.slice(0,3).join(" ")}`);return result.stdout;};
+// Diagnosability: a fail-closed deploy path is unusable when the child stderr is
+// discarded. Secret values never reach argv and child scripts redact their own
+// errors, so surfacing the stderr tail discloses no material.
+const run=(cwd,command)=>{const result=runResult(cwd,command);if(result.status!==0)throw new Error(`command failed:${command.slice(0,3).join(" ")}\n--- stderr ---\n${result.stderr.slice(-4000)}\n--- stdout ---\n${result.stdout.slice(-2000)}`);return result.stdout;};
 const authRunner={async run(_step,command,options){return runResult(brokerRoot,command,options);}};
 const providerEvidence=join(evidenceDir,"google-egress");
 const providerState=join(providerEvidence,"google-egress-ownership.json");
