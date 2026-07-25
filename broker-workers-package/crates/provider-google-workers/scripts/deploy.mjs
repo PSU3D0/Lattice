@@ -37,7 +37,8 @@ if (!/^[0-9a-f]{64}$/.test(manifest.source_hash ?? "")) throw new Error("source 
 const tokenName = `${prefix}-google-token-egress`;
 const providerName = `${prefix}-google-provider-egress`;
 const plan = {
-  schema_version: "0.2", account_id: accountId, prefix, source_hash: manifest.source_hash,
+  schema_version: "0.3", account_id: accountId, prefix,
+  operator_computed_uploaded_source_sha256: manifest.source_hash,
   workers_subdomain: workersSubdomain,
   public_callback_base: expected.publicCallbackBase,
   callback_uri: callbackUri,
@@ -75,21 +76,26 @@ const whoami = await runner.run("auth", ["npx", "wrangler", "whoami", "--json"])
 if (whoami.status !== 0) throw new Error("account authentication failed");
 assertAuthenticatedAccount(whoami.stdout, accountId);
 const created = [];
+const runStartedAt = new Date(Math.floor(Date.now() / 1000) * 1000).toISOString();
 try {
   const token = await deployPrivateWorker({
     runner, step: "token", name: tokenName, accountId, config: "wrangler.token.jsonc",
     secrets: secretValues["google-token-egress"],
     derivedSecrets: { GOOGLE_OAUTH_REDIRECT_URI: callbackUri },
+    uploadedSourceSha256: manifest.source_hash,
+    runStartedAt,
   });
   created.push(token);
   const provider = await deployPrivateWorker({
     runner, step: "provider", name: providerName, accountId, config: "wrangler.provider.jsonc",
     secrets: secretValues["google-provider-egress"],
+    uploadedSourceSha256: manifest.source_hash,
+    runStartedAt,
   });
   created.push(provider);
   const workers = [
-    { ...plan.workers[0], deployment_id: token.deployment_id, source_hash: token.source_hash, secrets: token.secrets },
-    { ...plan.workers[1], deployment_id: provider.deployment_id, source_hash: provider.source_hash, secrets: provider.secrets },
+    { ...plan.workers[0], ...token, secrets: token.secrets },
+    { ...plan.workers[1], ...provider, secrets: provider.secrets },
   ];
   const state = { ...plan, owner: "lattice-provider-google-workers", created_by_run: true, workers };
   await writeFile(join(evidenceDir, "google-egress-ownership.json"), `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
@@ -101,6 +107,9 @@ try {
     const result = await runner.run(`${worker.name}:cleanup`, ["npx", "wrangler", "delete", "--name", worker.name, "--force"]);
     cleanupFailed ||= result.status !== 0;
   }
-  if (cleanupFailed) throw new Error("private_egress_failed_cleanup_failed");
+  if (cleanupFailed) {
+    const original = error instanceof Error ? error.message : String(error);
+    throw new Error(`${original}; private_egress_cleanup_failed`, { cause: error });
+  }
   throw error;
 }

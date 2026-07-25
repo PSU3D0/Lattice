@@ -1,20 +1,29 @@
 {
-  "schema_version": "2",
+  "schema_version": "3",
   "account_id": "00000000000000000000000000000000",
   "prefix": "lattice-b5-example1",
   "d1_database_id": "00000000-0000-0000-0000-000000000000",
   "services": {
+    "AUTH_DRIVER_SERVICE": {
+      "name": "approved-auth-driver-service",
+      "account_id": "00000000000000000000000000000000",
+      "deployment_id": "aaaaaaaa-aaaa-4aaa-8aaa-111111111111",
+      "version_id": "aaaaaaaa-aaaa-4aaa-8aaa-222222222222",
+      "uploaded_source_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
     "GOOGLE_PROVIDER_SERVICE": {
       "name": "approved-google-provider-service",
       "account_id": "00000000000000000000000000000000",
-      "deployment_id": "immutable-provider-deployment-id",
-      "source_hash": "0000000000000000000000000000000000000000000000000000000000000000"
+      "deployment_id": "11111111-1111-4111-8111-111111111111",
+      "version_id": "11111111-1111-4111-8111-222222222222",
+      "uploaded_source_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
     },
     "GOOGLE_TOKEN_SERVICE": {
       "name": "approved-google-token-service",
       "account_id": "00000000000000000000000000000000",
-      "deployment_id": "immutable-token-deployment-id",
-      "source_hash": "0000000000000000000000000000000000000000000000000000000000000000"
+      "deployment_id": "22222222-2222-4222-8222-111111111111",
+      "version_id": "22222222-2222-4222-8222-222222222222",
+      "uploaded_source_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
     }
   },
   "workers": {
@@ -22,15 +31,17 @@
       "name": "lattice-b5-example1-broker-private",
       "account_id": "00000000000000000000000000000000",
       "prefix": "lattice-b5-example1",
-      "deployment_id": "only-required-when-pre-existing",
-      "source_hash": "0000000000000000000000000000000000000000000000000000000000000000"
+      "deployment_id": "33333333-3333-4333-8333-111111111111",
+      "version_id": "33333333-3333-4333-8333-222222222222",
+      "uploaded_source_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
     },
     "public": {
       "name": "lattice-b5-example1-broker-public",
       "account_id": "00000000000000000000000000000000",
       "prefix": "lattice-b5-example1",
-      "deployment_id": "only-required-when-pre-existing",
-      "source_hash": "0000000000000000000000000000000000000000000000000000000000000000"
+      "deployment_id": "44444444-4444-4444-8444-111111111111",
+      "version_id": "44444444-4444-4444-8444-222222222222",
+      "uploaded_source_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
     }
   }
 }

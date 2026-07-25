@@ -1,11 +1,11 @@
 {
-  "schema_version": "0.2",
+  "schema_version": "0.3",
   "artifact": "c5-production-readiness",
   "contains_credentials_or_pii": false,
   "provisioning_order": [
     "provision non-owned D1, KV, R2, AI Gateway, and immutable operator authority artifacts",
-    "for auth-driver, then Google token egress, then provider egress: prove absent, deploy private, install secrets through stdin, verify secret names, and capture exactly one deployment id plus source hash",
-    "prove broker-private absent, deploy it unreachable, install and verify its 12 secrets, and capture its exact deployment before any destructive D1 migration",
+    "for auth-driver, then Google token egress, then provider egress: prove absent, deploy private, install secrets through stdin, verify secret names, and capture the newest fresh Cloudflare deployment UUID and version UUID plus the operator-computed uploaded-source digest",
+    "prove broker-private absent, deploy it unreachable, install and verify its 12 secrets, and capture its newest fresh deployment before any destructive D1 migration",
     "apply checked-in forward-only D1 migrations; preserve private broker, egress, and D1 on failure",
     "after migration, re-prove broker-public absent, deploy it last with no secrets, capture its exact deployment, and verify callback/health behavior",
     "render S21 binding lock, authority manifest, Flow IR hash, receipt trust pin, and service bindings",
@@ -53,9 +53,12 @@
     "value_validation": "all values are non-empty strings; auth-driver and broker-private AUTH_DRIVER_SERVICE_AUTH match; token/provider/broker-private GOOGLE_EGRESS_SERVICE_AUTH match; GOOGLE_TOKEN_RESULT_KEY and documented broker keys have their exact lowercase-hex/base64url shapes",
     "transport": "pipe each value to wrangler secret put over stdin; never place a value in argv, logs, plans, ownership manifests, or evidence",
     "absence_classification": "explicit script-not-found or an empty deployment array is absent; one or more deployments is present; every other command error or parse failure is unknown and aborts before mutation",
-    "per_worker_order": ["prove absent", "deploy Worker (unreachable private Worker until the final public role)", "install required secrets", "verify required secret names", "capture exactly one deployment id and source hash"],
-    "secret_failure_rollback": "before migration, delete only the just-created failing Worker; once migration is attempted, perform no deletion rollback and require a forward fix",
-    "evidence": "secret names and planned or installed_and_verified status only"
+    "per_worker_order": ["prove absent", "capture a run-start timestamp before the first mutation", "deploy Worker (unreachable private Worker until the final public role)", "install required secrets", "verify required secret names", "capture all fresh deployments and select the newest created_on"],
+    "deployment_freshness": "after deploy and secret installation, require at least one deployment; every returned deployment must have source wrangler, canonical lowercase deployment and version UUIDs, and created_on at or after run_started_at; select the maximum created_on even when the API array is out of order",
+    "cloudflare_content_digest_limitation": "Cloudflare deployments and versions JSON exposes no content digest. uploaded_source_sha256 is computed locally by the operator from the upload input and is not a Cloudflare attestation, measurement, or verification of running code.",
+    "deployment_evidence_schema": ["deployment_id", "version_id", "deployment_count", "triggered_by_annotations[{deployment_id,version_id,created_on,triggered_by}]", "run_started_at", "uploaded_source_sha256"],
+    "secret_failure_rollback": "before migration, delete only the just-created failing Worker when creation ownership remains proven; invalid or stale deployment evidence makes ownership uncertain and causes zero further mutation; once migration is attempted, perform no deletion rollback and require a forward fix",
+    "evidence": "secret names and planned or installed_and_verified status only; content evidence uses the explicitly operator-computed uploaded_source_sha256 field"
   },
   "oauth_application": {
     "application_type": "web",

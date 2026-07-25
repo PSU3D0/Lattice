@@ -119,20 +119,44 @@ export async function loadPrivateWorkerSecrets(path, repositoryRoot) {
   return parsed;
 }
 
-function validDeployment(deployment) {
-  const sourceHash = deployment?.source_hash ?? deployment?.metadata?.source_hash;
-  return /^[A-Za-z0-9._:-]{6,256}$/.test(deployment?.id ?? "") && /^[0-9a-f]{64}$/.test(sourceHash ?? "");
+const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const LOWERCASE_SHA256 = /^[0-9a-f]{64}$/;
+
+export function isCanonicalUuid(value) {
+  return CANONICAL_UUID.test(value ?? "");
+}
+
+export function isValidCloudflareDeployment(deployment) {
+  return isCanonicalUuid(deployment?.id) &&
+    deployment?.source === "wrangler" &&
+    typeof deployment?.created_on === "string" &&
+    Number.isFinite(Date.parse(deployment.created_on)) &&
+    Array.isArray(deployment?.versions) && deployment.versions.length > 0 &&
+    deployment.versions.every((version) => isCanonicalUuid(version?.version_id));
+}
+
+function recordedDeployment(deployment) {
+  const version = [...deployment.versions].sort((left, right) =>
+    (Number(right?.percentage) || 0) - (Number(left?.percentage) || 0)
+  )[0];
+  return {
+    deployment_id: deployment.id,
+    version_id: version.version_id,
+    created_on: deployment.created_on,
+    triggered_by: deployment.annotations?.["workers/triggered_by"] ?? null,
+  };
 }
 
 function ownedDeploymentPresent(deployments, ownership, name, accountId) {
   if (
     ownership?.name !== name || ownership?.account_id !== accountId ||
-    !/^[A-Za-z0-9._:-]{6,256}$/.test(ownership?.deployment_id ?? "") ||
-    !/^[0-9a-f]{64}$/.test(ownership?.source_hash ?? "")
+    !isCanonicalUuid(ownership?.deployment_id) ||
+    !isCanonicalUuid(ownership?.version_id) ||
+    !LOWERCASE_SHA256.test(ownership?.uploaded_source_sha256 ?? "")
   ) return false;
-  return deployments.some((deployment) =>
+  return deployments.every(isValidCloudflareDeployment) && deployments.some((deployment) =>
     deployment.id === ownership.deployment_id &&
-    (deployment.source_hash ?? deployment.metadata?.source_hash) === ownership.source_hash
+    deployment.versions.some((version) => version.version_id === ownership.version_id)
   );
 }
 
@@ -149,9 +173,13 @@ export async function qualifyWorkerTarget({ runner, step, name, accountId, owned
 
 export async function deployPrivateWorker({
   runner, step, name, accountId, config, secrets, derivedSecrets = {}, ownedUpdate = false, ownership,
-  rollbackCreatedOnFailure = true,
+  rollbackCreatedOnFailure = true, uploadedSourceSha256, runStartedAt,
 }) {
+  if (!LOWERCASE_SHA256.test(uploadedSourceSha256 ?? "")) throw new Error(`${step}_uploaded_source_sha256_invalid`);
   const resource = await qualifyWorkerTarget({ runner, step, name, accountId, ownedUpdate, ownership });
+  const capturedRunStartedAt = runStartedAt ?? new Date(Math.floor(Date.now() / 1000) * 1000).toISOString();
+  const runStartedAtMillis = Date.parse(capturedRunStartedAt);
+  if (!Number.isFinite(runStartedAtMillis)) throw new Error(`${step}_run_started_at_invalid`);
   const suppliedNames = Object.keys(secrets);
   const derivedNames = Object.keys(derivedSecrets);
   const requiredNames = [...suppliedNames, ...derivedNames];
@@ -180,22 +208,41 @@ export async function deployPrivateWorker({
     if (requiredNames.some((name) => !names.has(name))) throw new Error(`${step}_secret_verification_failed`);
     const deploymentResult = await runner.run(`${step}:capture`, ["npx", "wrangler", "deployments", "list", "--name", name, "--json"]);
     const classified = classifyDeploymentsListResult(deploymentResult);
-    if (classified.state !== "present" || classified.deployments.length !== 1 || !validDeployment(classified.deployments[0])) {
-      throw new Error(`${step}_deployment_evidence_invalid`);
+    if (
+      classified.state !== "present" ||
+      classified.deployments.some((deployment) =>
+        !isValidCloudflareDeployment(deployment) || Date.parse(deployment.created_on) < runStartedAtMillis
+      )
+    ) {
+      const evidenceError = new Error(`${step}_deployment_evidence_invalid`);
+      evidenceError.creationOwnershipUncertain = true;
+      throw evidenceError;
     }
-    const deployment = classified.deployments[0];
+    const history = classified.deployments.map(recordedDeployment);
+    const deployment = history.reduce((newest, candidate) =>
+      Date.parse(candidate.created_on) > Date.parse(newest.created_on) ? candidate : newest
+    );
     return {
       name,
       account_id: accountId,
-      deployment_id: deployment.id,
-      source_hash: deployment.source_hash ?? deployment.metadata.source_hash,
+      deployment_id: deployment.deployment_id,
+      version_id: deployment.version_id,
+      deployment_count: history.length,
+      triggered_by_annotations: history.map(({ deployment_id, version_id, created_on, triggered_by }) => ({
+        deployment_id, version_id, created_on, triggered_by,
+      })),
+      run_started_at: capturedRunStartedAt,
+      uploaded_source_sha256: uploadedSourceSha256,
       created_by_run: created,
       secrets: requiredNames.map((secretName) => ({ name: secretName, install_status: "installed_and_verified" })),
     };
   } catch (error) {
-    if (created && rollbackCreatedOnFailure) {
+    if (created && rollbackCreatedOnFailure && error?.creationOwnershipUncertain !== true) {
       const cleanup = await runner.run(`${step}:cleanup`, ["npx", "wrangler", "delete", "--name", name, "--force"]);
-      if (cleanup.status !== 0) throw new Error(`${step}_failed_cleanup_failed`);
+      if (cleanup.status !== 0) {
+        const original = error instanceof Error ? error.message : String(error);
+        throw new Error(`${original}; ${step}_cleanup_failed`, { cause: error });
+      }
     }
     throw error;
   }

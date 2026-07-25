@@ -15,9 +15,35 @@ import {
   loadPrivateWorkerSecrets,
 } from "./private-worker-deploy-lib.mjs";
 import { validatePublicCallbackBase } from "./workers-subdomain.mjs";
+import { renderWorkerUploadedSourceDigests } from "./uploaded-source.mjs";
 
 const hash = "c".repeat(64);
 const d1Id = "c1a61a80-5d61-4500-aae8-4db034897753";
+const deploymentIds = {
+  auth: "11111111-1111-4111-8111-111111111111",
+  provider: "22222222-2222-4222-8222-222222222222",
+  token: "33333333-3333-4333-8333-333333333333",
+  private: "44444444-4444-4444-8444-444444444444",
+  public: "55555555-5555-4555-8555-555555555555",
+};
+const versionIds = {
+  auth: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
+  provider: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2",
+  token: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3",
+  private: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4",
+  public: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa5",
+};
+const runStartedAt = "2026-07-25T02:35:40Z";
+function cloudflareDeployment(id, versionId, createdOn = "2026-07-25T02:35:42Z", triggeredBy = "upload") {
+  return {
+    id,
+    source: "wrangler",
+    strategy: "percentage",
+    annotations: { "workers/triggered_by": triggeredBy },
+    versions: [{ version_id: versionId, percentage: 100 }],
+    created_on: createdOn,
+  };
+}
 const completeSecrets = {
   "auth-driver": { AUTH_DRIVER_SERVICE_AUTH: "shared-auth-driver-value" },
   "google-token-egress": {
@@ -57,7 +83,7 @@ const context = {
   googleProviderService: "approved-google-provider",
   googleTokenService: "approved-google-token",
   approvedDependencies: {
-    schema_version: "2", account_id: "a".repeat(32), prefix: "lattice-b5-test123",
+    schema_version: "3", account_id: "a".repeat(32), prefix: "lattice-b5-test123",
     d1_database_id: d1Id,
     artifacts: {
       deployment_authority_key_id: "operator-key", deployment_authority_public_key_b64u: "operator-public-key",
@@ -68,14 +94,15 @@ const context = {
       generic_activation_recipient_key_id: "recipient-key",
     },
     services: {
-      AUTH_DRIVER_SERVICE: { name: "approved-auth-driver", account_id: "a".repeat(32), deployment_id: "auth-driver-deployment", source_hash: hash },
-      GOOGLE_PROVIDER_SERVICE: { name: "approved-google-provider", account_id: "a".repeat(32), deployment_id: "provider-deployment", source_hash: hash },
-      GOOGLE_TOKEN_SERVICE: { name: "approved-google-token", account_id: "a".repeat(32), deployment_id: "token-deployment", source_hash: hash },
+      AUTH_DRIVER_SERVICE: { name: "approved-auth-driver", account_id: "a".repeat(32), deployment_id: deploymentIds.auth, version_id: versionIds.auth, uploaded_source_sha256: hash },
+      GOOGLE_PROVIDER_SERVICE: { name: "approved-google-provider", account_id: "a".repeat(32), deployment_id: deploymentIds.provider, version_id: versionIds.provider, uploaded_source_sha256: hash },
+      GOOGLE_TOKEN_SERVICE: { name: "approved-google-token", account_id: "a".repeat(32), deployment_id: deploymentIds.token, version_id: versionIds.token, uploaded_source_sha256: hash },
     },
     workers: {},
   },
   privateConfig: '{"workers_dev": false}', publicConfig: '{"workers_dev": true}',
   privateConfigPath: "/evidence/private.jsonc", publicConfigPath: "/evidence/public.jsonc",
+  privateUploadedSourceSha256: hash, publicUploadedSourceSha256: hash, runStartedAt,
   privateSecrets: completeSecrets["broker-private"],
   publicSecrets: completeSecrets["broker-public"],
 };
@@ -92,14 +119,14 @@ class FakeRunner {
     if (step.startsWith("target:")) return { status: 0, stdout: "[]" };
     if (step === "private_worker:absence") return this.overrides["target:private"] ?? { status: 0, stdout: "[]" };
     if (step === "public_worker:absence") return this.overrides["target:public"] ?? { status: 0, stdout: "[]" };
-    if (step === "dependency:AUTH_DRIVER_SERVICE") return { status: 0, stdout: JSON.stringify([{ id: "auth-driver-deployment", source_hash: hash }]) };
-    if (step === "dependency:GOOGLE_PROVIDER_SERVICE") return { status: 0, stdout: JSON.stringify([{ id: "provider-deployment", source_hash: hash }]) };
-    if (step === "dependency:GOOGLE_TOKEN_SERVICE") return { status: 0, stdout: JSON.stringify([{ id: "token-deployment", source_hash: hash }]) };
+    if (step === "dependency:AUTH_DRIVER_SERVICE") return { status: 0, stdout: JSON.stringify([cloudflareDeployment(deploymentIds.auth, versionIds.auth)]) };
+    if (step === "dependency:GOOGLE_PROVIDER_SERVICE") return { status: 0, stdout: JSON.stringify([cloudflareDeployment(deploymentIds.provider, versionIds.provider)]) };
+    if (step === "dependency:GOOGLE_TOKEN_SERVICE") return { status: 0, stdout: JSON.stringify([cloudflareDeployment(deploymentIds.token, versionIds.token)]) };
     if (step === "d1") return { status: 0, stdout: JSON.stringify([{ uuid: context.d1Id }]) };
     if (step === "private_worker:secrets") return { status: 0, stdout: JSON.stringify(REQUIRED_SECRET_NAMES.map((name) => ({ name }))) };
     if (step === "public_worker:secrets") return { status: 0, stdout: "[]" };
-    if (step === "private_worker:capture") return { status: 0, stdout: JSON.stringify([{ id: "private-deployment", source_hash: hash }]) };
-    if (step === "public_worker:capture") return { status: 0, stdout: JSON.stringify([{ id: "public-deployment", source_hash: hash }]) };
+    if (step === "private_worker:capture") return { status: 0, stdout: JSON.stringify([cloudflareDeployment(deploymentIds.private, versionIds.private)]) };
+    if (step === "public_worker:capture") return { status: 0, stdout: JSON.stringify([cloudflareDeployment(deploymentIds.public, versionIds.public)]) };
     if (step === "readiness:oauth_callback_400") return { status: 0, stdout: "400" };
     if (step === "smoke") return { status: 0, stdout: JSON.stringify({ status: "ok" }) };
     return { status: 0, stdout: "{}" };
@@ -112,11 +139,16 @@ function ownedContext(kind) {
     ...context,
     approvedDependencies: {
       ...context.approvedDependencies,
-      workers: { [kind]: { name, account_id: context.accountId, prefix: context.prefix, deployment_id: `${kind}-deployment`, source_hash: hash } },
+      workers: { [kind]: {
+        name, account_id: context.accountId, prefix: context.prefix,
+        deployment_id: deploymentIds[kind], version_id: versionIds[kind], uploaded_source_sha256: hash,
+      } },
     },
   };
 }
-const live = (kind) => ({ status: 0, stdout: JSON.stringify([{ id: `${kind}-deployment`, source_hash: hash }]) });
+const live = (kind) => ({ status: 0, stdout: JSON.stringify([
+  cloudflareDeployment(deploymentIds[kind], versionIds[kind], runStartedAt),
+]) });
 
 function mutatingCalls(runner) {
   return runner.calls.filter(({ command }) =>
@@ -325,7 +357,7 @@ test("D1 existence proof requires a byte-exact UUID and aborts before mutation",
 });
 
 test("pre-existing unowned target fails before mutation", async () => {
-  const runner = new FakeRunner({ "target:private": { status: 0, stdout: JSON.stringify([{ id: "foreign", source_hash: hash }]) } });
+  const runner = new FakeRunner({ "target:private": { status: 0, stdout: JSON.stringify([cloudflareDeployment(deploymentIds.private, versionIds.private)]) } });
   await assert.rejects(executeApply(context, runner), /target_private_unowned/);
   assert.equal(runner.calls.some((call) => call.step === "migrations"), false);
 });
@@ -352,8 +384,10 @@ test("post-migration failure deletes only the created public facade and requires
     ["npx", "wrangler", "delete", "--name", context.publicName, "--force"],
   ]);
 });
-test("immutable dependency hash mismatch fails before mutation", async () => {
-  const runner = new FakeRunner({ "dependency:GOOGLE_PROVIDER_SERVICE": { status: 0, stdout: JSON.stringify([{ id: "provider-deployment", source_hash: "d".repeat(64) }]) } });
+test("immutable dependency deployment mismatch fails before mutation", async () => {
+  const runner = new FakeRunner({ "dependency:GOOGLE_PROVIDER_SERVICE": { status: 0, stdout: JSON.stringify([
+    cloudflareDeployment("99999999-9999-4999-8999-999999999999", versionIds.provider),
+  ]) } });
   await assert.rejects(executeApply(context, runner), /dependency_pin_mismatch/);
   assert.equal(runner.calls.some((call) => call.step === "migrations"), false);
 });
@@ -442,7 +476,10 @@ class PrivateWorkerRunner {
     if (step.endsWith(":absence")) return { status: 1, stdout: "", stderr: "workers.api.error.script_not_found [code: 10007]" };
     if (step.endsWith(":deploy")) { this.deployed = true; return { status: 0, stdout: "" }; }
     if (step.endsWith(":secrets")) return { status: 0, stdout: JSON.stringify([{ name: "AUTH_DRIVER_SERVICE_AUTH" }]) };
-    if (step.endsWith(":capture")) return { status: 0, stdout: JSON.stringify([{ id: "deployment-123", source_hash: hash }]) };
+    if (step.endsWith(":capture")) return {
+      status: 0,
+      stdout: JSON.stringify([cloudflareDeployment(deploymentIds.auth, versionIds.auth)]),
+    };
     return { status: 0, stdout: "" };
   }
 }
@@ -470,6 +507,7 @@ test("unknown private target state aborts before every mutation", async () => {
   await assert.rejects(deployPrivateWorker({
     runner, step: "auth_driver", name: "fresh-auth-driver", accountId: context.accountId,
     config: "auth-driver.jsonc", secrets: privateSecrets["auth-driver"],
+    uploadedSourceSha256: hash, runStartedAt,
   }), /target_unknown/);
   assert.deepEqual(runner.calls.map((call) => call.step), ["auth_driver:absence"]);
 });
@@ -479,12 +517,135 @@ test("private Worker apply proves absence, deploys, installs and verifies secret
   const evidence = await deployPrivateWorker({
     runner, step: "auth_driver", name: "fresh-auth-driver", accountId: context.accountId,
     config: "auth-driver.jsonc", secrets: privateSecrets["auth-driver"],
+    uploadedSourceSha256: hash, runStartedAt,
   });
   assert.deepEqual(runner.calls.map((call) => call.step), [
     "auth_driver:absence", "auth_driver:deploy", "auth_driver:secret:AUTH_DRIVER_SERVICE_AUTH",
     "auth_driver:secrets", "auth_driver:capture",
   ]);
   assert.deepEqual(evidence.secrets, [{ name: "AUTH_DRIVER_SERVICE_AUTH", install_status: "installed_and_verified" }]);
+});
+
+test("real Cloudflare upload and secret deployments are accepted without source_hash", async () => {
+  const upload = cloudflareDeployment(
+    "9651fa32-1111-4111-8111-111111111111",
+    "dabcfe1d-1111-4111-8111-111111111111",
+    "2026-07-25T02:35:42Z",
+    "upload",
+  );
+  upload.annotations["workers/message"] = "Automatic deployment on upload.";
+  const secret = cloudflareDeployment(
+    "721b76ed-2222-4222-8222-222222222222",
+    "5aa3982d-2222-4222-8222-222222222222",
+    "2026-07-25T02:35:44Z",
+    "secret",
+  );
+  const runner = new PrivateWorkerRunner({
+    "auth_driver:capture": { status: 0, stdout: JSON.stringify([upload, secret]) },
+  });
+  const evidence = await deployPrivateWorker({
+    runner, step: "auth_driver", name: "fresh-auth-driver", accountId: context.accountId,
+    config: "auth-driver.jsonc", secrets: privateSecrets["auth-driver"],
+    uploadedSourceSha256: hash, runStartedAt,
+  });
+  assert.equal(evidence.deployment_id, secret.id);
+  assert.equal(evidence.version_id, secret.versions[0].version_id);
+  assert.equal(evidence.deployment_count, 2);
+  assert.deepEqual(evidence.triggered_by_annotations.map((entry) => entry.triggered_by), ["upload", "secret"]);
+  assert.equal(evidence.uploaded_source_sha256, hash);
+  assert.equal(Object.hasOwn(evidence, "source_hash"), false);
+});
+
+test("newest deployment is selected when Cloudflare entries are out of order", async () => {
+  const newest = cloudflareDeployment(
+    "77777777-7777-4777-8777-777777777777",
+    "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    "2026-07-25T02:35:49Z",
+    "secret",
+  );
+  const runner = new PrivateWorkerRunner({
+    "auth_driver:capture": { status: 0, stdout: JSON.stringify([
+      cloudflareDeployment(deploymentIds.auth, versionIds.auth, "2026-07-25T02:35:42Z"),
+      newest,
+      cloudflareDeployment(deploymentIds.private, versionIds.private, "2026-07-25T02:35:45Z", "secret"),
+    ]) },
+  });
+  const evidence = await deployPrivateWorker({
+    runner, step: "auth_driver", name: "fresh-auth-driver", accountId: context.accountId,
+    config: "auth-driver.jsonc", secrets: privateSecrets["auth-driver"],
+    uploadedSourceSha256: hash, runStartedAt,
+  });
+  assert.equal(evidence.deployment_id, newest.id);
+  assert.equal(evidence.version_id, newest.versions[0].version_id);
+});
+
+test("invalid deployment identity, stale creation, and non-wrangler source are rejected", async () => {
+  const invalidFixtures = [
+    { ...cloudflareDeployment(deploymentIds.auth, versionIds.auth), id: "not-a-uuid" },
+    cloudflareDeployment(deploymentIds.auth, "not-a-uuid"),
+    cloudflareDeployment(deploymentIds.auth, versionIds.auth, "2026-07-25T02:35:39Z"),
+    { ...cloudflareDeployment(deploymentIds.auth, versionIds.auth), source: "api" },
+  ];
+  for (const fixture of invalidFixtures) {
+    const runner = new PrivateWorkerRunner({
+      "auth_driver:capture": { status: 0, stdout: JSON.stringify([fixture]) },
+    });
+    await assert.rejects(deployPrivateWorker({
+      runner, step: "auth_driver", name: "fresh-auth-driver", accountId: context.accountId,
+      config: "auth-driver.jsonc", secrets: privateSecrets["auth-driver"],
+      uploadedSourceSha256: hash, runStartedAt,
+    }), /deployment_evidence_invalid/);
+    assert.equal(runner.calls.some((call) => call.step === "auth_driver:cleanup"), false);
+    assert.equal(runner.calls.some((call) => call.step === "migrations"), false);
+    assert.equal(runner.calls.at(-1).step, "auth_driver:capture");
+  }
+});
+
+test("operator-computed uploaded source digests are threaded into rendered config", () => {
+  const template = [
+    "REPLACE_WITH_AUTH_DRIVER_SOURCE_SHA256",
+    "REPLACE_WITH_GOOGLE_TOKEN_SOURCE_SHA256",
+    "REPLACE_WITH_GOOGLE_PROVIDER_SOURCE_SHA256",
+  ].join("|");
+  const rendered = renderWorkerUploadedSourceDigests(template, context.approvedDependencies.services);
+  assert.equal(rendered, [`sha256:${hash}`, `sha256:${hash}`, `sha256:${hash}`].join("|"));
+  assert.throws(() => renderWorkerUploadedSourceDigests(template, {
+    ...context.approvedDependencies.services,
+    AUTH_DRIVER_SERVICE: {
+      ...context.approvedDependencies.services.AUTH_DRIVER_SERVICE,
+      uploaded_source_sha256: "A".repeat(64),
+    },
+  }), /uploaded source digest invalid/);
+});
+
+test("uploaded source digest is required lowercase SHA-256 and is recorded", async () => {
+  for (const invalid of [undefined, "a".repeat(63), "A".repeat(64)]) {
+    const runner = new PrivateWorkerRunner();
+    await assert.rejects(deployPrivateWorker({
+      runner, step: "auth_driver", name: "fresh-auth-driver", accountId: context.accountId,
+      config: "auth-driver.jsonc", secrets: privateSecrets["auth-driver"], uploadedSourceSha256: invalid,
+    }), /uploaded_source_sha256_invalid/);
+    assert.equal(runner.calls.length, 0);
+  }
+  const runner = new PrivateWorkerRunner();
+  const evidence = await deployPrivateWorker({
+    runner, step: "auth_driver", name: "fresh-auth-driver", accountId: context.accountId,
+    config: "auth-driver.jsonc", secrets: privateSecrets["auth-driver"],
+    uploadedSourceSha256: hash, runStartedAt,
+  });
+  assert.equal(evidence.uploaded_source_sha256, hash);
+});
+
+test("rollback failure preserves the original deployment error", async () => {
+  const runner = new PrivateWorkerRunner({
+    "auth_driver:secret:AUTH_DRIVER_SERVICE_AUTH": { status: 1, stdout: "", stderr: "redacted" },
+    "auth_driver:cleanup": { status: 1, stdout: "", stderr: "redacted" },
+  });
+  await assert.rejects(deployPrivateWorker({
+    runner, step: "auth_driver", name: "fresh-auth-driver", accountId: context.accountId,
+    config: "auth-driver.jsonc", secrets: privateSecrets["auth-driver"],
+    uploadedSourceSha256: hash, runStartedAt,
+  }), /auth_driver_secret_install_failed; auth_driver_cleanup_failed/);
 });
 
 test("missing or extra secrets-file names abort during local validation", async () => {
@@ -531,6 +692,7 @@ test("secret-install failure deletes exactly the Worker created by this run", as
   await assert.rejects(deployPrivateWorker({
     runner, step: "auth_driver", name: "fresh-auth-driver", accountId: context.accountId,
     config: "auth-driver.jsonc", secrets: privateSecrets["auth-driver"],
+    uploadedSourceSha256: hash, runStartedAt,
   }), /secret_install_failed/);
   assert.deepEqual(runner.calls.filter((call) => call.step.endsWith(":cleanup")).map((call) => call.command), [
     ["npx", "wrangler", "delete", "--name", "fresh-auth-driver", "--force"],
@@ -542,6 +704,7 @@ test("secret values travel only over stdin and never appear in argv or evidence"
   const evidence = await deployPrivateWorker({
     runner, step: "auth_driver", name: "fresh-auth-driver", accountId: context.accountId,
     config: "auth-driver.jsonc", secrets: privateSecrets["auth-driver"],
+    uploadedSourceSha256: hash, runStartedAt,
   });
   const secretValue = privateSecrets["auth-driver"].AUTH_DRIVER_SERVICE_AUTH;
   assert.equal(JSON.stringify(runner.calls).includes(secretValue), false);

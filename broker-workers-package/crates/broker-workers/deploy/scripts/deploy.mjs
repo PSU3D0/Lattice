@@ -7,6 +7,7 @@ import { renderD1DatabaseId, validateD1Id } from "./cloudflare-identifiers.mjs";
 import { loadPrivateWorkerSecrets } from "./private-worker-deploy-lib.mjs";
 import { verifyBundle } from "./operator-artifacts.mjs";
 import { validatePublicCallbackBase, validateWorkersSubdomain } from "./workers-subdomain.mjs";
+import { computeUploadedSourceSha256, renderWorkerUploadedSourceDigests } from "./uploaded-source.mjs";
 
 const args = new Map();
 for (let index = 2; index < process.argv.length; index += 2) {
@@ -70,6 +71,10 @@ const bundledContracts=operatorBundle.artifacts.deployment_contract_set?.map(ent
 if(!bundledStanding.includes(artifacts.deployment_standing_authority_jcs)||!bundledContracts.includes(artifacts.deployment_contract_set_jcs))throw new Error("installed deployment authority is not the exact verified bundle artifact");
 const brokerManifest = JSON.parse(await readFile(resolve(root, "../../broker-workers-package/build-manifest.json"), "utf8"));
 if (!/^[0-9a-f]{64}$/.test(brokerManifest.wasm_sha256 ?? "")) throw new Error("broker WASM hash missing");
+const publicUploadedSourceSha256 = await computeUploadedSourceSha256([{
+  path: "deploy/public-callback/src/index.mjs",
+  file: join(root, "deploy/public-callback/src/index.mjs"),
+}]);
 const privateName = `${prefix}-broker-private`;
 const publicName = `${prefix}-broker-public`;
 const d1Name = `${prefix}-broker`;
@@ -87,11 +92,9 @@ let privateConfig = renderD1DatabaseId((await readFile(join(root, "wrangler.json
   .replaceAll("https://invalid.example", publicCallbackBase)
   .replace('"AI_GATEWAY_SPEND_LIMIT_USD": "0"', `"AI_GATEWAY_SPEND_LIMIT_USD": "${args.get("--spend-limit-usd")}"`)
   .replace('"AI_GATEWAY_RATE_LIMIT_PER_MINUTE": "0"', `"AI_GATEWAY_RATE_LIMIT_PER_MINUTE": "${args.get("--rate-limit-per-minute")}"`);
+privateConfig = renderWorkerUploadedSourceDigests(privateConfig, approvedDependencies.services);
 const artifactReplacements = {
   REPLACE_WITH_PACKAGED_PRODUCTION_WASM_SHA256: `sha256:${brokerManifest.wasm_sha256}`,
-  REPLACE_WITH_AUTH_DRIVER_SOURCE_SHA256: `sha256:${approvedDependencies.services?.AUTH_DRIVER_SERVICE?.source_hash ?? ""}`,
-  REPLACE_WITH_GOOGLE_TOKEN_SOURCE_SHA256: `sha256:${approvedDependencies.services?.GOOGLE_TOKEN_SERVICE?.source_hash ?? ""}`,
-  REPLACE_WITH_GOOGLE_PROVIDER_SOURCE_SHA256: `sha256:${approvedDependencies.services?.GOOGLE_PROVIDER_SERVICE?.source_hash ?? ""}`,
   REPLACE_WITH_OPERATOR_KEY_ID: artifacts.deployment_authority_key_id,
   REPLACE_WITH_OPERATOR_ED25519_KEY: artifacts.deployment_authority_public_key_b64u,
   REPLACE_WITH_SIGNED_CANONICAL_CONTRACT_SET: artifacts.deployment_contract_set_jcs,
@@ -135,6 +138,8 @@ const context = {
   googleTokenService: args.get("--google-token-service"),
   authDriverService: args.get("--auth-driver-service"),
   approvedDependencies, privateConfig, publicConfig, privateConfigPath, publicConfigPath,
+  privateUploadedSourceSha256: brokerManifest.wasm_sha256,
+  publicUploadedSourceSha256,
   privateSecrets: secretValues["broker-private"], publicSecrets: secretValues["broker-public"],
 };
 if (!apply) {

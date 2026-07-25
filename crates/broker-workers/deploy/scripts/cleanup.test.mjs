@@ -7,19 +7,24 @@ const prefix = "lattice-b5-test123";
 const source = "b".repeat(64);
 function worker(kind) {
   const name = `${prefix}-broker-${kind}`;
-  const deployment_id = `${kind}-immutable-deployment`;
+  const deployment_id = kind === "private"
+    ? "11111111-1111-4111-8111-111111111111"
+    : "22222222-2222-4222-8222-222222222222";
+  const version_id = kind === "private"
+    ? "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1"
+    : "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2";
   const ownership = {
     owner: "lattice-broker-b5", account_id: account, prefix,
-    worker_name: name, deployment_id, source_hash: source,
+    worker_name: name, deployment_id, version_id, uploaded_source_sha256: source,
   };
   return {
     kind, name, account_id: account, prefix, created_by_run: true,
-    deployment_id, source_hash: source, ownership,
+    deployment_id, version_id, uploaded_source_sha256: source, ownership,
     ownership_manifest_hash: manifestHash(ownership),
   };
 }
 const state = {
-  schema_version: "0.2", owner: "lattice-broker-b5", account_id: account, prefix,
+  schema_version: "0.3", owner: "lattice-broker-b5", account_id: account, prefix,
   resources: { workers: [worker("private"), worker("public")], d1_database: { owned: false } },
 };
 class Runner {
@@ -29,8 +34,12 @@ class Runner {
     if (this.overrides[step]) return this.overrides[step];
     const kind = step.split(":").at(-1);
     const pin = state.resources.workers.find((value) => value.kind === kind);
-    if (step.startsWith("cleanup:deployments:")) return { status: 0, stdout: JSON.stringify([{ id: pin.deployment_id, source_hash: pin.source_hash }]) };
-    if (step.startsWith("cleanup:metadata:")) return { status: 0, stdout: JSON.stringify({ id: pin.deployment_id, account_id: account, source_hash: pin.source_hash, metadata: { source_hash: pin.source_hash, ownership: pin.ownership, ownership_manifest_hash: pin.ownership_manifest_hash } }) };
+    if (step.startsWith("cleanup:deployments:")) return { status: 0, stdout: JSON.stringify([{
+      id: pin.deployment_id,
+      source: "wrangler",
+      versions: [{ version_id: pin.version_id, percentage: 100 }],
+      created_on: "2026-07-25T02:35:42Z",
+    }]) };
     return { status: 0, stdout: "{}" };
   }
 }
@@ -42,25 +51,29 @@ test("standalone cleanup refuses pre-existing unowned state before queries", asy
   await assert.rejects(executeStandaloneCleanup(forged, runner), /ownership_manifest_invalid/);
   assert.equal(runner.calls.length, 0);
 });
-test("standalone cleanup refuses immutable deployment hash mismatch without deleting", async () => {
+test("standalone cleanup refuses immutable deployment identity mismatch without deleting", async () => {
   const runner = new Runner({
-    "cleanup:deployments:private": { status: 0, stdout: JSON.stringify([{ id: "private-immutable-deployment", source_hash: "c".repeat(64) }]) },
+    "cleanup:deployments:private": { status: 0, stdout: JSON.stringify([{
+      id: "99999999-9999-4999-8999-999999999999",
+      source: "wrangler",
+      versions: [{ version_id: state.resources.workers[0].version_id, percentage: 100 }],
+      created_on: "2026-07-25T02:35:42Z",
+    }]) },
   });
   await assert.rejects(executeStandaloneCleanup(state, runner), /deployment_mismatch/);
   assert.equal(runner.calls.some((step) => step.startsWith("cleanup:delete:")), false);
 });
-test("standalone cleanup refuses missing live metadata without deleting", async () => {
-  const runner = new Runner({ "cleanup:metadata:private": { status: 1, stdout: "" } });
-  await assert.rejects(executeStandaloneCleanup(state, runner), /cleanup_metadata_private_failed/);
+test("standalone cleanup refuses missing live deployment without deleting", async () => {
+  const runner = new Runner({ "cleanup:deployments:private": { status: 0, stdout: "[]" } });
+  await assert.rejects(executeStandaloneCleanup(state, runner), /missing_deployment/);
   assert.equal(runner.calls.some((step) => step.startsWith("cleanup:delete:")), false);
 });
-test("standalone cleanup refuses metadata ownership mismatch without deleting", async () => {
-  const pin = state.resources.workers[0];
-  const runner = new Runner({
-    "cleanup:metadata:private": { status: 0, stdout: JSON.stringify({ id: pin.deployment_id, account_id: account, source_hash: pin.source_hash, metadata: { ownership: { ...pin.ownership, prefix: "foreign" }, ownership_manifest_hash: pin.ownership_manifest_hash } }) },
-  });
-  await assert.rejects(executeStandaloneCleanup(state, runner), /metadata_mismatch/);
-  assert.equal(runner.calls.some((step) => step.startsWith("cleanup:delete:")), false);
+test("standalone cleanup refuses local ownership digest mismatch without querying", async () => {
+  const forged = structuredClone(state);
+  forged.resources.workers[0].ownership.uploaded_source_sha256 = "c".repeat(64);
+  const runner = new Runner();
+  await assert.rejects(executeStandaloneCleanup(forged, runner), /ownership_manifest_invalid/);
+  assert.equal(runner.calls.length, 0);
 });
 test("standalone cleanup deletes only both exact live-verified resources", async () => {
   const runner = new Runner();

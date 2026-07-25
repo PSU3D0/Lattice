@@ -10,8 +10,8 @@ const statePath = args.get("--ownership-state");
 if (!isAbsolute(statePath ?? "")) throw new Error("ownership state must be absolute");
 const state = JSON.parse(await readFile(statePath, "utf8"));
 const manifest = JSON.parse(await readFile("build-manifest.json", "utf8"));
-if (state.schema_version !== "0.2" || state.owner !== "lattice-provider-google-workers" ||
-    state.created_by_run !== true || state.source_hash !== manifest.source_hash ||
+if (state.schema_version !== "0.3" || state.owner !== "lattice-provider-google-workers" ||
+    state.created_by_run !== true || state.operator_computed_uploaded_source_sha256 !== manifest.source_hash ||
     !/^[0-9a-f]{32}$/.test(state.account_id ?? "") || !/^lattice-c5-[a-z0-9]{6,20}$/.test(state.prefix ?? "") ||
     !Array.isArray(state.workers) || state.workers.length !== 2) throw new Error("ownership state invalid");
 const callback = validatePublicCallbackBase(state.prefix, state.workers_subdomain, state.public_callback_base);
@@ -20,8 +20,20 @@ const expected = new Map([
   ["token", `${state.prefix}-google-token-egress`],
   ["provider", `${state.prefix}-google-provider-egress`],
 ]);
-for (const worker of state.workers) if (expected.get(worker.kind) !== worker.name) throw new Error("worker ownership mismatch");
-const plan = { schema_version: "0.2", account_id: state.account_id, source_hash: state.source_hash, delete: [...expected.values()].reverse() };
+for (const worker of state.workers) {
+  if (
+    expected.get(worker.kind) !== worker.name ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(worker.deployment_id ?? "") ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(worker.version_id ?? "") ||
+    worker.uploaded_source_sha256 !== manifest.source_hash
+  ) throw new Error("worker ownership mismatch");
+}
+const plan = {
+  schema_version: "0.3",
+  account_id: state.account_id,
+  operator_computed_uploaded_source_sha256: state.operator_computed_uploaded_source_sha256,
+  delete: [...expected.values()].reverse(),
+};
 if (args.get("--mode") !== "apply") {
   console.log(JSON.stringify(plan, null, 2));
   console.log("cleanup dry-run complete; zero remote commands executed");
@@ -35,8 +47,12 @@ const run = (command) => {
 };
 assertAuthenticatedAccount(run(["npx", "wrangler", "whoami", "--json"]), state.account_id);
 for (const name of plan.delete) {
+  const worker = state.workers.find((candidate) => candidate.name === name);
   const deployments = JSON.parse(run(["npx", "wrangler", "deployments", "list", "--name", name, "--json"]));
-  if (!Array.isArray(deployments) || deployments.length === 0) throw new Error("owned deployment missing");
+  if (!Array.isArray(deployments) || !deployments.some((deployment) =>
+    deployment?.source === "wrangler" && deployment.id === worker.deployment_id &&
+    deployment.versions?.some((version) => version?.version_id === worker.version_id)
+  )) throw new Error("owned deployment missing");
 }
 for (const name of plan.delete) run(["npx", "wrangler", "delete", "--name", name, "--force"]);
 console.log("private Google egress cleanup complete");

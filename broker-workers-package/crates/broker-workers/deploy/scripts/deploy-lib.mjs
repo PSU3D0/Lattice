@@ -5,13 +5,15 @@ import {
   BROKER_PRIVATE_SECRET_NAMES,
   classifyDeploymentsListResult,
   deployPrivateWorker,
+  isCanonicalUuid,
+  isValidCloudflareDeployment,
 } from "./private-worker-deploy-lib.mjs";
 
 export const REQUIRED_SECRET_NAMES = BROKER_PRIVATE_SECRET_NAMES;
 
 export function redactedPlan(context) {
   return {
-    schema_version: "2",
+    schema_version: "3",
     account_id: context.accountId,
     prefix: context.prefix,
     resources: {
@@ -61,17 +63,19 @@ async function checked(runner, step, command) {
 }
 
 function exactDeployment(deployments, pin) {
-  return Array.isArray(deployments) && deployments.some((deployment) =>
+  return Array.isArray(deployments) && deployments.every(isValidCloudflareDeployment) && deployments.some((deployment) =>
+    deployment?.source === "wrangler" &&
     deployment.id === pin.deployment_id &&
-    (deployment.source_hash ?? deployment.metadata?.source_hash) === pin.source_hash
+    deployment.versions?.some((version) => version?.version_id === pin.version_id)
   );
 }
 
 function validateServicePin(binding, expectedName, pin, accountId) {
   if (
     pin?.name !== expectedName || pin?.account_id !== accountId ||
-    !/^[A-Za-z0-9._:-]{6,256}$/.test(pin?.deployment_id ?? "") ||
-    !/^[0-9a-f]{64}$/.test(pin?.source_hash ?? "")
+    !isCanonicalUuid(pin?.deployment_id) ||
+    !isCanonicalUuid(pin?.version_id) ||
+    !/^[0-9a-f]{64}$/.test(pin?.uploaded_source_sha256 ?? "")
   ) throw new Error(`dependency_pin_invalid:${binding}`);
 }
 
@@ -85,6 +89,8 @@ async function qualifyTarget(context, runner, kind, name) {
   const pin = context.approvedDependencies.workers?.[kind];
   if (
     pin?.name !== name || pin?.account_id !== context.accountId || pin?.prefix !== context.prefix ||
+    !isCanonicalUuid(pin?.deployment_id) || !isCanonicalUuid(pin?.version_id) ||
+    !/^[0-9a-f]{64}$/.test(pin?.uploaded_source_sha256 ?? "") ||
     !exactDeployment(deployments, pin)
   ) throw new Error(`target_${kind}_unowned`);
   return { existed: true, created: false };
@@ -95,12 +101,17 @@ export async function executeApply(context, runner) {
     !context.privateConfig.includes('"workers_dev": false') ||
     /"routes?"\s*:/.test(context.privateConfig)
   ) throw new Error("private_worker_not_fail_closed");
+  if (
+    !/^[0-9a-f]{64}$/.test(context.privateUploadedSourceSha256 ?? "") ||
+    !/^[0-9a-f]{64}$/.test(context.publicUploadedSourceSha256 ?? "")
+  ) throw new Error("uploaded_source_sha256_invalid");
+  const runStartedAt = context.runStartedAt ?? new Date(Math.floor(Date.now() / 1000) * 1000).toISOString();
   const resources = {
     private: { existed: false, created: false },
     public: { existed: false, created: false },
   };
   const evidence = {
-    schema_version: "2",
+    schema_version: "3",
     account_id: context.accountId,
     prefix: context.prefix,
     workers_subdomain: context.workersSubdomain,
@@ -133,7 +144,7 @@ export async function executeApply(context, runner) {
 
     const ownership = context.approvedDependencies;
     if (
-      ownership.schema_version !== "2" || ownership.account_id !== context.accountId ||
+      ownership.schema_version !== "3" || ownership.account_id !== context.accountId ||
       ownership.prefix !== context.prefix || ownership.d1_database_id !== context.d1Id
     ) throw new Error("ownership_mismatch");
 
@@ -170,13 +181,19 @@ export async function executeApply(context, runner) {
       secrets: context.privateSecrets,
       ownedUpdate: resources.private.existed,
       ownership: ownership.workers?.private,
+      uploadedSourceSha256: context.privateUploadedSourceSha256,
+      runStartedAt,
     });
     resources.private = { existed: resources.private.existed, created: privateDeployment.created_by_run };
     if (resources.private.created) evidence.created_resources.push(context.privateName);
     evidence.worker_secrets = { [context.privateName]: privateDeployment.secrets };
     evidence.deployments = { [context.privateName]: {
       deployment_id: privateDeployment.deployment_id,
-      source_hash: privateDeployment.source_hash,
+      version_id: privateDeployment.version_id,
+      deployment_count: privateDeployment.deployment_count,
+      triggered_by_annotations: privateDeployment.triggered_by_annotations,
+      run_started_at: privateDeployment.run_started_at,
+      uploaded_source_sha256: privateDeployment.uploaded_source_sha256,
     } };
     evidence.checks.push("fence_aware_private_deployed_secrets_verified_and_captured");
     evidence.migration_state = "attempting_forward_only";
@@ -195,13 +212,19 @@ export async function executeApply(context, runner) {
       secrets: context.publicSecrets ?? {},
       ownedUpdate: resources.public.existed,
       ownership: ownership.workers?.public,
+      uploadedSourceSha256: context.publicUploadedSourceSha256,
+      runStartedAt,
     });
     resources.public = { existed: resources.public.existed, created: publicDeployment.created_by_run };
     if (resources.public.created) evidence.created_resources.push(context.publicName);
     evidence.worker_secrets[context.publicName] = publicDeployment.secrets;
     evidence.deployments[context.publicName] = {
       deployment_id: publicDeployment.deployment_id,
-      source_hash: publicDeployment.source_hash,
+      version_id: publicDeployment.version_id,
+      deployment_count: publicDeployment.deployment_count,
+      triggered_by_annotations: publicDeployment.triggered_by_annotations,
+      run_started_at: publicDeployment.run_started_at,
+      uploaded_source_sha256: publicDeployment.uploaded_source_sha256,
     };
     evidence.checks.push("public_deployed_last_and_captured");
 
