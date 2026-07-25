@@ -4,8 +4,8 @@
   "package_version": "0.1.0",
   "requirements_sha256": "912bfee6e786efc2506216a19737f21a2489134bf230cd828b80befc3e80fd03",
   "cargo_lock_sha256": "52700211f98b06aa893b5bc6c6f8576c518cf06f43a0fc0e84d148af21c8a5c9",
-  "wasm_sha256": "6f84d70d6651267b98bfa8038a11deec6c4b9f15676c5fc0b81803e523a65e94",
-  "root_production_wasm_sha256": "6f84d70d6651267b98bfa8038a11deec6c4b9f15676c5fc0b81803e523a65e94",
+  "wasm_sha256": "405c3618177d0c74807301e21749d1ad51ea0ebb55a00427c33b9b0b466e3e69",
+  "root_production_wasm_sha256": "405c3618177d0c74807301e21749d1ad51ea0ebb55a00427c33b9b0b466e3e69",
   "feature_flags": {
     "production": [],
     "workerd_tests_separate_artifact": [
@@ -260,7 +260,7 @@
     },
     {
       "path": "crates/broker-workers/build/index_bg.wasm",
-      "sha256": "6f84d70d6651267b98bfa8038a11deec6c4b9f15676c5fc0b81803e523a65e94",
+      "sha256": "405c3618177d0c74807301e21749d1ad51ea0ebb55a00427c33b9b0b466e3e69",
       "size_bytes": 5725938
     },
     {
@@ -315,8 +315,8 @@
     },
     {
       "path": "crates/broker-workers/deploy/GOOGLE-OAUTH-RUNBOOK.md",
-      "sha256": "9b6302f65a63aa6e6b93be1cc25db063c16db941575170d1d0e88e3e8463b16e",
-      "size_bytes": 13409
+      "sha256": "e4a1212508a746cadd3065670e0a1ae1d52743a2a8d371f84cc8845d7b17e7b2",
+      "size_bytes": 14853
     },
     {
       "path": "crates/broker-workers/deploy/public-callback/src/index.mjs",
@@ -375,13 +375,23 @@
     },
     {
       "path": "crates/broker-workers/deploy/scripts/operator-artifacts.mjs",
-      "sha256": "0f09040dcb87e50c9734f9279a843db96a1b7bef2ed011d9fe84646661904a98",
-      "size_bytes": 8335
+      "sha256": "d540a6b1890c237ac4be10eb72d4b5453d1f822a9a75df9c76571412c2ec72e6",
+      "size_bytes": 16154
     },
     {
       "path": "crates/broker-workers/deploy/scripts/operator-artifacts.test.mjs",
-      "sha256": "d8435643a730edb1248974aee927f43b1e3176a2aba5253bcd77332045e50b96",
-      "size_bytes": 3316
+      "sha256": "5463b65e7a9ee4bb9a9eb0c3bd4deabc93ccf4f2cc748cc9f5f0f323f5570b90",
+      "size_bytes": 553
+    },
+    {
+      "path": "crates/broker-workers/deploy/scripts/operator-input.mjs",
+      "sha256": "c33c9efdd9ca865c5185061ad5bf70b6a1548ba1605e4c72a63cc0596dd4d3c1",
+      "size_bytes": 18090
+    },
+    {
+      "path": "crates/broker-workers/deploy/scripts/operator-input.test.mjs",
+      "sha256": "b4c5d3dec13e7de4889fb127f5a3fce03c317a9f77eabffa387d83dbeffd323e",
+      "size_bytes": 5956
     },
     {
       "path": "crates/broker-workers/deploy/scripts/private-worker-deploy-lib.mjs",
@@ -905,7 +915,7 @@
     },
     {
       "path": "impl-docs/spec/credential-plane-protocol.schema.json",
-      "sha256": "1f498a79bea904445f67db762e54c11fe4aebf7378ae28de0c2daf14ba639e81",
+      "sha256": "2a97c4f963e32d541e3759d8d0da5d64ebcc7841878b5f99de0221032c4a6790",
       "size_bytes": 175572
     },
     {

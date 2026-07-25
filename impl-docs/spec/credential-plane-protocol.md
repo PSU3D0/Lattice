@@ -924,7 +924,7 @@ are V2; after C4 all new bindings/leases/grants/receipts are V2. V1 executable
 admission exists only through a signed `LegacyAdmissionInventoryV2`; there is
 no wildcard legacy policy.
 
-The inventory is a sorted enumerable list. Every admitted V1 row pins exact:
+The inventory is a sorted enumerable list and may be empty after cutover to express deny-all executable V1 admission. Every admitted V1 row pins exact:
 org, deployment, broker issuer and broker key ID/public-key hash, binding
 canonical hash, authority-manifest hash, connection ref, provider, lane,
 account commitment envelope, roles JCS hash, required/actual scopes JCS hashes,

@@ -31,11 +31,33 @@ The deployment renderer derives this single value and threads it to token egress
 
 The token egress Worker calls the pinned Google `tokeninfo` endpoint, validates its opaque `user_id` and exact two-scope result, and returns only the subject to broker custody for a scoped commitment. Email, name, avatar, and raw subject are not control-plane fields or evidence. Revocation uses only the fixed token-egress `/revoke` route backed by `https://oauth2.googleapis.com/revoke`.
 
-## 3. Sign operator artifacts offline
+## 3. Generate and sign operator artifacts offline
 
-Prepare an operator-owned `operator-artifact-input.json` outside the repository. It names `key_id`, `not_before`, `expires_at`, the pinned `activation_recipient` (`key_id`, raw X25519 `public_key_b64u`, and exact HPKE suite), and the six required artifact groups: `deployment_standing_authority`, `deployment_contract_set`, `registry_definitions`, `registry_decisions`, `historical_inventory`, and `historical_key_evidence`. Each entry names its C1 `schema` and unsigned `value`; historical archives include unsigned validity and revocation evidence. Do not use generated defaults.
+Never hand-write `operator-artifact-input.json`. Generate it from the checked-in Google broker descriptors and registry shapes, supplying every deployment identity, validity, budget, assurance, recipient, and deployed module digest explicitly. Digests are exact 64-character lowercase hexadecimal values without a `sha256:` prefix. The assurance argument is exact JSON and must be non-empty, unique, and JCS-lexically sorted. This is the exact generator command shape an operator runs:
 
-Keep the Ed25519 seed or PKCS8 PEM in a mode-0600 operator file, or pipe it on standard input. Never pass key bytes as an argument:
+```bash
+node deploy/scripts/operator-input.mjs \
+  --org-id "$ORG_ID" \
+  --deployment-id "$DEPLOYMENT_ID" \
+  --prefix "$PREFIX" \
+  --not-before "$NOT_BEFORE" \
+  --expires-at "$EXPIRES_AT" \
+  --spend-limit-usd "$SPEND_LIMIT_USD" \
+  --rate-limit-per-minute "$RATE_LIMIT_PER_MINUTE" \
+  --required-assurance-predicates '[{"kind":"brokered_count","predicate_id":"durable-budget-and-dispatch","required_kernel_controls":["durable_budget_ledger","persisted_dispatch_boundary"]}]' \
+  --activation-recipient-key-id "$ACTIVATION_RECIPIENT_KEY_ID" \
+  --activation-recipient-public-key-b64u "$ACTIVATION_RECIPIENT_PUBLIC_KEY_B64U" \
+  --key-id "$OPERATOR_KEY_ID" \
+  --broker-wasm-sha256 "$BROKER_WASM_SHA256" \
+  --auth-driver-sha256 "$AUTH_DRIVER_SHA256" \
+  --google-token-sha256 "$GOOGLE_TOKEN_SHA256" \
+  --google-provider-sha256 "$GOOGLE_PROVIDER_SHA256" \
+  --output /operator/private/operator-artifact-input.json
+```
+
+The generator verifies the descriptor contract hashes with the same JCS-plus-SHA-256 rule as `connector-spec`, derives all six required artifact groups, emits a deny-all empty historical V1 inventory, and writes mode 0600. It never reads, accepts, or emits a private key. The spend/rate values are signed in standing-authority extensions and the rate also bounds every logical-call budget.
+
+Keep the Ed25519 seed or PKCS8 PEM in a mode-0600 operator file, or pipe it on standard input. Never pass key bytes as an argument. Build signs the ContractSet first, resolves the StandingAuthority pin to the final signed ContractSet hash, signs nested historical evidence, and runs the Rust `broker-artifact-verifier` before returning success:
 
 ```bash
 node deploy/scripts/operator-artifacts.mjs build \
