@@ -150,3 +150,21 @@ After migrations succeed, deploy broker public, then the S21 flow Worker. Qualif
 Only the user may authorize the first live proof. Use the exact consent-screen test account, verify account commitment behavior, then execute the LLM to Sheets to Gmail flow once. Evidence may contain artifact hashes, receipt references, counts, status codes, and ownership IDs; it must exclude credentials, OAuth codes, tokens, provider bodies, document content, raw account subject, and email.
 
 If the proof is disposable, cleanup is ownership-safe and identity-pinned. Remove the public route, flow Worker, broker Workers, both egress Workers/DOs, AI Gateway, and secret names only when the recorded ownership manifest and live Cloudflare deployment/version UUIDs match. The operator-computed uploaded-source digest is checked against local evidence only; it is not available from Cloudflare. Preserve the operator-provisioned D1; the cleanup scripts do not delete it. Retain only sanitized receipt/history verification evidence and ciphertext-destruction confirmations.
+
+## Durable Object migrations on fresh deployments
+
+The production configuration declares a single collapsed `v1` migration creating
+exactly the three bound classes (`ConnectionRefreshDurableObject`,
+`CredentialStateDurableObject`, `V2AuthorityDurableObject`).
+
+The former `v1..v4` chain created `BrokerLedgerDurableObject` and then deleted it
+in `v4-delete-v1-ledger`. That chain cannot be applied to a NEW script: Cloudflare
+rejects a delete-class migration for a class that had no previous script version
+(`code: 10074`). Because this deploy path only ever creates fresh disposable
+deployments (target absence is proven first) and V1 is history-only after cutover,
+the collapsed chain is the correct form. An existing deployment carrying tags
+`v1..v4` must NOT be migrated with this collapsed chain.
+
+Known cleanup item: the production build still exports `BrokerLedgerDurableObject`
+even though it is neither bound nor migrated. It is inert, but a V2-only build
+should stop exporting it.

@@ -74,26 +74,9 @@
     {
       "tag": "v1",
       "new_sqlite_classes": [
-        "BrokerLedgerDurableObject",
-        "ConnectionRefreshDurableObject"
-      ]
-    },
-    {
-      "tag": "v2-credential-state",
-      "new_sqlite_classes": [
-        "CredentialStateDurableObject"
-      ]
-    },
-    {
-      "tag": "v3-authority",
-      "new_sqlite_classes": [
+        "ConnectionRefreshDurableObject",
+        "CredentialStateDurableObject",
         "V2AuthorityDurableObject"
-      ]
-    },
-    {
-      "tag": "v4-delete-v1-ledger",
-      "deleted_classes": [
-        "BrokerLedgerDurableObject"
       ]
     }
   ],

@@ -315,8 +315,8 @@
     },
     {
       "path": "crates/broker-workers/deploy/GOOGLE-OAUTH-RUNBOOK.md",
-      "sha256": "72400c3c953c8f417668973815470d13240a73c5fbc00249db44e3cd93012e25",
-      "size_bytes": 16919
+      "sha256": "6c82ed543d5e39456b373c0fa9e88cf96cb68cf56fe404e357a9dbb3bbb6ff0c",
+      "size_bytes": 17911
     },
     {
       "path": "crates/broker-workers/deploy/public-callback/src/index.mjs",
@@ -640,8 +640,8 @@
     },
     {
       "path": "crates/broker-workers/wrangler.jsonc",
-      "sha256": "d7c98a45f8a859972f2ed662e0a61c82827e7ec947400a15741a78562469f808",
-      "size_bytes": 3887
+      "sha256": "0cebc13ec96e5b71fe3d4c1fd7dbe0e1f15a36023d8a9a00d9adebe08e418a9c",
+      "size_bytes": 3565
     },
     {
       "path": "crates/connector-spec/Cargo.toml",
