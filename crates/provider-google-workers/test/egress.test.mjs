@@ -50,6 +50,16 @@ afterAll(async () => mf.dispose());
 
 async function calls() { return (await (await upstream.fetch("http://mock/__calls")).json()); }
 
+async function exchangeCode(code, prefix) {
+  return token.fetch("http://token.internal/exchange", {
+    method: "POST", headers: headers(prefix),
+    body: JSON.stringify({
+      code, code_verifier: "v".repeat(43), grant_type: "authorization_code",
+      redirect_uri: "https://broker.example/v0.2/credential-callback",
+    }),
+  });
+}
+
 describe("private Google token and account egress", () => {
   it("constructs authorization only from secret client identity and the exact callback/scopes", async () => {
     const response = await token.fetch("http://token.internal/authorize", {
@@ -100,6 +110,23 @@ describe("private Google token and account egress", () => {
     expect(form.get("client_id")).toBe("google-client-id-private");
     expect(form.get("client_secret")).toBe("google-client-secret-private");
     expect(JSON.stringify(value)).not.toContain("google-client-secret-private");
+  });
+
+  it.each([
+    ["missing-subject", "a response missing both subject fields"],
+    ["wrong-audience", "a token minted for another OAuth client"],
+    ["unknown-claim", "a genuinely unknown tokeninfo field"],
+    ["wrong-scope", "a scope mismatch"],
+  ])("fails closed for %s (%s)", async (code) => {
+    const response = await exchangeCode(code, `tokeninfo-${code}`);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "provider_response_invalid" });
+  });
+
+  it("accepts legacy user_id only when the modern sub field is absent", async () => {
+    const response = await exchangeCode("legacy-subject", "tokeninfo-legacy-subject");
+    expect(response.status).toBe(200);
+    expect((await response.json()).account_subject).toBe("legacy-google-subject-654321");
   });
 
   it("revokes only through the pinned lifecycle route with idempotent custody", async () => {

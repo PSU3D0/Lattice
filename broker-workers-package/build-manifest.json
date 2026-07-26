@@ -254,6 +254,11 @@
       "size_bytes": 197
     },
     {
+      "path": "crates/broker-workers/.wrangler.private.generated-2831519-9acc6192-e05f-4622-95cc-e96bf8051934.jsonc",
+      "sha256": "dc75de72143448f29602eadded1e01d5790927a67f09990210e8e4ac73166ac6",
+      "size_bytes": 6435
+    },
+    {
       "path": "crates/broker-workers/build/.gitignore",
       "sha256": "684888c0ebb17f374298b65ee2807526c066094c701bcc7ebbe1c1095f494fc1",
       "size_bytes": 1
@@ -317,6 +322,11 @@
       "path": "crates/broker-workers/deploy/GOOGLE-OAUTH-RUNBOOK.md",
       "sha256": "6c82ed543d5e39456b373c0fa9e88cf96cb68cf56fe404e357a9dbb3bbb6ff0c",
       "size_bytes": 17911
+    },
+    {
+      "path": "crates/broker-workers/deploy/public-callback/.wrangler.public.generated-2831519-5e909306-d119-4e0f-b773-2c770c5cd30a.jsonc",
+      "sha256": "7831eca8eb7c7202cfd0b1c23a9e8edbfad1eff52b71ae766f83a292c4dce423",
+      "size_bytes": 647
     },
     {
       "path": "crates/broker-workers/deploy/public-callback/src/index.mjs",
