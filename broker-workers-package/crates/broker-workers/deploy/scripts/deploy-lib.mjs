@@ -305,9 +305,19 @@ export async function executeApply(context, runner) {
       context.googleOauthRedirectUri,
     ], context.readinessSleep, (result) => result.status === 0 && result.stdout.trim() === "400");
     if (callback.stdout.trim() !== "400") throw new Error("oauth_callback_status_mismatch");
-    const smoke = parseJson(await runner.run("smoke", [
+    // Same propagation window as the other probes: retry until the response is
+    // genuinely our health payload rather than an edge error body.
+    const smokeResult = await checkedWithPropagationRetry(runner, "smoke", [
       "curl", "--fail", "--silent", "--show-error", `${context.publicCallbackBase}/health`,
-    ]), "smoke");
+    ], context.readinessSleep, (result) => {
+      if (result.status !== 0) return false;
+      try {
+        return JSON.parse(result.stdout).status === "ok";
+      } catch {
+        return false;
+      }
+    });
+    const smoke = parseJson(smokeResult, "smoke");
     if (smoke.status !== "ok") throw new Error("smoke_failed");
     evidence.checks.push("health_ready_callback_400_smoke");
     evidence.config_sha256 = createHash("sha256").update(context.privateConfig).digest("hex");
