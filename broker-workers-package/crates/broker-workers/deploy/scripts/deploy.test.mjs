@@ -657,7 +657,10 @@ test("broker secret values use stdin and never enter argv or evidence", async ()
 
 test("OAuth callback readiness requires exact safe 400", async () => {
   const runner = new FakeRunner({ "readiness:oauth_callback_400": { status: 0, stdout: "200" } });
-  await assert.rejects(executeApply(context, runner), /oauth_callback_status_mismatch/);
+  // Fail-closed either way: a wrong status now exhausts the propagation budget
+  // first, so the surfaced error is the retry failure rather than the mismatch.
+  await assert.rejects(executeApply(context, runner),
+    /readiness:oauth_callback_400_failed|oauth_callback_status_mismatch/);
   assert.deepEqual(runner.calls.filter((call) => call.command.includes("delete")).map((call) => call.command), [
     ["npx", "wrangler", "delete", "--name", context.publicName, "--force"],
   ]);
@@ -1024,4 +1027,39 @@ test("readiness still fails closed once the propagation budget is exhausted", as
   const runner = new AlwaysDownRunner({});
   await assert.rejects(executeApply(context, runner), /readiness:\/health_failed/);
   assert.ok(healthAttempts > 1, "must retry before failing closed");
+});
+
+test("callback readiness retries a propagation-time edge status until it sees an exact 400", async () => {
+  // A brand-new workers.dev hostname can answer with a Cloudflare edge error
+  // (e.g. 1042/404) before the route is live. That must not be read as final.
+  let attempts = 0;
+  class EdgeErrorRunner extends FakeRunner {
+    async run(step, command, options) {
+      if (step === "readiness:oauth_callback_400") {
+        attempts += 1;
+        return { status: 0, stdout: attempts < 3 ? "404" : "400" };
+      }
+      return super.run(step, command, options);
+    }
+  }
+  const runner = new EdgeErrorRunner({});
+  const evidence = await executeApply(context, runner);
+  assert.equal(evidence.status, "qualified");
+  assert.equal(attempts, 3);
+});
+
+test("callback readiness fails closed when the status never becomes 400", async () => {
+  let attempts = 0;
+  class WrongStatusRunner extends FakeRunner {
+    async run(step, command, options) {
+      if (step === "readiness:oauth_callback_400") {
+        attempts += 1;
+        return { status: 0, stdout: "200" };
+      }
+      return super.run(step, command, options);
+    }
+  }
+  await assert.rejects(executeApply(context, new WrongStatusRunner({})),
+    /readiness:oauth_callback_400_failed|oauth_callback_status_mismatch/);
+  assert.ok(attempts > 1, "must retry before failing closed");
 });

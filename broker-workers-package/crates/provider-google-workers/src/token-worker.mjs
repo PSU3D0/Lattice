@@ -88,7 +88,8 @@ async function exchange(env, input, correlationId) {
     if (token === null || typeof token !== "object" || Array.isArray(token) ||
         typeof token.access_token !== "string" || token.access_token.length < 8 ||
         typeof token.refresh_token !== "string" || token.refresh_token.length < 8 ||
-        token.token_type !== "Bearer" || !Number.isInteger(token.expires_in) || token.expires_in < 1 || token.expires_in > 86400) {
+        typeof token.token_type !== "string" || token.token_type.toLowerCase() !== "bearer" ||
+        !Number.isInteger(token.expires_in) || token.expires_in < 1 || token.expires_in > 86400) {
       throw new Error("token_response_invalid");
     }
     const scopes = normalizeScopes(token.scope);
@@ -125,10 +126,12 @@ async function refresh(env, input, correlationId) {
   try {
     if (token === null || typeof token !== "object" || Array.isArray(token) ||
         typeof token.access_token !== "string" || token.access_token.length < 8 ||
-        token.token_type !== "Bearer" || !Number.isInteger(token.expires_in) || token.expires_in < 1 || token.expires_in > 86400) {
+        (token.refresh_token !== undefined && !validProviderSecret(token.refresh_token, 8, 8192)) ||
+        typeof token.token_type !== "string" || token.token_type.toLowerCase() !== "bearer" ||
+        !Number.isInteger(token.expires_in) || token.expires_in < 1 || token.expires_in > 86400) {
       throw new Error("token_response_invalid");
     }
-    const scopes = normalizeScopes(token.scope);
+    const scopes = token.scope === undefined ? [...EXACT_SCOPES] : normalizeScopes(token.scope);
     return Response.json(
       { access_token: token.access_token, expires_in: token.expires_in, scopes },
       { headers: { "cache-control": "no-store", "x-lattice-correlation-id": correlationId } },
@@ -174,6 +177,9 @@ async function authorize(env, input, correlationId) {
     response_type: "code",
     code_challenge: input.code_challenge,
     code_challenge_method: "S256",
+    access_type: "offline",
+    // Google can omit refresh_token for an already-authorized account unless consent is forced again.
+    prompt: "consent",
   }).toString();
   return Response.json(
     { authorization_url: url.toString(), exact_scopes: EXACT_SCOPES },

@@ -70,11 +70,13 @@ async function checked(runner, step, command) {
 // closed once it is exhausted; no mutation happens in this window.
 const READINESS_ATTEMPTS = 10;
 const defaultReadinessSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-async function checkedWithPropagationRetry(runner, step, command, sleep = defaultReadinessSleep) {
+async function checkedWithPropagationRetry(
+  runner, step, command, sleep = defaultReadinessSleep, acceptable = (result) => result.status === 0,
+) {
   let last;
   for (let attempt = 0; attempt < READINESS_ATTEMPTS; attempt += 1) {
     last = await runner.run(step, command);
-    if (last.status === 0) return last;
+    if (acceptable(last)) return last;
     if (attempt < READINESS_ATTEMPTS - 1) await sleep(Math.min(2000 * 2 ** attempt, 8000));
   }
   throw new Error(`${step}_failed`);
@@ -295,10 +297,13 @@ export async function executeApply(context, runner) {
         "curl", "--fail", "--silent", "--show-error", `${context.publicCallbackBase}${route}`,
       ], context.readinessSleep);
     }
+    // The callback probe records an HTTP status rather than failing the process,
+    // so a propagation-time edge error (Cloudflare 1042/404/530) would otherwise
+    // be read as a final answer. Only an exact 400 ends the retry budget.
     const callback = await checkedWithPropagationRetry(runner, "readiness:oauth_callback_400", [
       "curl", "--silent", "--output", "/dev/null", "--write-out", "%{http_code}",
       context.googleOauthRedirectUri,
-    ]);
+    ], context.readinessSleep, (result) => result.status === 0 && result.stdout.trim() === "400");
     if (callback.stdout.trim() !== "400") throw new Error("oauth_callback_status_mismatch");
     const smoke = parseJson(await runner.run("smoke", [
       "curl", "--fail", "--silent", "--show-error", `${context.publicCallbackBase}/health`,
