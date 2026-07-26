@@ -12,7 +12,7 @@
       "wrangler": "wrangler.provider.jsonc"
     }
   },
-  "source_hash": "4a82afc8a12f47960d4be8951bcab7e6389069b0a57c980f1414a6affda199b9",
+  "source_hash": "7bca4bd73720ec20e40a35fca1270b622be91199944035e1d446bffb0325104b",
   "files": [
     {
       "path": "README.md",
@@ -46,8 +46,8 @@
     },
     {
       "path": "src/provider-worker.mjs",
-      "sha256": "5038ef82f472804b68ace4301d7de34bcd1c525f3a86f342747796fcbb7f3f33",
-      "size_bytes": 8594
+      "sha256": "1ff6333a7f4ad45942a5d7c992ef62ee75bce4c5b9c6bc8acb0245132b8ae48c",
+      "size_bytes": 9682
     },
     {
       "path": "src/shared.mjs",
@@ -56,8 +56,8 @@
     },
     {
       "path": "src/token-worker.mjs",
-      "sha256": "2a130967505f7404e745ee655c147f6e5ed2e37928e2e2186ec2c4b928715420",
-      "size_bytes": 12337
+      "sha256": "ab9f1656051b21ca60b46366093287515dbd7acaf76d3185e71afdd8fc657b97",
+      "size_bytes": 13167
     },
     {
       "path": "wrangler.provider.jsonc",

@@ -254,8 +254,8 @@
       "size_bytes": 197
     },
     {
-      "path": "crates/broker-workers/.wrangler.private.generated-2831519-9acc6192-e05f-4622-95cc-e96bf8051934.jsonc",
-      "sha256": "dc75de72143448f29602eadded1e01d5790927a67f09990210e8e4ac73166ac6",
+      "path": "crates/broker-workers/.wrangler.private.generated-2313234-4d0158c9-9e85-4b2b-8841-0c4485c682b8.jsonc",
+      "sha256": "4236df5cdce6871719d68465315d2fa08ed88045f47b9df2f223843a23edd06d",
       "size_bytes": 6435
     },
     {
@@ -324,7 +324,7 @@
       "size_bytes": 17911
     },
     {
-      "path": "crates/broker-workers/deploy/public-callback/.wrangler.public.generated-2831519-5e909306-d119-4e0f-b773-2c770c5cd30a.jsonc",
+      "path": "crates/broker-workers/deploy/public-callback/.wrangler.public.generated-2313234-ad551a1a-4e67-43f9-a97d-1b9d82171312.jsonc",
       "sha256": "7831eca8eb7c7202cfd0b1c23a9e8edbfad1eff52b71ae766f83a292c4dce423",
       "size_bytes": 647
     },
@@ -865,7 +865,7 @@
     },
     {
       "path": "crates/provider-google-workers/build-manifest.json",
-      "sha256": "eee8ddc74e7eab51dd2ddedfd7ecb141d08a8483786c800bc5b894b05166dc08",
+      "sha256": "b948e181dde28e3fd361ad6a92eb825697c002ba95baadcfc9f55abaa171e169",
       "size_bytes": 2178
     },
     {
@@ -900,8 +900,8 @@
     },
     {
       "path": "crates/provider-google-workers/src/provider-worker.mjs",
-      "sha256": "5038ef82f472804b68ace4301d7de34bcd1c525f3a86f342747796fcbb7f3f33",
-      "size_bytes": 8594
+      "sha256": "1ff6333a7f4ad45942a5d7c992ef62ee75bce4c5b9c6bc8acb0245132b8ae48c",
+      "size_bytes": 9682
     },
     {
       "path": "crates/provider-google-workers/src/shared.mjs",
@@ -910,8 +910,8 @@
     },
     {
       "path": "crates/provider-google-workers/src/token-worker.mjs",
-      "sha256": "2a130967505f7404e745ee655c147f6e5ed2e37928e2e2186ec2c4b928715420",
-      "size_bytes": 12337
+      "sha256": "ab9f1656051b21ca60b46366093287515dbd7acaf76d3185e71afdd8fc657b97",
+      "size_bytes": 13167
     },
     {
       "path": "crates/provider-google-workers/wrangler.provider.jsonc",

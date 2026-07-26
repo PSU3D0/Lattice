@@ -34,6 +34,11 @@ async function tokenEndpoint(env, form, correlationId) {
   return { value };
 }
 
+function validUnsignedInteger(value) {
+  return (Number.isSafeInteger(value) && value >= 0) ||
+    (typeof value === "string" && /^[0-9]{1,20}$/.test(value));
+}
+
 async function discoverSubject(env, accessToken, correlationId) {
   const url = new URL(TOKENINFO_ENDPOINT);
   url.searchParams.set("access_token", accessToken);
@@ -44,13 +49,21 @@ async function discoverSubject(env, accessToken, correlationId) {
   const bytes = await boundedBytes(response, MAX_RESPONSE_BYTES);
   if (response.status !== 200) throw new Error("account_discovery_failed");
   const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-  const allowed = ["access_type", "aud", "azp", "expires_in", "issued_to", "scope", "user_id"];
+  const allowed = ["access_type", "aud", "azp", "email", "email_verified", "exp", "expires_in", "scope", "sub", "user_id"];
+  const subject = value !== null && typeof value === "object" && !Array.isArray(value) && Object.hasOwn(value, "sub")
+    ? value.sub
+    : value?.user_id;
   if (value === null || typeof value !== "object" || Array.isArray(value) ||
-      Object.keys(value).some((key) => !allowed.includes(key)) || !validOpaque(value.user_id, 3, 255) ||
+      Object.keys(value).some((key) => !allowed.includes(key)) ||
+      value.aud !== env.GOOGLE_OAUTH_CLIENT_ID || !validOpaque(value.azp, 8, 512) ||
+      !validUnsignedInteger(value.exp) || !validUnsignedInteger(value.expires_in) ||
+      !["online", "offline"].includes(value.access_type) || !validOpaque(subject, 3, 255) ||
+      (value.email !== undefined && (typeof value.email !== "string" || value.email.length < 3 || value.email.length > 320 || /[\x00-\x1f\x7f]/.test(value.email))) ||
+      (value.email_verified !== undefined && !["true", "false"].includes(value.email_verified)) ||
       normalizeScopes(value.scope).join("\0") !== EXACT_SCOPES.join("\0")) {
     throw new Error("account_discovery_invalid");
   }
-  return value.user_id;
+  return subject;
 }
 
 async function exchange(env, input, correlationId) {

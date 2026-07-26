@@ -12,7 +12,7 @@
       "wrangler": "wrangler.provider.jsonc"
     }
   },
-  "source_hash": "7bca4bd73720ec20e40a35fca1270b622be91199944035e1d446bffb0325104b",
+  "source_hash": "cd0040925f411bfb0372989b24509e7d19c261739d3211e6c414900831a6ca46",
   "files": [
     {
       "path": "README.md",
@@ -56,8 +56,8 @@
     },
     {
       "path": "src/token-worker.mjs",
-      "sha256": "ab9f1656051b21ca60b46366093287515dbd7acaf76d3185e71afdd8fc657b97",
-      "size_bytes": 13167
+      "sha256": "306a5fbc95f496dba0497c55d1501a5ec2a7bd5a142aba01b3757a0f4e5f480d",
+      "size_bytes": 13594
     },
     {
       "path": "wrangler.provider.jsonc",

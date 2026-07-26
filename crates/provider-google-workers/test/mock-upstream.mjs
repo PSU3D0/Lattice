@@ -1,13 +1,32 @@
 const calls = [];
 
 function tokenResponse(form) {
+  const code = form.get("code");
+  const refreshToken = form.get("refresh_token");
   const common = {
-    access_token: form.has("code") ? `access-token-${form.get("code")}` : "access-token-private-value",
+    access_token: form.has("code") ? `access-token-${code}` : "access-token-private-value",
     expires_in: 3600,
     scope: "https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/gmail.send",
     token_type: "Bearer",
   };
-  if (form.get("grant_type") === "authorization_code") return { ...common, refresh_token: "refresh-token-private-value" };
+  if (form.get("grant_type") === "authorization_code") {
+    return code === "missing-refresh-token" ? common : { ...common, refresh_token: "refresh-token-private-value" };
+  }
+  if (refreshToken === "refresh-missing-access-token") {
+    const { access_token: _accessToken, ...response } = common;
+    return response;
+  }
+  if (refreshToken === "refresh-missing-expires-in") {
+    const { expires_in: _expiresIn, ...response } = common;
+    return response;
+  }
+  if (refreshToken === "refresh-without-scope") {
+    const { scope: _scope, ...response } = common;
+    return response;
+  }
+  if (refreshToken === "refresh-wrong-scope") return { ...common, scope: "https://www.googleapis.com/auth/gmail.send" };
+  if (refreshToken === "refresh-lowercase-bearer") return { ...common, token_type: "bearer" };
+  if (refreshToken === "refresh-with-rotation") return { ...common, refresh_token: "rotated-refresh-token-private-value" };
   return common;
 }
 

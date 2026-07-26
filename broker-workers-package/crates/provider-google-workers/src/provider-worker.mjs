@@ -51,6 +51,20 @@ function validateBody(kind, value, encodedLength) {
     Array.isArray(value.values[0]) && value.values[0].length >= 1 && value.values[0].length <= 256 && encodedLength <= MAX_REQUEST_BYTES;
 }
 
+function validGmailMessage(value) {
+  const allowed = ["historyId", "id", "internalDate", "labelIds", "payload", "raw", "sizeEstimate", "snippet", "threadId"];
+  return value !== null && typeof value === "object" && !Array.isArray(value) &&
+    !Object.keys(value).some((key) => !allowed.includes(key)) &&
+    validOpaque(value.id, 1, 256) && validOpaque(value.threadId, 1, 256) &&
+    (value.labelIds === undefined || (Array.isArray(value.labelIds) && value.labelIds.every((label) => validOpaque(label, 1, 256)))) &&
+    (value.snippet === undefined || typeof value.snippet === "string") &&
+    (value.historyId === undefined || (typeof value.historyId === "string" && /^[0-9]+$/.test(value.historyId))) &&
+    (value.internalDate === undefined || (typeof value.internalDate === "string" && /^[0-9]+$/.test(value.internalDate))) &&
+    (value.payload === undefined || (value.payload !== null && typeof value.payload === "object" && !Array.isArray(value.payload))) &&
+    (value.sizeEstimate === undefined || (Number.isInteger(value.sizeEstimate) && value.sizeEstimate >= 0)) &&
+    (value.raw === undefined || (typeof value.raw === "string" && /^[A-Za-z0-9_-]*={0,2}$/.test(value.raw)));
+}
+
 async function perform(env, request, target, correlationId, body) {
   const authorization = request.headers.get("authorization");
   if (request.method !== "POST" || !validAuthorization(authorization) ||
@@ -86,7 +100,7 @@ async function perform(env, request, target, correlationId, body) {
   catch { return errorResponse("provider_response_invalid", 503); }
   let projection;
   if (target.kind === "gmail") {
-    if (!exactObject(providerValue, ["id", "threadId"]) || !validOpaque(providerValue.id, 1, 256) || !validOpaque(providerValue.threadId, 1, 256)) return errorResponse("provider_response_invalid", 503);
+    if (!validGmailMessage(providerValue)) return errorResponse("provider_response_invalid", 503);
     projection = { id: providerValue.id, thread_id: providerValue.threadId };
   } else {
     const updates = providerValue?.updates;

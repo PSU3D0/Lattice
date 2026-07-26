@@ -79,9 +79,17 @@ describe("private Google token and account egress", () => {
     const value = await response.json();
     const url = new URL(value.authorization_url);
     expect(`${url.origin}${url.pathname}`).toBe("https://accounts.google.com/o/oauth2/v2/auth");
-    expect(url.searchParams.get("client_id")).toBe("google-client-id-private");
-    expect(url.searchParams.get("redirect_uri")).toBe("https://broker.example/v0.2/credential-callback");
-    expect(url.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      client_id: "google-client-id-private",
+      redirect_uri: "https://broker.example/v0.2/credential-callback",
+      scope: "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/spreadsheets",
+      state: "oauth-state-value-123456789",
+      response_type: "code",
+      code_challenge: "c".repeat(43),
+      code_challenge_method: "S256",
+      access_type: "offline",
+      prompt: "consent",
+    });
     expect(JSON.stringify(value)).not.toContain("google-client-secret-private");
   });
 
@@ -129,6 +137,12 @@ describe("private Google token and account egress", () => {
     expect((await response.json()).account_subject).toBe("legacy-google-subject-654321");
   });
 
+  it("fails closed when an authorization-code exchange omits the required refresh token", async () => {
+    const response = await exchangeCode("missing-refresh-token", "exchange-missing-refresh");
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "provider_response_invalid" });
+  });
+
   it("revokes only through the pinned lifecycle route with idempotent custody", async () => {
     const h = headers("revoke");
     const body = JSON.stringify({ token: "refresh-token-private-value" });
@@ -139,13 +153,58 @@ describe("private Google token and account egress", () => {
     expect((await calls()).filter((call) => call.url === "https://oauth2.googleapis.com/revoke")).toHaveLength(1);
   });
 
-  it("refreshes only through the pinned endpoint and rejects caller credentials, bad scope, and wrong redirect", async () => {
+  it("accepts Google's normal refresh response without a replacement refresh token", async () => {
     const response = await token.fetch("http://token.internal/refresh", {
       method: "POST", headers: headers("refresh"),
       body: JSON.stringify({ grant_type: "refresh_token", refresh_token: "refresh-token-private-value" }),
     });
     expect(response.status).toBe(200);
-    expect((await response.json()).scopes).toHaveLength(2);
+    expect(await response.json()).toEqual({
+      access_token: "access-token-private-value",
+      expires_in: 3600,
+      scopes: [
+        "https://www.googleapis.com/auth/gmail.send",
+        "https://www.googleapis.com/auth/spreadsheets",
+      ],
+    });
+  });
+
+  it("uses the unchanged exact scopes when Google omits scope on refresh", async () => {
+    const response = await token.fetch("http://token.internal/refresh", {
+      method: "POST", headers: headers("refresh-no-scope"),
+      body: JSON.stringify({ grant_type: "refresh_token", refresh_token: "refresh-without-scope" }),
+    });
+    expect(response.status).toBe(200);
+    expect((await response.json()).scopes).toEqual([
+      "https://www.googleapis.com/auth/gmail.send",
+      "https://www.googleapis.com/auth/spreadsheets",
+    ]);
+  });
+
+  it.each(["refresh-missing-access-token", "refresh-missing-expires-in", "refresh-wrong-scope"])(
+    "fails closed for an invalid refresh response (%s)",
+    async (refreshToken) => {
+      const response = await token.fetch("http://token.internal/refresh", {
+        method: "POST", headers: headers(refreshToken),
+        body: JSON.stringify({ grant_type: "refresh_token", refresh_token: refreshToken }),
+      });
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ error: "provider_response_invalid" });
+    },
+  );
+
+  it.each(["refresh-lowercase-bearer", "refresh-with-rotation"])(
+    "accepts a documented refresh response variant (%s)",
+    async (refreshToken) => {
+      const response = await token.fetch("http://token.internal/refresh", {
+        method: "POST", headers: headers(refreshToken),
+        body: JSON.stringify({ grant_type: "refresh_token", refresh_token: refreshToken }),
+      });
+      expect(response.status).toBe(200);
+    },
+  );
+
+  it("rejects caller credentials and wrong redirects", async () => {
     for (const body of [
       { grant_type: "refresh_token", refresh_token: "refresh-token-private-value", client_secret: "caller" },
       { code: "authorization-code-value", code_verifier: "v".repeat(43), grant_type: "authorization_code", redirect_uri: "https://evil.example/callback" },
