@@ -171,6 +171,7 @@ pub fn authority_facts_for_input(
             headers.sort();
             serde_json::json!({"google":{"sheets":{"headers": headers}}})
         }
+        "connector.google.sheets.create_spreadsheet@1" => serde_json::json!({}),
         "connector.google.gmail.send_message@1" => serde_json::json!({"allowed":true}),
         _ => return Err(BrokerError::Brk004),
     };

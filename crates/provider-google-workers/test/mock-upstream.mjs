@@ -77,6 +77,32 @@ export default {
     if (url.origin === "https://gmail.googleapis.com") {
       return Response.json({ id: "message-1", threadId: "thread-1", labelIds: ["SENT"] }, { headers: { "x-request-id": "gmail-request-1" } });
     }
+    if (url.origin === "https://sheets.googleapis.com" && url.pathname === "/v4/spreadsheets") {
+      const title = JSON.parse(body).properties.title;
+      if (title === "Unknown response") {
+        return Response.json({
+          spreadsheetId: "sheet_unknown", spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet_unknown/edit",
+          properties: { title }, unexpected: "must fail closed",
+        });
+      }
+      if (title === "Malformed response") {
+        return Response.json({
+          spreadsheetId: 7, spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet_malformed/edit",
+          properties: { title },
+        });
+      }
+      return Response.json({
+        spreadsheetId: "sheet_created_1",
+        spreadsheetUrl: "https://docs.google.com/spreadsheets/d/sheet_created_1/edit",
+        properties: {
+          title, locale: "en_US", autoRecalc: "ON_CHANGE", timeZone: "America/Los_Angeles",
+          defaultFormat: { backgroundColorStyle: { rgbColor: { red: 1, green: 1, blue: 1 } } },
+          spreadsheetTheme: { primaryFontFamily: "Arial" },
+        },
+        sheets: [{ properties: { sheetId: 0, title: "Sheet1", index: 0, sheetType: "GRID" } }],
+        namedRanges: [], developerMetadata: [], dataSources: [], dataSourceSchedules: [],
+      }, { headers: { "x-request-id": "sheets-create-request-1" } });
+    }
     if (url.origin === "https://sheets.googleapis.com") {
       return Response.json({ spreadsheetId: "sheet_1", tableRange: "Sheet1!A1:A1", updates: { updatedCells: 1, updatedColumns: 1, updatedRange: "Sheet1!A2", updatedRows: 1 } }, { headers: { "x-request-id": "sheets-request-1" } });
     }

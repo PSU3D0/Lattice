@@ -5,10 +5,11 @@ import {
 } from "./shared.mjs";
 
 const GMAIL_PATH = "/gmail/v1/users/me/messages/send";
-const SHEETS_PATH = /^\/v4\/spreadsheets\/([^/]{1,768})\/values\/([^/]{1,3072}):append$/;
+const SHEETS_CREATE_PATH = "/v4/spreadsheets";
+const SHEETS_APPEND_PATH = /^\/v4\/spreadsheets\/([^/]{1,768})\/values\/([^/]{1,3072}):append$/;
 
 function exactQuery(url, kind) {
-  if (kind === "gmail") return url.search === "";
+  if (kind === "gmail" || kind === "sheets_create") return url.search === "";
   const entries = [...url.searchParams.entries()];
   if (entries.length !== 2 || new Set(entries.map(([name]) => name)).size !== 2) return false;
   return url.searchParams.get("insertDataOption") === "INSERT_ROWS" &&
@@ -19,7 +20,10 @@ function classify(url) {
   if (url.pathname === GMAIL_PATH && exactQuery(url, "gmail")) {
     return { kind: "gmail", upstream: `${GMAIL_ORIGIN}${GMAIL_PATH}` };
   }
-  const match = url.pathname.match(SHEETS_PATH);
+  if (url.pathname === SHEETS_CREATE_PATH && exactQuery(url, "sheets_create")) {
+    return { kind: "sheets_create", upstream: `${SHEETS_ORIGIN}${SHEETS_CREATE_PATH}` };
+  }
+  const match = url.pathname.match(SHEETS_APPEND_PATH);
   let decodedSheetTarget;
   try {
     decodedSheetTarget = match === null ? null : [decodeURIComponent(match[1]), decodeURIComponent(match[2])];
@@ -27,12 +31,12 @@ function classify(url) {
   if (match !== null && decodedSheetTarget !== null &&
       /^[A-Za-z0-9_-]{1,256}$/.test(decodedSheetTarget[0]) &&
       decodedSheetTarget[1].length >= 1 && decodedSheetTarget[1].length <= 1024 &&
-      !decodedSheetTarget[1].includes("/") && exactQuery(url, "sheets")) {
+      !decodedSheetTarget[1].includes("/") && exactQuery(url, "sheets_append")) {
     const query = new URLSearchParams({
       insertDataOption: "INSERT_ROWS",
       valueInputOption: url.searchParams.get("valueInputOption"),
     });
-    return { kind: "sheets", upstream: `${SHEETS_ORIGIN}${url.pathname}?${query}` };
+    return { kind: "sheets_append", upstream: `${SHEETS_ORIGIN}${url.pathname}?${query}` };
   }
   return null;
 }
@@ -46,6 +50,11 @@ function validateBody(kind, value, encodedLength) {
   if (kind === "gmail") {
     return exactObject(value, ["raw"]) && typeof value.raw === "string" && value.raw.length >= 1 &&
       value.raw.length <= 120 * 1024 && /^[A-Za-z0-9_-]+$/.test(value.raw);
+  }
+  if (kind === "sheets_create") {
+    return exactObject(value, ["properties"]) && exactObject(value.properties, ["title"]) &&
+      typeof value.properties.title === "string" && value.properties.title.length >= 1 &&
+      value.properties.title.length <= 256 && encodedLength <= MAX_REQUEST_BYTES;
   }
   return exactObject(value, ["values"]) && Array.isArray(value.values) && value.values.length === 1 &&
     Array.isArray(value.values[0]) && value.values[0].length >= 1 && value.values[0].length <= 256 && encodedLength <= MAX_REQUEST_BYTES;
@@ -63,6 +72,59 @@ function validGmailMessage(value) {
     (value.payload === undefined || (value.payload !== null && typeof value.payload === "object" && !Array.isArray(value.payload))) &&
     (value.sizeEstimate === undefined || (Number.isInteger(value.sizeEstimate) && value.sizeEstimate >= 0)) &&
     (value.raw === undefined || (typeof value.raw === "string" && /^[A-Za-z0-9_-]*={0,2}$/.test(value.raw)));
+}
+
+function validObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function validObjectArray(value) {
+  return Array.isArray(value) && value.every(validObject);
+}
+
+function validText(value, minimum, maximum) {
+  return typeof value === "string" && value.length >= minimum && value.length <= maximum &&
+    !/[\u0000-\u001f\u007f]/.test(value);
+}
+
+function validSpreadsheetUrl(value) {
+  if (typeof value !== "string" || value.length < 1 || value.length > 2048) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname === "docs.google.com" &&
+      url.pathname.startsWith("/spreadsheets/") && url.username === "" && url.password === "";
+  } catch { return false; }
+}
+
+function validSpreadsheetProperties(value) {
+  const allowed = [
+    "autoRecalc", "defaultFormat", "importFunctionsExternalUrlAccessAllowed",
+    "iterativeCalculationSettings", "locale", "spreadsheetTheme", "timeZone", "title",
+  ];
+  return validObject(value) && !Object.keys(value).some((key) => !allowed.includes(key)) &&
+    validText(value.title, 1, 256) &&
+    (value.locale === undefined || validText(value.locale, 1, 128)) &&
+    (value.timeZone === undefined || validText(value.timeZone, 1, 128)) &&
+    (value.autoRecalc === undefined || ["ON_CHANGE", "MINUTE", "HOUR"].includes(value.autoRecalc)) &&
+    (value.defaultFormat === undefined || validObject(value.defaultFormat)) &&
+    (value.iterativeCalculationSettings === undefined || validObject(value.iterativeCalculationSettings)) &&
+    (value.spreadsheetTheme === undefined || validObject(value.spreadsheetTheme)) &&
+    (value.importFunctionsExternalUrlAccessAllowed === undefined || typeof value.importFunctionsExternalUrlAccessAllowed === "boolean");
+}
+
+function validSpreadsheet(value) {
+  const allowed = [
+    "dataSourceSchedules", "dataSources", "developerMetadata", "namedRanges", "properties",
+    "sheets", "spreadsheetId", "spreadsheetUrl",
+  ];
+  return validObject(value) && !Object.keys(value).some((key) => !allowed.includes(key)) &&
+    typeof value.spreadsheetId === "string" && /^[A-Za-z0-9_-]{1,256}$/.test(value.spreadsheetId) &&
+    validSpreadsheetUrl(value.spreadsheetUrl) && validSpreadsheetProperties(value.properties) &&
+    (value.sheets === undefined || validObjectArray(value.sheets)) &&
+    (value.namedRanges === undefined || validObjectArray(value.namedRanges)) &&
+    (value.developerMetadata === undefined || validObjectArray(value.developerMetadata)) &&
+    (value.dataSources === undefined || validObjectArray(value.dataSources)) &&
+    (value.dataSourceSchedules === undefined || validObjectArray(value.dataSourceSchedules));
 }
 
 async function perform(env, request, target, correlationId, body) {
@@ -102,6 +164,12 @@ async function perform(env, request, target, correlationId, body) {
   if (target.kind === "gmail") {
     if (!validGmailMessage(providerValue)) return errorResponse("provider_response_invalid", 503);
     projection = { id: providerValue.id, thread_id: providerValue.threadId };
+  } else if (target.kind === "sheets_create") {
+    if (!validSpreadsheet(providerValue)) return errorResponse("provider_response_invalid", 503);
+    projection = {
+      spreadsheet_id: providerValue.spreadsheetId,
+      spreadsheet_url: providerValue.spreadsheetUrl,
+    };
   } else {
     const updates = providerValue?.updates;
     if (updates === null || typeof updates !== "object" || Array.isArray(updates) ||

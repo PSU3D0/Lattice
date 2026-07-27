@@ -10,6 +10,10 @@ pub const SHEETS_HEADERS_AUTHORITY_POINTER: &str = "/google/sheets/headers";
 pub const SHEETS_APPEND_ROW_ADAPTER_VERSION: &str = "1";
 pub const SHEETS_APPEND_ROW_ADAPTER_HASH: &str =
     "sha256:54db6603967e1ce4e46ef45ece7bfa947c129564e40a290989fa2ae901a23966";
+pub const SHEETS_CREATE_SPREADSHEET_ADAPTER_ID: &str = "google.sheets.create_spreadsheet.v1";
+pub const SHEETS_CREATE_SPREADSHEET_ADAPTER_VERSION: &str = "1";
+pub const SHEETS_CREATE_SPREADSHEET_ADAPTER_HASH: &str =
+    "sha256:ed9e62ea7bd0e93fc3de07ffe4a8d168f840faf61d463bcc8ca6564bb5b82755";
 pub const GMAIL_RFC822_ADAPTER_ID: &str = "google.gmail.rfc822_message.v1";
 pub const GMAIL_RFC822_ADAPTER_VERSION: &str = "1";
 pub const GMAIL_RFC822_ADAPTER_HASH: &str =
@@ -19,6 +23,30 @@ pub const GMAIL_RFC822_ADAPTER_HASH: &str =
 pub enum GoogleBrokerAdapterError {
     InvalidInput,
     MissingAuthorityFacts,
+}
+
+pub fn adapt_sheets_create_spreadsheet(
+    input: &Value,
+) -> Result<Map<String, Value>, GoogleBrokerAdapterError> {
+    let input = input
+        .as_object()
+        .ok_or(GoogleBrokerAdapterError::InvalidInput)?;
+    let title = required_string(input, "title")?;
+    if title.len() > 256
+        || input.iter().any(|(field, value)| {
+            field != "title"
+                && (!matches!(
+                    field.as_str(),
+                    "locale" | "time_zone" | "initial_sheet_title"
+                ) || !value.is_null())
+        })
+    {
+        return Err(GoogleBrokerAdapterError::InvalidInput);
+    }
+    Ok(Map::from_iter([(
+        "title".into(),
+        serde_json::json!({ "title": title }),
+    )]))
 }
 
 pub fn adapt_sheets_append_row(
@@ -146,6 +174,31 @@ mod tests {
         assert_eq!(
             adapted["row"],
             serde_json::json!([["ada@example.test", "Ada"]])
+        );
+    }
+
+    #[test]
+    fn create_spreadsheet_adapter_builds_only_bounded_properties() {
+        let adapted = adapt_sheets_create_spreadsheet(&serde_json::json!({
+            "title": "Disposable proof sheet"
+        }))
+        .unwrap();
+        assert_eq!(
+            Value::Object(adapted),
+            serde_json::json!({"title":{"title":"Disposable proof sheet"}})
+        );
+        assert!(
+            adapt_sheets_create_spreadsheet(&serde_json::json!({"title":"x".repeat(257)})).is_err()
+        );
+        assert!(
+            adapt_sheets_create_spreadsheet(&serde_json::json!({"title":"sheet","locale":"en_US"}))
+                .is_err()
+        );
+        assert!(
+            adapt_sheets_create_spreadsheet(
+                &serde_json::json!({"title":"sheet","passthrough":null})
+            )
+            .is_err()
         );
     }
 

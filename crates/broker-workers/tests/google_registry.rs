@@ -7,7 +7,7 @@ use broker_workers::{composition::verified_google_registry, registry::StaticRegi
 #[test]
 fn google_registry_requires_complete_signed_approved_active_records() {
     let registry = verified_google_registry("2026-07-21T00:00:00Z").unwrap();
-    assert_eq!(registry.len(), 10);
+    assert_eq!(registry.len(), 12);
 
     let mut bundle = provider_google::signed_registry::signed_registry_bundle().unwrap();
     bundle.seeds[0].1 = bundle.seeds[1].1.clone();

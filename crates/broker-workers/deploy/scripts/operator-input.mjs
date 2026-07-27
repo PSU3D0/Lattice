@@ -140,6 +140,7 @@ async function descriptors() {
   const paths = [
     new URL("../../../connectors/google/gmail/broker/operations/send_message.json", import.meta.url),
     new URL("../../../connectors/google/sheets/broker/operations/append_row.json", import.meta.url),
+    new URL("../../../connectors/google/sheets/broker/operations/create_spreadsheet.json", import.meta.url),
   ];
   const output = [];
   for (const path of paths) {

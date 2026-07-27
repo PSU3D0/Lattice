@@ -16,6 +16,7 @@ const workspacePackages = [
 const providerGoogleWorkers = "crates/provider-google-workers";
 const descriptors = [
   "crates/connectors/google/sheets/broker/operations/append_row.json",
+  "crates/connectors/google/sheets/broker/operations/create_spreadsheet.json",
   "crates/connectors/google/gmail/broker/operations/send_message.json",
 ];
 const sentinels = [

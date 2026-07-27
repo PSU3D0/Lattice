@@ -8,7 +8,7 @@ use crate::ops::GoogleSheetsCreateSpreadsheet;
 
 #[def_node(
     name = "GoogleSheetsCreateSpreadsheet",
-    summary = "Create a spreadsheet with optional initial sheet metadata",
+    summary = "Create a spreadsheet",
     identifier = "connector.google.sheets.create_spreadsheet",
     connector_ops(crate::ops::GoogleSheetsCreateSpreadsheet)
 )]

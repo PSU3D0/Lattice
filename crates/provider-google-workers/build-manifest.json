@@ -12,7 +12,7 @@
       "wrangler": "wrangler.provider.jsonc"
     }
   },
-  "source_hash": "6db0c8d08662bc472ece8c2e6cf51bc86ef67f6467bb044b6b44887d265df8bd",
+  "source_hash": "39d6a83628a3efb33a2869233144b477e3edfd8a1396b6feceb3f796676c17b9",
   "files": [
     {
       "path": "README.md",
@@ -46,8 +46,8 @@
     },
     {
       "path": "src/provider-worker.mjs",
-      "sha256": "1ff6333a7f4ad45942a5d7c992ef62ee75bce4c5b9c6bc8acb0245132b8ae48c",
-      "size_bytes": 9682
+      "sha256": "cf8c3c1890a501c4798d48715e0e7ab962da357cd347eea46b64cefbe3cc5558",
+      "size_bytes": 13238
     },
     {
       "path": "src/shared.mjs",

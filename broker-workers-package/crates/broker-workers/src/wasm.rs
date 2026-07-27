@@ -2241,7 +2241,7 @@ async fn install_binding(request: &mut Request, env: &Env) -> worker::Result<Res
     };
     if body.deployment_id != session.deployment_id
         || body.contracts.is_empty()
-        || body.contracts.len() > 2
+        || body.contracts.len() > 3
         || body
             .contracts
             .iter()

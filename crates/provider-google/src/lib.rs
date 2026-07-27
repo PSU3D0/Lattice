@@ -46,6 +46,9 @@ pub const GMAIL_CONTRACT_HASH: &str =
 pub const SHEETS_CONTRACT_ID: &str = "connector.google.sheets.append_row@1";
 pub const SHEETS_CONTRACT_HASH: &str =
     "sha256:d02ed39536d396d66895f97672551a9eb443e701900112613865170bf157e999";
+pub const SHEETS_CREATE_CONTRACT_ID: &str = "connector.google.sheets.create_spreadsheet@1";
+pub const SHEETS_CREATE_CONTRACT_HASH: &str =
+    "sha256:d6c81edf333ec75dfa4d1b3bdda03d2c9b6be51d6d7a7bc2b7e218723240cd76";
 
 const PROFILE_HASH: &str =
     "sha256:a97b7aed775144652866f288bf4fdd52d329ae479180069721d41a94282f1890";
@@ -125,6 +128,10 @@ pub fn google_v1() -> GoogleComposition {
                 SHEETS_CONTRACT_ID.into(),
                 BTreeSet::from([SHEETS_SCOPE.into()]),
             ),
+            (
+                SHEETS_CREATE_CONTRACT_ID.into(),
+                BTreeSet::from([SHEETS_SCOPE.into()]),
+            ),
         ]),
         lifecycle: BTreeSet::from([
             "activate".into(),
@@ -175,6 +182,28 @@ pub fn google_v1() -> GoogleComposition {
             authority_facts_jcs: br#"{"google":{"sheets":{"headers":["column"]}}}"#,
             planner: pin(&format!("planner.{SHEETS_CONTRACT_ID}"), DRIVER_HASH),
             projector: pin(&format!("projector.{SHEETS_CONTRACT_ID}"), NORMALIZER_HASH),
+            response_firewall: profile.response_firewall.clone(),
+        },
+        AdapterRegistration {
+            contract_id: SHEETS_CREATE_CONTRACT_ID,
+            contract_hash: SHEETS_CREATE_CONTRACT_HASH,
+            required_claim: SHEETS_SCOPE,
+            semantic_effect_slot: "create_spreadsheet",
+            origin: "https://sheets.googleapis.com",
+            implementation_hash:
+                "sha256:ed9e62ea7bd0e93fc3de07ffe4a8d168f840faf61d463bcc8ca6564bb5b82755",
+            descriptor: include_bytes!(
+                "../../connectors/google/sheets/broker/operations/create_spreadsheet.json"
+            ),
+            authority_facts_jcs: br#"{}"#,
+            planner: pin(
+                connector_google_platform::broker::SHEETS_CREATE_SPREADSHEET_ADAPTER_ID,
+                DRIVER_HASH,
+            ),
+            projector: pin(
+                &format!("projector.{SHEETS_CREATE_CONTRACT_ID}"),
+                NORMALIZER_HASH,
+            ),
             response_firewall: profile.response_firewall.clone(),
         },
     ]
@@ -281,6 +310,9 @@ pub fn verified_google_v1(now: &str) -> Result<GoogleComposition, BrokerError> {
         let planner_entry = match adapter.contract_id {
             GMAIL_CONTRACT_ID => connector_google_platform::broker::GMAIL_RFC822_ADAPTER_ID,
             SHEETS_CONTRACT_ID => connector_google_platform::broker::SHEETS_APPEND_ROW_ADAPTER_ID,
+            SHEETS_CREATE_CONTRACT_ID => {
+                connector_google_platform::broker::SHEETS_CREATE_SPREADSHEET_ADAPTER_ID
+            }
             _ => return Err(BrokerError::Brk004),
         };
         adapter.planner = pins
@@ -310,6 +342,10 @@ impl broker_host::CredentialBlindPlannerImplementation for GooglePlanner {
             }
             SHEETS_CONTRACT_ID => {
                 connector_google_platform::broker::adapt_sheets_append_row(input, authority)
+                    .map_err(|_| BrokerError::Brk301)
+            }
+            SHEETS_CREATE_CONTRACT_ID => {
+                connector_google_platform::broker::adapt_sheets_create_spreadsheet(input)
                     .map_err(|_| BrokerError::Brk301)
             }
             _ => Err(BrokerError::Brk108),
@@ -348,6 +384,17 @@ impl broker_host::ResponseProjectorImplementation for GoogleProjector {
                     projected.insert(
                         field.into(),
                         source.get(wire).cloned().ok_or(BrokerError::Brk305)?,
+                    );
+                }
+            }
+            SHEETS_CREATE_CONTRACT_ID => {
+                for (field, wire) in [
+                    ("spreadsheet_id", "spreadsheetId"),
+                    ("spreadsheet_url", "spreadsheetUrl"),
+                ] {
+                    projected.insert(
+                        field.into(),
+                        object.get(wire).cloned().ok_or(BrokerError::Brk305)?,
                     );
                 }
             }
@@ -562,7 +609,7 @@ mod tests {
     fn definitions_are_static_complete_and_device_is_unsupported() {
         let c = google_v1();
         c.profile.validate().unwrap();
-        assert_eq!(c.adapters.len(), 2);
+        assert_eq!(c.adapters.len(), 3);
         assert!(!c.profile.lifecycle.contains("device_authorization"));
         assert_eq!(c.profile.endpoint("token").unwrap(), TOKEN_ENDPOINT);
         assert_eq!(
@@ -600,6 +647,51 @@ mod tests {
             )
             .unwrap();
         assert_eq!(projected["thread_id"], "thread-1");
+    }
+
+    #[test]
+    fn create_spreadsheet_uses_the_signed_planner_and_narrow_projection() {
+        let now = "2026-07-21T00:00:00Z";
+        let registry = host_registry(now).unwrap();
+        let create = contract_registration(SHEETS_CREATE_CONTRACT_ID, now).unwrap();
+        let descriptor: connector_spec::BrokerDispatchDescriptor =
+            serde_json::from_slice(create.descriptor).unwrap();
+        let planned = broker_host::descriptor_plan_template(
+            &descriptor,
+            br#"{"title":"Disposable proof sheet"}"#,
+            create.authority_facts_jcs,
+            &registry,
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            now,
+        )
+        .unwrap();
+        let planned: serde_json::Value = serde_json::from_slice(&planned).unwrap();
+        assert_eq!(
+            planned["body"],
+            serde_json::json!({"properties":{"title":"Disposable proof sheet"}})
+        );
+        assert_eq!(planned["path"], "/v4/spreadsheets");
+        assert_eq!(planned["query"], serde_json::json!({}));
+        let projected = registry
+            .project(
+                create.contract_hash,
+                &serde_json::json!({
+                    "spreadsheetId":"sheet-1",
+                    "spreadsheetUrl":"https://docs.google.com/spreadsheets/d/sheet-1/edit",
+                    "properties":{"title":"Disposable proof sheet"}
+                }),
+            )
+            .unwrap();
+        assert_eq!(
+            projected,
+            serde_json::json!({
+                "spreadsheet_id":"sheet-1",
+                "spreadsheet_url":"https://docs.google.com/spreadsheets/d/sheet-1/edit"
+            })
+            .as_object()
+            .unwrap()
+            .clone()
+        );
     }
 
     #[test]

@@ -4,6 +4,51 @@ use connector_spec::{
 };
 
 #[test]
+fn create_spreadsheet_descriptor_matches_the_manifest_contract() {
+    let manifest = ConnectorManifest::from_yaml_str(include_str!("../connector.yaml")).unwrap();
+    let action = manifest
+        .surfaces
+        .iter()
+        .find_map(|surface| match surface {
+            SurfaceDecl::Action(action)
+                if action.identifier == "connector.google.sheets.create_spreadsheet" =>
+            {
+                Some(action)
+            }
+            _ => None,
+        })
+        .unwrap();
+    let descriptor: BrokerDispatchDescriptor = serde_json::from_slice(include_bytes!(
+        "../broker/operations/create_spreadsheet.json"
+    ))
+    .unwrap();
+    assert!(validate_broker_dispatch_descriptor(&descriptor));
+    assert_eq!(
+        descriptor.contract_hash,
+        contract_hash(&manifest, action).unwrap()
+    );
+    let metadata =
+        connector_google_sheets::ops::GoogleSheetsCreateSpreadsheet::BROKER_CONTRACT.unwrap();
+    assert_eq!(metadata.contract_id, descriptor.contract.contract_id);
+    assert_eq!(metadata.contract_hash, descriptor.contract_hash);
+    assert_eq!(descriptor.contract.effect_class, "effectful");
+    assert_eq!(descriptor.request_plan.path_template, "/v4/spreadsheets");
+    assert!(descriptor.request_plan.query.is_empty());
+    assert_eq!(
+        descriptor
+            .request_plan
+            .body
+            .get("properties")
+            .map(String::as_str),
+        Some("title")
+    );
+    assert_eq!(
+        descriptor.response_data_policy.fields,
+        ["spreadsheet_id", "spreadsheet_url"]
+    );
+}
+
+#[test]
 fn append_row_descriptor_matches_the_manifest_contract() {
     let manifest = ConnectorManifest::from_yaml_str(include_str!("../connector.yaml")).unwrap();
     let action = manifest

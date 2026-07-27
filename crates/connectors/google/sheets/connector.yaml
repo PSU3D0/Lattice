@@ -219,7 +219,7 @@ surfaces:
   - kind: action
     identifier: connector.google.sheets.create_spreadsheet
     name: GoogleSheetsCreateSpreadsheet
-    summary: Create a spreadsheet with optional initial sheet metadata
+    summary: Create a spreadsheet
     input: GoogleSheetsCreateSpreadsheetInput
     output: GoogleSheetsCreateSpreadsheetOutput
     auth: google_workspace_auth
@@ -229,6 +229,30 @@ surfaces:
     resources:
       - http_write(capabilities::http::HttpWrite)
     implementation: handwritten_semantic
+    contract:
+      contract_id: connector.google.sheets.create_spreadsheet@1
+      effect_class: Effectful
+      auth_role: outbound_auth.google_workspace_auth
+      minimum_scopes: [https://www.googleapis.com/auth/spreadsheets]
+      response_data_policy:
+        fields: [spreadsheet_id, spreadsheet_url]
+        kind: json_projection
+        max_bytes: 4096
+      broker_abi_version: "0.1"
+      semantic_effect_slots: [create_spreadsheet]
+    broker_request:
+      method: POST
+      origin: https://sheets.googleapis.com
+      path_template: /v4/spreadsheets
+      static_headers:
+        Accept: application/json
+        Content-Type: application/json
+      body:
+        properties: title
+      trusted_adapter:
+        trusted_adapter_id: google.sheets.create_spreadsheet.v1
+        implementation_version: "1"
+        implementation_hash: sha256:ed9e62ea7bd0e93fc3de07ffe4a8d168f840faf61d463bcc8ca6564bb5b82755
 
   - kind: action
     identifier: connector.google.sheets.create_sheet

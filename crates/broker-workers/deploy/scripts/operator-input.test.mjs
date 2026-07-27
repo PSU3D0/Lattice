@@ -61,6 +61,23 @@ test("generator derives, signs, and passes JS plus Rust bundle verification", as
   assert.equal((await stat(configPath)).mode & 0o777, 0o600);
   const config = JSON.parse(await readFile(configPath, "utf8"));
   assert.equal(config.artifacts.historical_inventory[0].value.items.length, 0);
+  const contracts = config.artifacts.deployment_contract_set[0].value.contracts;
+  assert.deepEqual(contracts.map(({ contract_id }) => contract_id).sort(), [
+    "connector.google.gmail.send_message@1",
+    "connector.google.sheets.append_row@1",
+    "connector.google.sheets.create_spreadsheet@1",
+  ]);
+  const sheetsHashes = contracts
+    .filter(({ contract_id }) => contract_id.includes("sheets"))
+    .map(({ contract_hash }) => contract_hash)
+    .sort();
+  const sheetsImplementations = config.artifacts.registry_definitions
+    .map(({ value }) => value)
+    .filter(({ class: kind, entry_ref }) => ["capsule_planner", "response_projector"].includes(kind) && entry_ref.includes("sheets"));
+  assert.equal(sheetsImplementations.length, 4);
+  for (const implementation of sheetsImplementations) {
+    assert.deepEqual(implementation.class_payload.supported_contract_hashes.slice().sort(), sheetsHashes);
+  }
   assert.equal(config.artifacts.registry_definitions.some(({ value }) => value.class_payload?.implementation_digest === `sha256:${digest("1")}`), true);
   assert.equal(config.artifacts.registry_definitions.some(({ value }) => value.class_payload?.implementation_digest === `sha256:${digest("2")}`), true);
   assert.equal(config.artifacts.registry_definitions.some(({ value }) => value.class_payload?.implementation_digest === `sha256:${digest("3")}`), true);

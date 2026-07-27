@@ -102,7 +102,7 @@ mod tests {
     #[test]
     fn all_seed_records_have_valid_signatures_hashes_and_classes() {
         let bundle = signed_registry_bundle().unwrap();
-        assert_eq!(bundle.seeds.len(), 10);
+        assert_eq!(bundle.seeds.len(), 12);
         for (definition, decision) in bundle.seeds {
             let definition = parse::<RegistryDefinitionV2>(&definition).unwrap();
             let decision = parse::<RegistryDecisionV2>(&decision).unwrap();

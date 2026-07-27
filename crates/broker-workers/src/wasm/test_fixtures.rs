@@ -193,6 +193,16 @@ pub(super) async fn provision_fixture(
                 extensions: Default::default(),
             },
             broker_core::artifacts::SupportedContract {
+                contract_id: provider_google::SHEETS_CREATE_CONTRACT_ID.into(),
+                contract_hash: provider_google::SHEETS_CREATE_CONTRACT_HASH.into(),
+                observed_plugin_module_sha256: Some(
+                    "sha256:ed9e62ea7bd0e93fc3de07ffe4a8d168f840faf61d463bcc8ca6564bb5b82755"
+                        .into(),
+                ),
+                attenuation_profiles: vec![],
+                extensions: Default::default(),
+            },
+            broker_core::artifacts::SupportedContract {
                 contract_id: provider_google::GMAIL_CONTRACT_ID.into(),
                 contract_hash: provider_google::GMAIL_CONTRACT_HASH.into(),
                 observed_plugin_module_sha256: Some(
@@ -268,6 +278,7 @@ pub(super) async fn provision_fixture(
         JsValue::from_str(
             &serde_json::to_string(&[
                 provider_google::SHEETS_CONTRACT_ID,
+                provider_google::SHEETS_CREATE_CONTRACT_ID,
                 provider_google::GMAIL_CONTRACT_ID,
             ])
             .map_err(|_| worker_rust_error("fixture"))?,
@@ -284,6 +295,15 @@ pub(super) async fn provision_fixture(
             "sheets",
             provider_google::SHEETS_CONTRACT_ID,
             provider_google::SHEETS_CONTRACT_HASH,
+            APPROVED_SCOPES
+                .iter()
+                .map(|scope| (*scope).to_string())
+                .collect(),
+        ),
+        (
+            "sheets_create",
+            provider_google::SHEETS_CREATE_CONTRACT_ID,
+            provider_google::SHEETS_CREATE_CONTRACT_HASH,
             APPROVED_SCOPES
                 .iter()
                 .map(|scope| (*scope).to_string())

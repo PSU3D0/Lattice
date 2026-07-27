@@ -231,7 +231,7 @@ describe("private Google token and account egress", () => {
 });
 
 describe("private exact Google provider egress", () => {
-  it("dispatches only exact Gmail send and Sheets append plans and suppresses duplicate dispatch", async () => {
+  it("dispatches only exact Gmail send, Sheets create, and Sheets append plans and suppresses duplicate dispatch", async () => {
     const gmailHeaders = { ...headers("gmail"), accept: "application/json", authorization: "Bearer access-token-private-value" };
     const gmailBody = JSON.stringify({ raw: "SGVsbG8" });
     const gmail = await provider.fetch("http://provider.internal/gmail/v1/users/me/messages/send", {
@@ -245,6 +245,18 @@ describe("private exact Google provider egress", () => {
     })).status).toBe(200);
     expect((await calls()).length).toBe(before);
 
+    const create = await provider.fetch("http://provider.internal/v4/spreadsheets", {
+      method: "POST",
+      headers: { ...headers("sheets-create"), accept: "application/json", authorization: "Bearer access-token-private-value" },
+      body: JSON.stringify({ properties: { title: "Disposable proof sheet" } }),
+    });
+    expect(create.status).toBe(200);
+    expect(create.headers.get("x-request-id")).toBe("sheets-create-request-1");
+    expect(await create.json()).toEqual({
+      spreadsheet_id: "sheet_created_1",
+      spreadsheet_url: "https://docs.google.com/spreadsheets/d/sheet_created_1/edit",
+    });
+
     const sheets = await provider.fetch("http://provider.internal/v4/spreadsheets/sheet_1/values/Sheet1:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS", {
       method: "POST",
       headers: { ...headers("sheets"), accept: "application/json", authorization: "Bearer access-token-private-value" },
@@ -254,20 +266,41 @@ describe("private exact Google provider egress", () => {
     expect(sheets.headers.get("x-request-id")).toBe("sheets-request-1");
     const providerCalls = (await calls()).filter((call) => call.url.includes("googleapis.com"));
     expect(providerCalls.some((call) => call.url.startsWith("https://gmail.googleapis.com/gmail/v1/users/me/messages/send"))).toBe(true);
+    expect(providerCalls.some((call) => call.url === "https://sheets.googleapis.com/v4/spreadsheets")).toBe(true);
     expect(providerCalls.some((call) => call.url.startsWith("https://sheets.googleapis.com/v4/spreadsheets/sheet_1/values/Sheet1:append"))).toBe(true);
+  });
+
+  it("rejects undocumented or malformed Spreadsheet resources", async () => {
+    for (const title of ["Unknown response", "Malformed response"]) {
+      const response = await provider.fetch("http://provider.internal/v4/spreadsheets", {
+        method: "POST",
+        headers: { ...headers("sheets-create-invalid"), accept: "application/json", authorization: "Bearer access-token-private-value" },
+        body: JSON.stringify({ properties: { title } }),
+      });
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ error: "provider_response_invalid" });
+    }
   });
 
   it("has no arbitrary proxy surface and rejects method, origin-shaped path, query, headers, and bounds", async () => {
     const before = (await calls()).length;
-    const baseHeaders = { ...headers("negative"), accept: "application/json", authorization: "Bearer access-token-private-value" };
     for (const [url, method, body, additions = {}] of [
       ["http://provider.internal/https://evil.example", "POST", "{}"],
       ["http://provider.internal/gmail/v1/users/me/messages/send?alt=json", "POST", JSON.stringify({ raw: "QQ" })],
       ["http://provider.internal/gmail/v1/users/me/messages/send", "GET", undefined],
       ["http://provider.internal/v4/spreadsheets/s/values/r:append?valueInputOption=RAW", "POST", JSON.stringify({ values: [[1]] })],
+      ["http://provider.internal/v4/spreadsheets?fields=spreadsheetId", "POST", JSON.stringify({ properties: { title: "No query" } })],
+      ["http://provider.internal/v4/spreadsheets", "POST", JSON.stringify({ properties: { title: "No passthrough", locale: "en_US" } })],
       ["http://provider.internal/gmail/v1/users/me/messages/send", "POST", JSON.stringify({ raw: "not+/base64", extra: true })],
     ]) {
-      const response = await provider.fetch(url, { method, headers: { ...baseHeaders, ...additions }, body });
+      const response = await provider.fetch(url, {
+        method,
+        headers: {
+          ...headers("negative"), accept: "application/json",
+          authorization: "Bearer access-token-private-value", ...additions,
+        },
+        body,
+      });
       expect([400, 404]).toContain(response.status);
     }
     expect((await calls()).length).toBe(before);
