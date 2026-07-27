@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { verifyBundle } from "./operator-artifacts.mjs";
+import { parsePredicates } from "./operator-input.mjs";
 
 const generator = new URL("./operator-input.mjs", import.meta.url).pathname;
 const artifactsTool = new URL("./operator-artifacts.mjs", import.meta.url).pathname;
@@ -14,7 +15,7 @@ const timestamp = (milliseconds) => new Date(Math.floor(milliseconds / 1000) * 1
 const validPredicates = JSON.stringify([{
   kind: "brokered_count",
   predicate_id: "durable-budget-and-dispatch",
-  required_kernel_controls: ["durable_budget_ledger", "persisted_dispatch_boundary"],
+  required_kernel_controls: ["durable_before_dispatch", "exact_redelivery", "pop_bound"],
 }]);
 
 function baseArguments(directory, overrides = {}) {
@@ -103,4 +104,25 @@ test("generator derives, signs, and passes JS plus Rust bundle verification", as
   const mismatched = run(artifactsTool, ["build", "--config", configPath, "--key-file", keyPath, "--output", join(directory, "mismatch.json")]);
   assert.notEqual(mismatched.status, 0);
   assert.match(mismatched.stderr, /contract_set_hash mismatch/);
+});
+
+test("rejects required kernel controls the broker does not implement", () => {
+  // Regression: a standing authority demanding controls outside the broker's
+  // advertised set deploys cleanly and then fails every binding with Brk108.
+  const predicates = JSON.stringify([{
+    kind: "brokered_count",
+    predicate_id: "durable-budget-and-dispatch",
+    required_kernel_controls: ["durable_budget_ledger", "persisted_dispatch_boundary"],
+  }]);
+  assert.throws(() => parsePredicates(predicates), /unsupported required kernel controls/);
+});
+
+test("accepts the exact control set the broker implements", () => {
+  const predicates = JSON.stringify([{
+    kind: "brokered_count",
+    predicate_id: "brokered-count-v2",
+    required_kernel_controls: ["durable_before_dispatch", "exact_redelivery", "pop_bound"],
+  }]);
+  assert.deepEqual(parsePredicates(predicates)[0].required_kernel_controls,
+    ["durable_before_dispatch", "exact_redelivery", "pop_bound"]);
 });

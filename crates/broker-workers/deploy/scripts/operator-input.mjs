@@ -3,6 +3,10 @@ import { createHash } from "node:crypto";
 import { chmod, readFile, writeFile } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 
+// Mirrors the control set the broker advertises when admitting bindings; see
+// crates/broker-workers/src/wasm/v2_production.rs. Keep these in lockstep.
+const BROKER_KERNEL_CONTROLS = ["durable_before_dispatch", "exact_redelivery", "pop_bound"];
+
 const PRINTABLE = /^[\x21-\x7e]{1,256}$/;
 const DIGEST = /^[0-9a-f]{64}$/;
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
@@ -64,7 +68,7 @@ const REQUIRED_ARGS = [
   "--google-provider-sha256", "--output",
 ];
 
-function parsePredicates(exact) {
+export function parsePredicates(exact) {
   let predicates;
   try {
     predicates = JSON.parse(exact);
@@ -85,6 +89,13 @@ function parsePredicates(exact) {
       const controls = predicate.required_kernel_controls;
       if (!Array.isArray(controls) || controls.length < 1 || controls.length > 32 || controls.some((value) => !PRINTABLE.test(value))) fail("malformed required kernel controls");
       if (new Set(controls).size !== controls.length || controls.some((value, index) => index > 0 && Buffer.compare(Buffer.from(controls[index - 1]), Buffer.from(value)) >= 0)) fail("required kernel controls must be unique and JCS-lexically sorted");
+      // The broker admits a binding only when the standing authority's required
+      // kernel controls are a SUBSET of the controls it actually implements
+      // (crates/broker-workers/src/wasm/v2_production.rs). Demanding a control the
+      // broker does not advertise is unsatisfiable and fails at bind time with
+      // Brk108, long after deployment succeeded. Reject it here instead.
+      const unsupported = controls.filter((value) => !BROKER_KERNEL_CONTROLS.includes(value));
+      if (unsupported.length > 0) fail("unsupported required kernel controls: " + unsupported.join(", ") + " (broker implements: " + BROKER_KERNEL_CONTROLS.join(", ") + ")");
     } else if (predicate.kind === "semantic_policy") {
       if (canonical(keys) !== canonical(["kind", "predicate_id", "required_policy_instance_hashes"])) fail("malformed semantic_policy predicate");
       const hashes = predicate.required_policy_instance_hashes;

@@ -44,7 +44,7 @@ node deploy/scripts/operator-input.mjs \
   --expires-at "$EXPIRES_AT" \
   --spend-limit-usd "$SPEND_LIMIT_USD" \
   --rate-limit-per-minute "$RATE_LIMIT_PER_MINUTE" \
-  --required-assurance-predicates '[{"kind":"brokered_count","predicate_id":"durable-budget-and-dispatch","required_kernel_controls":["durable_budget_ledger","persisted_dispatch_boundary"]}]' \
+  --required-assurance-predicates '[{"kind":"brokered_count","predicate_id":"durable-budget-and-dispatch","required_kernel_controls":["durable_before_dispatch","exact_redelivery","pop_bound"]}]' \
   --activation-recipient-key-id "$ACTIVATION_RECIPIENT_KEY_ID" \
   --activation-recipient-public-key-b64u "$ACTIVATION_RECIPIENT_PUBLIC_KEY_B64U" \
   --key-id "$OPERATOR_KEY_ID" \
