@@ -6,11 +6,12 @@ function tokenResponse(form) {
   const common = {
     access_token: form.has("code") ? `access-token-${code}` : "access-token-private-value",
     expires_in: 3600,
-    scope: "https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/gmail.send",
+    scope: "https://www.googleapis.com/auth/spreadsheets openid https://www.googleapis.com/auth/gmail.send",
     token_type: "Bearer",
   };
   if (form.get("grant_type") === "authorization_code") {
-    return code === "missing-refresh-token" ? common : { ...common, refresh_token: "refresh-token-private-value" };
+    const response = code === "missing-refresh-token" ? common : { ...common, refresh_token: "refresh-token-private-value" };
+    return code === "with-id-token" ? { ...response, id_token: "header.sensitive-subject.signature" } : response;
   }
   if (refreshToken === "refresh-missing-access-token") {
     const { access_token: _accessToken, ...response } = common;
@@ -24,7 +25,9 @@ function tokenResponse(form) {
     const { scope: _scope, ...response } = common;
     return response;
   }
-  if (refreshToken === "refresh-wrong-scope") return { ...common, scope: "https://www.googleapis.com/auth/gmail.send" };
+  if (refreshToken === "refresh-wrong-scope") {
+    return { ...common, scope: "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/spreadsheets" };
+  }
   if (refreshToken === "refresh-lowercase-bearer") return { ...common, token_type: "bearer" };
   if (refreshToken === "refresh-with-rotation") return { ...common, refresh_token: "rotated-refresh-token-private-value" };
   return common;
@@ -34,7 +37,7 @@ function tokenInfoResponse(accessToken) {
   const common = {
     aud: "google-client-id-private",
     azp: "google-client-id-private",
-    scope: "https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/gmail.send",
+    scope: "https://www.googleapis.com/auth/spreadsheets openid https://www.googleapis.com/auth/gmail.send",
     sub: "google-subject-123456",
     exp: "1784023200",
     expires_in: "3599",
@@ -46,7 +49,9 @@ function tokenInfoResponse(accessToken) {
   }
   if (accessToken === "access-token-wrong-audience") return { ...common, aud: "different-google-client-id" };
   if (accessToken === "access-token-unknown-claim") return { ...common, unexpected_claim: "not-documented" };
-  if (accessToken === "access-token-wrong-scope") return { ...common, scope: "https://www.googleapis.com/auth/gmail.send" };
+  if (accessToken === "access-token-wrong-scope") {
+    return { ...common, scope: "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/spreadsheets" };
+  }
   if (accessToken === "access-token-legacy-subject") {
     const { sub: _sub, ...response } = common;
     return { ...response, user_id: "legacy-google-subject-654321" };

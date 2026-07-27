@@ -85,9 +85,10 @@
     "token_endpoint_auth_method": "client_secret_post",
     "exact_scopes": [
       "https://www.googleapis.com/auth/gmail.send",
-      "https://www.googleapis.com/auth/spreadsheets"
+      "https://www.googleapis.com/auth/spreadsheets",
+      "openid"
     ],
-    "account_discovery": "validate tokeninfo user_id and the exact two-scope set inside token egress; commit only the opaque subject"
+    "account_discovery": "validate tokeninfo sub and the exact three-scope set inside token egress; commit only the opaque subject"
   },
   "broker_private": {
     "secrets": ["ACTIVATION_SERVICE_AUTH", "AI_GATEWAY_AUTHORIZATION", "AUTH_DRIVER_SERVICE_AUTH", "BINDING_SIGNING_SEED", "COMMITMENT_KEY", "CUSTODY_ROOT_KEY", "GENERIC_ACTIVATION_RECIPIENT_PRIVATE_KEY_B64U", "DEPLOYMENT_BOOTSTRAP_AUTH", "GOOGLE_EGRESS_SERVICE_AUTH", "INVOKE_SERVICE_AUTH", "KEY_HASH_PEPPER", "RECEIPT_SIGNING_SEED"],

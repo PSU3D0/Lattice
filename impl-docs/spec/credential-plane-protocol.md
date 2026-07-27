@@ -967,8 +967,10 @@ destroys receipt verifiability.
 The old connector remains contract metadata. `auth.google.workspace.oauth2@1`
 maps to profile ref/version plus an approved auth-profile registry pin. The old
 provider and role disappear from V2 authority; the scheme config is OAuth PKCE.
-The exact Gmail-send and Sheets scopes are normalized privately and committed;
-no full scope list is public by default. The old account commitment is stored
+The exact connection scope set is `openid`, Gmail send, and Sheets. `openid`
+is a connection-level identity requirement, while the two resource scopes
+remain operation-level minimum authority. The set is normalized privately and
+committed; no full scope list is public by default. The old account commitment is stored
 only as tagged `LegacyCommitmentV1` for inventory/historical verification.
 Native V2 activation rediscoveries the subject and computes a new V2 principal
 commitment; inability to do so blocks migration.
@@ -987,8 +989,11 @@ The static Google profile's logical endpoints resolve through a signed
 `https://oauth2.googleapis.com/revoke`, principal discovery
 `https://oauth2.googleapis.com/tokeninfo`, and the exact deployed universal
 callback. PKCE is S256 and OAuth scheme config uses `client_secret_post`. Claims
-come from the exact standing-authority/contract-set record, never deployment-
-wide constants or caller input.
+come from the exact standing-authority/contract-set record plus the profile's
+connection-level identity claims, never deployment-wide constants or caller
+input. An OpenID `id_token` in the token response is privileged response
+material and MUST be discarded without logging, storage, forwarding, or
+evidence projection after the access-token fields are validated.
 
 ### 12.3 D1 migration
 
@@ -1122,8 +1127,9 @@ approved live test; this protocol authorizes no live setup or effect.
   client ID disclosure policy and client-secret custody are documented.
 - [ ] The one exact deployed universal redirect URI is registered with Google
   and byte-equals the profile endpoint policy.
-- [ ] Server-derived claims are exactly Gmail send and Sheets scopes listed in
-  Section 12.2; no implicit/extra scopes are requested.
+- [ ] Server-derived claims are exactly connection-level `openid` plus the Gmail
+  send and Sheets operation scopes listed in Section 12.2; no implicit/extra
+  scopes are requested.
 - [ ] Account discovery uses the pinned driver/endpoint, produces an immutable
   subject commitment, and has multi-account ambiguity tests.
 - [ ] Production token egress is restricted to the pinned token/revocation/

@@ -20,6 +20,7 @@ const STALE: &str = "stale-access-never-log";
 const FRESH: &str = "fresh-access-never-log";
 const SHEETS: &str = "https://www.googleapis.com/auth/spreadsheets";
 const GMAIL: &str = "https://www.googleapis.com/auth/gmail.send";
+const OPENID: &str = "openid";
 
 fn account() -> CommitmentEnvelope {
     CommitmentEnvelope {
@@ -32,7 +33,7 @@ fn account() -> CommitmentEnvelope {
 }
 
 fn registration(cached_expiry: Option<i64>) -> ConnectionRegistration {
-    let scopes = BTreeSet::from([GMAIL.into(), SHEETS.into()]);
+    let scopes = BTreeSet::from([GMAIL.into(), SHEETS.into(), OPENID.into()]);
     ConnectionRegistration {
         connection_ref: "google-primary".into(),
         org_id: "org".into(),
@@ -108,7 +109,7 @@ fn cached_material_stays_sealed_and_is_handed_out_only_in_scope() {
 
 #[test]
 fn expired_access_refreshes_once_before_material_handoff() {
-    let scopes = BTreeSet::from([GMAIL.into(), SHEETS.into()]);
+    let scopes = BTreeSet::from([GMAIL.into(), SHEETS.into(), OPENID.into()]);
     let endpoint = Arc::new(MockTokenEndpoint::new([response(scopes)]));
     let (custodian, _) = custodian(endpoint.clone(), Some(0));
     let observed = custodian

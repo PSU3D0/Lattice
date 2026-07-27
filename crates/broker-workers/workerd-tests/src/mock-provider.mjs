@@ -70,6 +70,7 @@ export default {
         scopes: [
           "https://www.googleapis.com/auth/gmail.send",
           "https://www.googleapis.com/auth/spreadsheets",
+          "openid",
         ],
       };
       if (url.pathname === "/exchange") {

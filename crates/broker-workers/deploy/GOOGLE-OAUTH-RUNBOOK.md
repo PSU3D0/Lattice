@@ -26,10 +26,10 @@ The deployment renderer derives this single value and threads it to token egress
 2. Add only the operator-selected exact test account(s). Never record those addresses in this repository or sanitized evidence.
 3. Create an OAuth 2.0 client of type **Web application**.
 4. Configure the one exact authorized redirect URI derived in step 1.
-5. Request exactly `https://www.googleapis.com/auth/gmail.send` and `https://www.googleapis.com/auth/spreadsheets`; reject every additional scope.
+5. Request exactly `openid`, `https://www.googleapis.com/auth/gmail.send`, and `https://www.googleapis.com/auth/spreadsheets`; reject every additional scope. `openid` is the connection-level identity scope needed for a stable pseudonymous subject; it is not an operation authority.
 6. Install the client ID and client secret as `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET` secrets on the private token egress Worker. The broker never receives the client secret.
 
-The token egress Worker calls the pinned Google `tokeninfo` endpoint, validates its opaque `user_id` and exact two-scope result, and returns only the subject to broker custody for a scoped commitment. Email, name, avatar, and raw subject are not control-plane fields or evidence. Revocation uses only the fixed token-egress `/revoke` route backed by `https://oauth2.googleapis.com/revoke`.
+The token egress Worker calls the pinned Google `tokeninfo` endpoint, validates its opaque `sub` and exact three-scope result, and returns only the subject to broker custody for a scoped commitment. The token endpoint's OpenID `id_token` is accepted but discarded; it is never logged, stored, forwarded, or placed in evidence. Email, name, avatar, and raw subject are not control-plane fields or evidence. Revocation uses only the fixed token-egress `/revoke` route backed by `https://oauth2.googleapis.com/revoke`.
 
 ## 3. Generate and sign operator artifacts offline
 

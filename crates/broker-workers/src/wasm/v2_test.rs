@@ -882,6 +882,7 @@ fn auth_profile(profile: &TestProfile) -> Result<AuthProfile, BrokerError> {
         scheme,
         endpoints: std::collections::BTreeMap::from([("api".into(), profile.endpoint.clone())]),
         callback_uri: "https://broker.invalid/v0.2/credential-callback".into(),
+        connection_claims: std::collections::BTreeSet::new(),
         contract_claims: std::collections::BTreeMap::from([(
             "contract.synthetic".into(),
             std::collections::BTreeSet::from(["claim.synthetic".into()]),

@@ -70,6 +70,7 @@ describe("private Google token and account egress", () => {
         response_type: "code",
         scopes: [
           "https://www.googleapis.com/auth/spreadsheets",
+          "openid",
           "https://www.googleapis.com/auth/gmail.send",
         ],
         state: "oauth-state-value-123456789",
@@ -82,7 +83,7 @@ describe("private Google token and account egress", () => {
     expect(Object.fromEntries(url.searchParams)).toEqual({
       client_id: "google-client-id-private",
       redirect_uri: "https://broker.example/v0.2/credential-callback",
-      scope: "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/spreadsheets",
+      scope: "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/spreadsheets openid",
       state: "oauth-state-value-123456789",
       response_type: "code",
       code_challenge: "c".repeat(43),
@@ -105,7 +106,7 @@ describe("private Google token and account egress", () => {
     const value = JSON.parse(firstText);
     expect(value.account_subject).toBe("google-subject-123456");
     expect(value.scopes).toEqual([
-      "https://www.googleapis.com/auth/gmail.send", "https://www.googleapis.com/auth/spreadsheets",
+      "https://www.googleapis.com/auth/gmail.send", "https://www.googleapis.com/auth/spreadsheets", "openid",
     ]);
     const before = (await calls()).length;
     const replay = await token.fetch("http://token.internal/exchange", { method: "POST", headers: h, body });
@@ -120,11 +121,20 @@ describe("private Google token and account egress", () => {
     expect(JSON.stringify(value)).not.toContain("google-client-secret-private");
   });
 
+  it("accepts an OpenID token response without forwarding its id_token", async () => {
+    const response = await exchangeCode("with-id-token", "exchange-with-id-token");
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    expect(text).not.toContain("id_token");
+    expect(text).not.toContain("header.sensitive-subject.signature");
+    expect(JSON.parse(text).account_subject).toBe("google-subject-123456");
+  });
+
   it.each([
     ["missing-subject", "a response missing both subject fields"],
     ["wrong-audience", "a token minted for another OAuth client"],
     ["unknown-claim", "a genuinely unknown tokeninfo field"],
-    ["wrong-scope", "a scope mismatch"],
+    ["wrong-scope", "the former two-resource-scope tokeninfo result"],
   ])("fails closed for %s (%s)", async (code) => {
     const response = await exchangeCode(code, `tokeninfo-${code}`);
     expect(response.status).toBe(503);
@@ -165,6 +175,7 @@ describe("private Google token and account egress", () => {
       scopes: [
         "https://www.googleapis.com/auth/gmail.send",
         "https://www.googleapis.com/auth/spreadsheets",
+        "openid",
       ],
     });
   });
@@ -178,6 +189,7 @@ describe("private Google token and account egress", () => {
     expect((await response.json()).scopes).toEqual([
       "https://www.googleapis.com/auth/gmail.send",
       "https://www.googleapis.com/auth/spreadsheets",
+      "openid",
     ]);
   });
 

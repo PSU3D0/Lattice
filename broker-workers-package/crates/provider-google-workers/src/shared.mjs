@@ -1,6 +1,7 @@
 export const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.send";
 export const SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets";
-export const EXACT_SCOPES = Object.freeze([GMAIL_SCOPE, SHEETS_SCOPE].sort());
+export const OPENID_SCOPE = "openid";
+export const EXACT_SCOPES = Object.freeze([GMAIL_SCOPE, SHEETS_SCOPE, OPENID_SCOPE].sort());
 export const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 export const TOKENINFO_ENDPOINT = "https://oauth2.googleapis.com/tokeninfo";
 export const REVOCATION_ENDPOINT = "https://oauth2.googleapis.com/revoke";

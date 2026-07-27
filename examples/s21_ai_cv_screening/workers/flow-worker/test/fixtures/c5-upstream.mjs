@@ -20,11 +20,11 @@ export default {
     if (request.url === "https://oauth2.googleapis.com/token") {
       state.token += 1;
       return Response.json({ access_token: "owned-access-token-private", refresh_token: "owned-refresh-token-private", expires_in: 3600,
-        scope: "https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/gmail.send", token_type: "Bearer" });
+        scope: "https://www.googleapis.com/auth/spreadsheets openid https://www.googleapis.com/auth/gmail.send", token_type: "Bearer" });
     }
     if (url.origin === "https://oauth2.googleapis.com" && url.pathname === "/tokeninfo") {
       state.userinfo += 1;
-      return Response.json({ user_id: "owned-google-subject", scope: "https://www.googleapis.com/auth/spreadsheets https://www.googleapis.com/auth/gmail.send" });
+      return Response.json({ sub: "owned-google-subject", scope: "https://www.googleapis.com/auth/spreadsheets openid https://www.googleapis.com/auth/gmail.send" });
     }
     if (url.origin === "https://sheets.googleapis.com") {
       state.sheets += 1;

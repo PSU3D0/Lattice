@@ -56,6 +56,7 @@ fn profile(name: &str, activation: ActivationKind, scheme: AuthScheme) -> AuthPr
         scheme,
         endpoints,
         callback_uri: "https://broker.invalid/v0.2/credential-callback".into(),
+        connection_claims: BTreeSet::new(),
         contract_claims: BTreeMap::from([(
             "contract.one".into(),
             BTreeSet::from(["claim.read".into()]),

@@ -102,6 +102,7 @@ pub fn installed_provider_plane(now: &str) -> Result<InstalledProviderPlane, Bro
             .contract_claims
             .values()
             .flat_map(|claims| claims.iter().cloned())
+            .chain(composition.profile.connection_claims.iter().cloned())
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect(),

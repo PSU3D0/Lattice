@@ -12,12 +12,12 @@
       "wrangler": "wrangler.provider.jsonc"
     }
   },
-  "source_hash": "cd0040925f411bfb0372989b24509e7d19c261739d3211e6c414900831a6ca46",
+  "source_hash": "6db0c8d08662bc472ece8c2e6cf51bc86ef67f6467bb044b6b44887d265df8bd",
   "files": [
     {
       "path": "README.md",
-      "sha256": "0c2cd1a5a46fbe2a53c7cf351e55278107bc8c896acf0086073999fc79640e6d",
-      "size_bytes": 1386
+      "sha256": "ee6183c69cd6636c9b712c59cc7cabeecc20970759d5d594682dba6fbb85b9ce",
+      "size_bytes": 1477
     },
     {
       "path": "package-lock.json",
@@ -51,8 +51,8 @@
     },
     {
       "path": "src/shared.mjs",
-      "sha256": "37f32ee1b673370b7005c164a743983d131b76ddf2fff74e10dece2ae76ea7d7",
-      "size_bytes": 4836
+      "sha256": "bf70b9f5028be4d0ae85ae32d75b64f4eac6927f2bd9189f9dd560ec3c6d11ad",
+      "size_bytes": 4888
     },
     {
       "path": "src/token-worker.mjs",

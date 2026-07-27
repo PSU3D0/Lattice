@@ -37,6 +37,7 @@ pub const TOKEN_SERVICE_BINDING: &str = "GOOGLE_TOKEN_SERVICE";
 pub const PROVIDER_SERVICE_BINDING: &str = "GOOGLE_PROVIDER_SERVICE";
 pub const AUTHORIZATION_ENDPOINT_BINDING: &str = "GOOGLE_AUTHORIZE_ENDPOINT";
 pub const OAUTH_CLIENT_ID_BINDING: &str = "GOOGLE_OAUTH_CLIENT_ID";
+pub const OPENID_SCOPE: &str = "openid";
 pub const GMAIL_SCOPE: &str = "https://www.googleapis.com/auth/gmail.send";
 pub const SHEETS_SCOPE: &str = "https://www.googleapis.com/auth/spreadsheets";
 pub const GMAIL_CONTRACT_ID: &str = "connector.google.gmail.send_message@1";
@@ -114,6 +115,7 @@ pub fn google_v1() -> GoogleComposition {
             ("principal_discovery".into(), PRINCIPAL_ENDPOINT.into()),
         ]),
         callback_uri: UNIVERSAL_CALLBACK.into(),
+        connection_claims: BTreeSet::from([OPENID_SCOPE.into()]),
         contract_claims: BTreeMap::from([
             (
                 GMAIL_CONTRACT_ID.into(),
@@ -497,7 +499,11 @@ pub fn normalized_scopes(value: &str) -> Result<NormalizedClaims, BrokerError> {
         .split_ascii_whitespace()
         .map(str::to_owned)
         .collect::<BTreeSet<_>>();
-    if values.len() != 2 || values.iter().any(|v| v != GMAIL_SCOPE && v != SHEETS_SCOPE) {
+    if values.len() != 3
+        || values
+            .iter()
+            .any(|v| v != GMAIL_SCOPE && v != SHEETS_SCOPE && v != OPENID_SCOPE)
+    {
         return Err(BrokerError::Brk109);
     }
     Ok(NormalizedClaims { values })
@@ -559,6 +565,18 @@ mod tests {
         assert_eq!(c.adapters.len(), 2);
         assert!(!c.profile.lifecycle.contains("device_authorization"));
         assert_eq!(c.profile.endpoint("token").unwrap(), TOKEN_ENDPOINT);
+        assert_eq!(
+            c.profile.connection_claims,
+            BTreeSet::from([OPENID_SCOPE.into()])
+        );
+        assert_eq!(
+            c.profile
+                .derive_claims(CONNECTOR_REF, [GMAIL_CONTRACT_ID])
+                .unwrap()
+                .values,
+            BTreeSet::from([GMAIL_SCOPE.into(), OPENID_SCOPE.into()]),
+        );
+        assert!(!c.profile.contract_claims[GMAIL_CONTRACT_ID].contains(OPENID_SCOPE));
     }
     #[test]
     fn generic_host_registry_composes_exact_signed_implementations() {
@@ -619,19 +637,24 @@ mod tests {
     #[test]
     fn scope_normalization_and_discovery_are_profile_pinned_and_private() {
         let expected = NormalizedClaims {
-            values: BTreeSet::from([GMAIL_SCOPE.into(), SHEETS_SCOPE.into()]),
+            values: BTreeSet::from([GMAIL_SCOPE.into(), SHEETS_SCOPE.into(), OPENID_SCOPE.into()]),
         };
         assert_eq!(
-            normalized_scopes(&format!("{SHEETS_SCOPE} {GMAIL_SCOPE} {GMAIL_SCOPE}")).unwrap(),
+            normalized_scopes(&format!(
+                "{SHEETS_SCOPE} {OPENID_SCOPE} {GMAIL_SCOPE} {GMAIL_SCOPE}"
+            ))
+            .unwrap(),
             expected
         );
         assert_eq!(
-            normalized_scopes("openid").unwrap_err(),
+            normalized_scopes(&format!("{GMAIL_SCOPE} {SHEETS_SCOPE}")).unwrap_err(),
             BrokerError::Brk109
         );
         let subject = discover_account(
-            format!(r#"{{"user_id":"account-1","scope":"{GMAIL_SCOPE} {SHEETS_SCOPE}"}}"#)
-                .as_bytes(),
+            format!(
+                r#"{{"user_id":"account-1","scope":"{GMAIL_SCOPE} {SHEETS_SCOPE} {OPENID_SCOPE}"}}"#
+            )
+            .as_bytes(),
             &expected,
         )
         .unwrap();

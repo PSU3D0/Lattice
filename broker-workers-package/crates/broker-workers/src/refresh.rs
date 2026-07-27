@@ -512,7 +512,7 @@ mod tests {
             _ => unreachable!(),
         };
         let mut expanded = scopes();
-        expanded.insert("openid".into());
+        expanded.insert("drive.read".into());
         let result = state
             .complete_refresh(
                 "lease-added-000000000000000000000001",

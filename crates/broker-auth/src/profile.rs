@@ -79,6 +79,7 @@ pub struct AuthProfile {
     pub scheme: AuthScheme,
     pub endpoints: BTreeMap<String, String>,
     pub callback_uri: String,
+    pub connection_claims: BTreeSet<String>,
     pub contract_claims: BTreeMap<String, BTreeSet<String>>,
     pub lifecycle: BTreeSet<String>,
     pub material_schema_hash: String,
@@ -198,6 +199,7 @@ impl AuthProfile {
             return Err(BrokerError::Brk109);
         }
         let mut claims = BTreeSet::new();
+        claims.extend(self.connection_claims.iter().cloned());
         let mut saw_contract = false;
         for contract in contract_ids {
             let required = self

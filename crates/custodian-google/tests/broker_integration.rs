@@ -36,6 +36,7 @@ const FLOW_HASH: &str = "sha256:222222222222222222222222222222222222222222222222
 const LOCK_HASH: &str = "sha256:3333333333333333333333333333333333333333333333333333333333333333";
 const GMAIL: &str = "https://www.googleapis.com/auth/gmail.send";
 const SHEETS: &str = "https://www.googleapis.com/auth/spreadsheets";
+const OPENID: &str = "openid";
 const REFRESH: &str = "integration-refresh-never-log";
 const STALE: &str = "integration-stale-never-log";
 const FRESH: &str = "integration-fresh-never-log";
@@ -106,7 +107,7 @@ fn account() -> CommitmentEnvelope {
 }
 
 fn all_scopes() -> BTreeSet<String> {
-    BTreeSet::from([GMAIL.into(), SHEETS.into()])
+    BTreeSet::from([GMAIL.into(), SHEETS.into(), OPENID.into()])
 }
 
 fn roles() -> BTreeMap<String, String> {

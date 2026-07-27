@@ -667,6 +667,7 @@ describe.skip("archived V1 packet regression fixtures", () => {
     const firstText = await first.text();
     expect(firstText).not.toContain("mock-oauth-code-never-log");
     expect(firstText).not.toContain("mock-access-never-log");
+    expect(firstText).not.toContain("google-subject-123456");
     const connection = JSON.parse(firstText);
     const authority = authorityFixture();
     const validBinding = {
