@@ -40,7 +40,7 @@ export function redactedPlan(context) {
       "verify_immutable_dependency_pins",
       "qualify_exact_secrets_file_before_mutation",
       "prove_deploy_install_verify_capture_fence_aware_private",
-      "apply_forward_only_d1_migrations_through_0004_operator_artifact_bundle",
+      "apply_forward_only_d1_migrations_through_0005_preflight_binding",
       "seed_operator_artifact_bundle_and_verify_byte_exact_readback",
       "prove_deploy_verify_capture_public_last",
       "health_ready_callback_400_smoke",
@@ -264,7 +264,7 @@ export async function executeApply(context, runner) {
       "--remote", "--config", context.privateConfigPath,
     ]);
     evidence.migration_state = "applied_forward_only";
-    evidence.checks.push("forward_only_d1_migrations_through_0004_applied");
+    evidence.checks.push("forward_only_d1_migrations_through_0005_applied");
     evidence.operator_bundle = await seedOperatorBundle(context, runner);
     evidence.checks.push("operator_bundle_seeded_and_byte_exact_readback_verified");
     const publicDeployment = await deployPrivateWorker({

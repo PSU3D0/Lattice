@@ -3,9 +3,9 @@
   "package": "broker-workers",
   "package_version": "0.1.0",
   "requirements_sha256": "912bfee6e786efc2506216a19737f21a2489134bf230cd828b80befc3e80fd03",
-  "cargo_lock_sha256": "2286719c57477e94565bf94b90895586497e3674b927357aefe6c5dcec498808",
-  "wasm_sha256": "3d1c04b30f954f9ddea93ab92f3267e4c3df341c4ac2f202a27b2cf007bed7f6",
-  "root_production_wasm_sha256": "3d1c04b30f954f9ddea93ab92f3267e4c3df341c4ac2f202a27b2cf007bed7f6",
+  "cargo_lock_sha256": "9beeb0a4190f492556c8b8cd575477143fd4128b166312b8769a98377dc225bd",
+  "wasm_sha256": "f6ae5d6aca1222b96d3211981405f14a1b3aeb6ffe6246b6a4934ed4b0fe032b",
+  "root_production_wasm_sha256": "f6ae5d6aca1222b96d3211981405f14a1b3aeb6ffe6246b6a4934ed4b0fe032b",
   "feature_flags": {
     "production": [],
     "workerd_tests_separate_artifact": [
@@ -15,8 +15,8 @@
   "files": [
     {
       "path": "Cargo.lock",
-      "sha256": "2286719c57477e94565bf94b90895586497e3674b927357aefe6c5dcec498808",
-      "size_bytes": 220007
+      "sha256": "9beeb0a4190f492556c8b8cd575477143fd4128b166312b8769a98377dc225bd",
+      "size_bytes": 220127
     },
     {
       "path": "Cargo.toml",
@@ -245,8 +245,8 @@
     },
     {
       "path": "crates/broker-host/src/v2.rs",
-      "sha256": "9d7c28d62792e4a386a773f806fcd06af4a7c3cc3db5bed25c9f72c9a0ef7a12",
-      "size_bytes": 39209
+      "sha256": "9661fcee36b19ff4808998f0d4806ee3b752a3ac68a71461f517d0520da8f60b",
+      "size_bytes": 41859
     },
     {
       "path": "crates/broker-workers/.gitignore",
@@ -260,8 +260,8 @@
     },
     {
       "path": "crates/broker-workers/build/index_bg.wasm",
-      "sha256": "3d1c04b30f954f9ddea93ab92f3267e4c3df341c4ac2f202a27b2cf007bed7f6",
-      "size_bytes": 5738035
+      "sha256": "f6ae5d6aca1222b96d3211981405f14a1b3aeb6ffe6246b6a4934ed4b0fe032b",
+      "size_bytes": 5807274
     },
     {
       "path": "crates/broker-workers/build/index.js",
@@ -310,8 +310,8 @@
     },
     {
       "path": "crates/broker-workers/deploy/google-oauth-readiness.json",
-      "sha256": "c6295259ea9c3df4025fd1275a9b03897afb9982282b2615bf2a94c54181f0ec",
-      "size_bytes": 12284
+      "sha256": "510ec38a82b9ce4021c791bfef6c609d9b8d3eda52114d60d7e993c54118e185",
+      "size_bytes": 12277
     },
     {
       "path": "crates/broker-workers/deploy/GOOGLE-OAUTH-RUNBOOK.md",
@@ -360,8 +360,8 @@
     },
     {
       "path": "crates/broker-workers/deploy/scripts/deploy-lib.mjs",
-      "sha256": "a0a3a7a914bcbb0bfb92199ff9ae08ba0aa34a70bcc8bb4eb242596692a1b2d7",
-      "size_bytes": 17047
+      "sha256": "2ff013c3876447f714dfd260b59579d1f14e8e60ffa63b8b702fa89b4d3244c6",
+      "size_bytes": 17040
     },
     {
       "path": "crates/broker-workers/deploy/scripts/deploy.mjs",
@@ -432,6 +432,11 @@
       "path": "crates/broker-workers/migrations/0004_operator_artifact_bundle.sql",
       "sha256": "594e3d97b3399703a31f723a3185d577554acf9c7dc878b136eca1511416e2c5",
       "size_bytes": 493
+    },
+    {
+      "path": "crates/broker-workers/migrations/0005_preflight_binding.sql",
+      "sha256": "4cf9ceb404b4afbde4326bbd40df6f6db2bb097b21bd462dd6de40a382e44d34",
+      "size_bytes": 3681
     },
     {
       "path": "crates/broker-workers/REVIEW-REMEDIATION.md",
@@ -530,8 +535,8 @@
     },
     {
       "path": "crates/broker-workers/src/wasm/v2_production.rs",
-      "sha256": "a6732f4c3ab1ab42149f63de5c9a783a113c10a9184d5ccdc38cd4676fcee06c",
-      "size_bytes": 156786
+      "sha256": "4c6b5c7f19fd42c722472d6140df2ea5fa1a7b71c1ea568df31b253502021c89",
+      "size_bytes": 177059
     },
     {
       "path": "crates/broker-workers/src/wasm/v2_test.rs",
@@ -750,8 +755,8 @@
     },
     {
       "path": "crates/dag-core/Cargo.toml",
-      "sha256": "a91c75dc746bde7a50ed8f48e8f476aa9dbfbc9289028e6e82ba11ab6946bb79",
-      "size_bytes": 657
+      "sha256": "e19919d72c3e4d6ac784a6074b1386b9343f09073887047d81addd560e92ac03",
+      "size_bytes": 731
     },
     {
       "path": "crates/dag-core/README.md",
@@ -805,18 +810,18 @@
     },
     {
       "path": "crates/dag-core/src/ir.rs",
-      "sha256": "ae4b8e15d7c3a5f06211077e96dbaccee0d15eb39c8d11ca5dd042949bccd22c",
-      "size_bytes": 51838
+      "sha256": "8d07bec9173ffa1675bf8a8bd8982acc994bd4395f7150c010dda1456527b4b8",
+      "size_bytes": 52904
     },
     {
       "path": "crates/dag-core/src/lib.rs",
-      "sha256": "5e11e6e9e77bb4b4d609648abe78bdc034a5acd3693f12e3417d18b0466904f2",
-      "size_bytes": 8539
+      "sha256": "2bdc79801af531f37d2999ffeb13498f9486e981adf6a6c85f054f946d7f882c",
+      "size_bytes": 8616
     },
     {
       "path": "crates/dag-core/src/requirements.rs",
-      "sha256": "bf2c8b05ef61651be52bbd18b3798dc1b4ad9ab176f5ff4108c4a876add69861",
-      "size_bytes": 37153
+      "sha256": "dc320e3d5a3340c81efd9256bf948c7a24f597204c2d87e8be19d733c6edef39",
+      "size_bytes": 57431
     },
     {
       "path": "crates/dag-core/src/schema.rs",
@@ -850,8 +855,8 @@
     },
     {
       "path": "crates/kernel-plan/src/lib.rs",
-      "sha256": "6efbe5c2c564bc2c77685a3dc7b4a8f0d729c254bef355e0e67ea0fcd9ede1b1",
-      "size_bytes": 137933
+      "sha256": "d59754a7e411cd5b1aa31f4ae40a683df4a71cbf36d1f4a62bf1fdcb0b8bdb44",
+      "size_bytes": 138538
     },
     {
       "path": "crates/provider-google-workers/.gitignore",
@@ -965,13 +970,13 @@
     },
     {
       "path": "schemas/flow_ir.schema.json",
-      "sha256": "344018ffd7aa7dfc8de47be70977012ee89ec2959db41fffa910e6479a17a61f",
-      "size_bytes": 34483
+      "sha256": "e2fe2dbdfe7af33be58cd034d6ef0730521293a7537c8f3fec998ec3bccd580b",
+      "size_bytes": 35101
     },
     {
       "path": "schemas/flow_requirements.schema.json",
-      "sha256": "b913014e88b765ddd060d8f6f28c9929372321be556ea18c4ce7971394591258",
-      "size_bytes": 18926
+      "sha256": "5cebf9415ed29f87f67b2b99a75f37235ee2c2d646d31d7192721d32296a419e",
+      "size_bytes": 22715
     }
   ]
 }

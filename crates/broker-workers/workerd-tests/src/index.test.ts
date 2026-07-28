@@ -223,7 +223,7 @@ beforeAll(async () => {
     [productionMf, "broker-production", "production-route-test-pepper"],
   ] as const) {
     const db = await runtime.getD1Database("BROKER_DB", workerName);
-    for (const name of ["0001_broker.sql", "0002_credential_plane_v2.sql", "0003_production_v2_cutover.sql", "0004_operator_artifact_bundle.sql"]) {
+    for (const name of ["0001_broker.sql", "0002_credential_plane_v2.sql", "0003_production_v2_cutover.sql", "0004_operator_artifact_bundle.sql", "0005_preflight_binding.sql"]) {
       const migration = await readFile(`../migrations/${name}`, "utf8");
       for (const statement of migration.split(";").map((value) => value.trim()).filter(Boolean)) {
         await db.prepare(statement).run();
@@ -1320,12 +1320,25 @@ describe("production V2 broker routes", () => {
       authority_manifest_json: authority.authorityManifestJson,
       contracts: [authority.gmail.contract, authority.sheets.contract],
     };
-    const bindingResponse = await jsonRequest(worker, "/v0.2/bindings", bindingRequest, sessionHeaders(auth.body.session_ref));
-    const bindingText = await bindingResponse.text();
-    expect(bindingResponse.status, bindingText).toBe(201);
-    const binding = JSON.parse(bindingText);
+    const concurrentInstalls = await Promise.all(Array.from({ length: 6 }, () =>
+      jsonRequest(worker, "/v0.2/bindings", bindingRequest, sessionHeaders(auth.body.session_ref))));
+    const bindingBodies = await Promise.all(concurrentInstalls.map(async response => ({
+      status: response.status,
+      text: await response.text(),
+    })));
+    for (const response of bindingBodies) {
+      expect([200, 201], response.text).toContain(response.status);
+    }
+    const installedRefs = new Set(bindingBodies.map(response => JSON.parse(response.text).binding_ref));
+    expect(installedRefs.size).toBe(1);
+    const binding = JSON.parse(bindingBodies[0].text);
     expect(binding.binding.schema_version).toBe("0.2");
     const productionDb = await productionMf.getD1Database("BROKER_DB", "broker-production");
+    expect((await productionDb.prepare("SELECT COUNT(*) AS count FROM v2_host_records WHERE org_id=? AND connection_ref=? AND artifact_kind='binding'")
+      .bind("org-fixture", connection.connection_ref).first<any>())?.count).toBe(1);
+    const lifecycle = await productionDb.prepare("SELECT l.state AS logical_state,r.state AS revision_state FROM logical_bindings_v2 l JOIN binding_revisions_v2 r ON r.org_id=l.org_id AND r.logical_binding_ref=l.logical_binding_ref WHERE r.org_id=? AND r.binding_ref=?")
+      .bind("org-fixture", binding.binding_ref).first<any>();
+    expect(lifecycle).toEqual({ logical_state: "active", revision_state: "active" });
     const cutover = await productionDb.prepare("SELECT phase,legacy_destruction_evidence_hash FROM credential_cutover_state_v2 WHERE org_id=? AND connection_ref=?")
       .bind("org-fixture", connection.connection_ref).first<any>();
     expect(cutover?.phase).toBe("complete");
@@ -1333,6 +1346,25 @@ describe("production V2 broker routes", () => {
     const freshEvents = await productionDb.prepare("SELECT phase FROM credential_cutover_events_v2 WHERE org_id=? AND connection_ref=? ORDER BY event_sequence")
       .bind("org-fixture", connection.connection_ref).all<any>();
     expect(freshEvents.results.map((row: any) => row.phase)).toEqual(["registry_verified", "binding_verified", "fence_switched", "legacy_material_destroyed", "complete"]);
+    const expiredBinding = { ...binding.binding, expires_at: "2000-01-01T00:00:00Z" };
+    await productionDb.prepare("UPDATE v2_host_records SET canonical_artifact_json=? WHERE org_id=? AND artifact_ref=?")
+      .bind(canonicalJson(expiredBinding), "org-fixture", binding.binding_ref).run();
+    const staleReplay = await jsonRequest(worker, "/v0.2/bindings", bindingRequest, sessionHeaders(auth.body.session_ref));
+    expect(staleReplay.status, await staleReplay.clone().text()).toBe(409);
+    expect((await staleReplay.json() as any).error.code).toBe("BRK203");
+    await productionDb.prepare("UPDATE v2_host_records SET canonical_artifact_json=? WHERE org_id=? AND artifact_ref=?")
+      .bind(canonicalJson(binding.binding), "org-fixture", binding.binding_ref).run();
+    await productionDb.prepare("UPDATE logical_bindings_v2 SET state='revoked' WHERE org_id=? AND current_binding_ref=?")
+      .bind("org-fixture", binding.binding_ref).run();
+    await productionDb.prepare("UPDATE binding_revisions_v2 SET state='revoked' WHERE org_id=? AND binding_ref=?")
+      .bind("org-fixture", binding.binding_ref).run();
+    const lifecycleRevokedReplay = await jsonRequest(worker, "/v0.2/bindings", bindingRequest, sessionHeaders(auth.body.session_ref));
+    expect(lifecycleRevokedReplay.status).toBe(409);
+    expect((await lifecycleRevokedReplay.json() as any).error.code).toBe("BRK106");
+    await productionDb.prepare("UPDATE logical_bindings_v2 SET state='active' WHERE org_id=? AND current_binding_ref=?")
+      .bind("org-fixture", binding.binding_ref).run();
+    await productionDb.prepare("UPDATE binding_revisions_v2 SET state='active' WHERE org_id=? AND binding_ref=?")
+      .bind("org-fixture", binding.binding_ref).run();
     const bindingReplay = await jsonRequest(worker, "/v0.2/bindings", bindingRequest, sessionHeaders(auth.body.session_ref));
     expect([200, 201]).toContain(bindingReplay.status);
     expect((await productionDb.prepare("SELECT COUNT(*) AS count FROM credential_cutover_events_v2 WHERE org_id=? AND connection_ref=?")
@@ -1369,6 +1401,17 @@ describe("production V2 broker routes", () => {
       expect(grant.grant.audience).toBe("broker-execution");
       expect(grant.grant.budgets.logical_calls).toBe(1);
       grants[node.alias] = { grant_ref: grant.grant_ref, input };
+      if (node.alias === "sheets") {
+        await productionDb.prepare("UPDATE v2_host_records SET canonical_artifact_json='{}' WHERE org_id=? AND artifact_ref=?")
+          .bind("org-fixture", grant.grant_ref).run();
+        const conflictedGrant = await jsonRequest(worker, "/internal/v0.2/grants", {
+          ...common, node_lease_ref: lease.node_lease_ref, semantic_effect_slot: node.slot,
+          expected_cas_version: grant.cas_version, input,
+        }, { ...sessionHeaders(auth.body.session_ref), "x-lattice-service-auth": "production-route-test-service-auth" });
+        expect(conflictedGrant.status).toBeGreaterThanOrEqual(409);
+        await productionDb.prepare("UPDATE v2_host_records SET canonical_artifact_json=? WHERE org_id=? AND artifact_ref=?")
+          .bind(canonicalJson(grant.grant), "org-fixture", grant.grant_ref).run();
+      }
     }
 
     for (const node of [authority.sheets, authority.gmail]) {
@@ -1421,6 +1464,11 @@ describe("production V2 broker routes", () => {
     const revokedReplay = await authenticatedFetch(worker, `/v0.2/connections/${connection.connection_ref}`, auth.body.session_ref, "DELETE");
     expect(revokedReplay.status).toBe(200);
     expect((await revokedReplay.json() as any).redelivery).toBe(true);
+    const revokedInstall = await jsonRequest(worker, "/v0.2/bindings", bindingRequest, sessionHeaders(auth.body.session_ref));
+    expect(revokedInstall.status).toBe(409);
+    expect((await revokedInstall.json() as any).error.code).toBe("BRK106");
+    expect((await db.prepare("SELECT state FROM logical_bindings_v2 WHERE org_id=? AND current_binding_ref=?")
+      .bind("org-fixture", binding.binding_ref).first<any>())?.state).toBe("revoked");
     const destroyedReply = await stateNamespace.get(stateNamespace.idFromName(stateRoute)).fetch("http://state/", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ org_id: "org-fixture", connection_ref: connectionRow.connection_ref, command: { op: "read" } }) });
     const destroyed = await destroyedReply.json() as any;
     expect(destroyed.material_generations).toEqual([]);
@@ -1428,7 +1476,7 @@ describe("production V2 broker routes", () => {
     expect(destroyed.revocation_evidence_hash).toMatch(/^sha256:[0-9a-f]{64}$/);
     const forbiddenLease = await stateNamespace.get(stateNamespace.idFromName(stateRoute)).fetch("http://state/", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ org_id: "org-fixture", connection_ref: connectionRow.connection_ref, command: { op: "lease_material_for_dispatch", generation: 1 } }) });
     expect(forbiddenLease.status).toBe(409);
-  });
+  }, 45_000);
 
   it("executes signed generic private activation drivers with one-time channels", async () => {
     const worker = await productionMf.getWorker("broker-production");

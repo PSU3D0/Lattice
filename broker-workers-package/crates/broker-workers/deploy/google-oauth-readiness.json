@@ -6,7 +6,7 @@
     "provision non-owned D1, KV, R2, AI Gateway, and immutable operator authority artifacts",
     "for auth-driver, then Google token egress, then provider egress: prove absent, deploy private, install secrets through stdin, verify secret names, and capture the newest fresh Cloudflare deployment UUID and version UUID plus the operator-computed uploaded-source digest",
     "prove broker-private absent, deploy it unreachable, install and verify its 12 secrets, and capture its newest fresh deployment before any destructive D1 migration",
-    "apply checked-in forward-only D1 migrations through 0004_operator_artifact_bundle.sql; preserve private broker, egress, and D1 on failure",
+    "apply checked-in forward-only D1 migrations through 0005_preflight_binding.sql; preserve private broker, egress, and D1 on failure",
     "seed the byte-exact canonical operator bundle into D1 idempotently and verify its byte-exact readback before exposing any public Worker",
     "after migration and verified bundle seeding, re-prove broker-public absent, deploy it last with no secrets, capture its exact deployment, and verify callback/health behavior",
     "render S21 binding lock, authority manifest, Flow IR hash, receipt trust pin, and service bindings",

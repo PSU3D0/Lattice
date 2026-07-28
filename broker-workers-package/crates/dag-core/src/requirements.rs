@@ -21,18 +21,21 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::effect_hint::EffectHint;
 use crate::ir::{
-    ConnectorResolutionModeDecl, ConnectorRoleRequirementIR, DurabilityMode, FlowIR, FlowId,
-    ImplementationDependencyKind, NodeKind, Profile,
+    BrokerContractIdentityIR, ConnectorResolutionModeDecl, ConnectorRoleRequirementIR,
+    DurabilityMode, FlowIR, FlowId, ImplementationDependencyKind, NodeIR, NodeKind, Profile,
 };
 
 /// Version of the FlowRequirements manifest shape itself (not the flow).
 ///
 /// Bump on any breaking change to the manifest structure; consumers must
 /// reject schema versions they do not understand.
-pub const FLOW_REQUIREMENTS_SCHEMA_VERSION: &str = "0.3";
+pub const FLOW_REQUIREMENTS_SCHEMA_VERSION: &str = "0.4";
+
+const MAX_SUBFLOW_REQUIREMENTS_DEPTH: usize = 64;
 
 /// Prefix for policy markers that are allowed to appear in
 /// `NodeIR.effect_hints` but are lint annotations, not capability
@@ -66,10 +69,64 @@ pub enum RequirementsError {
     },
     #[error("node `{node}` declares invalid implementation dependency key `{key}`")]
     InvalidImplementationDependency { node: String, key: String },
+    #[error(
+        "subflow node `{node}` has no embedded subflow IR; requirements derivation fails closed"
+    )]
+    MissingSubflowIr { node: String },
+    #[error("subflow cycle detected while deriving requirements: {chain}")]
+    SubflowCycle { chain: String },
+    #[error("subflow nesting exceeds the maximum requirements depth of {maximum}")]
+    SubflowDepthExceeded { maximum: usize },
+    #[error("no pinned contract descriptor resolves hash `{contract_hash}` for `{contract_id}`")]
+    UnknownContractHash {
+        contract_id: String,
+        contract_hash: String,
+    },
+    #[error(
+        "descriptor resolved by hash `{contract_hash}` names `{actual_contract_id}`, expected `{expected_contract_id}`"
+    )]
+    ContractIdentityMismatch {
+        contract_hash: String,
+        expected_contract_id: String,
+        actual_contract_id: String,
+    },
+    #[error("descriptor hash `{contract_hash}` resolves to conflicting contract scope metadata")]
+    ConflictingContractDescriptor { contract_hash: String },
+    #[error("operation contract descriptor is not valid bounded canonicalizable JSON")]
+    InvalidContractDescriptor,
+    #[error(
+        "operation contract descriptor is missing a string contract_id or string minimum_scopes"
+    )]
+    InvalidContractDescriptorShape,
+    #[error(
+        "operation contract descriptor hash mismatch: expected `{expected}`, computed `{actual}`"
+    )]
+    ContractDescriptorHashMismatch { expected: String, actual: String },
+    #[error(
+        "descriptor `{contract_id}` has malformed minimum scopes; expected sorted unique non-empty ASCII values"
+    )]
+    InvalidMinimumScopes { contract_id: String },
+    #[error("scope resolution Flow IR does not match the identity-phase requirements manifest")]
+    ScopeResolutionFlowMismatch,
+    #[error("scope resolution requires requirements pinned to the exact serialized Flow IR")]
+    MissingScopeResolutionFlowHash,
+    #[error("operation `{operation_id}` declares conflicting hash-pinned contract identities")]
+    ConflictingOperationContract { operation_id: String },
+    #[error("node `{node}` broker authority does not name exact contract `{contract_id}`")]
+    ContractAuthorityMismatch { node: String, contract_id: String },
+    #[error(
+        "node `{node}` broker authority names contract `{contract_id}`, but operation `{operation_id}` has no pinned contract identity"
+    )]
+    MissingPinnedContractIdentity {
+        node: String,
+        contract_id: String,
+        operation_id: String,
+    },
 }
 
 /// Static requirements manifest for a single flow.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "FlowRequirementsWire")]
 pub struct FlowRequirements {
     /// Manifest shape version ([`FLOW_REQUIREMENTS_SCHEMA_VERSION`]).
     pub schema_version: String,
@@ -86,6 +143,14 @@ pub struct FlowRequirements {
     /// Connector operation requirements, grouped by connector family.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub connectors: Vec<ConnectorRequirement>,
+    /// Report-only scope closure partitioned by connection aggregate key.
+    /// Empty until descriptor resolution is requested explicitly.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scope_closures: Vec<ConnectionScopeClosure>,
+    /// Explicit state of report-only scope resolution. This distinguishes a
+    /// genuinely scope-free flow from a contracted or unexpanded flow whose
+    /// descriptors have not been resolved yet.
+    pub scope_resolution: ScopeClosureResolution,
     /// Durability mode and the host services it implies.
     pub durability: DurabilityRequirements,
     /// Trigger nodes that originate executions of this flow.
@@ -102,6 +167,57 @@ pub struct FlowRequirements {
     /// the bundle id, so embedding it would be circular.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flow_ir_hash: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct FlowRequirementsWire {
+    schema_version: String,
+    flow: FlowIdentity,
+    profile: Profile,
+    effects: EffectRequirements,
+    #[serde(default)]
+    implementation_dependencies: Vec<ImplementationDependencyRequirement>,
+    #[serde(default)]
+    connectors: Vec<ConnectorRequirement>,
+    #[serde(default)]
+    scope_closures: Vec<ConnectionScopeClosure>,
+    scope_resolution: ScopeClosureResolution,
+    durability: DurabilityRequirements,
+    #[serde(default)]
+    triggers: Vec<TriggerRequirement>,
+    #[serde(default)]
+    entrypoints: Vec<EntrypointRequirement>,
+    host: HostConstraints,
+    #[serde(default)]
+    flow_ir_hash: Option<String>,
+}
+
+impl TryFrom<FlowRequirementsWire> for FlowRequirements {
+    type Error = String;
+
+    fn try_from(wire: FlowRequirementsWire) -> Result<Self, Self::Error> {
+        if wire.schema_version != FLOW_REQUIREMENTS_SCHEMA_VERSION {
+            return Err(format!(
+                "unsupported FlowRequirements schema_version `{}`; expected `{}`",
+                wire.schema_version, FLOW_REQUIREMENTS_SCHEMA_VERSION
+            ));
+        }
+        Ok(Self {
+            schema_version: wire.schema_version,
+            flow: wire.flow,
+            profile: wire.profile,
+            effects: wire.effects,
+            implementation_dependencies: wire.implementation_dependencies,
+            connectors: wire.connectors,
+            scope_closures: wire.scope_closures,
+            scope_resolution: wire.scope_resolution,
+            durability: wire.durability,
+            triggers: wire.triggers,
+            entrypoints: wire.entrypoints,
+            host: wire.host,
+            flow_ir_hash: wire.flow_ir_hash,
+        })
+    }
 }
 
 /// Identity of the flow a requirements manifest describes.
@@ -153,11 +269,109 @@ pub struct ConnectorRequirement {
     pub operations: Vec<ConnectorOperationRequirement>,
 }
 
+/// Scope-bearing projection of a full operation contract descriptor whose
+/// hash was recomputed by the constructor. Private fields make an unverified
+/// `(claimed hash, scopes)` record unrepresentable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContractScopeDescriptor {
+    contract_id: String,
+    contract_hash: String,
+    minimum_scopes: Vec<String>,
+}
+
+impl ContractScopeDescriptor {
+    /// Verify a complete canonical descriptor preimage against its pinned
+    /// hash and retain only the fields needed by report generation.
+    pub fn verify_json(
+        descriptor_json: &[u8],
+        expected_hash: &str,
+    ) -> Result<Self, RequirementsError> {
+        const MAX_DESCRIPTOR_BYTES: usize = 256 * 1024;
+        let canonical = jcs_canonical::canonicalize_bounded(descriptor_json, MAX_DESCRIPTOR_BYTES)
+            .map_err(|_| RequirementsError::InvalidContractDescriptor)?;
+        let actual_hash = format!(
+            "sha256:{}",
+            hex::encode(Sha256::digest(canonical.as_bytes()))
+        );
+        if actual_hash != expected_hash {
+            return Err(RequirementsError::ContractDescriptorHashMismatch {
+                expected: expected_hash.to_string(),
+                actual: actual_hash,
+            });
+        }
+
+        let value: serde_json::Value = serde_json::from_slice(canonical.as_bytes())
+            .map_err(|_| RequirementsError::InvalidContractDescriptor)?;
+        let contract_id = value
+            .get("contract_id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or(RequirementsError::InvalidContractDescriptorShape)?
+            .to_string();
+        let minimum_scopes = value
+            .get("minimum_scopes")
+            .and_then(serde_json::Value::as_array)
+            .ok_or(RequirementsError::InvalidContractDescriptorShape)?
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_string)
+                    .ok_or(RequirementsError::InvalidContractDescriptorShape)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if !valid_minimum_scopes(&minimum_scopes) {
+            return Err(RequirementsError::InvalidMinimumScopes {
+                contract_id: contract_id.clone(),
+            });
+        }
+        Ok(Self {
+            contract_id,
+            contract_hash: expected_hash.to_string(),
+            minimum_scopes,
+        })
+    }
+}
+
+/// Whether descriptor-backed scope closure has been computed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ScopeClosureResolution {
+    /// The complete IR contains neither contracted operations nor unresolved
+    /// subflows, so no descriptor lookup is needed.
+    NotRequired,
+    /// Resolution has not run, or cannot yet be complete because authored
+    /// subflows have not been expanded.
+    Unresolved {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        unresolved_subflows: Vec<String>,
+    },
+    /// Every contracted operation was resolved from its exact descriptor.
+    Resolved,
+}
+
+/// Report-only required scopes for one connection aggregate partition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ConnectionScopeClosure {
+    /// Existing broker-authority aggregate key. `None` is the current unkeyed
+    /// default connection partition, not a flow-wide union.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_aggregate_key: Option<String>,
+    /// Exact contracts contributing scopes to this partition.
+    pub contracts: Vec<BrokerContractIdentityIR>,
+    /// Sorted, deduplicated union of descriptor-owned minimum scopes.
+    pub required_scopes: Vec<String>,
+}
+
 /// Declared contract for a single connector operation used by the flow.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ConnectorOperationRequirement {
     /// Operation identifier (e.g. `connector.formualizer.sheetport.evaluate`).
     pub operation_id: String,
+    /// Optional hash-pinned semantic contract identity. Minimum scopes are
+    /// resolved separately from the descriptor addressed by this hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub broker_contract: Option<BrokerContractIdentityIR>,
     /// Auth/endpoint role requirements declared by the connector crate
     /// (`ConnectorOpMetadata.roles`). Lock-time binding must satisfy each
     /// role with a handle of the expected kind.
@@ -208,10 +422,8 @@ pub enum TriggerKind {
     Http,
     /// Trigger is wired to a schedule (cron) entrypoint.
     ///
-    /// Tolerated additive value under `schema_version` 0.x (policy decided at 0.1): consumers
-    /// encountering an unknown trigger `kind` must treat that flow as
-    /// "cannot place" (fail closed per-flow) rather than reject the
-    /// manifest. See `impl-docs/spec/flow-requirements.md`.
+    /// Introduced with a deliberate schema-version migration; readers reject
+    /// unknown unstable minor versions and enum values.
     Schedule,
     /// Trigger has no entrypoint wiring recorded in the IR; invocation
     /// mechanism is host-defined.
@@ -276,15 +488,36 @@ pub struct HostConstraints {
 }
 
 impl FlowRequirements {
-    /// Derive the requirements manifest from a Flow IR.
+    /// Derive the identity-only requirements manifest from a Flow IR.
     ///
-    /// This performs NO execution and NO connector-runtime calls: every field
-    /// is a pure function of the IR. Callers should pass IR that already
-    /// passed kernel-plan validation; `kernel_plan::derive_requirements`
-    /// wraps this for `ValidatedIR`. On unvalidated IR with unknown hint
-    /// strings this fails closed with [`RequirementsError::UnknownEffectHint`]
-    /// (the same condition kernel-plan rejects as EFFECT202).
+    /// This performs NO execution, connector-runtime calls, or descriptor
+    /// lookups: every populated field is a pure function of the IR. Contract
+    /// scopes are resolved explicitly with [`Self::resolve_scope_closure`].
+    /// Callers should pass IR that already passed kernel-plan validation;
+    /// `kernel_plan::derive_requirements` wraps this for `ValidatedIR`.
     pub fn derive(flow: &FlowIR) -> Result<Self, RequirementsError> {
+        let (connectors, unresolved_subflows) = derive_connectors(flow)?;
+        let has_contracts = connectors.iter().any(|connector| {
+            connector
+                .operations
+                .iter()
+                .any(|operation| operation.broker_contract.is_some())
+        });
+        let has_authority_contracts = recursive_nodes(flow)?.0.iter().any(|located| {
+            located
+                .node
+                .broker_authority
+                .as_ref()
+                .is_some_and(|authority| !authority.operation_budgets().is_empty())
+        });
+        let scope_resolution =
+            if has_contracts || has_authority_contracts || !unresolved_subflows.is_empty() {
+                ScopeClosureResolution::Unresolved {
+                    unresolved_subflows,
+                }
+            } else {
+                ScopeClosureResolution::NotRequired
+            };
         Ok(Self {
             schema_version: FLOW_REQUIREMENTS_SCHEMA_VERSION.to_string(),
             flow: FlowIdentity {
@@ -295,13 +528,57 @@ impl FlowRequirements {
             profile: flow.profile,
             effects: derive_effects(flow)?,
             implementation_dependencies: derive_implementation_dependencies(flow)?,
-            connectors: derive_connectors(flow),
+            connectors,
+            scope_closures: Vec::new(),
+            scope_resolution,
             durability: derive_durability(flow),
             triggers: derive_triggers(flow),
             entrypoints: derive_entrypoints(flow),
-            host: derive_host_constraints(flow),
+            host: derive_host_constraints(flow)?,
             flow_ir_hash: None,
         })
+    }
+
+    /// Resolve descriptor-owned scopes by exact contract hash and populate a
+    /// report-only closure partitioned by connection aggregate key.
+    pub fn resolve_scope_closure(
+        mut self,
+        flow: &FlowIR,
+        descriptors: &[ContractScopeDescriptor],
+    ) -> Result<Self, RequirementsError> {
+        let (connectors, unresolved_subflows) = derive_connectors(flow)?;
+        if self.flow.id != flow.id
+            || self.flow.name != flow.name
+            || self.flow.version != flow.version.to_string()
+            || self.connectors != connectors
+        {
+            return Err(RequirementsError::ScopeResolutionFlowMismatch);
+        }
+        let expected_flow_hash = self
+            .flow_ir_hash
+            .as_deref()
+            .ok_or(RequirementsError::MissingScopeResolutionFlowHash)?;
+        let flow_bytes = serde_json::to_vec_pretty(flow)
+            .map_err(|_| RequirementsError::ScopeResolutionFlowMismatch)?;
+        let actual_flow_hash = format!("sha256:{}", hex::encode(Sha256::digest(&flow_bytes)));
+        if actual_flow_hash != expected_flow_hash {
+            return Err(RequirementsError::ScopeResolutionFlowMismatch);
+        }
+        if let Some(node) = unresolved_subflows.into_iter().next() {
+            return Err(RequirementsError::MissingSubflowIr { node });
+        }
+        self.scope_closures = derive_scope_closures(flow, descriptors)?;
+        self.scope_resolution = if self.connectors.iter().any(|connector| {
+            connector
+                .operations
+                .iter()
+                .any(|op| op.broker_contract.is_some())
+        }) {
+            ScopeClosureResolution::Resolved
+        } else {
+            ScopeClosureResolution::NotRequired
+        };
+        Ok(self)
     }
 
     /// Record the hash of the serialized Flow IR this manifest describes.
@@ -393,19 +670,98 @@ fn valid_implementation_key(key: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
-fn derive_connectors(flow: &FlowIR) -> Vec<ConnectorRequirement> {
+struct LocatedNode<'a> {
+    node: &'a NodeIR,
+    qualified_alias: String,
+}
+
+fn recursive_nodes(
+    flow: &FlowIR,
+) -> Result<(Vec<LocatedNode<'_>>, Vec<String>), RequirementsError> {
+    let mut nodes = Vec::new();
+    let mut unresolved_subflows = Vec::new();
+    let mut ancestry = Vec::new();
+    collect_recursive_nodes(
+        flow,
+        "",
+        0,
+        &mut ancestry,
+        &mut nodes,
+        &mut unresolved_subflows,
+    )?;
+    Ok((nodes, unresolved_subflows))
+}
+
+fn collect_recursive_nodes<'a>(
+    flow: &'a FlowIR,
+    prefix: &str,
+    depth: usize,
+    ancestry: &mut Vec<String>,
+    nodes: &mut Vec<LocatedNode<'a>>,
+    unresolved_subflows: &mut Vec<String>,
+) -> Result<(), RequirementsError> {
+    if depth > MAX_SUBFLOW_REQUIREMENTS_DEPTH {
+        return Err(RequirementsError::SubflowDepthExceeded {
+            maximum: MAX_SUBFLOW_REQUIREMENTS_DEPTH,
+        });
+    }
+    let flow_id = flow.id.as_str().to_string();
+    if let Some(cycle_start) = ancestry.iter().position(|id| id == &flow_id) {
+        let mut chain = ancestry[cycle_start..].to_vec();
+        chain.push(flow_id);
+        return Err(RequirementsError::SubflowCycle {
+            chain: chain.join(" -> "),
+        });
+    }
+    ancestry.push(flow_id);
+
+    for node in &flow.nodes {
+        let qualified_alias = if prefix.is_empty() {
+            node.alias.clone()
+        } else {
+            format!("{prefix}/{}", node.alias)
+        };
+        nodes.push(LocatedNode {
+            node,
+            qualified_alias: qualified_alias.clone(),
+        });
+        if node.kind == NodeKind::Subflow {
+            if let Some(subflow) = node.subflow_ir.as_deref() {
+                collect_recursive_nodes(
+                    subflow,
+                    &qualified_alias,
+                    depth + 1,
+                    ancestry,
+                    nodes,
+                    unresolved_subflows,
+                )?;
+            } else {
+                unresolved_subflows.push(qualified_alias);
+            }
+        }
+    }
+
+    ancestry.pop();
+    Ok(())
+}
+
+fn derive_connectors(
+    flow: &FlowIR,
+) -> Result<(Vec<ConnectorRequirement>, Vec<String>), RequirementsError> {
     // connector_id -> operation_id -> accumulating requirement
     let mut grouped: BTreeMap<String, BTreeMap<String, ConnectorOperationRequirement>> =
         BTreeMap::new();
+    let (nodes, unresolved_subflows) = recursive_nodes(flow)?;
 
-    for node in &flow.nodes {
-        for op in &node.connector_ops {
+    for located in nodes {
+        for op in &located.node.connector_ops {
             let entry = grouped
                 .entry(op.connector_id.clone())
                 .or_default()
                 .entry(op.operation_id.clone())
                 .or_insert_with(|| ConnectorOperationRequirement {
                     operation_id: op.operation_id.clone(),
+                    broker_contract: op.broker_contract.clone(),
                     roles: op.roles.clone(),
                     supported_resolution_modes: op.supported_resolution_modes.clone(),
                     default_resolution_mode: op.default_resolution_mode,
@@ -414,6 +770,11 @@ fn derive_connectors(flow: &FlowIR) -> Vec<ConnectorRequirement> {
                     nodes: Vec::new(),
                 });
 
+            if entry.broker_contract != op.broker_contract {
+                return Err(RequirementsError::ConflictingOperationContract {
+                    operation_id: op.operation_id.clone(),
+                });
+            }
             if !entry
                 .selected_resolution_modes
                 .contains(&op.selected_resolution_mode)
@@ -425,13 +786,13 @@ fn derive_connectors(flow: &FlowIR) -> Vec<ConnectorRequirement> {
             if op.selected_resolution_mode == ConnectorResolutionModeDecl::BoundConnection {
                 entry.requires_bound_connection = true;
             }
-            if !entry.nodes.contains(&node.alias) {
-                entry.nodes.push(node.alias.clone());
+            if !entry.nodes.contains(&located.qualified_alias) {
+                entry.nodes.push(located.qualified_alias.clone());
             }
         }
     }
 
-    grouped
+    let connectors = grouped
         .into_iter()
         .map(|(connector_id, operations)| ConnectorRequirement {
             connector_id,
@@ -445,7 +806,134 @@ fn derive_connectors(flow: &FlowIR) -> Vec<ConnectorRequirement> {
                 })
                 .collect(),
         })
-        .collect()
+        .collect();
+    Ok((connectors, unresolved_subflows))
+}
+
+fn derive_scope_closures(
+    flow: &FlowIR,
+    descriptors: &[ContractScopeDescriptor],
+) -> Result<Vec<ConnectionScopeClosure>, RequirementsError> {
+    let mut by_hash: BTreeMap<&str, &ContractScopeDescriptor> = BTreeMap::new();
+    for descriptor in descriptors {
+        if !valid_minimum_scopes(&descriptor.minimum_scopes) {
+            return Err(RequirementsError::InvalidMinimumScopes {
+                contract_id: descriptor.contract_id.clone(),
+            });
+        }
+        if let Some(existing) = by_hash.insert(&descriptor.contract_hash, descriptor)
+            && existing != descriptor
+        {
+            return Err(RequirementsError::ConflictingContractDescriptor {
+                contract_hash: descriptor.contract_hash.clone(),
+            });
+        }
+    }
+
+    let mut grouped: BTreeMap<Option<String>, (BTreeSet<(String, String)>, BTreeSet<String>)> =
+        BTreeMap::new();
+    let (nodes, unresolved_subflows) = recursive_nodes(flow)?;
+    if let Some(node) = unresolved_subflows.into_iter().next() {
+        return Err(RequirementsError::MissingSubflowIr { node });
+    }
+    for located in nodes {
+        if let Some(authority) = &located.node.broker_authority {
+            for budget in authority.operation_budgets() {
+                let operation_id = budget
+                    .contract_id
+                    .rsplit_once('@')
+                    .map_or(budget.contract_id.as_str(), |(operation_id, _)| {
+                        operation_id
+                    });
+                let Some(operation) = located
+                    .node
+                    .connector_ops
+                    .iter()
+                    .find(|operation| operation.operation_id == operation_id)
+                else {
+                    return Err(RequirementsError::MissingPinnedContractIdentity {
+                        node: located.qualified_alias.clone(),
+                        contract_id: budget.contract_id.clone(),
+                        operation_id: operation_id.to_string(),
+                    });
+                };
+                let Some(identity) = &operation.broker_contract else {
+                    return Err(RequirementsError::MissingPinnedContractIdentity {
+                        node: located.qualified_alias.clone(),
+                        contract_id: budget.contract_id.clone(),
+                        operation_id: operation.operation_id.clone(),
+                    });
+                };
+                if identity.contract_id != budget.contract_id {
+                    return Err(RequirementsError::ContractAuthorityMismatch {
+                        node: located.qualified_alias.clone(),
+                        contract_id: identity.contract_id.clone(),
+                    });
+                }
+            }
+        }
+        for operation in &located.node.connector_ops {
+            let Some(contract) = &operation.broker_contract else {
+                continue;
+            };
+            let descriptor = by_hash
+                .get(contract.contract_hash.as_str())
+                .ok_or_else(|| RequirementsError::UnknownContractHash {
+                    contract_id: contract.contract_id.clone(),
+                    contract_hash: contract.contract_hash.clone(),
+                })?;
+            if descriptor.contract_id != contract.contract_id {
+                return Err(RequirementsError::ContractIdentityMismatch {
+                    contract_hash: contract.contract_hash.clone(),
+                    expected_contract_id: contract.contract_id.clone(),
+                    actual_contract_id: descriptor.contract_id.clone(),
+                });
+            }
+
+            let connection_aggregate_key = if let Some(authority) = &located.node.broker_authority {
+                authority
+                    .operation_budgets()
+                    .iter()
+                    .find(|budget| budget.contract_id == contract.contract_id)
+                    .ok_or_else(|| RequirementsError::ContractAuthorityMismatch {
+                        node: located.qualified_alias.clone(),
+                        contract_id: contract.contract_id.clone(),
+                    })?
+                    .connection_aggregate_key
+                    .clone()
+            } else {
+                None
+            };
+            let (contracts, scopes) = grouped.entry(connection_aggregate_key).or_default();
+            contracts.insert((contract.contract_id.clone(), contract.contract_hash.clone()));
+            scopes.extend(descriptor.minimum_scopes.iter().cloned());
+        }
+    }
+
+    Ok(grouped
+        .into_iter()
+        .map(
+            |(connection_aggregate_key, (contracts, required_scopes))| ConnectionScopeClosure {
+                connection_aggregate_key,
+                contracts: contracts
+                    .into_iter()
+                    .map(|(contract_id, contract_hash)| BrokerContractIdentityIR {
+                        contract_id,
+                        contract_hash,
+                    })
+                    .collect(),
+                required_scopes: required_scopes.into_iter().collect(),
+            },
+        )
+        .collect())
+}
+
+fn valid_minimum_scopes(scopes: &[String]) -> bool {
+    scopes.len() <= 1024
+        && scopes
+            .iter()
+            .all(|scope| !scope.is_empty() && scope.len() <= 1024 && scope.is_ascii())
+        && scopes.windows(2).all(|pair| pair[0] < pair[1])
 }
 
 /// Stable ordering for resolution modes in derived output (declaration order
@@ -537,17 +1025,21 @@ fn derive_entrypoints(flow: &FlowIR) -> Vec<EntrypointRequirement> {
         .collect()
 }
 
-fn derive_host_constraints(flow: &FlowIR) -> HostConstraints {
-    let requires_connector_runtime = flow.nodes.iter().any(|node| {
-        node.connector_ops
-            .iter()
-            .any(|op| op.selected_resolution_mode == ConnectorResolutionModeDecl::BoundConnection)
-    });
-    HostConstraints {
+fn derive_host_constraints(flow: &FlowIR) -> Result<HostConstraints, RequirementsError> {
+    let (nodes, _) = recursive_nodes(flow)?;
+    let requires_connector_runtime =
+        nodes.iter().any(|located| {
+            located.node.connector_ops.iter().any(|op| {
+                op.selected_resolution_mode == ConnectorResolutionModeDecl::BoundConnection
+            })
+        });
+    Ok(HostConstraints {
         requires_wasm32_compatibility: flow.profile == Profile::Wasm,
         requires_connector_runtime,
-        has_subflows: flow.nodes.iter().any(|node| node.kind == NodeKind::Subflow),
-    }
+        has_subflows: nodes
+            .iter()
+            .any(|located| located.node.kind == NodeKind::Subflow),
+    })
 }
 
 #[cfg(test)]
@@ -731,6 +1223,7 @@ mod tests {
         flow.nodes[1].connector_ops.push(ConnectorOpRefIR {
             operation_id: "connector.demo.op".to_string(),
             connector_id: "connector.demo".to_string(),
+            broker_contract: None,
             roles: vec![ConnectorRoleRequirementIR {
                 kind: ConnectorRoleKindDecl::OutboundAuth,
                 name: "api".to_string(),
@@ -798,6 +1291,7 @@ mod tests {
         flow.nodes[1].connector_ops.push(ConnectorOpRefIR {
             operation_id: "connector.http.get".to_string(),
             connector_id: "connector.http".to_string(),
+            broker_contract: None,
             roles: vec![
                 ConnectorRoleRequirementIR {
                     kind: ConnectorRoleKindDecl::EndpointProfile,
@@ -861,6 +1355,7 @@ mod tests {
         flow.nodes[1].connector_ops.push(ConnectorOpRefIR {
             operation_id: "connector.demo.op".to_string(),
             connector_id: "connector.demo".to_string(),
+            broker_contract: None,
             roles: vec![ConnectorRoleRequirementIR {
                 kind: ConnectorRoleKindDecl::OutboundAuth,
                 name: "api".to_string(),
@@ -906,5 +1401,16 @@ mod tests {
         let json = serde_json::to_value(&reqs).expect("serialize");
         let back: FlowRequirements = serde_json::from_value(json).expect("deserialize");
         assert_eq!(back, reqs);
+    }
+
+    #[test]
+    fn unknown_unstable_minor_schema_is_rejected() {
+        let mut json = serde_json::to_value(
+            FlowRequirements::derive(&two_node_flow()).expect("derive requirements"),
+        )
+        .unwrap();
+        json["schema_version"] = serde_json::Value::String("0.5".to_string());
+        let error = serde_json::from_value::<FlowRequirements>(json).unwrap_err();
+        assert!(error.to_string().contains("expected `0.4`"));
     }
 }

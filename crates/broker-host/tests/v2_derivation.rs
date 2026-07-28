@@ -135,6 +135,8 @@ fn node_lease_is_non_invocable_and_child_is_exact_and_cas_budgeted() {
             &binding,
             &scope,
             NodeLeaseLimitsV2 {
+                logical_binding_ref: "logical_binding_v2_fixture".into(),
+                binding_revision_ref: "binding_v2_fixture_a".into(),
                 operation_contract: "synthetic@1".into(),
                 contract_hash: H.into(),
                 logical_calls: 2,
@@ -257,6 +259,106 @@ fn node_lease_is_non_invocable_and_child_is_exact_and_cas_budgeted() {
 }
 
 #[test]
+fn a_run_aborts_instead_of_switching_binding_revisions() {
+    let (binding, scope, _live, signer) = setup();
+    let store = NodeLeaseStoreV2::default();
+    let limits = |lease: &str, revision: &str| NodeLeaseLimitsV2 {
+        logical_binding_ref: "logical_binding_v2_fixture".into(),
+        binding_revision_ref: revision.into(),
+        operation_contract: "synthetic@1".into(),
+        contract_hash: H.into(),
+        logical_calls: 3,
+        dispatch_attempts_per_call: 1,
+        flow_logical_calls: 3,
+        connection_logical_calls: 3,
+        node_logical_calls: 3,
+        first_activation_ordinal: 2,
+        last_activation_ordinal: 2,
+        semantic_effect_slots: vec!["first".into()],
+        not_before: "2026-01-01T00:00:00Z".into(),
+        expires_at: "2030-01-01T00:00:00Z".into(),
+        node_lease_ref: lease.into(),
+        jti: format!("{lease}-jti"),
+    };
+    store
+        .issue(
+            &binding,
+            &scope,
+            limits("node_lease_revision_a", "binding_v2_revision_a"),
+            &signer,
+        )
+        .unwrap();
+    let error = match store.issue(
+        &binding,
+        &scope,
+        limits("node_lease_revision_b", "binding_v2_revision_b"),
+        &signer,
+    ) {
+        Ok(_) => panic!("run switched binding revisions"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error,
+        broker_host::BrokerHostError::Broker(BrokerError::Brk106)
+    );
+}
+
+#[test]
+fn grant_identity_is_namespaced_by_binding_revision() {
+    let (binding, scope, live, signer) = setup();
+    let key = CommitmentKey::new("v2-input-key", [44; 32]).unwrap();
+    let derive = |revision: &str, lease: &str| {
+        let store = NodeLeaseStoreV2::default();
+        store
+            .issue(
+                &binding,
+                &scope,
+                NodeLeaseLimitsV2 {
+                    logical_binding_ref: "logical_binding_v2_fixture".into(),
+                    binding_revision_ref: revision.into(),
+                    operation_contract: "synthetic@1".into(),
+                    contract_hash: H.into(),
+                    logical_calls: 1,
+                    dispatch_attempts_per_call: 1,
+                    flow_logical_calls: 1,
+                    connection_logical_calls: 1,
+                    node_logical_calls: 1,
+                    first_activation_ordinal: 2,
+                    last_activation_ordinal: 2,
+                    semantic_effect_slots: vec!["first".into()],
+                    not_before: "2026-01-01T00:00:00Z".into(),
+                    expires_at: "2030-01-01T00:00:00Z".into(),
+                    node_lease_ref: lease.into(),
+                    jti: format!("{lease}-jti"),
+                },
+                &signer,
+            )
+            .unwrap();
+        store
+            .derive_child(
+                lease,
+                &scope,
+                "first",
+                br#"{"value":1}"#,
+                "2027-01-01T00:00:00Z",
+                0,
+                b"proof",
+                b"proof",
+                &live,
+                &key,
+            )
+            .unwrap()
+            .grant_ref
+            .as_str()
+            .to_owned()
+    };
+    assert_ne!(
+        derive("binding_v2_revision_a", "node_lease_revision_a"),
+        derive("binding_v2_revision_b", "node_lease_revision_b")
+    );
+}
+
+#[test]
 fn concurrent_child_reservation_has_one_atomic_cas_winner() {
     use std::{sync::Arc, thread};
     let (binding, scope, live, signer) = setup();
@@ -266,6 +368,8 @@ fn concurrent_child_reservation_has_one_atomic_cas_winner() {
             &binding,
             &scope,
             NodeLeaseLimitsV2 {
+                logical_binding_ref: "logical_binding_v2_fixture".into(),
+                binding_revision_ref: "binding_v2_fixture_a".into(),
                 operation_contract: "synthetic@1".into(),
                 contract_hash: H.into(),
                 logical_calls: 2,
@@ -329,6 +433,8 @@ fn pop_and_live_generation_epoch_drift_fail_closed() {
             &binding,
             &scope,
             NodeLeaseLimitsV2 {
+                logical_binding_ref: "logical_binding_v2_fixture".into(),
+                binding_revision_ref: "binding_v2_fixture_a".into(),
                 operation_contract: "synthetic@1".into(),
                 contract_hash: H.into(),
                 logical_calls: 1,

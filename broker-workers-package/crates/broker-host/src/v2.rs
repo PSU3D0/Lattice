@@ -288,6 +288,8 @@ pub fn verify_binding_v2(
 
 #[derive(Clone, Debug)]
 pub struct NodeLeaseLimitsV2 {
+    pub logical_binding_ref: String,
+    pub binding_revision_ref: String,
     pub operation_contract: String,
     pub contract_hash: String,
     pub logical_calls: u64,
@@ -308,6 +310,7 @@ pub struct NodeLeaseLimitsV2 {
 struct LeaseRecord {
     parsed: ParsedV2<NodeLeaseV2>,
     canonical: Vec<u8>,
+    binding_revision_ref: String,
     standing_authority_ref: String,
     standing_authority_hash: String,
     contract_set_ref: String,
@@ -330,6 +333,7 @@ struct AggregateState {
 #[derive(Default)]
 struct LeaseStoreState {
     leases: BTreeMap<String, LeaseRecord>,
+    run_binding_revisions: BTreeMap<(String, String), String>,
     flow_remaining: BTreeMap<(String, String), AggregateState>,
     connection_remaining: BTreeMap<(String, String), AggregateState>,
 }
@@ -342,6 +346,8 @@ pub struct NodeLeaseStoreV2 {
 #[serde(deny_unknown_fields)]
 pub struct NodeLeaseStoreSnapshotV2 {
     leases: Vec<PersistedLeaseV2>,
+    #[serde(default)]
+    run_binding_revisions: Vec<PersistedRunBindingRevisionV2>,
     flow_aggregates: Vec<PersistedAggregateV2>,
     connection_aggregates: Vec<PersistedAggregateV2>,
 }
@@ -351,6 +357,8 @@ pub struct NodeLeaseStoreSnapshotV2 {
 struct PersistedLeaseV2 {
     lease_ref: String,
     canonical_lease: Vec<u8>,
+    #[serde(default)]
+    binding_revision_ref: String,
     standing_authority_ref: String,
     standing_authority_hash: String,
     contract_set_ref: String,
@@ -376,6 +384,14 @@ struct PersistedAggregateV2 {
     run_id: String,
     ceiling: u64,
     remaining: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedRunBindingRevisionV2 {
+    deployment_id: String,
+    run_id: String,
+    binding_revision_ref: String,
 }
 
 /// Opaque exact child grant reference. It has no constructor and cannot hold a
@@ -455,6 +471,7 @@ impl NodeLeaseStoreV2 {
                     LeaseRecord {
                         parsed,
                         canonical: persisted.canonical_lease,
+                        binding_revision_ref: persisted.binding_revision_ref,
                         standing_authority_ref: persisted.standing_authority_ref,
                         standing_authority_hash: persisted.standing_authority_hash,
                         contract_set_ref: persisted.contract_set_ref,
@@ -465,6 +482,21 @@ impl NodeLeaseStoreV2 {
                     },
                 )
                 .is_some()
+            {
+                return Err(BrokerHostError::V2DerivationRejected);
+            }
+        }
+        for pinned in snapshot.run_binding_revisions {
+            if pinned.deployment_id.is_empty()
+                || pinned.run_id.is_empty()
+                || pinned.binding_revision_ref.is_empty()
+                || state
+                    .run_binding_revisions
+                    .insert(
+                        (pinned.deployment_id, pinned.run_id),
+                        pinned.binding_revision_ref,
+                    )
+                    .is_some()
             {
                 return Err(BrokerHostError::V2DerivationRejected);
             }
@@ -506,6 +538,7 @@ impl NodeLeaseStoreV2 {
             .map(|(lease_ref, lease)| PersistedLeaseV2 {
                 lease_ref: lease_ref.clone(),
                 canonical_lease: lease.canonical.clone(),
+                binding_revision_ref: lease.binding_revision_ref.clone(),
                 standing_authority_ref: lease.standing_authority_ref.clone(),
                 standing_authority_hash: lease.standing_authority_hash.clone(),
                 contract_set_ref: lease.contract_set_ref.clone(),
@@ -537,6 +570,17 @@ impl NodeLeaseStoreV2 {
         };
         Ok(NodeLeaseStoreSnapshotV2 {
             leases,
+            run_binding_revisions: state
+                .run_binding_revisions
+                .iter()
+                .map(|((deployment_id, run_id), binding_revision_ref)| {
+                    PersistedRunBindingRevisionV2 {
+                        deployment_id: deployment_id.clone(),
+                        run_id: run_id.clone(),
+                        binding_revision_ref: binding_revision_ref.clone(),
+                    }
+                })
+                .collect(),
             flow_aggregates: aggregates(&state.flow_remaining),
             connection_aggregates: aggregates(&state.connection_remaining),
         })
@@ -558,6 +602,10 @@ impl NodeLeaseStoreV2 {
             != Some(signer.key_id())
             || limits.node_lease_ref.starts_with("grant_")
             || !limits.node_lease_ref.starts_with("node_lease_")
+            || !limits
+                .logical_binding_ref
+                .starts_with("logical_binding_v2_")
+            || !limits.binding_revision_ref.starts_with("binding_v2_")
             || limits.logical_calls == 0
             || limits.semantic_effect_slots.is_empty()
             || limits.first_activation_ordinal > limits.last_activation_ordinal
@@ -621,6 +669,17 @@ impl NodeLeaseStoreV2 {
             scope.run_id().to_owned(),
         );
         let mut state = self.state.lock().map_err(|_| BrokerError::Brk401)?;
+        let run_key = (
+            b["deployment_id"].as_str().unwrap_or_default().to_owned(),
+            scope.run_id().to_owned(),
+        );
+        if state
+            .run_binding_revisions
+            .get(&run_key)
+            .is_some_and(|revision| revision != &limits.binding_revision_ref)
+        {
+            return Err(BrokerError::Brk106.into());
+        }
         if state.leases.contains_key(&lease_ref) {
             return Err(BrokerError::Brk204.into());
         }
@@ -639,6 +698,7 @@ impl NodeLeaseStoreV2 {
             LeaseRecord {
                 parsed: parsed.clone(),
                 canonical,
+                binding_revision_ref: limits.binding_revision_ref.clone(),
                 standing_authority_ref: b["standing_authority_ref"]
                     .as_str()
                     .unwrap_or_default()
@@ -660,6 +720,10 @@ impl NodeLeaseStoreV2 {
                 children: BTreeMap::new(),
             },
         );
+        state
+            .run_binding_revisions
+            .entry(run_key)
+            .or_insert(limits.binding_revision_ref);
         Ok(parsed)
     }
 
@@ -771,10 +835,14 @@ impl NodeLeaseStoreV2 {
         let contract_set_ref = lease.contract_set_ref.clone();
         let contract_set_hash = lease.contract_set_hash.clone();
         let l = l.clone();
-        let grant_ref_text = format!(
-            "grant_{}",
-            &logical_effect_id[logical_effect_id.len().saturating_sub(32)..]
+        let grant_namespace = hash(
+            format!(
+                "lattice.v2.grant-revision\0{}\0{}",
+                lease.binding_revision_ref, logical_effect_id
+            )
+            .as_bytes(),
         );
+        let grant_ref_text = format!("grant_{}", &grant_namespace[7..39]);
         let (input_commitment, _) = commit_v2(
             commitments,
             l["org_id"].as_str().unwrap_or_default(),

@@ -22,6 +22,7 @@ connector_google_gmail = { path = "../../crates/connectors/google/gmail", defaul
 connector_google_sheets = { path = "../../crates/connectors/google/sheets", default-features = false }
 dag-core = { path = "../../crates/dag-core" }
 dag-macros = { path = "../../crates/dag-macros" }
+hex.workspace = true
 host-inproc = { path = "../../crates/host-inproc", optional = true }
 kernel-exec = { path = "../../crates/kernel-exec", optional = true }
 kernel-plan = { path = "../../crates/kernel-plan" }
@@ -29,7 +30,6 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
-hex.workspace = true
 sha2.workspace = true
 
 [features]

@@ -934,6 +934,12 @@ pub mod http {
         Transport(#[from] anyhow::Error),
         #[error("request timed out after {0}ms")]
         Timeout(u64),
+        #[error("broker rejected request with {code} (HTTP {status}): {message}")]
+        BrokerRejected {
+            code: String,
+            status: u16,
+            message: String,
+        },
         #[error("invalid response: {0}")]
         InvalidResponse(String),
     }
@@ -941,9 +947,20 @@ pub mod http {
     #[derive(Debug, Clone, Serialize, Deserialize)]
     #[serde(tag = "kind", rename_all = "snake_case")]
     pub enum RemoteHttpErrorEnvelope {
-        Transport { message: String },
-        Timeout { timeout_ms: u64 },
-        InvalidResponse { message: String },
+        Transport {
+            message: String,
+        },
+        Timeout {
+            timeout_ms: u64,
+        },
+        BrokerRejected {
+            code: String,
+            status: u16,
+            message: String,
+        },
+        InvalidResponse {
+            message: String,
+        },
     }
 
     impl RemoteHttpErrorEnvelope {
@@ -953,6 +970,15 @@ pub mod http {
                     message: err.to_string(),
                 },
                 HttpError::Timeout(timeout_ms) => Self::Timeout { timeout_ms },
+                HttpError::BrokerRejected {
+                    code,
+                    status,
+                    message,
+                } => Self::BrokerRejected {
+                    code,
+                    status,
+                    message,
+                },
                 HttpError::InvalidResponse(message) => Self::InvalidResponse { message },
             }
         }
@@ -962,6 +988,15 @@ pub mod http {
             match self {
                 Self::Transport { message } => HttpError::Transport(anyhow::anyhow!(message)),
                 Self::Timeout { timeout_ms } => HttpError::Timeout(timeout_ms),
+                Self::BrokerRejected {
+                    code,
+                    status,
+                    message,
+                } => HttpError::BrokerRejected {
+                    code,
+                    status,
+                    message,
+                },
                 Self::InvalidResponse { message } => HttpError::InvalidResponse(message),
             }
         }
@@ -1140,6 +1175,16 @@ pub mod http {
             let json = serde_json::to_value(&err).expect("json");
             assert_eq!(json["kind"], "timeout");
             assert_eq!(json["timeout_ms"], 1_000);
+
+            let broker = RemoteHttpErrorEnvelope::from_http_error(HttpError::BrokerRejected {
+                code: "BRK106".into(),
+                status: 409,
+                message: "binding revision is stale".into(),
+            });
+            let json = serde_json::to_value(&broker).expect("json");
+            assert_eq!(json["kind"], "broker_rejected");
+            assert_eq!(json["code"], "BRK106");
+            assert_eq!(json["status"], 409);
         }
     }
 }

@@ -158,6 +158,8 @@ enum V2AuthorityCommand {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct SerializableLeaseLimits {
+    logical_binding_ref: String,
+    binding_revision_ref: String,
     operation_contract: String,
     contract_hash: String,
     logical_calls: u64,
@@ -176,6 +178,8 @@ struct SerializableLeaseLimits {
 impl From<SerializableLeaseLimits> for NodeLeaseLimitsV2 {
     fn from(value: SerializableLeaseLimits) -> Self {
         Self {
+            logical_binding_ref: value.logical_binding_ref,
+            binding_revision_ref: value.binding_revision_ref,
             operation_contract: value.operation_contract,
             contract_hash: value.contract_hash,
             logical_calls: value.logical_calls,
@@ -661,6 +665,105 @@ struct HostRecordRow {
 }
 
 #[derive(Deserialize)]
+struct BindingLifecycleRow {
+    logical_binding_ref: String,
+    logical_state: String,
+    revision_state: String,
+}
+
+impl BindingLifecycleRow {
+    fn authority_route<'a>(&'a self, binding_ref: &'a str) -> &'a str {
+        if self
+            .logical_binding_ref
+            .starts_with("logical_binding_v2_legacy_")
+        {
+            binding_ref
+        } else {
+            &self.logical_binding_ref
+        }
+    }
+}
+
+async fn load_binding_lifecycle(
+    db: &D1Database,
+    org: &str,
+    binding_ref: &str,
+) -> worker::Result<Option<BindingLifecycleRow>> {
+    db.prepare(
+        "SELECT l.logical_binding_ref,l.state AS logical_state,r.state AS revision_state \
+         FROM binding_revisions_v2 r JOIN logical_bindings_v2 l \
+         ON l.org_id=r.org_id AND l.logical_binding_ref=r.logical_binding_ref \
+         WHERE r.org_id=? AND r.binding_ref=?",
+    )
+    .bind(&[JsValue::from_str(org), JsValue::from_str(binding_ref)])?
+    .first(None)
+    .await
+}
+
+fn binding_lock_for_live(
+    connection: &ConnectionV2Row,
+    org_id: &str,
+    deployment_id: &str,
+    authority_manifest_hash: &str,
+) -> worker::Result<BindingVerificationLockV2> {
+    let profile_ref = parse_value::<AuthProfileRefV2>(&serde_json::json!({
+        "profile_ref":connection.profile_ref,"version":connection.profile_version
+    }))
+    .map_err(|_| worker_rust_error("binding lock"))?
+    .view;
+    let authority: Value = serde_json::from_str(&connection.canonical_authority_view_json)
+        .map_err(|_| worker_rust_error("binding lock"))?;
+    Ok(BindingVerificationLockV2 {
+        org_id: org_id.to_owned(),
+        principal: deployment_id.to_owned(),
+        issuer: "broker-v2-authority".into(),
+        broker_key_id: "broker-v2-authority".into(),
+        deployment_id: deployment_id.to_owned(),
+        authority_manifest_hash: authority_manifest_hash.to_owned(),
+        standing_authority_ref: connection.standing_authority_ref.clone(),
+        standing_authority_hash: connection.standing_authority_hash.clone(),
+        contract_set_ref: connection.contract_set_ref.clone(),
+        contract_set_hash: connection.contract_set_hash.clone(),
+        connection_ref: connection.connection_ref.clone(),
+        auth_profile_ref: profile_ref,
+        execution_lane: text(&authority, "execution_lane")?.to_owned(),
+        custody_location: text(&authority, "custody_location")?.to_owned(),
+    })
+}
+
+fn verify_binding_against_live(
+    binding: &broker_core::credential::ParsedV2<BindingAttestationV2>,
+    connection: &ConnectionV2Row,
+    signer: &BrokerSigner,
+    org_id: &str,
+    deployment_id: &str,
+    authority_manifest_hash: &str,
+    now: &str,
+) -> worker::Result<()> {
+    let live = InMemoryLiveConnectionAuthority::new();
+    live.set(
+        connection.connection_ref.clone(),
+        connection.canonical_authority_view_json.as_bytes().to_vec(),
+        connection.active_material_generation,
+    )
+    .map_err(|_| worker_rust_error("live binding authority"))?;
+    verify_binding_v2(
+        binding.canonical_bytes(),
+        &binding_lock_for_live(connection, org_id, deployment_id, authority_manifest_hash)?,
+        &signer.verifying_key(),
+        &live,
+        now,
+    )
+    .map_err(|_| worker_rust_error("live binding verification"))?;
+    if binding.view.as_value()["minimum_material_generation"].as_u64()
+        != Some(connection.active_material_generation)
+    {
+        return Err(worker_rust_error("binding material generation drift"));
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
 struct OperatorBundleRow {
     canonical_bundle_hex: String,
 }
@@ -860,40 +963,6 @@ pub async fn install_binding(request: &mut Request, env: &Env) -> worker::Result
         }
         _ => return json(&PublicError::broker(BrokerError::Brk106), 409),
     };
-    #[derive(Deserialize)]
-    struct ExistingBindingRow {
-        artifact_ref: String,
-        artifact_hash: String,
-        canonical_artifact_json: String,
-    }
-    let existing = db.prepare("SELECT r.artifact_ref,r.artifact_hash,r.canonical_artifact_json FROM v2_host_records r JOIN v2_binding_manifests m ON m.org_id=r.org_id AND m.binding_ref=r.artifact_ref WHERE r.org_id=? AND r.connection_ref=? AND r.deployment_id=? AND r.artifact_kind='binding' AND m.flow_ir_hash=? AND m.flow_ir_json=? AND m.manifest_json=? LIMIT 1")
-        .bind(&[JsValue::from_str(&session.org_id),JsValue::from_str(&body.connection_ref),JsValue::from_str(&session.deployment_id),JsValue::from_str(&body.flow_ir_hash),JsValue::from_str(&body.flow_ir_json),JsValue::from_str(&body.authority_manifest_json)])?
-        .first::<ExistingBindingRow>(None).await?;
-    if let Some(existing) = existing {
-        let parsed = parse::<BindingAttestationV2>(existing.canonical_artifact_json.as_bytes())
-            .map_err(|_| worker_rust_error("binding"))?;
-        let standing_value =
-            parse::<StandingAuthorityV2>(connection.canonical_standing_authority_json.as_bytes())
-                .map_err(|_| worker_rust_error("standing authority"))?;
-        let _operator_policy_hash = standing_value.view.as_value()["operator_policy_hash"]
-            .as_str()
-            .ok_or_else(|| worker_rust_error("operator policy"))?
-            .to_owned();
-        let mut expected_policy_hashes = vec![
-            hash(body.bundle_id.as_bytes()),
-            body.binding_lock_hash.clone(),
-            _operator_policy_hash,
-        ];
-        expected_policy_hashes.sort();
-        if parsed.view.as_value()["policy_instance_hashes"]
-            == serde_json::json!(expected_policy_hashes)
-        {
-            return json(
-                &serde_json::json!({"binding_ref":existing.artifact_ref,"binding_hash":existing.artifact_hash,"binding":parsed.view.as_value(),"redelivery":true}),
-                200,
-            );
-        }
-    }
     let standing =
         match parse::<StandingAuthorityV2>(connection.canonical_standing_authority_json.as_bytes())
         {
@@ -987,10 +1056,142 @@ pub async fn install_binding(request: &mut Request, env: &Env) -> worker::Result
     if required_predicates.is_empty() {
         return json(&PublicError::broker(BrokerError::Brk108), 403);
     }
+    let mut expected_policy_hashes = vec![
+        hash(body.bundle_id.as_bytes()),
+        body.binding_lock_hash.clone(),
+        _operator_policy_hash.clone(),
+    ];
+    expected_policy_hashes.sort();
     let signer = BrokerSigner::from_seed(
         "broker-v2-authority",
         secret_32(env, "BINDING_SIGNING_SEED")?,
     );
+    let mut identity_contracts = body.contracts.clone();
+    identity_contracts.sort();
+    let identity = broker_core::canonical::from_serde(
+        &serde_json::json!({
+            "schema_version":"lattice.logical-binding-identity.v1",
+            "org_id":session.org_id,"deployment_id":session.deployment_id,
+            "connection_ref":body.connection_ref,"bundle_id":body.bundle_id,
+            "flow_ir_hash":body.flow_ir_hash,"flow_ir_json_hash":hash(body.flow_ir_json.as_bytes()),
+            "authority_manifest_hash":hash(body.authority_manifest_json.as_bytes()),
+            "binding_lock_hash":body.binding_lock_hash,"flow_id":body.flow_id,
+            "contracts":identity_contracts
+        }),
+        64 * 1024,
+    )
+    .map_err(|_| worker_rust_error("logical binding identity"))?;
+    let identity_hash = identity.sha256();
+    let logical_binding_ref = format!("logical_binding_v2_{}", &identity_hash[7..39]);
+    let now_seconds_value = now_seconds();
+    db.prepare(
+        "INSERT OR IGNORE INTO logical_bindings_v2(org_id,logical_binding_ref,identity_hash,connection_ref,deployment_id,state,current_binding_ref,created_at,updated_at) VALUES(?,?,?,?,?,'active',NULL,?,?)",
+    )
+    .bind(&[
+        JsValue::from_str(&session.org_id),
+        JsValue::from_str(&logical_binding_ref),
+        JsValue::from_str(&identity_hash),
+        JsValue::from_str(&body.connection_ref),
+        JsValue::from_str(&session.deployment_id),
+        JsValue::from_f64(now_seconds_value as f64),
+        JsValue::from_f64(now_seconds_value as f64),
+    ])?
+    .run()
+    .await?;
+    #[derive(Deserialize)]
+    struct LogicalBindingRow {
+        identity_hash: String,
+        connection_ref: String,
+        deployment_id: String,
+        state: String,
+        current_binding_ref: Option<String>,
+    }
+    let logical = db
+        .prepare("SELECT identity_hash,connection_ref,deployment_id,state,current_binding_ref FROM logical_bindings_v2 WHERE org_id=? AND logical_binding_ref=?")
+        .bind(&[JsValue::from_str(&session.org_id), JsValue::from_str(&logical_binding_ref)])?
+        .first::<LogicalBindingRow>(None)
+        .await?
+        .ok_or_else(|| worker_rust_error("logical binding"))?;
+    if logical.identity_hash != identity_hash
+        || logical.connection_ref != body.connection_ref
+        || logical.deployment_id != session.deployment_id
+    {
+        return json(&PublicError::broker(BrokerError::Brk203), 409);
+    }
+    if logical.state != "active" {
+        return json(&PublicError::broker(BrokerError::Brk106), 409);
+    }
+    if let Some(current_ref) = logical.current_binding_ref {
+        #[derive(Deserialize)]
+        struct ExistingBindingRow {
+            artifact_hash: String,
+            canonical_artifact_json: String,
+            revision_state: String,
+            manifest_json: String,
+            flow_ir_json: String,
+        }
+        let existing = db.prepare(
+            "SELECT h.artifact_hash,h.canonical_artifact_json,r.state AS revision_state,m.manifest_json,m.flow_ir_json \
+             FROM binding_revisions_v2 r JOIN v2_host_records h ON h.org_id=r.org_id AND h.artifact_ref=r.binding_ref \
+             JOIN v2_binding_manifests m ON m.org_id=r.org_id AND m.binding_ref=r.binding_ref \
+             WHERE r.org_id=? AND r.binding_ref=? AND r.logical_binding_ref=?",
+        )
+        .bind(&[
+            JsValue::from_str(&session.org_id),
+            JsValue::from_str(&current_ref),
+            JsValue::from_str(&logical_binding_ref),
+        ])?
+        .first::<ExistingBindingRow>(None)
+        .await?;
+        if let Some(existing) = existing {
+            let parsed = parse::<BindingAttestationV2>(existing.canonical_artifact_json.as_bytes());
+            let verified = parsed.as_ref().is_ok_and(|parsed| {
+                existing.revision_state == "active"
+                    && existing.manifest_json == body.authority_manifest_json
+                    && existing.flow_ir_json == body.flow_ir_json
+                    && parsed.view.as_value()["policy_instance_hashes"]
+                        == serde_json::json!(expected_policy_hashes)
+                    && verify_binding_against_live(
+                        parsed,
+                        &connection,
+                        &signer,
+                        &session.org_id,
+                        &session.deployment_id,
+                        &authority.manifest.content_hash(),
+                        &now_rfc3339(),
+                    )
+                    .is_ok()
+            });
+            if verified && connection.status == "active" {
+                let parsed = parsed.expect("checked parsed binding");
+                return json(
+                    &serde_json::json!({
+                        "logical_binding_ref":logical_binding_ref,
+                        "binding_ref":current_ref,"binding_hash":existing.artifact_hash,
+                        "binding":parsed.view.as_value(),"redelivery":true
+                    }),
+                    200,
+                );
+            }
+        }
+    }
+    let validity_start = (now_seconds_value / 3600) * 3600;
+    let revision_identity = broker_core::canonical::from_serde(
+        &serde_json::json!({
+            "schema_version":"lattice.binding-revision-identity.v1",
+            "logical_binding_ref":logical_binding_ref,
+            "authority_view_hash":hash(connection.canonical_authority_view_json.as_bytes()),
+            "material_generation":connection.active_material_generation,
+            "standing_authority_hash":connection.standing_authority_hash,
+            "contract_set_hash":connection.contract_set_hash,
+            "policy_instance_hashes":expected_policy_hashes,
+            "validity_start":validity_start
+        }),
+        64 * 1024,
+    )
+    .map_err(|_| worker_rust_error("binding revision identity"))?;
+    let revision_hash = revision_identity.sha256();
+    let binding_ref = format!("binding_v2_{}", &revision_hash[7..39]);
     let binding = match issue_binding_v2(
         body.flow_ir_json.as_bytes(),
         &authority,
@@ -1009,52 +1210,86 @@ pub async fn install_binding(request: &mut Request, env: &Env) -> worker::Result
             auth_profile_ref: profile_ref,
             auth_profile_pin: profile_pin,
             supported_contract_hashes,
-            policy_instance_hashes: {
-                let mut hashes = vec![
-                    hash(body.bundle_id.as_bytes()),
-                    body.binding_lock_hash.clone(),
-                    _operator_policy_hash,
-                ];
-                hashes.sort();
-                hashes
-            },
+            policy_instance_hashes: expected_policy_hashes.clone(),
             required_assurance_predicates: required_predicates,
-            observed_at: now_rfc3339(),
-            expires_at: rfc3339_from_seconds(now_seconds() + 3600),
+            observed_at: rfc3339_from_seconds(validity_start),
+            expires_at: rfc3339_from_seconds(validity_start + 3600),
         },
         &signer,
     ) {
         Ok(value) => value,
         Err(error) => return json(&PublicError::broker(host_error(error)), 409),
     };
-    let binding_ref = opaque_id("binding_v2_")?;
     let canonical = binding.canonical_bytes();
     let artifact_hash = binding.content_hash();
-    let inserted = db
-        .prepare(
-            "INSERT INTO v2_host_records (org_id,artifact_ref,artifact_kind,artifact_hash,canonical_artifact_json,connection_ref,deployment_id,parent_ref,cas_version,created_at) VALUES (?,?,'binding',?,?,?,?,NULL,0,?)",
-        )
-        .bind(&[
-            JsValue::from_str(&session.org_id),
-            JsValue::from_str(&binding_ref),
-            JsValue::from_str(&artifact_hash),
-            JsValue::from_str(std::str::from_utf8(canonical).map_err(|_| worker_rust_error("binding"))?),
-            JsValue::from_str(&connection.connection_ref),
-            JsValue::from_str(&session.deployment_id),
-            JsValue::from_f64(now_seconds() as f64),
-        ])?
-        .run()
-        .await;
-    if inserted.is_err() {
+    let canonical_text =
+        std::str::from_utf8(canonical).map_err(|_| worker_rust_error("binding"))?;
+    let expected_authority_hash = hash(connection.canonical_authority_view_json.as_bytes());
+    let active_identity = "EXISTS(SELECT 1 FROM logical_bindings_v2 WHERE org_id=? AND logical_binding_ref=? AND identity_hash=? AND state='active') AND EXISTS(SELECT 1 FROM connections_v2 WHERE org_id=? AND connection_ref=? AND authority_view_hash=? AND active_material_generation=? AND standing_authority_hash=? AND contract_set_hash=? AND status IN ('reconciling','active'))";
+    let statements = vec![
+        db.prepare(&format!("INSERT OR IGNORE INTO v2_host_records(org_id,artifact_ref,artifact_kind,artifact_hash,canonical_artifact_json,connection_ref,deployment_id,parent_ref,cas_version,created_at) SELECT ?,?,'binding',?,?,?,?,NULL,0,? WHERE {active_identity}"))
+            .bind(&[JsValue::from_str(&session.org_id),JsValue::from_str(&binding_ref),JsValue::from_str(&artifact_hash),JsValue::from_str(canonical_text),JsValue::from_str(&connection.connection_ref),JsValue::from_str(&session.deployment_id),JsValue::from_f64(now_seconds_value as f64),JsValue::from_str(&session.org_id),JsValue::from_str(&logical_binding_ref),JsValue::from_str(&identity_hash),JsValue::from_str(&session.org_id),JsValue::from_str(&connection.connection_ref),JsValue::from_str(&expected_authority_hash),JsValue::from_f64(connection.active_material_generation as f64),JsValue::from_str(&connection.standing_authority_hash),JsValue::from_str(&connection.contract_set_hash)])?,
+        db.prepare(&format!("INSERT OR IGNORE INTO v2_binding_manifests(org_id,binding_ref,manifest_hash,manifest_json,flow_ir_hash,flow_ir_json) SELECT ?,?,?,?,?,? WHERE {active_identity}"))
+            .bind(&[JsValue::from_str(&session.org_id),JsValue::from_str(&binding_ref),JsValue::from_str(&hash(body.authority_manifest_json.as_bytes())),JsValue::from_str(&body.authority_manifest_json),JsValue::from_str(&body.flow_ir_hash),JsValue::from_str(&body.flow_ir_json),JsValue::from_str(&session.org_id),JsValue::from_str(&logical_binding_ref),JsValue::from_str(&identity_hash),JsValue::from_str(&session.org_id),JsValue::from_str(&connection.connection_ref),JsValue::from_str(&expected_authority_hash),JsValue::from_f64(connection.active_material_generation as f64),JsValue::from_str(&connection.standing_authority_hash),JsValue::from_str(&connection.contract_set_hash)])?,
+        db.prepare(&format!("INSERT OR IGNORE INTO binding_revisions_v2(org_id,binding_ref,logical_binding_ref,revision_hash,binding_hash,canonical_binding_json,authority_view_hash,material_generation,state,created_at) SELECT ?,?,?,?,?,?,?,?,'active',? WHERE {active_identity}"))
+            .bind(&[JsValue::from_str(&session.org_id),JsValue::from_str(&binding_ref),JsValue::from_str(&logical_binding_ref),JsValue::from_str(&revision_hash),JsValue::from_str(&artifact_hash),JsValue::from_str(canonical_text),JsValue::from_str(&hash(connection.canonical_authority_view_json.as_bytes())),JsValue::from_f64(connection.active_material_generation as f64),JsValue::from_f64(now_seconds_value as f64),JsValue::from_str(&session.org_id),JsValue::from_str(&logical_binding_ref),JsValue::from_str(&identity_hash),JsValue::from_str(&session.org_id),JsValue::from_str(&connection.connection_ref),JsValue::from_str(&expected_authority_hash),JsValue::from_f64(connection.active_material_generation as f64),JsValue::from_str(&connection.standing_authority_hash),JsValue::from_str(&connection.contract_set_hash)])?,
+        db.prepare("UPDATE binding_revisions_v2 SET state='superseded' WHERE org_id=? AND logical_binding_ref=? AND binding_ref<>? AND state='active'")
+            .bind(&[JsValue::from_str(&session.org_id),JsValue::from_str(&logical_binding_ref),JsValue::from_str(&binding_ref)])?,
+        db.prepare("UPDATE logical_bindings_v2 SET current_binding_ref=?,updated_at=? WHERE org_id=? AND logical_binding_ref=? AND identity_hash=? AND state='active'")
+            .bind(&[JsValue::from_str(&binding_ref),JsValue::from_f64(now_seconds_value as f64),JsValue::from_str(&session.org_id),JsValue::from_str(&logical_binding_ref),JsValue::from_str(&identity_hash)])?,
+    ];
+    let results = db.batch(statements).await?;
+    if results.iter().any(|result| !result.success()) {
+        return json(&PublicError::broker(BrokerError::Brk401), 503);
+    }
+    #[derive(Deserialize)]
+    struct StoredRevisionRow {
+        logical_state: String,
+        current_binding_ref: Option<String>,
+        revision_state: String,
+        artifact_hash: String,
+        canonical_artifact_json: String,
+        manifest_json: String,
+        flow_ir_json: String,
+    }
+    let stored = db.prepare("SELECT l.state AS logical_state,l.current_binding_ref,r.state AS revision_state,h.artifact_hash,h.canonical_artifact_json,m.manifest_json,m.flow_ir_json FROM logical_bindings_v2 l JOIN binding_revisions_v2 r ON r.org_id=l.org_id AND r.logical_binding_ref=l.logical_binding_ref JOIN v2_host_records h ON h.org_id=r.org_id AND h.artifact_ref=r.binding_ref JOIN v2_binding_manifests m ON m.org_id=r.org_id AND m.binding_ref=r.binding_ref WHERE r.org_id=? AND r.binding_ref=?")
+        .bind(&[JsValue::from_str(&session.org_id),JsValue::from_str(&binding_ref)])?
+        .first::<StoredRevisionRow>(None).await?;
+    let exact = stored.as_ref().is_some_and(|stored| {
+        stored.logical_state == "active"
+            && stored.current_binding_ref.as_deref() == Some(binding_ref.as_str())
+            && stored.revision_state == "active"
+            && stored.artifact_hash == artifact_hash
+            && stored.canonical_artifact_json.as_bytes() == canonical
+            && stored.manifest_json == body.authority_manifest_json
+            && stored.flow_ir_json == body.flow_ir_json
+    });
+    if !exact {
         return json(&PublicError::broker(BrokerError::Brk203), 409);
     }
-    db.prepare("INSERT INTO v2_binding_manifests(org_id,binding_ref,manifest_hash,manifest_json,flow_ir_hash,flow_ir_json) VALUES(?,?,?,?,?,?)")
-        .bind(&[
-            JsValue::from_str(&session.org_id), JsValue::from_str(&binding_ref),
-            JsValue::from_str(&hash(body.authority_manifest_json.as_bytes())),
-            JsValue::from_str(&body.authority_manifest_json), JsValue::from_str(&body.flow_ir_hash),
-            JsValue::from_str(&body.flow_ir_json),
-        ])?.run().await?;
+    let current_connection =
+        match load_connection(&db, &session.org_id, &body.connection_ref).await? {
+            Some(value)
+                if matches!(value.status.as_str(), "reconciling" | "active")
+                    && value.registry_is_current(&now_rfc3339()) =>
+            {
+                value
+            }
+            _ => return json(&PublicError::broker(BrokerError::Brk106), 409),
+        };
+    if verify_binding_against_live(
+        &binding,
+        &current_connection,
+        &signer,
+        &session.org_id,
+        &session.deployment_id,
+        &authority.manifest.content_hash(),
+        &now_rfc3339(),
+    )
+    .is_err()
+    {
+        return json(&PublicError::broker(BrokerError::Brk106), 409);
+    }
     if connection.status == "reconciling" {
         let put = CredentialStateEnvelope {
             org_id: session.org_id.clone(),
@@ -1094,6 +1329,7 @@ pub async fn install_binding(request: &mut Request, env: &Env) -> worker::Result
     }
     json(
         &serde_json::json!({
+            "logical_binding_ref":logical_binding_ref,
             "binding_ref":binding_ref,
             "binding_hash":artifact_hash,
             "binding":binding.view.as_value()
@@ -1408,15 +1644,58 @@ pub async fn issue_node_lease(request: &mut Request, env: &Env) -> worker::Resul
         Ok(value) => value,
         Err(_) => return json(&PublicError::broker(BrokerError::Brk106), 409),
     };
+    let lifecycle = match load_binding_lifecycle(&db, &session.org_id, &body.binding_ref).await? {
+        Some(value)
+            if value.logical_state == "active"
+                && matches!(value.revision_state.as_str(), "active" | "superseded") =>
+        {
+            value
+        }
+        _ => return json(&PublicError::broker(BrokerError::Brk106), 409),
+    };
     let connection = match load_connection(&db, &session.org_id, &record.connection_ref).await? {
         Some(value) if value.status == "active" && value.registry_is_current(&now_rfc3339()) => {
             value
         }
         _ => return json(&PublicError::broker(BrokerError::Brk106), 409),
     };
+    let signer = BrokerSigner::from_seed(
+        "broker-v2-authority",
+        secret_32(env, "BINDING_SIGNING_SEED")?,
+    );
     let manifest_hash = binding.view.as_value()["authority_manifest_hash"]
         .as_str()
         .unwrap_or_default();
+    if verify_binding_against_live(
+        &binding,
+        &connection,
+        &signer,
+        &session.org_id,
+        &session.deployment_id,
+        manifest_hash,
+        &now_rfc3339(),
+    )
+    .is_err()
+    {
+        return json(&PublicError::broker(BrokerError::Brk106), 409);
+    }
+    db.prepare("INSERT OR IGNORE INTO binding_run_pins_v2(org_id,deployment_id,run_id,logical_binding_ref,binding_ref,created_at) VALUES(?,?,?,?,?,?)")
+        .bind(&[JsValue::from_str(&session.org_id),JsValue::from_str(&session.deployment_id),JsValue::from_str(&body.run_id),JsValue::from_str(&lifecycle.logical_binding_ref),JsValue::from_str(&body.binding_ref),JsValue::from_f64(now_seconds() as f64)])?
+        .run().await?;
+    #[derive(Deserialize)]
+    struct RunBindingPinRow {
+        logical_binding_ref: String,
+        binding_ref: String,
+    }
+    let run_pin = db.prepare("SELECT logical_binding_ref,binding_ref FROM binding_run_pins_v2 WHERE org_id=? AND deployment_id=? AND run_id=?")
+        .bind(&[JsValue::from_str(&session.org_id),JsValue::from_str(&session.deployment_id),JsValue::from_str(&body.run_id)])?
+        .first::<RunBindingPinRow>(None).await?;
+    if run_pin.is_none_or(|pin| {
+        pin.logical_binding_ref != lifecycle.logical_binding_ref
+            || pin.binding_ref != body.binding_ref
+    }) {
+        return json(&PublicError::broker(BrokerError::Brk106), 409);
+    }
     let installed = match installed_contract(&body.operation_contract) {
         Ok(value) => value,
         Err(error) => return json(&PublicError::broker(error), 403),
@@ -1489,6 +1768,22 @@ pub async fn issue_node_lease(request: &mut Request, env: &Env) -> worker::Resul
     let standing =
         parse::<StandingAuthorityV2>(connection.canonical_standing_authority_json.as_bytes())
             .map_err(|_| worker_rust_error("standing authority"))?;
+    if !artifact_time_is_current(standing.view.as_value(), &now_rfc3339()) {
+        return json(&PublicError::broker(BrokerError::Brk106), 409);
+    }
+    let authorized_contract =
+        parse::<ContractSetV2>(connection.canonical_contract_set_json.as_bytes())
+            .ok()
+            .and_then(|contracts| contracts.view.as_value()["contracts"].as_array().cloned())
+            .is_some_and(|contracts| {
+                contracts.iter().any(|contract| {
+                    contract["contract_id"] == installed.contract_id
+                        && contract["contract_hash"] == installed.contract_hash
+                })
+            });
+    if !authorized_contract {
+        return json(&PublicError::broker(BrokerError::Brk108), 403);
+    }
     let operator_policy_hash = standing.view.as_value()["operator_policy_hash"]
         .as_str()
         .ok_or_else(|| worker_rust_error("operator policy"))?
@@ -1531,6 +1826,8 @@ pub async fn issue_node_lease(request: &mut Request, env: &Env) -> worker::Resul
         standing_limit("dispatch_attempts_per_call").min(u64::from(u8::MAX)) as u8;
     let lock = lock_from_binding(&binding)?;
     let limits = SerializableLeaseLimits {
+        logical_binding_ref: lifecycle.logical_binding_ref.clone(),
+        binding_revision_ref: body.binding_ref.clone(),
         operation_contract: body.operation_contract,
         contract_hash: installed.contract_hash.into(),
         logical_calls: operation
@@ -1558,7 +1855,7 @@ pub async fn issue_node_lease(request: &mut Request, env: &Env) -> worker::Resul
     let reply: V2AuthorityReply = authority_do(
         env,
         &session.org_id,
-        &body.binding_ref,
+        lifecycle.authority_route(&body.binding_ref),
         &V2AuthorityCommand::IssueLease {
             canonical_binding: record.canonical_artifact_json.into_bytes(),
             lock,
@@ -1654,6 +1951,16 @@ pub async fn derive_grant(request: &mut Request, env: &Env) -> worker::Result<Re
         Some(v) if v.status == "active" && v.registry_is_current(&now_rfc3339()) => v,
         _ => return json(&PublicError::broker(BrokerError::Brk106), 409),
     };
+    let authority =
+        parse::<ConnectionAuthorityViewV2>(connection.canonical_authority_view_json.as_bytes())
+            .map_err(|_| worker_rust_error("authority"))?;
+    if lease.view.as_value()["authority_view_hash"] != serde_json::json!(authority.content_hash())
+        || lease.view.as_value()["authority_epoch"] != authority.view.as_value()["authority_epoch"]
+        || lease.view.as_value()["minimum_material_generation"].as_u64()
+            != Some(connection.active_material_generation)
+    {
+        return json(&PublicError::broker(BrokerError::Brk106), 409);
+    }
     let canonical_input = broker_core::canonical::from_serde(
         &body.input,
         broker_core::canonical::MAX_OPERATION_BYTES,
@@ -1679,10 +1986,19 @@ pub async fn derive_grant(request: &mut Request, env: &Env) -> worker::Result<Re
         .parent_ref
         .as_deref()
         .ok_or_else(|| worker_rust_error("lease parent"))?;
+    let lifecycle = match load_binding_lifecycle(&db, &session.org_id, binding_ref).await? {
+        Some(value)
+            if value.logical_state == "active"
+                && matches!(value.revision_state.as_str(), "active" | "superseded") =>
+        {
+            value
+        }
+        _ => return json(&PublicError::broker(BrokerError::Brk106), 409),
+    };
     let reply: V2AuthorityReply = authority_do(
         env,
         &session.org_id,
-        binding_ref,
+        lifecycle.authority_route(binding_ref),
         &V2AuthorityCommand::DeriveGrant {
             canonical_authority_view: connection
                 .canonical_authority_view_json
@@ -1700,7 +2016,7 @@ pub async fn derive_grant(request: &mut Request, env: &Env) -> worker::Result<Re
         },
     )
     .await?;
-    store_host_artifact(
+    if store_host_artifact(
         &db,
         &session.org_id,
         &reply.artifact_ref,
@@ -1711,7 +2027,11 @@ pub async fn derive_grant(request: &mut Request, env: &Env) -> worker::Result<Re
         Some(&body.node_lease_ref),
         reply.cas_version,
     )
-    .await?;
+    .await
+    .is_err()
+    {
+        return json(&PublicError::broker(BrokerError::Brk203), 409);
+    }
     let grant = parse::<ExecutionGrantV2>(&reply.canonical_artifact)
         .map_err(|_| worker_rust_error("grant"))?;
     json(
@@ -1760,6 +2080,43 @@ pub async fn invoke(request: &mut Request, env: &Env) -> worker::Result<Response
         };
     let grant = parse::<ExecutionGrantV2>(row.canonical_artifact_json.as_bytes())
         .map_err(|_| worker_rust_error("grant"))?;
+    let lease_ref = row
+        .parent_ref
+        .as_deref()
+        .ok_or_else(|| worker_rust_error("grant parent"))?;
+    let lease_row = load_host_record(&db, &session.org_id, lease_ref, "node_lease")
+        .await?
+        .ok_or_else(|| worker_rust_error("grant parent"))?;
+    let binding_ref = lease_row
+        .parent_ref
+        .as_deref()
+        .ok_or_else(|| worker_rust_error("lease parent"))?;
+    let lifecycle = load_binding_lifecycle(&db, &session.org_id, binding_ref).await?;
+    if lifecycle.is_none_or(|value| {
+        value.logical_state != "active"
+            || !matches!(value.revision_state.as_str(), "active" | "superseded")
+    }) {
+        return json(&PublicError::broker(BrokerError::Brk106), 409);
+    }
+    let live_connection = match load_connection(&db, &session.org_id, &row.connection_ref).await? {
+        Some(value) if value.status == "active" && value.registry_is_current(&now_rfc3339()) => {
+            value
+        }
+        _ => return json(&PublicError::broker(BrokerError::Brk106), 409),
+    };
+    let live_authority = parse::<ConnectionAuthorityViewV2>(
+        live_connection.canonical_authority_view_json.as_bytes(),
+    )
+    .map_err(|_| worker_rust_error("live authority"))?;
+    if grant.view.as_value()["authority_view_hash"]
+        != serde_json::json!(live_authority.content_hash())
+        || grant.view.as_value()["authority_epoch"]
+            != live_authority.view.as_value()["authority_epoch"]
+        || grant.view.as_value()["minimum_material_generation"].as_u64()
+            != Some(live_connection.active_material_generation)
+    {
+        return json(&PublicError::broker(BrokerError::Brk106), 409);
+    }
     broker_core::credential::grant::require_invocable(&grant.view)
         .map_err(|_| worker_rust_error("grant"))?;
     if !artifact_time_is_current(grant.view.as_value(), &now_rfc3339()) {
@@ -1835,12 +2192,13 @@ async fn execute_grant(
         Ok(v) => v,
         Err(e) => return json(&PublicError::broker(e), 403),
     };
+    let authority =
+        parse::<ConnectionAuthorityViewV2>(connection.canonical_authority_view_json.as_bytes())
+            .map_err(|_| worker_rust_error("authority"))?;
     if g["contract_hash"] != installed.contract_hash
         || g["authority_view_hash"] != connection.authority_view_hash_value()
-        || g["authority_epoch"] != serde_json::json!(1)
-        || g["minimum_material_generation"]
-            .as_u64()
-            .is_none_or(|v| v > connection.active_material_generation)
+        || g["authority_epoch"] != authority.view.as_value()["authority_epoch"]
+        || g["minimum_material_generation"].as_u64() != Some(connection.active_material_generation)
     {
         return json(&PublicError::broker(BrokerError::Brk106), 409);
     }
@@ -2385,10 +2743,35 @@ async fn store_host_artifact(
     parent: Option<&str>,
     cas: u64,
 ) -> worker::Result<()> {
-    let parent = parent.map(JsValue::from_str).unwrap_or(JsValue::NULL);
-    let result=db.prepare("INSERT OR IGNORE INTO v2_host_records(org_id,artifact_ref,artifact_kind,artifact_hash,canonical_artifact_json,connection_ref,deployment_id,parent_ref,cas_version,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)").bind(&[JsValue::from_str(org),JsValue::from_str(reference),JsValue::from_str(kind),JsValue::from_str(&hash(canonical)),JsValue::from_str(std::str::from_utf8(canonical).map_err(|_|worker_rust_error("artifact"))?),JsValue::from_str(connection),JsValue::from_str(deployment),parent,JsValue::from_f64(cas as f64),JsValue::from_f64(now_seconds() as f64)])?.run().await?;
+    let parent_value = parent.map(JsValue::from_str).unwrap_or(JsValue::NULL);
+    let result=db.prepare("INSERT OR IGNORE INTO v2_host_records(org_id,artifact_ref,artifact_kind,artifact_hash,canonical_artifact_json,connection_ref,deployment_id,parent_ref,cas_version,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)").bind(&[JsValue::from_str(org),JsValue::from_str(reference),JsValue::from_str(kind),JsValue::from_str(&hash(canonical)),JsValue::from_str(std::str::from_utf8(canonical).map_err(|_|worker_rust_error("artifact"))?),JsValue::from_str(connection),JsValue::from_str(deployment),parent_value,JsValue::from_f64(cas as f64),JsValue::from_f64(now_seconds() as f64)])?.run().await?;
     if !result.success() {
         return Err(worker_rust_error("artifact"));
+    }
+    #[derive(Deserialize)]
+    struct StoredArtifactConflictRow {
+        artifact_kind: String,
+        artifact_hash: String,
+        canonical_artifact_json: String,
+        connection_ref: String,
+        deployment_id: String,
+        parent_ref: Option<String>,
+        cas_version: u64,
+    }
+    let stored = db.prepare("SELECT artifact_kind,artifact_hash,canonical_artifact_json,connection_ref,deployment_id,parent_ref,cas_version FROM v2_host_records WHERE org_id=? AND artifact_ref=?")
+        .bind(&[JsValue::from_str(org),JsValue::from_str(reference)])?
+        .first::<StoredArtifactConflictRow>(None).await?;
+    let exact = stored.is_some_and(|stored| {
+        stored.artifact_kind == kind
+            && stored.artifact_hash == hash(canonical)
+            && stored.canonical_artifact_json.as_bytes() == canonical
+            && stored.connection_ref == connection
+            && stored.deployment_id == deployment
+            && stored.parent_ref.as_deref() == parent
+            && stored.cas_version == cas
+    });
+    if !exact {
+        return Err(worker_rust_error("artifact conflict"));
     }
     Ok(())
 }
@@ -3362,7 +3745,8 @@ async fn revoke_connection_v2(
         }),64*1024).map_err(|_|worker_rust_error("revocation"))?;
         let statements=vec![
             db.prepare("UPDATE connections_v2 SET status='revoked',revocation_epoch=?,authority_view_hash=?,canonical_authority_view_json=?,fence_generation=fence_generation+1 WHERE org_id=? AND connection_ref=? AND status IN ('revoking','cleanup_pending')").bind(&[JsValue::from_f64(journal.authority_epoch as f64),JsValue::from_str(&next_authority_hash),JsValue::from_str(next_authority_json),JsValue::from_str(&session.org_id),JsValue::from_str(&connection.connection_ref)])?,
-            db.prepare("UPDATE binding_attestations_v2 SET state='revoked' WHERE org_id=? AND connection_ref=?").bind(&[JsValue::from_str(&session.org_id),JsValue::from_str(&connection.connection_ref)])?,
+            db.prepare("UPDATE logical_bindings_v2 SET state='revoked',updated_at=? WHERE org_id=? AND connection_ref=? AND state='active'").bind(&[JsValue::from_f64(now_seconds() as f64),JsValue::from_str(&session.org_id),JsValue::from_str(&connection.connection_ref)])?,
+            db.prepare("UPDATE binding_revisions_v2 SET state='revoked' WHERE org_id=? AND logical_binding_ref IN (SELECT logical_binding_ref FROM logical_bindings_v2 WHERE org_id=? AND connection_ref=? AND state='revoked')").bind(&[JsValue::from_str(&session.org_id),JsValue::from_str(&session.org_id),JsValue::from_str(&connection.connection_ref)])?,
             db.prepare("UPDATE connection_revocations_v2 SET phase='complete',canonical_journal_json=?,cas_version=cas_version+1 WHERE org_id=? AND connection_ref=? AND phase='material_destroyed'").bind(&[JsValue::from_str(std::str::from_utf8(event.as_bytes()).map_err(|_|worker_rust_error("revocation"))?),JsValue::from_str(&session.org_id),JsValue::from_str(&connection.connection_ref)])?,
             db.prepare("INSERT INTO credential_cutover_events_v2(org_id,connection_ref,phase,event_hash,canonical_event_json,recorded_at) VALUES(?,?,'revoked',?,?,?)").bind(&[JsValue::from_str(&session.org_id),JsValue::from_str(&connection.connection_ref),JsValue::from_str(&hash(event.as_bytes())),JsValue::from_str(std::str::from_utf8(event.as_bytes()).map_err(|_|worker_rust_error("revocation"))?),JsValue::from_f64(now_seconds() as f64)])?
         ];

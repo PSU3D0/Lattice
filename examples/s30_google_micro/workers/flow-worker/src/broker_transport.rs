@@ -26,7 +26,9 @@ unsafe impl Sync for ServiceFetcher {}
 struct Config {
     deployment_key: String,
     service_auth: String,
-    binding_ref: String,
+    connection_ref: String,
+    deployment_id: String,
+    authority_manifest_json: String,
     bundle_id: String,
     flow_ir_hash: String,
     binding_lock_hash: String,
@@ -36,6 +38,7 @@ struct Config {
 
 struct State {
     session_ref: Option<String>,
+    binding_ref: Option<String>,
     counter: u64,
 }
 
@@ -51,6 +54,22 @@ pub struct WorkersBrokerTransport {
 #[derive(Deserialize)]
 struct SessionResponse {
     session_ref: String,
+}
+
+#[derive(Deserialize)]
+struct BindingResponse {
+    binding_ref: String,
+}
+
+#[derive(Deserialize)]
+struct BrokerErrorResponse {
+    error: BrokerErrorBody,
+}
+
+#[derive(Deserialize)]
+struct BrokerErrorBody {
+    code: String,
+    message: String,
 }
 
 impl WorkersBrokerTransport {
@@ -85,8 +104,19 @@ impl WorkersBrokerTransport {
         }
         let receipt_key = BrokerVerifyingKey::from_bytes("broker-v2-receipt", receipt_key_bytes)
             .map_err(|_| worker::Error::RustError("invalid pinned receipt key".into()))?;
-        let now = worker::js_sys::Date::now() as u64;
-        let run_id = format!("s30-run-{:032x}", now);
+        let authority_manifest_json = var("LATTICE_BROKER_AUTHORITY_MANIFEST_JCS")?;
+        let authority_manifest: Value = serde_json::from_str(&authority_manifest_json)
+            .map_err(|_| worker::Error::RustError("invalid broker authority manifest".into()))?;
+        let deployment_id = authority_manifest
+            .pointer("/principal/id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| worker::Error::RustError("broker manifest deployment is absent".into()))?
+            .to_owned();
+        let mut run_nonce = [0_u8; 16];
+        getrandom::fill(&mut run_nonce)
+            .map_err(|_| worker::Error::RustError("broker run identity unavailable".into()))?;
+        let run_id = s30_google_micro::host_run_id(run_nonce);
         Ok(Arc::new(Self {
             service: ServiceFetcher(env.service("LATTICE_BROKER_PRIVATE")?),
             signing: SigningKey::from_bytes(&seed),
@@ -94,7 +124,9 @@ impl WorkersBrokerTransport {
             config: Config {
                 deployment_key: secret("LATTICE_BROKER_DEPLOYMENT_KEY")?,
                 service_auth: secret("LATTICE_BROKER_SERVICE_AUTH")?,
-                binding_ref: var("LATTICE_BROKER_BINDING_REF")?,
+                connection_ref: var("LATTICE_BROKER_CONNECTION_REF")?,
+                deployment_id,
+                authority_manifest_json,
                 bundle_id: var("LATTICE_BROKER_BUNDLE_ID")?,
                 flow_ir_hash: var("LATTICE_BROKER_FLOW_IR_HASH")?,
                 binding_lock_hash: var("LATTICE_BROKER_BINDING_LOCK_HASH")?,
@@ -123,6 +155,7 @@ impl WorkersBrokerTransport {
             run_id,
             state: Mutex::new(State {
                 session_ref: None,
+                binding_ref: None,
                 counter: 0,
             }),
         }))
@@ -195,7 +228,13 @@ impl WorkersBrokerTransport {
         let status = response.status().as_u16();
         let response_bytes = bounded_response(response).await?;
         if !(200..300).contains(&status) {
-            return Err(invalid("broker rejected the exact effect"));
+            let error = serde_json::from_slice::<BrokerErrorResponse>(&response_bytes)
+                .map_err(|_| invalid("broker error response was invalid"))?;
+            return Err(HttpError::BrokerRejected {
+                code: error.error.code,
+                status,
+                message: error.error.message,
+            });
         }
         serde_json::from_slice(&response_bytes).map_err(|_| invalid("broker response was invalid"))
     }
@@ -238,6 +277,39 @@ impl WorkersBrokerTransport {
         Ok(response.session_ref)
     }
 
+    async fn ensure_binding(&self, session: &str, state: &mut State) -> HttpResult<String> {
+        if let Some(binding_ref) = &state.binding_ref {
+            return Ok(binding_ref.clone());
+        }
+        let flow_ir = s30_google_micro::canonical_flow_ir();
+        let response = self
+            .fetch_json(
+                "/v0.2/bindings",
+                &json!({
+                    "connection_ref":self.config.connection_ref,
+                    "deployment_id":self.config.deployment_id,
+                    "bundle_id":self.config.bundle_id,
+                    "flow_ir_hash":self.config.flow_ir_hash,
+                    "binding_lock_hash":self.config.binding_lock_hash,
+                    "flow_id":self.config.flow_id,
+                    "flow_ir_json":String::from_utf8_lossy(flow_ir.as_bytes()),
+                    "authority_manifest_json":self.config.authority_manifest_json,
+                    "contracts":[
+                        "connector.google.sheets.create_spreadsheet@1",
+                        "connector.google.sheets.append_row@1",
+                        "connector.google.gmail.send_message@1"
+                    ]
+                }),
+                Some(session),
+                state,
+            )
+            .await?;
+        let response: BindingResponse = serde_json::from_value(response)
+            .map_err(|_| invalid("broker binding response invalid"))?;
+        state.binding_ref = Some(response.binding_ref.clone());
+        Ok(response.binding_ref)
+    }
+
     async fn invoke(
         &self,
         alias: &'static str,
@@ -247,8 +319,9 @@ impl WorkersBrokerTransport {
     ) -> HttpResult<Value> {
         let mut state = self.state.lock().await;
         let session = self.ensure_session(&mut state).await?;
+        let binding_ref = self.ensure_binding(&session, &mut state).await?;
         let common = json!({
-            "session_ref":session,"binding_ref":self.config.binding_ref,"bundle_id":self.config.bundle_id,
+            "session_ref":session,"binding_ref":binding_ref,"bundle_id":self.config.bundle_id,
             "flow_ir_hash":self.config.flow_ir_hash,"binding_lock_hash":self.config.binding_lock_hash,
             "flow_id":self.config.flow_id,"run_id":self.run_id,"node_id":self.config.nodes[alias],
             "node_alias":alias,"activation_ordinal":1

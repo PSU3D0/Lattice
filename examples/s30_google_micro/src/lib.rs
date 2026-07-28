@@ -184,6 +184,10 @@ dag_macros::flow! {
     });
 }
 
+pub fn host_run_id(nonce: [u8; 16]) -> String {
+    format!("s30-run-{}", hex::encode(nonce))
+}
+
 pub fn canonical_flow_ir() -> broker_core::canonical::CanonicalJson {
     let bytes = serde_json::to_vec(&flow()).expect("serialize Google micro Flow IR");
     broker_core::canonical::canonicalize_bounded(&bytes, 1024 * 1024)
@@ -284,6 +288,14 @@ mod tests {
                 "https://www.googleapis.com/auth/spreadsheets",
             ]
         );
+    }
+
+    #[test]
+    fn host_run_ids_are_collision_resistant_nonce_encodings() {
+        let first = host_run_id([1; 16]);
+        let second = host_run_id([2; 16]);
+        assert_ne!(first, second);
+        assert_eq!(first.len(), "s30-run-".len() + 32);
     }
 
     #[test]
