@@ -67,16 +67,25 @@ test("generator derives, signs, and passes JS plus Rust bundle verification", as
     "connector.google.sheets.append_row@1",
     "connector.google.sheets.create_spreadsheet@1",
   ]);
-  const sheetsHashes = contracts
-    .filter(({ contract_id }) => contract_id.includes("sheets"))
-    .map(({ contract_hash }) => contract_hash)
-    .sort();
-  const sheetsImplementations = config.artifacts.registry_definitions
+  // Each planner/projector must support EXACTLY its own operation. Granting a
+  // family-wide set let the append_row planner claim create_spreadsheet.
+  const hashFor = (id) => contracts.find(({ contract_id }) => contract_id === id).contract_hash;
+  const expectedByEntry = {
+    "google.sheets.append_row.v1": hashFor("connector.google.sheets.append_row@1"),
+    "projector.connector.google.sheets.append_row@1": hashFor("connector.google.sheets.append_row@1"),
+    "google.sheets.create_spreadsheet.v1": hashFor("connector.google.sheets.create_spreadsheet@1"),
+    "projector.connector.google.sheets.create_spreadsheet@1": hashFor("connector.google.sheets.create_spreadsheet@1"),
+    "google.gmail.rfc822_message.v1": hashFor("connector.google.gmail.send_message@1"),
+    "projector.connector.google.gmail.send_message@1": hashFor("connector.google.gmail.send_message@1"),
+  };
+  const implementations = config.artifacts.registry_definitions
     .map(({ value }) => value)
-    .filter(({ class: kind, entry_ref }) => ["capsule_planner", "response_projector"].includes(kind) && entry_ref.includes("sheets"));
-  assert.equal(sheetsImplementations.length, 4);
-  for (const implementation of sheetsImplementations) {
-    assert.deepEqual(implementation.class_payload.supported_contract_hashes.slice().sort(), sheetsHashes);
+    .filter(({ class: kind }) => ["capsule_planner", "response_projector"].includes(kind));
+  assert.equal(implementations.length, 6);
+  for (const implementation of implementations) {
+    assert.deepEqual(implementation.class_payload.supported_contract_hashes,
+      [expectedByEntry[implementation.entry_ref]],
+      `wrong contracts for ${implementation.entry_ref}`);
   }
   assert.equal(config.artifacts.registry_definitions.some(({ value }) => value.class_payload?.implementation_digest === `sha256:${digest("1")}`), true);
   assert.equal(config.artifacts.registry_definitions.some(({ value }) => value.class_payload?.implementation_digest === `sha256:${digest("2")}`), true);

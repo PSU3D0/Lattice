@@ -54,6 +54,7 @@ example-s24-lead-intake-verify = { path = "../../examples/s24_lead_intake_verify
 example-s26-http-longtail = { path = "../../examples/s26_http_longtail", optional = true }
 example-s27-binary = { path = "../../examples/s27_binary", optional = true }
 example-s28-timer-resume = { path = "../../examples/s28_timer_resume", optional = true }
+s30_google_micro = { path = "../../examples/s30_google_micro", optional = true }
 host-inproc = { path = "../host-inproc" }
 anyhow.workspace = true
 async-trait.workspace = true
@@ -112,6 +113,7 @@ example-s24 = ["dep:example-s24-lead-intake-verify"]
 example-s26 = ["dep:example-s26-http-longtail"]
 example-s27 = ["dep:example-s27-binary"]
 example-s28 = ["dep:example-s28-timer-resume"]
+example-s30 = ["dep:s30_google_micro"]
 example-github-issues = ["dep:example-connector-github-issues-local-flow"]
 example-google-sheets = ["dep:example-connector-google-sheets-local-flow"]
 
@@ -140,6 +142,7 @@ all-examples = [
     "example-s26",
     "example-s27",
     "example-s28",
+    "example-s30",
     "example-github-issues",
     "example-google-sheets",
 ]

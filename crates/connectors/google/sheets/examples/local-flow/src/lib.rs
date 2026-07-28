@@ -151,6 +151,7 @@ async fn ensure_spreadsheet(input: PreparedLeadInput) -> NodeResult<ProvisionedL
             locale: None,
             time_zone: None,
             initial_sheet_title: Some(input.sheet.clone()),
+            header_row: Vec::new(),
         },
     )
     .await

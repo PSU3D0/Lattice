@@ -1,0 +1,43 @@
+[package]
+name = "s30_google_micro"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Minimal brokered Google Sheets create/append and Gmail send flow."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "print-flow-ir"
+path = "src/bin/print_flow_ir.rs"
+
+[dependencies]
+broker-core = { path = "../../crates/broker-core" }
+connector_google_gmail = { path = "../../crates/connectors/google/gmail", default-features = false }
+connector_google_sheets = { path = "../../crates/connectors/google/sheets", default-features = false }
+dag-core = { path = "../../crates/dag-core" }
+dag-macros = { path = "../../crates/dag-macros" }
+host-inproc = { path = "../../crates/host-inproc", optional = true }
+kernel-exec = { path = "../../crates/kernel-exec", optional = true }
+kernel-plan = { path = "../../crates/kernel-plan" }
+serde.workspace = true
+serde_json.workspace = true
+
+[features]
+default = ["host-bundle"]
+host-bundle = [
+    "host-inproc",
+    "kernel-exec",
+    "connector_google_gmail/host-bundle",
+    "connector_google_sheets/host-bundle",
+]
+flow-registry = ["dag-core/flow-registry", "dag-macros/flow-registry"]
+
+[package.metadata.latticeflow]
+flows = ["s30_google_micro_flow"]
+default_flow = "s30_google_micro_flow"

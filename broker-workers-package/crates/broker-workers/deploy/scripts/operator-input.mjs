@@ -183,7 +183,16 @@ async function registryArtifacts(args, generatedDescriptors) {
     value = replacePlaceholderHashes(value, corpusHash);
     if (value.class_payload.implementation_digest) value.class_payload.implementation_digest = digestByClass[value.class];
     if (["capsule_planner", "response_projector"].includes(value.class)) {
-      value.class_payload.supported_contract_hashes = generatedDescriptors.map((descriptor) => descriptor.contract_hash).filter((digest) => value.entry_ref.includes("gmail") ? descriptorFor(generatedDescriptors, digest).contract.contract_id.includes("gmail") : descriptorFor(generatedDescriptors, digest).contract.contract_id.includes("sheets"));
+      // Each planner/projector supports exactly the operation named by its own
+      // entry ref. Matching only on connector family gave every sheets entry all
+      // sheets contracts, so the append_row planner claimed create_spreadsheet
+      // too. Hashes are sorted because the artifact schema requires a
+      // deterministic, canonically ordered array.
+      const contractId = REGISTRY_ENTRY_CONTRACTS[value.entry_ref];
+      if (contractId === undefined) fail("unmapped registry entry: " + value.entry_ref);
+      const match = generatedDescriptors.find((descriptor) => descriptor.contract.contract_id === contractId);
+      if (match === undefined) fail("registry entry " + value.entry_ref + " references unknown contract " + contractId);
+      value.class_payload.supported_contract_hashes = [match.contract_hash];
     }
     return value;
   });
@@ -222,6 +231,19 @@ async function registryArtifacts(args, generatedDescriptors) {
   })).sort((left, right) => canonical(left).localeCompare(canonical(right)));
   return { definitions, decisions, definitionPrehashes: Object.fromEntries(definitionPrehashes) };
 }
+
+// Registry entry refs do not consistently encode their operation: the Gmail
+// planner is named for its adapter (rfc822_message), not its contract
+// (send_message). Inferring from the ref therefore silently mis-assigns
+// authority, so the mapping is explicit and unknown refs fail closed.
+const REGISTRY_ENTRY_CONTRACTS = {
+  "google.gmail.rfc822_message.v1": "connector.google.gmail.send_message@1",
+  "projector.connector.google.gmail.send_message@1": "connector.google.gmail.send_message@1",
+  "google.sheets.append_row.v1": "connector.google.sheets.append_row@1",
+  "projector.connector.google.sheets.append_row@1": "connector.google.sheets.append_row@1",
+  "google.sheets.create_spreadsheet.v1": "connector.google.sheets.create_spreadsheet@1",
+  "projector.connector.google.sheets.create_spreadsheet@1": "connector.google.sheets.create_spreadsheet@1",
+};
 
 function descriptorFor(descriptors, digest) {
   return descriptors.find((descriptor) => descriptor.contract_hash === digest);

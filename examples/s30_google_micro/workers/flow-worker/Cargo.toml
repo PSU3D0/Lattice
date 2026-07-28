@@ -1,0 +1,30 @@
+[package]
+name = "s30-flow-worker"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+async-trait = "0.1"
+base64 = "0.22"
+broker-core = { path = "../../../../crates/broker-core" }
+cap-do-workers = { path = "../../../../crates/cap-do-workers" }
+capabilities = { path = "../../../../crates/capabilities" }
+ed25519-dalek = "2"
+futures = "0.3"
+getrandom = { version = "0.3", features = ["wasm_js"] }
+hmac = "0.12"
+dag-core = { path = "../../../../crates/dag-core" }
+host-inproc = { path = "../../../../crates/host-inproc" }
+host-workers = { path = "../../../../crates/host-workers", default-features = false }
+s30_google_micro = { path = "../.." }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+worker = { version = "=0.8.1", default-features = false, features = ["http"] }

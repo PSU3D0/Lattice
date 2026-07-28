@@ -187,7 +187,15 @@ async fn create_spreadsheet_returns_spreadsheet_metadata() {
                     {
                         "properties": {
                             "title": "Leads"
-                        }
+                        },
+                        "data": [{
+                            "rowData": [{
+                                "values": [
+                                    { "userEnteredValue": { "stringValue": "email" } },
+                                    { "userEnteredValue": { "stringValue": "name" } }
+                                ]
+                            }]
+                        }]
                     }
                 ]
             }));
@@ -219,6 +227,7 @@ async fn create_spreadsheet_returns_spreadsheet_metadata() {
             locale: Some("en_US".to_string()),
             time_zone: Some("America/Chicago".to_string()),
             initial_sheet_title: Some("Leads".to_string()),
+            header_row: vec!["email".to_string(), "name".to_string()],
         })
         .await
         .expect("create spreadsheet succeeds")

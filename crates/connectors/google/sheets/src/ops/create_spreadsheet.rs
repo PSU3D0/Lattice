@@ -10,7 +10,7 @@ impl GoogleSheetsCreateSpreadsheet {
     pub const BROKER_CONTRACT: Option<::dag_core::BrokerContractMetadata> = Some(
         ::dag_core::BrokerContractMetadata {
             contract_id: "connector.google.sheets.create_spreadsheet@1",
-            contract_hash: "sha256:d6c81edf333ec75dfa4d1b3bdda03d2c9b6be51d6d7a7bc2b7e218723240cd76",
+            contract_hash: "sha256:8d01e95713c226e5200a113f6a718e6b48e1e79ce4362f04bfae059d51926165",
         },
     );
 

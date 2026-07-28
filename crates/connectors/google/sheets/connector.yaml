@@ -55,6 +55,10 @@ types:
       initial_sheet_title:
         type: string
         optional: true
+      header_row:
+        type: list
+        item:
+          type: string
 
   GoogleSheetsCreateSpreadsheetOutput:
     kind: object
@@ -249,10 +253,11 @@ surfaces:
         Content-Type: application/json
       body:
         properties: title
+        sheets: header_row
       trusted_adapter:
         trusted_adapter_id: google.sheets.create_spreadsheet.v1
         implementation_version: "1"
-        implementation_hash: sha256:ed9e62ea7bd0e93fc3de07ffe4a8d168f840faf61d463bcc8ca6564bb5b82755
+        implementation_hash: sha256:273c32a2a836c676333259b5d6d644c778a47dac8559afdbd5a1544d24834afd
 
   - kind: action
     identifier: connector.google.sheets.create_sheet

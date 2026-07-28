@@ -3,9 +3,9 @@
   "package": "broker-workers",
   "package_version": "0.1.0",
   "requirements_sha256": "912bfee6e786efc2506216a19737f21a2489134bf230cd828b80befc3e80fd03",
-  "cargo_lock_sha256": "52700211f98b06aa893b5bc6c6f8576c518cf06f43a0fc0e84d148af21c8a5c9",
-  "wasm_sha256": "0317eaa10f59d950708458371762c5f9aa536ad6d8be11146e833bad1219fa58",
-  "root_production_wasm_sha256": "0317eaa10f59d950708458371762c5f9aa536ad6d8be11146e833bad1219fa58",
+  "cargo_lock_sha256": "2286719c57477e94565bf94b90895586497e3674b927357aefe6c5dcec498808",
+  "wasm_sha256": "3d1c04b30f954f9ddea93ab92f3267e4c3df341c4ac2f202a27b2cf007bed7f6",
+  "root_production_wasm_sha256": "3d1c04b30f954f9ddea93ab92f3267e4c3df341c4ac2f202a27b2cf007bed7f6",
   "feature_flags": {
     "production": [],
     "workerd_tests_separate_artifact": [
@@ -15,8 +15,8 @@
   "files": [
     {
       "path": "Cargo.lock",
-      "sha256": "52700211f98b06aa893b5bc6c6f8576c518cf06f43a0fc0e84d148af21c8a5c9",
-      "size_bytes": 219738
+      "sha256": "2286719c57477e94565bf94b90895586497e3674b927357aefe6c5dcec498808",
+      "size_bytes": 220007
     },
     {
       "path": "Cargo.toml",
@@ -260,8 +260,8 @@
     },
     {
       "path": "crates/broker-workers/build/index_bg.wasm",
-      "sha256": "0317eaa10f59d950708458371762c5f9aa536ad6d8be11146e833bad1219fa58",
-      "size_bytes": 5728701
+      "sha256": "3d1c04b30f954f9ddea93ab92f3267e4c3df341c4ac2f202a27b2cf007bed7f6",
+      "size_bytes": 5738035
     },
     {
       "path": "crates/broker-workers/build/index.js",
@@ -305,8 +305,8 @@
     },
     {
       "path": "crates/broker-workers/deploy/credential-registry-seed.json",
-      "sha256": "9bd5b2d960a6b781d60f43b5e3efab0e4ce5d28f5dc09881bb0db8ad1a728d14",
-      "size_bytes": 22781
+      "sha256": "d4f301340300b88e882967f8cd0a752dc2780cb84fb05a3535b235deb3782778",
+      "size_bytes": 27016
     },
     {
       "path": "crates/broker-workers/deploy/google-oauth-readiness.json",
@@ -385,13 +385,13 @@
     },
     {
       "path": "crates/broker-workers/deploy/scripts/operator-input.mjs",
-      "sha256": "1c40f2567ebfc69d6724891377ca9893750d6346b0ae218b610295fa6a07add3",
-      "size_bytes": 19120
+      "sha256": "4e46a9b477a64a93071e5607ddb50b4f067cedb3209ec8b716ccc4016385511e",
+      "size_bytes": 20467
     },
     {
       "path": "crates/broker-workers/deploy/scripts/operator-input.test.mjs",
-      "sha256": "ac651292fe150e918ba19b302621f3c4e23a74310d6ffa0f0746e1c76f8bc0f9",
-      "size_bytes": 7895
+      "sha256": "82e08a83e0013b79eb42a7efce081ea570b4f859eec499b3141da818a098158d",
+      "size_bytes": 8637
     },
     {
       "path": "crates/broker-workers/deploy/scripts/private-worker-deploy-lib.mjs",
@@ -690,8 +690,8 @@
     },
     {
       "path": "crates/connectors/google/platform/src/broker.rs",
-      "sha256": "8b73b9c63021747cc65fa45a17b5342a35016c5b2b3679a82bcc56de944be47d",
-      "size_bytes": 7692
+      "sha256": "76f6e4ffde48778de880c8d429a6b2b024f7afe142b286db2e5a7be027e67d6e",
+      "size_bytes": 11800
     },
     {
       "path": "crates/connectors/google/platform/src/calendar.rs",
@@ -725,8 +725,8 @@
     },
     {
       "path": "crates/connectors/google/sheets/broker/operations/create_spreadsheet.json",
-      "sha256": "bdfc87ee3db66015f4bd0f43233ddaec68d17eec6ce74d0e18b743af0b16e8a0",
-      "size_bytes": 1345
+      "sha256": "62ab7920e7ca8e6d7972256ae7a766f1518a90631b90ff61b9a96f093fefae0a",
+      "size_bytes": 1367
     },
     {
       "path": "crates/custodian-google/Cargo.toml",
@@ -925,13 +925,13 @@
     },
     {
       "path": "crates/provider-google/src/google-registry-bundle.json",
-      "sha256": "42b95e6e7725912f0a1d4b246ac5c0cd954be63c329e8bbf994e2407bc69a1ba",
-      "size_bytes": 24836
+      "sha256": "5a6ed4b13f844777fb05370e6a3622b0f359b21ad1d4ff60a490955aa0139660",
+      "size_bytes": 24835
     },
     {
       "path": "crates/provider-google/src/lib.rs",
-      "sha256": "97bc98e9311a5e8c8f94cf9f34f43644513a6231d4dd31a9172c7654a522241a",
-      "size_bytes": 29389
+      "sha256": "cb0ef4d52dbf8e7a109eb0e682578af8636de689b0fc299e3c71c913124a36c8",
+      "size_bytes": 31617
     },
     {
       "path": "crates/provider-google/src/signed_registry.rs",

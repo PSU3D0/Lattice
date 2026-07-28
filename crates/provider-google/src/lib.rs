@@ -48,7 +48,7 @@ pub const SHEETS_CONTRACT_HASH: &str =
     "sha256:d02ed39536d396d66895f97672551a9eb443e701900112613865170bf157e999";
 pub const SHEETS_CREATE_CONTRACT_ID: &str = "connector.google.sheets.create_spreadsheet@1";
 pub const SHEETS_CREATE_CONTRACT_HASH: &str =
-    "sha256:d6c81edf333ec75dfa4d1b3bdda03d2c9b6be51d6d7a7bc2b7e218723240cd76";
+    "sha256:8d01e95713c226e5200a113f6a718e6b48e1e79ce4362f04bfae059d51926165";
 
 const PROFILE_HASH: &str =
     "sha256:a97b7aed775144652866f288bf4fdd52d329ae479180069721d41a94282f1890";
@@ -191,7 +191,7 @@ pub fn google_v1() -> GoogleComposition {
             semantic_effect_slot: "create_spreadsheet",
             origin: "https://sheets.googleapis.com",
             implementation_hash:
-                "sha256:ed9e62ea7bd0e93fc3de07ffe4a8d168f840faf61d463bcc8ca6564bb5b82755",
+                "sha256:273c32a2a836c676333259b5d6d644c778a47dac8559afdbd5a1544d24834afd",
             descriptor: include_bytes!(
                 "../../connectors/google/sheets/broker/operations/create_spreadsheet.json"
             ),
@@ -658,7 +658,7 @@ mod tests {
             serde_json::from_slice(create.descriptor).unwrap();
         let planned = broker_host::descriptor_plan_template(
             &descriptor,
-            br#"{"title":"Disposable proof sheet"}"#,
+            br#"{"header_row":["note"],"initial_sheet_title":"Micro","locale":null,"time_zone":null,"title":"Disposable proof sheet"}"#,
             create.authority_facts_jcs,
             &registry,
             "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -668,7 +668,15 @@ mod tests {
         let planned: serde_json::Value = serde_json::from_slice(&planned).unwrap();
         assert_eq!(
             planned["body"],
-            serde_json::json!({"properties":{"title":"Disposable proof sheet"}})
+            serde_json::json!({
+                "properties":{"title":"Disposable proof sheet"},
+                "sheets":[{
+                    "properties":{"title":"Micro"},
+                    "data":[{"rowData":[{"values":[{
+                        "userEnteredValue":{"stringValue":"note"}
+                    }]}]}]
+                }]
+            })
         );
         assert_eq!(planned["path"], "/v4/spreadsheets");
         assert_eq!(planned["query"], serde_json::json!({}));
@@ -692,6 +700,49 @@ mod tests {
             .unwrap()
             .clone()
         );
+    }
+
+    #[test]
+    fn create_spreadsheet_planner_rejects_oversized_and_smuggled_input() {
+        let now = "2026-07-21T00:00:00Z";
+        let registry = host_registry(now).unwrap();
+        let create = contract_registration(SHEETS_CREATE_CONTRACT_ID, now).unwrap();
+        let descriptor: connector_spec::BrokerDispatchDescriptor =
+            serde_json::from_slice(create.descriptor).unwrap();
+        let plan = |input: &serde_json::Value| {
+            let bytes = broker_core::canonical::from_serde(input, 64 * 1024).unwrap();
+            broker_host::descriptor_plan_template(
+                &descriptor,
+                bytes.as_bytes(),
+                create.authority_facts_jcs,
+                &registry,
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                now,
+            )
+        };
+        let base = || {
+            serde_json::json!({
+                "title":"sheet", "locale":null, "time_zone":null,
+                "initial_sheet_title":"Micro", "header_row":["note"]
+            })
+        };
+        let mut too_many = base();
+        too_many["header_row"] = serde_json::json!(
+            (0..=connector_google_platform::broker::SHEETS_CREATE_MAX_HEADER_COUNT)
+                .map(|index| format!("column-{index}"))
+                .collect::<Vec<_>>()
+        );
+        assert!(plan(&too_many).is_err());
+        let mut too_long = base();
+        too_long["header_row"] = serde_json::json!([
+            "x".repeat(connector_google_platform::broker::SHEETS_CREATE_MAX_HEADER_BYTES + 1)
+        ]);
+        assert!(plan(&too_long).is_err());
+        for field in ["namedRanges", "developerMetadata"] {
+            let mut smuggled = base();
+            smuggled[field] = serde_json::json!([]);
+            assert!(plan(&smuggled).is_err(), "{field} must be denied");
+        }
     }
 
     #[test]

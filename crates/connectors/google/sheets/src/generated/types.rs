@@ -21,6 +21,7 @@ pub struct GoogleSheetsCreateSpreadsheetInput {
     pub locale: Option<String>,
     pub time_zone: Option<String>,
     pub initial_sheet_title: Option<String>,
+    pub header_row: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

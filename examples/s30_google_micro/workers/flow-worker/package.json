@@ -1,0 +1,11 @@
+{
+  "name": "@lattice-flow/s30-flow-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bash ../../../../scripts/ensure-worker-build.sh --release",
+    "render": "rm -rf deploy && cargo run --quiet --manifest-path ../../../../Cargo.toml -p flows-cli -- deploy render --example s30_google_micro --name s30-google-micro --wasm-artifact build/index_bg.wasm --paid --out deploy && node scripts/render-broker-config.mjs",
+    "package": "npm run build && npm run render"
+  }
+}

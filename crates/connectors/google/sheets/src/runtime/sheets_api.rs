@@ -55,6 +55,12 @@ impl SheetsApi {
         &self,
         input: &GoogleSheetsCreateSpreadsheetInput,
     ) -> Result<GoogleSheetsCreateSpreadsheetOutput, ConnectorRuntimeError> {
+        connector_google_platform::broker::validate_sheets_create_headers(&input.header_row)
+            .map_err(|_| {
+                ConnectorRuntimeError::invalid_response(
+                    "create_spreadsheet header_row exceeds its bounded schema or contains invalid headers",
+                )
+            })?;
         let mut properties = Map::new();
         properties.insert("title".to_string(), JsonValue::String(input.title.clone()));
         if let Some(locale) = &input.locale {
@@ -66,14 +72,29 @@ impl SheetsApi {
 
         let mut body = Map::new();
         body.insert("properties".to_string(), JsonValue::Object(properties));
-        if let Some(initial_sheet_title) = &input.initial_sheet_title {
+        if input.initial_sheet_title.is_some() || !input.header_row.is_empty() {
+            let mut sheet = Map::new();
+            if let Some(initial_sheet_title) = &input.initial_sheet_title {
+                sheet.insert(
+                    "properties".to_string(),
+                    json!({ "title": initial_sheet_title }),
+                );
+            }
+            if !input.header_row.is_empty() {
+                sheet.insert(
+                    "data".to_string(),
+                    json!([{
+                        "rowData": [{
+                            "values": input.header_row.iter().map(|header| json!({
+                                "userEnteredValue": { "stringValue": header }
+                            })).collect::<Vec<_>>()
+                        }]
+                    }]),
+                );
+            }
             body.insert(
                 "sheets".to_string(),
-                JsonValue::Array(vec![json!({
-                    "properties": {
-                        "title": initial_sheet_title,
-                    }
-                })]),
+                JsonValue::Array(vec![JsonValue::Object(sheet)]),
             );
         }
 

@@ -3633,6 +3633,7 @@ dependencies = [
  "proptest",
  "registry-client",
  "reqwest",
+ "s30_google_micro",
  "serde",
  "serde_json",
  "sha2",
@@ -7111,6 +7112,22 @@ name = "ryu-js"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04d056b875a9d2e6cb9a61d127afee9ac5999b9f87bcb32079d1318e505be714"
+
+[[package]]
+name = "s30_google_micro"
+version = "0.1.0"
+dependencies = [
+ "broker-core",
+ "connector_google_gmail",
+ "connector_google_sheets",
+ "dag-core",
+ "dag-macros",
+ "host-inproc",
+ "kernel-exec",
+ "kernel-plan",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "saffron"

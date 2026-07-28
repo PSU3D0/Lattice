@@ -13,7 +13,9 @@ pub const SHEETS_APPEND_ROW_ADAPTER_HASH: &str =
 pub const SHEETS_CREATE_SPREADSHEET_ADAPTER_ID: &str = "google.sheets.create_spreadsheet.v1";
 pub const SHEETS_CREATE_SPREADSHEET_ADAPTER_VERSION: &str = "1";
 pub const SHEETS_CREATE_SPREADSHEET_ADAPTER_HASH: &str =
-    "sha256:ed9e62ea7bd0e93fc3de07ffe4a8d168f840faf61d463bcc8ca6564bb5b82755";
+    "sha256:273c32a2a836c676333259b5d6d644c778a47dac8559afdbd5a1544d24834afd";
+pub const SHEETS_CREATE_MAX_HEADER_COUNT: usize = 64;
+pub const SHEETS_CREATE_MAX_HEADER_BYTES: usize = 256;
 pub const GMAIL_RFC822_ADAPTER_ID: &str = "google.gmail.rfc822_message.v1";
 pub const GMAIL_RFC822_ADAPTER_VERSION: &str = "1";
 pub const GMAIL_RFC822_ADAPTER_HASH: &str =
@@ -25,28 +27,86 @@ pub enum GoogleBrokerAdapterError {
     MissingAuthorityFacts,
 }
 
+pub fn validate_sheets_create_headers(headers: &[String]) -> Result<(), GoogleBrokerAdapterError> {
+    if headers.len() > SHEETS_CREATE_MAX_HEADER_COUNT
+        || headers.iter().any(|header| {
+            header.trim().is_empty() || header.as_bytes().len() > SHEETS_CREATE_MAX_HEADER_BYTES
+        })
+        || headers
+            .iter()
+            .enumerate()
+            .any(|(index, header)| headers[..index].contains(header))
+    {
+        return Err(GoogleBrokerAdapterError::InvalidInput);
+    }
+    Ok(())
+}
+
 pub fn adapt_sheets_create_spreadsheet(
     input: &Value,
 ) -> Result<Map<String, Value>, GoogleBrokerAdapterError> {
     let input = input
         .as_object()
         .ok_or(GoogleBrokerAdapterError::InvalidInput)?;
-    let title = required_string(input, "title")?;
-    if title.len() > 256
-        || input.iter().any(|(field, value)| {
-            field != "title"
-                && (!matches!(
-                    field.as_str(),
-                    "locale" | "time_zone" | "initial_sheet_title"
-                ) || !value.is_null())
-        })
-    {
+    if input.keys().any(|field| {
+        !matches!(
+            field.as_str(),
+            "title" | "locale" | "time_zone" | "initial_sheet_title" | "header_row"
+        )
+    }) {
         return Err(GoogleBrokerAdapterError::InvalidInput);
     }
-    Ok(Map::from_iter([(
-        "title".into(),
-        serde_json::json!({ "title": title }),
-    )]))
+    let title = required_bounded_string(input, "title", 256)?;
+    let locale = optional_bounded_string(input, "locale", 64)?;
+    let time_zone = optional_bounded_string(input, "time_zone", 128)?;
+    let sheet_title = optional_bounded_string(input, "initial_sheet_title", 100)?;
+    let headers = input
+        .get("header_row")
+        .and_then(Value::as_array)
+        .ok_or(GoogleBrokerAdapterError::InvalidInput)?
+        .iter()
+        .map(|header| {
+            header
+                .as_str()
+                .map(str::to_owned)
+                .ok_or(GoogleBrokerAdapterError::InvalidInput)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    validate_sheets_create_headers(&headers)?;
+
+    let mut properties = serde_json::json!({ "title": title });
+    if let Some(locale) = locale {
+        properties["locale"] = Value::String(locale.into());
+    }
+    if let Some(time_zone) = time_zone {
+        properties["timeZone"] = Value::String(time_zone.into());
+    }
+    let mut sheet = Map::new();
+    if let Some(sheet_title) = sheet_title {
+        sheet.insert(
+            "properties".into(),
+            serde_json::json!({ "title": sheet_title }),
+        );
+    }
+    if !headers.is_empty() {
+        sheet.insert(
+            "data".into(),
+            serde_json::json!([{
+                "rowData": [{
+                    "values": headers.iter().map(|header| serde_json::json!({
+                        "userEnteredValue": { "stringValue": header }
+                    })).collect::<Vec<_>>()
+                }]
+            }]),
+        );
+    }
+    Ok(Map::from_iter([
+        ("title".into(), properties),
+        (
+            "header_row".into(),
+            Value::Array(vec![Value::Object(sheet)]),
+        ),
+    ]))
 }
 
 pub fn adapt_sheets_append_row(
@@ -142,6 +202,31 @@ fn required_string<'a>(
         .ok_or(GoogleBrokerAdapterError::InvalidInput)
 }
 
+fn required_bounded_string<'a>(
+    input: &'a Map<String, Value>,
+    field: &str,
+    max_bytes: usize,
+) -> Result<&'a str, GoogleBrokerAdapterError> {
+    required_string(input, field).and_then(|value| {
+        (value.as_bytes().len() <= max_bytes)
+            .then_some(value)
+            .ok_or(GoogleBrokerAdapterError::InvalidInput)
+    })
+}
+
+fn optional_bounded_string<'a>(
+    input: &'a Map<String, Value>,
+    field: &str,
+    max_bytes: usize,
+) -> Result<Option<&'a str>, GoogleBrokerAdapterError> {
+    optional_string(input, field).and_then(|value| {
+        value
+            .is_none_or(|value| !value.is_empty() && value.as_bytes().len() <= max_bytes)
+            .then_some(value)
+            .ok_or(GoogleBrokerAdapterError::InvalidInput)
+    })
+}
+
 fn optional_string<'a>(
     input: &'a Map<String, Value>,
     field: &str,
@@ -178,28 +263,57 @@ mod tests {
     }
 
     #[test]
-    fn create_spreadsheet_adapter_builds_only_bounded_properties() {
+    fn create_spreadsheet_adapter_builds_a_bounded_header_row() {
         let adapted = adapt_sheets_create_spreadsheet(&serde_json::json!({
-            "title": "Disposable proof sheet"
+            "title": "Disposable proof sheet",
+            "locale": null,
+            "time_zone": null,
+            "initial_sheet_title": "Micro",
+            "header_row": ["note"]
         }))
         .unwrap();
         assert_eq!(
             Value::Object(adapted),
-            serde_json::json!({"title":{"title":"Disposable proof sheet"}})
+            serde_json::json!({
+                "title": {"title":"Disposable proof sheet"},
+                "header_row": [{
+                    "properties": {"title":"Micro"},
+                    "data": [{"rowData":[{"values":[{
+                        "userEnteredValue":{"stringValue":"note"}
+                    }]}]}]
+                }]
+            })
         );
-        assert!(
-            adapt_sheets_create_spreadsheet(&serde_json::json!({"title":"x".repeat(257)})).is_err()
+    }
+
+    #[test]
+    fn create_spreadsheet_adapter_rejects_oversized_or_smuggled_fields() {
+        let base = || {
+            serde_json::json!({
+                "title": "sheet",
+                "locale": null,
+                "time_zone": null,
+                "initial_sheet_title": "Micro",
+                "header_row": ["note"]
+            })
+        };
+        let mut too_many = base();
+        too_many["header_row"] = serde_json::json!(
+            (0..=SHEETS_CREATE_MAX_HEADER_COUNT)
+                .map(|index| format!("column-{index}"))
+                .collect::<Vec<_>>()
         );
-        assert!(
-            adapt_sheets_create_spreadsheet(&serde_json::json!({"title":"sheet","locale":"en_US"}))
-                .is_err()
-        );
-        assert!(
-            adapt_sheets_create_spreadsheet(
-                &serde_json::json!({"title":"sheet","passthrough":null})
-            )
-            .is_err()
-        );
+        assert!(adapt_sheets_create_spreadsheet(&too_many).is_err());
+        let mut too_long = base();
+        too_long["header_row"] =
+            serde_json::json!(["x".repeat(SHEETS_CREATE_MAX_HEADER_BYTES + 1)]);
+        assert!(adapt_sheets_create_spreadsheet(&too_long).is_err());
+        let mut smuggled = base();
+        smuggled["namedRanges"] = serde_json::json!([]);
+        assert!(adapt_sheets_create_spreadsheet(&smuggled).is_err());
+        smuggled.as_object_mut().unwrap().remove("namedRanges");
+        smuggled["developerMetadata"] = serde_json::json!([]);
+        assert!(adapt_sheets_create_spreadsheet(&smuggled).is_err());
     }
 
     #[test]

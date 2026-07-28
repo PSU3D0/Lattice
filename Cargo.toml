@@ -106,7 +106,8 @@ members = [
   "examples/s22_hydration_reminder",
   "examples/s26_http_longtail",
   "examples/s27_binary",
-  "examples/s28_timer_resume"
+  "examples/s28_timer_resume",
+  "examples/s30_google_micro"
 ]
 
 [workspace.package]
