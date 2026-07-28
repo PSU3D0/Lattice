@@ -2151,12 +2151,15 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "hex",
  "inventory",
+ "jcs-canonical",
  "once_cell",
  "schemars 0.8.22",
  "semver",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 1.0.69",
  "tracing",
  "uuid",
@@ -7124,11 +7127,13 @@ dependencies = [
  "connector_google_sheets",
  "dag-core",
  "dag-macros",
+ "hex",
  "host-inproc",
  "kernel-exec",
  "kernel-plan",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

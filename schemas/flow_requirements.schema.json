@@ -2,9 +2,67 @@
   "$id": "https://lattice.dev/schemas/flow_requirements.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "definitions": {
+    "BrokerContractIdentityIR": {
+      "description": "Hash-pinned semantic operation-contract identity serialized into Flow IR.",
+      "properties": {
+        "contract_hash": {
+          "type": "string"
+        },
+        "contract_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "contract_hash",
+        "contract_id"
+      ],
+      "type": "object"
+    },
+    "ConnectionScopeClosure": {
+      "description": "Report-only required scopes for one connection aggregate partition.",
+      "properties": {
+        "connection_aggregate_key": {
+          "description": "Existing broker-authority aggregate key. `None` is the current unkeyed default connection partition, not a flow-wide union.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "contracts": {
+          "description": "Exact contracts contributing scopes to this partition.",
+          "items": {
+            "$ref": "#/definitions/BrokerContractIdentityIR"
+          },
+          "type": "array"
+        },
+        "required_scopes": {
+          "description": "Sorted, deduplicated union of descriptor-owned minimum scopes.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "contracts",
+        "required_scopes"
+      ],
+      "type": "object"
+    },
     "ConnectorOperationRequirement": {
       "description": "Declared contract for a single connector operation used by the flow.",
       "properties": {
+        "broker_contract": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BrokerContractIdentityIR"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional hash-pinned semantic contract identity. Minimum scopes are resolved separately from the descriptor addressed by this hash."
+        },
         "default_resolution_mode": {
           "allOf": [
             {
@@ -434,6 +492,62 @@
         }
       ]
     },
+    "ScopeClosureResolution": {
+      "description": "Whether descriptor-backed scope closure has been computed.",
+      "oneOf": [
+        {
+          "description": "The complete IR contains neither contracted operations nor unresolved subflows, so no descriptor lookup is needed.",
+          "properties": {
+            "status": {
+              "enum": [
+                "not_required"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Resolution has not run, or cannot yet be complete because authored subflows have not been expanded.",
+          "properties": {
+            "status": {
+              "enum": [
+                "unresolved"
+              ],
+              "type": "string"
+            },
+            "unresolved_subflows": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Every contracted operation was resolved from its exact descriptor.",
+          "properties": {
+            "status": {
+              "enum": [
+                "resolved"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "TriggerKind": {
       "description": "Kind of trigger surface, as derivable from the IR today.",
       "oneOf": [
@@ -445,7 +559,7 @@
           "type": "string"
         },
         {
-          "description": "Trigger is wired to a schedule (cron) entrypoint.\n\nTolerated additive value under `schema_version` 0.x (policy decided at 0.1): consumers encountering an unknown trigger `kind` must treat that flow as \"cannot place\" (fail closed per-flow) rather than reject the manifest. See `impl-docs/spec/flow-requirements.md`.",
+          "description": "Trigger is wired to a schedule (cron) entrypoint.\n\nIntroduced with a deliberate schema-version migration; readers reject unknown unstable minor versions and enum values.",
           "enum": [
             "schedule"
           ],
@@ -569,6 +683,21 @@
       "description": "Manifest shape version ([`FLOW_REQUIREMENTS_SCHEMA_VERSION`]).",
       "type": "string"
     },
+    "scope_closures": {
+      "description": "Report-only scope closure partitioned by connection aggregate key. Empty until descriptor resolution is requested explicitly.",
+      "items": {
+        "$ref": "#/definitions/ConnectionScopeClosure"
+      },
+      "type": "array"
+    },
+    "scope_resolution": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ScopeClosureResolution"
+        }
+      ],
+      "description": "Explicit state of report-only scope resolution. This distinguishes a genuinely scope-free flow from a contracted or unexpanded flow whose descriptors have not been resolved yet."
+    },
     "triggers": {
       "description": "Trigger nodes that originate executions of this flow.",
       "items": {
@@ -583,7 +712,8 @@
     "flow",
     "host",
     "profile",
-    "schema_version"
+    "schema_version",
+    "scope_resolution"
   ],
   "title": "Lattice Flow Requirements",
   "type": "object"

@@ -13,7 +13,7 @@ use kernel_plan::{derive_requirements, validate};
 
 fn assert_matches_fixture(flow: &dag_core::FlowIR, fixture: &str) {
     let ir = validate(flow).expect("flow should validate");
-    let requirements = derive_requirements(&ir);
+    let requirements = derive_requirements(&ir).expect("derive requirements");
     let actual = serde_json::to_value(&requirements).expect("serialize requirements");
     let expected: serde_json::Value =
         serde_json::from_str(fixture).expect("fixture should be valid JSON");
@@ -89,7 +89,7 @@ fn tick_report_schedule_requirements_match_golden() {
 #[test]
 fn schedule_requirements_round_trip_via_schema_types() {
     let ir = validate(&tick_report_schedule_flow()).expect("validate");
-    let requirements = derive_requirements(&ir);
+    let requirements = derive_requirements(&ir).expect("derive requirements");
     let json = serde_json::to_value(&requirements).expect("serialize");
     let back: dag_core::FlowRequirements = serde_json::from_value(json).expect("deserialize");
     assert_eq!(back, requirements);
@@ -122,7 +122,7 @@ fn s12_sheetport_quote_internal_requirements_match_golden() {
 #[test]
 fn requirements_manifest_round_trips_via_schema_types() {
     let ir = validate(&example_s12_sheetport_quote::bound_flow()).expect("validate");
-    let requirements = derive_requirements(&ir);
+    let requirements = derive_requirements(&ir).expect("derive requirements");
     let json = serde_json::to_value(&requirements).expect("serialize");
     let back: dag_core::FlowRequirements = serde_json::from_value(json).expect("deserialize");
     assert_eq!(back, requirements);

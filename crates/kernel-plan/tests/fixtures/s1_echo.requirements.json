@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.3",
+  "schema_version": "0.4",
   "flow": {
     "id": "17d960d7-647c-5e8a-9317-3b821bfdafe1",
     "name": "s1_echo_flow",
@@ -10,6 +10,9 @@
     "union": [],
     "families": [],
     "per_node": {}
+  },
+  "scope_resolution": {
+    "status": "not_required"
   },
   "durability": {
     "mode": "partial",
@@ -32,7 +35,9 @@
       "capture_alias": "responder",
       "route_path": "/echo",
       "method": "POST",
-      "route_aliases": ["/echo"]
+      "route_aliases": [
+        "/echo"
+      ]
     }
   ],
   "host": {

@@ -5,6 +5,8 @@ use crate::runtime::sheets_api::SheetsApi;
 pub struct GoogleSheetsUpsertRow;
 
 impl GoogleSheetsUpsertRow {
+    pub const BROKER_CONTRACT: Option<::dag_core::BrokerContractMetadata> = None;
+
     pub const META: ::dag_core::ConnectorOpMetadata = ::dag_core::ConnectorOpMetadata {
         operation_id: "connector.google.sheets.upsert_row",
         connector_id: "connector.google.sheets",
@@ -16,6 +18,7 @@ impl GoogleSheetsUpsertRow {
             capabilities::http::HINT_HTTP_READ,
             capabilities::http::HINT_HTTP_WRITE,
         ],
+        broker_contract: Self::BROKER_CONTRACT,
         roles: &[
             ::dag_core::ConnectorRoleRequirement {
                 kind: ::dag_core::ConnectorRoleKindDecl::EndpointProfile,

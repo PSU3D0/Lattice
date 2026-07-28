@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.3",
+  "schema_version": "0.4",
   "flow": {
     "id": "00000000-0000-5000-8000-000000000002",
     "name": "schedule_demo_flow",
@@ -7,11 +7,20 @@
   },
   "profile": "web",
   "effects": {
-    "union": ["resource::kv::write"],
-    "families": ["resource::kv"],
+    "union": [
+      "resource::kv::write"
+    ],
+    "families": [
+      "resource::kv"
+    ],
     "per_node": {
-      "record": ["resource::kv::write"]
+      "record": [
+        "resource::kv::write"
+      ]
     }
+  },
+  "scope_resolution": {
+    "status": "not_required"
   },
   "durability": {
     "mode": "partial",
@@ -26,19 +35,25 @@
       "alias": "tick",
       "identifier": "schedule_demo::tick",
       "kind": "schedule",
-      "crons": ["*/5 * * * *"]
+      "crons": [
+        "*/5 * * * *"
+      ]
     },
     {
       "alias": "tick_shadow",
       "identifier": "schedule_demo::tick_shadow",
       "kind": "schedule",
-      "crons": ["*/5 * * * *"]
+      "crons": [
+        "*/5 * * * *"
+      ]
     },
     {
       "alias": "nightly",
       "identifier": "schedule_demo::nightly",
       "kind": "schedule",
-      "crons": ["0 2 * * *"]
+      "crons": [
+        "0 2 * * *"
+      ]
     }
   ],
   "entrypoints": [

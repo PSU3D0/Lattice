@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.3",
+  "schema_version": "0.4",
   "flow": {
     "id": "00000000-0000-5000-8000-0000000000f0",
     "name": "http_longtail_demo_flow",
@@ -15,9 +15,15 @@
       "resource::http"
     ],
     "per_node": {
-      "fetch_crm": ["resource::http::read"],
-      "push_stats": ["resource::http::write"],
-      "fetch_public": ["resource::http::read"]
+      "fetch_crm": [
+        "resource::http::read"
+      ],
+      "push_stats": [
+        "resource::http::write"
+      ],
+      "fetch_public": [
+        "resource::http::read"
+      ]
     }
   },
   "connectors": [
@@ -39,11 +45,17 @@
               "required": false
             }
           ],
-          "supported_resolution_modes": ["bound_connection"],
+          "supported_resolution_modes": [
+            "bound_connection"
+          ],
           "default_resolution_mode": "bound_connection",
-          "selected_resolution_modes": ["bound_connection"],
+          "selected_resolution_modes": [
+            "bound_connection"
+          ],
           "requires_bound_connection": true,
-          "nodes": ["fetch_crm"]
+          "nodes": [
+            "fetch_crm"
+          ]
         },
         {
           "operation_id": "connector.http.post",
@@ -60,11 +72,17 @@
               "required": false
             }
           ],
-          "supported_resolution_modes": ["bound_connection"],
+          "supported_resolution_modes": [
+            "bound_connection"
+          ],
           "default_resolution_mode": "bound_connection",
-          "selected_resolution_modes": ["bound_connection"],
+          "selected_resolution_modes": [
+            "bound_connection"
+          ],
           "requires_bound_connection": true,
-          "nodes": ["push_stats"]
+          "nodes": [
+            "push_stats"
+          ]
         },
         {
           "operation_id": "connector.http.get_any_origin",
@@ -75,15 +93,24 @@
               "expected_handle_kind": "endpoint.any_origin"
             }
           ],
-          "supported_resolution_modes": ["bound_connection"],
+          "supported_resolution_modes": [
+            "bound_connection"
+          ],
           "default_resolution_mode": "bound_connection",
-          "selected_resolution_modes": ["bound_connection"],
+          "selected_resolution_modes": [
+            "bound_connection"
+          ],
           "requires_bound_connection": true,
-          "nodes": ["fetch_public"]
+          "nodes": [
+            "fetch_public"
+          ]
         }
       ]
     }
   ],
+  "scope_resolution": {
+    "status": "not_required"
+  },
   "durability": {
     "mode": "off",
     "has_halting_nodes": false,
@@ -105,7 +132,9 @@
       "capture_alias": "capture",
       "route_path": "/run",
       "method": "POST",
-      "route_aliases": ["/run"]
+      "route_aliases": [
+        "/run"
+      ]
     }
   ],
   "host": {

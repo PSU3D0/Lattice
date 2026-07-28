@@ -60,6 +60,7 @@ impl OpenAiIssueTriageOp {
         max_determinism: Determinism::Nondeterministic,
         determinism_hints: &[capabilities::http::HINT_HTTP],
         effect_hints: &[capabilities::http::HINT_HTTP_WRITE],
+        broker_contract: None,
         roles: &[
             ConnectorRoleRequirement {
                 kind: ConnectorRoleKindDecl::EndpointProfile,

@@ -47,6 +47,8 @@ const GITHUB_ISSUES_CREATE_ACTION: ActionDescriptor = ActionDescriptor {
 pub struct GithubIssuesCreate;
 
 impl GithubIssuesCreate {
+    pub const BROKER_CONTRACT: Option<::dag_core::BrokerContractMetadata> = None;
+
     pub const META: ::dag_core::ConnectorOpMetadata = ::dag_core::ConnectorOpMetadata {
         operation_id: "connector.github.issues.create",
         connector_id: "connector.github.issues",
@@ -55,6 +57,7 @@ impl GithubIssuesCreate {
         max_determinism: ::dag_core::Determinism::BestEffort,
         determinism_hints: &[capabilities::http::HINT_HTTP],
         effect_hints: &[capabilities::http::HINT_HTTP_WRITE],
+        broker_contract: Self::BROKER_CONTRACT,
         roles: &[
             ::dag_core::ConnectorRoleRequirement {
                 kind: ::dag_core::ConnectorRoleKindDecl::EndpointProfile,

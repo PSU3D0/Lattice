@@ -18,6 +18,7 @@ impl DemoAppendRow {
         max_determinism: Determinism::BestEffort,
         determinism_hints: &[capabilities::http::HINT_HTTP],
         effect_hints: &[capabilities::http::HINT_HTTP_WRITE],
+        broker_contract: None,
         roles: &[
             ConnectorRoleRequirement {
                 kind: ConnectorRoleKindDecl::EndpointProfile,

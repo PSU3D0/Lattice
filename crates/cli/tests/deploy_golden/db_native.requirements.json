@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.3",
+  "schema_version": "0.4",
   "flow": {
     "id": "00000000-0000-5000-8000-000000000002",
     "name": "db_native_demo_flow",
@@ -16,9 +16,16 @@
       "resource::rng"
     ],
     "per_node": {
-      "fetch_legacy": ["resource::db::read"],
-      "shuffle": ["resource::rng"]
+      "fetch_legacy": [
+        "resource::db::read"
+      ],
+      "shuffle": [
+        "resource::rng"
+      ]
     }
+  },
+  "scope_resolution": {
+    "status": "not_required"
   },
   "durability": {
     "mode": "partial",
@@ -41,7 +48,9 @@
       "capture_alias": "capture",
       "route_path": "/legacy",
       "method": "POST",
-      "route_aliases": ["/legacy"]
+      "route_aliases": [
+        "/legacy"
+      ]
     }
   ],
   "host": {

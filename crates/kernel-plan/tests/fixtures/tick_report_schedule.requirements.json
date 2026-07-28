@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.3",
+  "schema_version": "0.4",
   "flow": {
     "id": "62567e51-4e4b-542c-aa21-88c38b374d50",
     "name": "tick_report_schedule",
@@ -10,6 +10,9 @@
     "union": [],
     "families": [],
     "per_node": {}
+  },
+  "scope_resolution": {
+    "status": "not_required"
   },
   "durability": {
     "mode": "partial",
@@ -24,7 +27,9 @@
       "alias": "tick",
       "identifier": "tests::schedule::tick",
       "kind": "schedule",
-      "crons": ["*/5 * * * *"]
+      "crons": [
+        "*/5 * * * *"
+      ]
     }
   ],
   "entrypoints": [

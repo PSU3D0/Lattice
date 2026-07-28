@@ -10,6 +10,7 @@ struct ContractCopies {
     descriptor_json: &'static [u8],
     generated_contract_id: &'static str,
     generated_contract_hash: &'static str,
+    generated_minimum_scopes: &'static [&'static str],
 }
 
 fn checked_in_descriptor_contract_ids() -> BTreeSet<String> {
@@ -49,6 +50,10 @@ fn contract_copies() -> [ContractCopies; 3] {
                 connector_google_gmail::ops::GoogleGmailSendMessage::BROKER_CONTRACT
                     .unwrap()
                     .contract_hash,
+            generated_minimum_scopes:
+                connector_google_gmail::ops::GoogleGmailSendMessage::BROKER_CONTRACT
+                    .unwrap()
+                    .minimum_scopes,
         },
         ContractCopies {
             operation_id: "connector.google.sheets.append_row",
@@ -64,6 +69,10 @@ fn contract_copies() -> [ContractCopies; 3] {
                 connector_google_sheets::ops::GoogleSheetsAppendRow::BROKER_CONTRACT
                     .unwrap()
                     .contract_hash,
+            generated_minimum_scopes:
+                connector_google_sheets::ops::GoogleSheetsAppendRow::BROKER_CONTRACT
+                    .unwrap()
+                    .minimum_scopes,
         },
         ContractCopies {
             operation_id: "connector.google.sheets.create_spreadsheet",
@@ -79,6 +88,10 @@ fn contract_copies() -> [ContractCopies; 3] {
                 connector_google_sheets::ops::GoogleSheetsCreateSpreadsheet::BROKER_CONTRACT
                     .unwrap()
                     .contract_hash,
+            generated_minimum_scopes:
+                connector_google_sheets::ops::GoogleSheetsCreateSpreadsheet::BROKER_CONTRACT
+                    .unwrap()
+                    .minimum_scopes,
         },
     ]
 }
@@ -128,6 +141,15 @@ fn google_minimum_scopes_match_manifest_generated_descriptor_and_profile_copies(
             descriptor.contract.contract_id
         );
         assert_eq!(copies.generated_contract_hash, descriptor.contract_hash);
+        assert_eq!(
+            copies.generated_minimum_scopes,
+            descriptor
+                .contract
+                .minimum_scopes
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+        );
         assert_eq!(
             contract_hash(&manifest, action).unwrap(),
             descriptor.contract_hash

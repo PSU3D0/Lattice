@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.3",
+  "schema_version": "0.4",
   "flow": {
     "id": "96ac65f6-2fd8-5091-97a5-f9f4efa5100f",
     "name": "s12_sheetport_quote_internal_flow",
@@ -7,10 +7,16 @@
   },
   "profile": "web",
   "effects": {
-    "union": ["resource::blob::read"],
-    "families": ["resource::blob"],
+    "union": [
+      "resource::blob::read"
+    ],
+    "families": [
+      "resource::blob"
+    ],
     "per_node": {
-      "evaluate": ["resource::blob::read"]
+      "evaluate": [
+        "resource::blob::read"
+      ]
     }
   },
   "connectors": [
@@ -25,13 +31,20 @@
             "inline_payload"
           ],
           "default_resolution_mode": "bound_connection",
-          "selected_resolution_modes": ["late_bound_refs"],
+          "selected_resolution_modes": [
+            "late_bound_refs"
+          ],
           "requires_bound_connection": false,
-          "nodes": ["evaluate"]
+          "nodes": [
+            "evaluate"
+          ]
         }
       ]
     }
   ],
+  "scope_resolution": {
+    "status": "not_required"
+  },
   "durability": {
     "mode": "partial",
     "has_halting_nodes": false,
@@ -53,7 +66,9 @@
       "capture_alias": "capture",
       "route_path": "/quote/internal",
       "method": "POST",
-      "route_aliases": ["/quote/internal"]
+      "route_aliases": [
+        "/quote/internal"
+      ]
     }
   ],
   "host": {

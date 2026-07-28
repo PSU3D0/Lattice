@@ -190,6 +190,9 @@ pub struct ConnectorOpMetadata {
     pub max_determinism: Determinism,
     pub determinism_hints: &'static [&'static str],
     pub effect_hints: &'static [&'static str],
+    /// Optional generated projection of the hash-pinned semantic contract.
+    /// Flow IR serializes only its identity; scopes stay descriptor-resolved.
+    pub broker_contract: Option<BrokerContractMetadata>,
     pub roles: &'static [ConnectorRoleRequirement],
     pub resolution: ConnectorResolutionContract,
 }
@@ -201,6 +204,16 @@ pub struct ConnectorOpMetadata {
 pub struct BrokerContractMetadata {
     pub contract_id: &'static str,
     pub contract_hash: &'static str,
+    /// Descriptor-owned minimum scopes, mechanically generated with the
+    /// identity. Flow IR serializes only the identity fields above.
+    pub minimum_scopes: &'static [&'static str],
+}
+
+/// Hash-pinned semantic operation-contract identity serialized into Flow IR.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct BrokerContractIdentityIR {
+    pub contract_id: String,
+    pub contract_hash: String,
 }
 
 /// Serializable connector role requirement emitted into Flow IR.
@@ -233,6 +246,8 @@ fn connector_role_required_is_default(required: &bool) -> bool {
 pub struct ConnectorOpRefIR {
     pub operation_id: String,
     pub connector_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub broker_contract: Option<BrokerContractIdentityIR>,
     #[serde(default)]
     pub roles: Vec<ConnectorRoleRequirementIR>,
     pub default_resolution_mode: ConnectorResolutionModeDecl,
@@ -492,6 +507,10 @@ impl NodeSpec {
             .map(|op| ConnectorOpRefIR {
                 operation_id: op.operation_id.to_string(),
                 connector_id: op.connector_id.to_string(),
+                broker_contract: op.broker_contract.map(|contract| BrokerContractIdentityIR {
+                    contract_id: contract.contract_id.to_string(),
+                    contract_hash: contract.contract_hash.to_string(),
+                }),
                 roles: op
                     .roles
                     .iter()
@@ -1377,6 +1396,7 @@ mod broker_authority_tests {
         flow.nodes[0].connector_ops.push(ConnectorOpRefIR {
             operation_id: "dev.synthetic.echo_effect".to_string(),
             connector_id: "dev.synthetic".to_string(),
+            broker_contract: None,
             roles: Vec::new(),
             default_resolution_mode: ConnectorResolutionModeDecl::BoundConnection,
             selected_resolution_mode: ConnectorResolutionModeDecl::BoundConnection,

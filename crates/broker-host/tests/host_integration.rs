@@ -47,6 +47,7 @@ static OP: ConnectorOpMetadata = ConnectorOpMetadata {
     max_determinism: Determinism::Nondeterministic,
     determinism_hints: &[],
     effect_hints: &[],
+    broker_contract: None,
     roles: &[],
     resolution: ConnectorResolutionContract {
         supported_modes: SUPPORTED,
@@ -539,6 +540,7 @@ fn real_for_each_body_entry_fails_closed_without_bound_and_accepts_bound() {
         .push(dag_core::ConnectorOpRefIR {
             operation_id: "connector.synthetic.one".into(),
             connector_id: "connector.synthetic".into(),
+            broker_contract: None,
             roles: vec![],
             default_resolution_mode: ConnectorResolutionModeDecl::BoundConnection,
             selected_resolution_mode: ConnectorResolutionModeDecl::BoundConnection,
@@ -598,6 +600,7 @@ fn manifest_binds_exact_ir_bytes_and_is_artifact_validated() {
         .push(dag_core::ConnectorOpRefIR {
             operation_id: OP.operation_id.into(),
             connector_id: OP.connector_id.into(),
+            broker_contract: None,
             roles: vec![],
             default_resolution_mode: ConnectorResolutionModeDecl::BoundConnection,
             selected_resolution_mode: ConnectorResolutionModeDecl::BoundConnection,
@@ -627,6 +630,7 @@ fn manifest_binds_exact_ir_bytes_and_is_artifact_validated() {
         contract: Some(BrokerContractMetadata {
             contract_id: "connector.synthetic.one@1",
             contract_hash: Box::leak(contracts[0].1.clone().into_boxed_str()),
+            minimum_scopes: &[],
         }),
     }];
     let manifest = derive_authority_manifest(

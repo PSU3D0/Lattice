@@ -93,6 +93,7 @@ impl HttpGetBinary {
             capabilities::http::HINT_HTTP_READ,
             capabilities::workspace::HINT_WORKSPACE_WRITE,
         ],
+        broker_contract: None,
         roles: TIER0_ROLES,
         resolution: RESOLUTION,
     };
@@ -238,6 +239,7 @@ macro_rules! define_multipart_op {
                     capabilities::http::HINT_HTTP_WRITE,
                     capabilities::workspace::HINT_WORKSPACE_READ,
                 ],
+                broker_contract: None,
                 roles: TIER0_ROLES,
                 resolution: RESOLUTION,
             };

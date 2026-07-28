@@ -241,6 +241,52 @@ mod tests {
     }
 
     #[test]
+    fn report_only_scope_closure_uses_generated_pinned_descriptors() {
+        use sha2::{Digest, Sha256};
+
+        fn verified_descriptor(dispatch_json: &str) -> dag_core::ContractScopeDescriptor {
+            let dispatch: serde_json::Value = serde_json::from_str(dispatch_json).unwrap();
+            let contract = serde_json::to_vec(&dispatch["contract"]).unwrap();
+            dag_core::ContractScopeDescriptor::verify_json(
+                &contract,
+                dispatch["contract_hash"].as_str().unwrap(),
+            )
+            .unwrap()
+        }
+
+        let ir = flow();
+        let descriptors = [
+            verified_descriptor(include_str!(
+                "../../../crates/connectors/google/sheets/broker/operations/create_spreadsheet.json"
+            )),
+            verified_descriptor(include_str!(
+                "../../../crates/connectors/google/sheets/broker/operations/append_row.json"
+            )),
+            verified_descriptor(include_str!(
+                "../../../crates/connectors/google/gmail/broker/operations/send_message.json"
+            )),
+        ];
+        let flow_bytes = serde_json::to_vec_pretty(&ir).unwrap();
+        let flow_hash = format!("sha256:{}", hex::encode(Sha256::digest(flow_bytes)));
+        let requirements = dag_core::FlowRequirements::derive(&ir)
+            .unwrap()
+            .with_flow_ir_hash(flow_hash)
+            .resolve_scope_closure(&ir, &descriptors)
+            .unwrap();
+
+        assert_eq!(requirements.scope_closures.len(), 1);
+        let closure = &requirements.scope_closures[0];
+        assert_eq!(closure.connection_aggregate_key.as_deref(), Some(AGGREGATE));
+        assert_eq!(
+            closure.required_scopes,
+            [
+                "https://www.googleapis.com/auth/gmail.send",
+                "https://www.googleapis.com/auth/spreadsheets",
+            ]
+        );
+    }
+
+    #[test]
     fn canonical_ir_round_trips_byte_for_byte() {
         let canonical = canonical_flow_ir();
         let checked =

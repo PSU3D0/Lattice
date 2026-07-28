@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.3",
+  "schema_version": "0.4",
   "flow": {
     "id": "00000000-0000-5000-8000-000000000001",
     "name": "kv_blob_demo_flow",
@@ -17,10 +17,19 @@
       "resource::kv"
     ],
     "per_node": {
-      "cache_read": ["resource::kv::read"],
-      "cache_write": ["resource::kv::write"],
-      "store": ["resource::blob::write"]
+      "cache_read": [
+        "resource::kv::read"
+      ],
+      "cache_write": [
+        "resource::kv::write"
+      ],
+      "store": [
+        "resource::blob::write"
+      ]
     }
+  },
+  "scope_resolution": {
+    "status": "not_required"
   },
   "durability": {
     "mode": "partial",
@@ -48,7 +57,9 @@
       "capture_alias": "capture",
       "route_path": "/demo",
       "method": "POST",
-      "route_aliases": ["/demo"]
+      "route_aliases": [
+        "/demo"
+      ]
     }
   ],
   "host": {

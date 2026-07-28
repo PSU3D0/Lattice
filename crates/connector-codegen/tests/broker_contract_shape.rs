@@ -1,22 +1,23 @@
 use std::fs;
 use std::path::Path;
 
+use connector_codegen::generate_files;
 use connector_spec::{ConnectorManifest, SurfaceDecl, generated_module_name};
 
 #[test]
-fn broker_contract_member_presence_matches_contract_declaration_for_every_google_operation() {
-    // Mutation: emit BROKER_CONTRACT for Drive search_files while leaving another
-    // non-contracted operation without it. The per-operation shape check must fail.
+fn broker_contract_member_is_unconditional_and_matches_contract_declaration() {
+    // Mutation: omit BROKER_CONTRACT from any generated operation or emit Some
+    // for a non-contracted operation. The per-operation shape check must fail.
     let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let codegen_source = fs::read_to_string(crate_root.join("src/lib.rs")).unwrap();
-    assert!(
-        codegen_source.contains("if let Some(contract) = &action.contract"),
-        "current codegen shape must remain conditional until P2 changes it deliberately"
-    );
 
-    let connectors_root = crate_root.join("../connectors/google");
-    for family in ["drive", "gmail", "sheets"] {
-        let root = connectors_root.join(family);
+    let connector_crates = [
+        ("../connectors/google/drive", "src/ops"),
+        ("../connectors/google/gmail", "src/ops"),
+        ("../connectors/google/sheets", "src/ops"),
+        ("../connectors/github/issues", "src/generated/ops"),
+    ];
+    for (relative_root, ops_dir) in connector_crates {
+        let root = crate_root.join(relative_root);
         let yaml = fs::read_to_string(root.join("connector.yaml")).unwrap();
         let manifest = ConnectorManifest::from_yaml_str(&yaml).unwrap();
 
@@ -25,15 +26,70 @@ fn broker_contract_member_presence_matches_contract_declaration_for_every_google
                 continue;
             };
             let module = generated_module_name(&action.identifier);
-            let checked_in = fs::read_to_string(root.join(format!("src/ops/{module}.rs"))).unwrap();
-            let expects_member = action.contract.is_some();
-
-            assert_eq!(
+            let checked_in =
+                fs::read_to_string(root.join(format!("{ops_dir}/{module}.rs"))).unwrap();
+            assert!(
                 checked_in.contains("pub const BROKER_CONTRACT"),
-                expects_member,
-                "checked-in BROKER_CONTRACT shape drifted for {}",
+                "checked-in BROKER_CONTRACT is absent for {}",
+                action.identifier
+            );
+            assert!(
+                checked_in.contains("broker_contract: Self::BROKER_CONTRACT"),
+                "checked-in META is not tied to BROKER_CONTRACT for {}",
+                action.identifier
+            );
+            assert_eq!(
+                checked_in.contains("= Some("),
+                action.contract.is_some(),
+                "checked-in BROKER_CONTRACT option drifted for {}",
                 action.identifier
             );
         }
+    }
+}
+
+#[test]
+fn github_checked_in_operations_match_fresh_codegen() {
+    let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = crate_root.join("../connectors/github/issues");
+    let yaml = fs::read_to_string(root.join("connector.yaml")).unwrap();
+    let manifest = ConnectorManifest::from_yaml_str(&yaml).unwrap();
+    let generated = generate_files(&manifest, &yaml).unwrap();
+
+    for surface in &manifest.surfaces {
+        let SurfaceDecl::Action(action) = surface else {
+            continue;
+        };
+        let module = generated_module_name(&action.identifier);
+        let relative = format!("src/generated/ops/{module}.rs");
+        let expected = &generated
+            .iter()
+            .find(|file| file.relative_path == relative)
+            .unwrap()
+            .contents;
+        let checked_in = fs::read_to_string(root.join(&relative)).unwrap();
+        assert_eq!(
+            tokens_without_formatting(&checked_in),
+            tokens_without_formatting(expected),
+            "checked-in generated operation drifted for {}",
+            action.identifier
+        );
+    }
+}
+
+fn tokens_without_formatting(source: &str) -> String {
+    let generated_body = source
+        .find("const ")
+        .map_or(source, |index| &source[index..]);
+    let mut normalized: String = generated_body.split_whitespace().collect();
+    loop {
+        let without_trailing_commas = normalized
+            .replace(",}", "}")
+            .replace(",]", "]")
+            .replace(",)", ")");
+        if without_trailing_commas == normalized {
+            return normalized;
+        }
+        normalized = without_trailing_commas;
     }
 }

@@ -681,6 +681,7 @@ fn bound_connector_flow(flow_id: &str, static_hints: &'static [&'static str]) ->
         .push(ConnectorOpRefIR {
             operation_id: "connector.test.read".to_string(),
             connector_id: "connector.test".to_string(),
+            broker_contract: None,
             roles: Vec::new(),
             default_resolution_mode: ConnectorResolutionModeDecl::BoundConnection,
             selected_resolution_mode: ConnectorResolutionModeDecl::BoundConnection,

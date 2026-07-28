@@ -121,7 +121,7 @@ fn resolve_requirements(args: &RequirementsArgs) -> Result<FlowRequirements> {
 /// `pub(crate)`: `flows deploy render` (W1) reuses the same source resolution.
 pub(crate) fn requirements_from_example(example: &str) -> Result<FlowRequirements> {
     let handle = load_example(example)?;
-    Ok(kernel_plan::derive_requirements(&handle.ir))
+    kernel_plan::derive_requirements(&handle.ir).map_err(Into::into)
 }
 
 /// Read the enriched requirements an already-built bundle carried for the

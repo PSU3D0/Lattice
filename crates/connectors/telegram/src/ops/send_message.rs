@@ -13,6 +13,7 @@ impl TelegramSendMessage {
         max_determinism: ::dag_core::Determinism::BestEffort,
         determinism_hints: &[capabilities::http::HINT_HTTP],
         effect_hints: &[capabilities::http::HINT_HTTP_WRITE],
+        broker_contract: None,
         roles: &[
             ::dag_core::ConnectorRoleRequirement {
                 kind: ::dag_core::ConnectorRoleKindDecl::EndpointProfile,

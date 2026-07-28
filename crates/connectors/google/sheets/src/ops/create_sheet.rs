@@ -5,6 +5,8 @@ use crate::runtime::sheets_api::SheetsApi;
 pub struct GoogleSheetsCreateSheet;
 
 impl GoogleSheetsCreateSheet {
+    pub const BROKER_CONTRACT: Option<::dag_core::BrokerContractMetadata> = None;
+
     pub const META: ::dag_core::ConnectorOpMetadata = ::dag_core::ConnectorOpMetadata {
         operation_id: "connector.google.sheets.create_sheet",
         connector_id: "connector.google.sheets",
@@ -13,6 +15,7 @@ impl GoogleSheetsCreateSheet {
         max_determinism: ::dag_core::Determinism::BestEffort,
         determinism_hints: &[capabilities::http::HINT_HTTP],
         effect_hints: &[capabilities::http::HINT_HTTP_WRITE],
+        broker_contract: Self::BROKER_CONTRACT,
         roles: &[
             ::dag_core::ConnectorRoleRequirement {
                 kind: ::dag_core::ConnectorRoleKindDecl::EndpointProfile,

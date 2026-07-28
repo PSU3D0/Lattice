@@ -24,8 +24,9 @@ pub use effect_hint::{EffectHint, UnknownEffectHint};
 pub use effects::{Determinism, Effects, NodeError, NodeResult};
 pub use ir::*;
 pub use requirements::{
-    FLOW_REQUIREMENTS_SCHEMA_VERSION, FlowRequirements, ImplementationDependencyRequirement,
-    RequirementsError,
+    ConnectionScopeClosure, ContractScopeDescriptor, FLOW_REQUIREMENTS_SCHEMA_VERSION,
+    FlowRequirements, ImplementationDependencyRequirement, RequirementsError,
+    ScopeClosureResolution,
 };
 pub use serde_json;
 use std::marker::PhantomData;

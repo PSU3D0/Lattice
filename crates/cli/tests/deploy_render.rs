@@ -710,11 +710,11 @@ fn custom_name_overrides_derived_worker_name() {
 }
 
 // ---------------------------------------------------------------------------
-// Typed-dependency schema floor: an older manifest must be regenerated rather
-// than defaulting implementation dependencies empty.
+// Unstable schema versions require an exact reader opt-in rather than silently
+// defaulting fields introduced by newer minor versions.
 // ---------------------------------------------------------------------------
 #[test]
-fn pre_implementation_dependency_schema_fails_workers_render_closed() {
+fn unknown_unstable_minor_schema_fails_workers_render_closed() {
     let mut requirements =
         dag_core::FlowRequirements::derive(&example_s1_echo::flow()).expect("derive requirements");
     requirements.schema_version = "0.1".to_string();
@@ -736,10 +736,9 @@ fn pre_implementation_dependency_schema_fails_workers_render_closed() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("predates the typed implementation-dependency placement surface"),
+        stderr.contains("unsupported FlowRequirements schema_version `0.1`; expected `0.4`"),
         "{stderr}"
     );
-    assert!(stderr.contains("regenerate requirements"), "{stderr}");
 }
 
 // ---------------------------------------------------------------------------

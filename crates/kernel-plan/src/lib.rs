@@ -65,13 +65,13 @@ pub fn validate(flow: &FlowIR) -> Result<ValidatedIR, Vec<Diagnostic>> {
 ///
 /// Lives in kernel-plan (not dag-core) at the public-API level because the
 /// manifest must only ever be derived from a `ValidatedIR`: EFFECT202
-/// validation is what guarantees every effect hint parses as a canonical
-/// `dag_core::EffectHint`, which is what makes this function infallible.
-pub fn derive_requirements(ir: &ValidatedIR) -> dag_core::FlowRequirements {
-    dag_core::FlowRequirements::derive(ir.flow()).expect(
-        "ValidatedIR guarantees canonical effect hints (EFFECT202); \
-         derivation cannot fail on validated IR",
-    )
+/// Validation guarantees canonical effect hints, but requirements derivation
+/// can still reject malformed recursive metadata. Return that error rather
+/// than panicking in callers that handle valid, unexpanded subflows.
+pub fn derive_requirements(
+    ir: &ValidatedIR,
+) -> Result<dag_core::FlowRequirements, dag_core::RequirementsError> {
+    dag_core::FlowRequirements::derive(ir.flow())
 }
 
 /// Strict validation mode that fails on any diagnostic severity.
@@ -1706,6 +1706,18 @@ mod tests {
         builder.build()
     }
 
+    #[test]
+    fn unexpanded_subflow_requirements_are_reported_without_panicking() {
+        let mut flow = build_sample_flow();
+        flow.nodes[0].kind = dag_core::NodeKind::Subflow;
+        let validated = validate(&flow).expect("unexpanded composed flow remains valid");
+        let requirements = derive_requirements(&validated).expect("derive requirements");
+        assert!(matches!(
+            requirements.scope_resolution,
+            dag_core::ScopeClosureResolution::Unresolved { .. }
+        ));
+    }
+
     fn downgrade_effect(level: Effects) -> Option<Effects> {
         match level {
             Effects::Effectful => Some(Effects::ReadOnly),
@@ -3033,7 +3045,7 @@ mod tests {
     fn schedule_entrypoint_with_valid_cron_validates() {
         let flow = schedule_test_flow(vec![schedule_entry("tick", "*/5 * * * *")]);
         let validated = validate(&flow).expect("schedule flow should validate");
-        let requirements = derive_requirements(&validated);
+        let requirements = derive_requirements(&validated).expect("derive requirements");
 
         assert_eq!(requirements.triggers.len(), 1);
         let trigger = &requirements.triggers[0];
@@ -3111,7 +3123,7 @@ mod tests {
             schedule_entry("tick", "0 0 * * *"),
         ]);
         let validated = validate(&flow).expect("multi-cadence schedule flow should validate");
-        let requirements = derive_requirements(&validated);
+        let requirements = derive_requirements(&validated).expect("derive requirements");
         assert_eq!(
             requirements.triggers[0].crons,
             vec!["*/5 * * * *".to_string(), "0 0 * * *".to_string()]
@@ -3608,6 +3620,7 @@ mod tests {
                 max_determinism: Determinism::BestEffort,
                 determinism_hints: &[capabilities::http::HINT_HTTP],
                 effect_hints: &[capabilities::http::HINT_HTTP_WRITE],
+                broker_contract: None,
                 roles: &[
                     dag_core::ConnectorRoleRequirement {
                         kind: dag_core::ConnectorRoleKindDecl::EndpointProfile,

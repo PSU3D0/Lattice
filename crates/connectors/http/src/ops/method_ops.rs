@@ -114,6 +114,7 @@ macro_rules! define_op {
                 max_determinism: ::dag_core::Determinism::BestEffort,
                 determinism_hints: &[capabilities::http::HINT_HTTP],
                 effect_hints: &[capabilities::http::$hint],
+                broker_contract: None,
                 roles: $roles,
                 resolution: RESOLUTION,
             };

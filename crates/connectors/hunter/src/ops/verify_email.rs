@@ -13,6 +13,7 @@ impl HunterVerifyEmail {
         max_determinism: ::dag_core::Determinism::BestEffort,
         determinism_hints: &[capabilities::http::HINT_HTTP],
         effect_hints: &[capabilities::http::HINT_HTTP_READ],
+        broker_contract: None,
         roles: &[
             ::dag_core::ConnectorRoleRequirement {
                 kind: ::dag_core::ConnectorRoleKindDecl::EndpointProfile,

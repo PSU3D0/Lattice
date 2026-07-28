@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.3",
+  "schema_version": "0.4",
   "flow": {
     "id": "00000000-0000-5000-8000-000000000003",
     "name": "host_workers_repro_flow",
@@ -15,9 +15,16 @@
       "resource::workspace"
     ],
     "per_node": {
-      "scan": ["resource::workspace::read"],
-      "upload": ["resource::workspace::write"]
+      "scan": [
+        "resource::workspace::read"
+      ],
+      "upload": [
+        "resource::workspace::write"
+      ]
     }
+  },
+  "scope_resolution": {
+    "status": "not_required"
   },
   "durability": {
     "mode": "partial",
@@ -40,7 +47,9 @@
       "capture_alias": "capture",
       "route_path": "/run",
       "method": "POST",
-      "route_aliases": ["/run"]
+      "route_aliases": [
+        "/run"
+      ]
     }
   ],
   "host": {

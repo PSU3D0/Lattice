@@ -1,7 +1,7 @@
 # wrangler.toml — rendered by `flows deploy render` (infra-from-code v0).
 #
 # flow: schedule_demo_flow v1.0.0 (id 00000000-0000-5000-8000-000000000002)
-# requirements schema: 0.3
+# requirements schema: 0.4
 #
 # Review every REPLACE_WITH_* placeholder before `wrangler deploy`; each carries
 # a comment with the exact `wrangler` command that creates the resource.

@@ -741,7 +741,7 @@ fn run_local(args: LocalArgs) -> Result<()> {
     let handle = load_example(&args.example)?;
 
     if burst > 1 {
-        let requirements = kernel_plan::derive_requirements(&handle.ir);
+        let requirements = kernel_plan::derive_requirements(&handle.ir)?;
         let workspace_hints: Vec<_> = requirements
             .effects
             .union
@@ -5235,6 +5235,7 @@ RGKOKF9RKKgFGiXk5I97qQ==
                 .push(dag_core::ConnectorOpRefIR {
                     operation_id: "connector.formualizer.sheetport.evaluate".to_string(),
                     connector_id: "connector.formualizer.sheetport".to_string(),
+                    broker_contract: None,
                     roles: Vec::new(),
                     default_resolution_mode: dag_core::ConnectorResolutionModeDecl::BoundConnection,
                     selected_resolution_mode: mode,

@@ -9,6 +9,7 @@ impl GoogleGmailSendMessage {
         ::dag_core::BrokerContractMetadata {
             contract_id: "connector.google.gmail.send_message@1",
             contract_hash: "sha256:8fbdd2dbb63877b92004b7b5e6a7dc665a0ec5788850e4a466c0b6200639de2a",
+            minimum_scopes: &["https://www.googleapis.com/auth/gmail.send"],
         },
     );
 
@@ -20,6 +21,7 @@ impl GoogleGmailSendMessage {
         max_determinism: ::dag_core::Determinism::BestEffort,
         determinism_hints: &[capabilities::http::HINT_HTTP],
         effect_hints: &[capabilities::http::HINT_HTTP_WRITE],
+        broker_contract: Self::BROKER_CONTRACT,
         roles: &[
             ::dag_core::ConnectorRoleRequirement {
                 kind: ::dag_core::ConnectorRoleKindDecl::EndpointProfile,

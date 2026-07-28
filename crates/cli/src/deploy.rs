@@ -313,15 +313,12 @@ fn requirements_from_file(path: &Path) -> Result<FlowRequirements> {
             path.display()
         )
     })?;
-    // Versioning policy (impl-docs/spec/flow-requirements.md): consumers MUST
-    // reject unknown major shapes.
-    if !requirements.schema_version.starts_with("0.") {
-        bail!(
-            "unsupported FlowRequirements schema_version `{}` in {} (this toolchain understands 0.x)",
-            requirements.schema_version,
-            path.display()
-        );
-    }
+    // Deserialization rejects every shape except the exact schema version this
+    // toolchain understands. Unstable 0.x minor versions are not compatible.
+    debug_assert_eq!(
+        requirements.schema_version,
+        dag_core::FLOW_REQUIREMENTS_SCHEMA_VERSION
+    );
     Ok(requirements)
 }
 

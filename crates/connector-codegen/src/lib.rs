@@ -743,9 +743,10 @@ fn emit_op_file(manifest: &ConnectorManifest, action: &ActionSurface) -> String 
 
     out.push_str(&format!("pub struct {};\n\n", op_struct));
     out.push_str(&format!("impl {} {{\n", op_struct));
+    out.push_str("    pub const BROKER_CONTRACT: Option<::dag_core::BrokerContractMetadata> = ");
     if let Some(contract) = &action.contract {
         let hash = contract_hash(manifest, action).expect("validated contract descriptor");
-        out.push_str("    pub const BROKER_CONTRACT: Option<::dag_core::BrokerContractMetadata> = Some(::dag_core::BrokerContractMetadata {\n");
+        out.push_str("Some(::dag_core::BrokerContractMetadata {\n");
         out.push_str(&format!(
             "        contract_id: \"{}\",\n",
             escape_rust_string(&contract.contract_id)
@@ -754,7 +755,13 @@ fn emit_op_file(manifest: &ConnectorManifest, action: &ActionSurface) -> String 
             "        contract_hash: \"{}\",\n",
             escape_rust_string(&hash)
         ));
+        out.push_str(&format!(
+            "        minimum_scopes: &{},\n",
+            emit_string_slice(&contract.minimum_scopes)
+        ));
         out.push_str("    });\n\n");
+    } else {
+        out.push_str("None;\n\n");
     }
     out.push_str(
         "    pub const META: ::dag_core::ConnectorOpMetadata = ::dag_core::ConnectorOpMetadata {\n",
@@ -787,6 +794,7 @@ fn emit_op_file(manifest: &ConnectorManifest, action: &ActionSurface) -> String 
         "        effect_hints: &{},\n",
         emit_connector_effect_hints(&action.resources)
     ));
+    out.push_str("        broker_contract: Self::BROKER_CONTRACT,\n");
     out.push_str(&format!(
         "        roles: &{},\n",
         emit_connector_role_requirements(manifest, action)
@@ -934,6 +942,15 @@ fn emit_outbound_auth_kind(profile: &OutboundAuthProfile) -> String {
             escape_rust_string(other.handle_kind())
         ),
     }
+}
+
+fn emit_string_slice(values: &[String]) -> String {
+    let values = values
+        .iter()
+        .map(|value| format!("\"{}\"", escape_rust_string(value)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[{values}]")
 }
 
 fn emit_field_binding_slice(bindings: &std::collections::BTreeMap<String, String>) -> String {

@@ -29,6 +29,7 @@ impl SheetPortEvaluate {
         // Evaluate materializes the workbook from blob storage before running
         // the semantic function, so the op intrinsically reads blobs.
         effect_hints: &[::dag_core::EffectHint::BlobRead.as_str()],
+        broker_contract: None,
         roles: &[],
         resolution: ::dag_core::ConnectorResolutionContract {
             supported_modes: &[

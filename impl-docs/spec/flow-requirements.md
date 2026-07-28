@@ -3,7 +3,7 @@ Purpose: spec
 Owner: Core
 Last reviewed: 2026-07-16
 
-# Flow Requirements Manifest (0.3)
+# Flow Requirements Manifest (0.4)
 
 This document specifies `FlowRequirements`: a static, machine-readable
 manifest that answers "what does this flow need to run?" entirely from the
@@ -44,21 +44,23 @@ Related docs:
 
 ## The static derivability rule
 
-Every field of `FlowRequirements` MUST be computable from:
+The identity phase of `FlowRequirements` MUST be computable from:
 
-1. a `ValidatedIR` (kernel-plan validated Flow IR), and
-2. the connector operation metadata already hoisted into it
+1. a `ValidatedIR` (kernel-plan validated Flow IR),
+2. connector operation metadata already hoisted into it
    (`NodeIR.connector_ops`, populated from `ConnectorOpMetadata` at macro
    expansion), and
 3. optionally, bundle-assembly context (the serialized Flow IR hash and flow
    registry entrypoint specs).
 
-Nothing may require executing a node, calling a live connector runtime,
-reading the environment, or consulting a deployment. `derive_requirements`
-is a pure function; the C2 regression test (preflight performs zero
-`ConnectorRuntime` calls) extends the same guarantee to preflight.
+`derive_requirements` remains this pure identity phase. Contracted operations
+carry only hash-pinned contract identity in Flow IR. Scope closure is a second,
+explicitly failable phase that resolves `minimum_scopes` from descriptor data
+by exact contract hash; unknown hashes and identity mismatches fail closed.
+Neither phase executes a node, calls a live connector runtime, reads the
+environment, consults a deployment, or enforces against live state.
 
-## Manifest shape (schema_version 0.3)
+## Manifest shape (schema_version 0.4)
 
 Top-level type: `dag_core::requirements::FlowRequirements`
 (serde + schemars; JSON schema generated at
@@ -73,7 +75,7 @@ is identical minus the two bundle-assembly enrichments, `deadline_ms` and
 
 ```json
 {
-  "schema_version": "0.3",
+  "schema_version": "0.4",
   "flow": {
     "id": "bac0586b-907c-5d76-8f31-029beefc2977",
     "name": "s12_sheetport_quote_flow",
@@ -134,14 +136,16 @@ is identical minus the two bundle-assembly enrichments, `deadline_ms` and
 
 | Field | Derived from | Rule |
 | --- | --- | --- |
-| `schema_version` | constant | `FLOW_REQUIREMENTS_SCHEMA_VERSION` (`"0.3"`). |
+| `schema_version` | constant | `FLOW_REQUIREMENTS_SCHEMA_VERSION` (`"0.4"`). |
 | `flow.{id,name,version}` | `FlowIR` | Copied verbatim; `id` is the UUIDv5 of `name:version`. |
 | `profile` | `FlowIR.profile` | Copied verbatim. |
 | `effects.union` | `NodeIR.effect_hints` | Union of all hints that parse as `dag_core::EffectHint`, sorted by canonical string. `policy::*` markers (e.g. the TYPE001 `policy::json_boundary` annotation) are lint metadata, not capability requirements, and are skipped. Any other unparseable hint fails derivation closed (same condition kernel-plan rejects as EFFECT202). Connector-op effect hints are already included because macro expansion hoists `ConnectorOpMetadata.effect_hints` into `NodeIR.effect_hints`. |
 | `effects.families` | `effects.union` | `EffectHint::family()` of each union member, deduplicated, sorted. A planner provisioning capability providers works at this granularity. |
 | `effects.per_node` | `NodeIR.effect_hints` | Node alias → sorted hints; only nodes declaring at least one capability hint appear. |
 | `implementation_dependencies` | `NodeIR.implementation_dependencies` | Generic typed implementation contracts are grouped by `(kind, key)` with sorted node aliases in `nodes`. Keys are non-empty, at most 128 ASCII bytes, start alphanumeric, and contain only alphanumeric, `.`, `_`, or `-`; invalid metadata fails derivation closed. Dag-core never infers dependencies from handler identifiers, summaries, source text, or effect hints, and contains no product-specific keys. Empty lists are omitted. |
-| `connectors` | `NodeIR.connector_ops` | Grouped by `connector_id`, then `operation_id`. Per operation: declared `roles` (`ConnectorOpMetadata.roles` as serialized in `ConnectorOpRefIR`), `supported_resolution_modes` and `default_resolution_mode` verbatim, `selected_resolution_modes` = sorted set of the modes nodes actually selected, `requires_bound_connection` = any selection is `bound_connection`, `nodes` = sorted aliases declaring the op. |
+| `connectors` | recursive `NodeIR.connector_ops` | Grouped by `connector_id`, then `operation_id`, including embedded `subflow_ir`. Per operation: optional hash-pinned `broker_contract` identity, declared roles and resolution modes, selected modes, bound-connection requirement, and sorted qualified node aliases. An unexpanded subflow is recorded explicitly in `scope_resolution` and contributes only metadata known at that phase; cycles, depth over 64, or conflicting identities fail closed. |
+| `scope_closures` | full exact-hash contract descriptors + broker-authority aggregate keys | Explicit second phase only. The API recomputes the JCS descriptor hash before accepting its opaque descriptor value and verifies the exact serialized Flow IR hash. One sorted entry per `connection_aggregate_key` (including the unkeyed default partition), with exact contributing contract identities and the sorted union of descriptor-owned `minimum_scopes`. Unknown hashes, ID mismatches, malformed scope sets, missing pinned identity, unresolved subflows, and authored authority disagreement fail closed. Report-only in 0.4; no live bind/invoke enforcement consumes it. |
+| `scope_resolution` | connector identity, broker authority, subflow expansion state, descriptor resolution | Required tagged state: `not_required`, `unresolved` (with qualified unresolved subflow aliases when present), or `resolved`. This prevents an omitted empty closure from being interpreted as a completed zero-scope report. |
 | `durability` | `FlowIR.policies.durability` + `NodeIR.durability` + node identifiers | Mirrors host-inproc `collect_missing_durability_services` exactly: `needs_checkpoint_store` ⇔ mode ≠ `off`; `needs_resume_scheduler` ⇔ halting nodes present AND a `std.timer.wait` node exists; `needs_resume_signal_source` ⇔ halting nodes present AND a `std.callback.wait`/`std.hitl.approval` node exists; `needs_checkpoint_blob_store` ⇔ mode ≠ `off` AND `blob_threshold_bytes` configured. |
 | `triggers` | `NodeIR.kind == Trigger` + `FlowMetadata.entrypoints` | One entry per trigger node. `kind` is `schedule` when the alias is wired to an entrypoint carrying `schedule`, `http` when wired to one without, else `unspecified` (extend the enum when polling/webhook trigger runtimes land). TRIG003 validation guarantees the schedule/http cases are disjoint. `crons` lists the schedule expressions of the entrypoints wired to that alias (skip-when-empty; the wrangler renderer's `[triggers].crons` union reads this). |
 | `entrypoints` | `FlowMetadata.entrypoints` (+ registry specs at bundle time) | Route path/method/aliases and `schedule` (skip-when-absent, byte-verbatim cron) copied from IR metadata. `deadline_ms` is NOT in Flow IR metadata today; it is enriched during bundle assembly from the flow registry's `EntrypointSpec` (`exporters::bundle`). When derived directly from IR (e.g. future `flows bundle requirements` on a bare IR), `deadline_ms` is `null`. |
@@ -200,17 +204,16 @@ time.
 - `schema_version` versions the manifest *shape*. `0.1` was the initial shape;
   `0.2` briefly added an identifier-derived native-only surface; `0.3` replaces
   it with generic typed `implementation_dependencies` derived exclusively from
-  node metadata. Dag-core owns only generic dependency kinds; declaring crates
-  own stable keys and target renderers decide support. Workers deployment
-  rendering rejects manifests older than `0.3`, because defaulting an absent
-  dependency list would bypass the static placement gate. Regenerate older
+  node metadata. `0.4` adds hash-pinned connector contract identity, recursive
+  subflow connector derivation, and report-only per-connection scope closure.
+  Dag-core owns only generic dependency kinds and treats scope strings as
+  opaque descriptor data; it has no provider knowledge. Because `0.x` minor
+  versions are unstable shapes, current consumers accept exactly `0.4` and
+  reject every other version before using the manifest. Regenerate older
   manifests with the current toolchain.
-- New trigger `kind` values are *tolerated additive values* under `0.x`
-  (policy decided at `0.1` in `impl-docs/spec/schedule-trigger.md` §6, first exercised by
-  `"schedule"`): a consumer encountering an unknown trigger `kind` MUST treat
-  that flow as "cannot place" (fail closed per-flow) rather than reject the
-  manifest. This keeps bundle ids stable for every flow that does not use the
-  new kind.
+- New enum values require a schema-version bump and a deliberate reader
+  migration. Unknown trigger kinds and unknown `0.x` minors fail closed rather
+  than being silently discarded.
 - `flow.{id,name,version}` pins the manifest to a flow revision. `flow.id`
   is derived from name+version, so a version bump changes the id.
 - `flow_ir_hash` pins the manifest to the exact serialized IR artifact in the

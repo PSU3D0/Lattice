@@ -11,6 +11,7 @@ impl GoogleSheetsCreateSpreadsheet {
         ::dag_core::BrokerContractMetadata {
             contract_id: "connector.google.sheets.create_spreadsheet@1",
             contract_hash: "sha256:8d01e95713c226e5200a113f6a718e6b48e1e79ce4362f04bfae059d51926165",
+            minimum_scopes: &["https://www.googleapis.com/auth/spreadsheets"],
         },
     );
 
@@ -22,6 +23,7 @@ impl GoogleSheetsCreateSpreadsheet {
         max_determinism: ::dag_core::Determinism::BestEffort,
         determinism_hints: &[capabilities::http::HINT_HTTP],
         effect_hints: &[capabilities::http::HINT_HTTP_WRITE],
+        broker_contract: Self::BROKER_CONTRACT,
         roles: &[
             ::dag_core::ConnectorRoleRequirement {
                 kind: ::dag_core::ConnectorRoleKindDecl::EndpointProfile,

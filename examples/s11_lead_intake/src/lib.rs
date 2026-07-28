@@ -54,6 +54,7 @@ impl OpenAiStructuredExtractOp {
         max_determinism: Determinism::Nondeterministic,
         determinism_hints: &[capabilities::http::HINT_HTTP],
         effect_hints: &[capabilities::http::HINT_HTTP_WRITE],
+        broker_contract: None,
         roles: &[
             ConnectorRoleRequirement {
                 kind: ConnectorRoleKindDecl::EndpointProfile,
@@ -85,6 +86,7 @@ impl OpenAiDraftOp {
         max_determinism: Determinism::Nondeterministic,
         determinism_hints: &[capabilities::http::HINT_HTTP],
         effect_hints: &[capabilities::http::HINT_HTTP_WRITE],
+        broker_contract: None,
         roles: &[
             ConnectorRoleRequirement {
                 kind: ConnectorRoleKindDecl::EndpointProfile,
@@ -116,6 +118,7 @@ impl OpenAiImageGenOp {
         max_determinism: Determinism::Nondeterministic,
         determinism_hints: &[capabilities::http::HINT_HTTP],
         effect_hints: &[capabilities::http::HINT_HTTP_WRITE],
+        broker_contract: None,
         roles: &[
             ConnectorRoleRequirement {
                 kind: ConnectorRoleKindDecl::EndpointProfile,
