@@ -80,6 +80,8 @@ describe("private Google token and account egress", () => {
     const value = await response.json();
     const url = new URL(value.authorization_url);
     expect(`${url.origin}${url.pathname}`).toBe("https://accounts.google.com/o/oauth2/v2/auth");
+    // Mutation: remove access_type (or prompt) from authorize() in token-worker.mjs.
+    // The exact request-shape assertion must fail because exchange requires a durable refresh token.
     expect(Object.fromEntries(url.searchParams)).toEqual({
       client_id: "google-client-id-private",
       redirect_uri: "https://broker.example/v0.2/credential-callback",
@@ -148,6 +150,7 @@ describe("private Google token and account egress", () => {
   });
 
   it("fails closed when an authorization-code exchange omits the required refresh token", async () => {
+    // Mutation: make refresh_token optional in exchange() in token-worker.mjs. This must become 200.
     const response = await exchangeCode("missing-refresh-token", "exchange-missing-refresh");
     expect(response.status).toBe(503);
     expect(await response.json()).toEqual({ error: "provider_response_invalid" });
