@@ -4,8 +4,8 @@
   "package_version": "0.1.0",
   "requirements_sha256": "912bfee6e786efc2506216a19737f21a2489134bf230cd828b80befc3e80fd03",
   "cargo_lock_sha256": "9beeb0a4190f492556c8b8cd575477143fd4128b166312b8769a98377dc225bd",
-  "wasm_sha256": "f6ae5d6aca1222b96d3211981405f14a1b3aeb6ffe6246b6a4934ed4b0fe032b",
-  "root_production_wasm_sha256": "f6ae5d6aca1222b96d3211981405f14a1b3aeb6ffe6246b6a4934ed4b0fe032b",
+  "wasm_sha256": "d8db70202484175f62c18869b0e509748e0504908e025f64aea602cb421513fb",
+  "root_production_wasm_sha256": "d8db70202484175f62c18869b0e509748e0504908e025f64aea602cb421513fb",
   "feature_flags": {
     "production": [],
     "workerd_tests_separate_artifact": [
@@ -100,8 +100,8 @@
     },
     {
       "path": "crates/broker-core/src/credential/model.rs",
-      "sha256": "65a6441d74f8c120e83ce3efdd15f74a9506bbcc483fc09d08e1d4f6cf9de51b",
-      "size_bytes": 16853
+      "sha256": "2438cc1a2aafebf682888c06385302d677a23c907cc8e23391e4462a7bad1b73",
+      "size_bytes": 17385
     },
     {
       "path": "crates/broker-core/src/credential/policy.rs",
@@ -260,8 +260,8 @@
     },
     {
       "path": "crates/broker-workers/build/index_bg.wasm",
-      "sha256": "f6ae5d6aca1222b96d3211981405f14a1b3aeb6ffe6246b6a4934ed4b0fe032b",
-      "size_bytes": 5807274
+      "sha256": "d8db70202484175f62c18869b0e509748e0504908e025f64aea602cb421513fb",
+      "size_bytes": 5807493
     },
     {
       "path": "crates/broker-workers/build/index.js",
@@ -315,8 +315,8 @@
     },
     {
       "path": "crates/broker-workers/deploy/GOOGLE-OAUTH-RUNBOOK.md",
-      "sha256": "57795c251fc805f3df61b74cb784f1e7820fa4065448917165a3613b6129c191",
-      "size_bytes": 18175
+      "sha256": "d98bdcf67bbb0502b6631b4b463dc1f46ad4c57376ca4ae393421fedd43ed31e",
+      "size_bytes": 18625
     },
     {
       "path": "crates/broker-workers/deploy/public-callback/src/index.mjs",
@@ -375,8 +375,8 @@
     },
     {
       "path": "crates/broker-workers/deploy/scripts/operator-artifacts.mjs",
-      "sha256": "d540a6b1890c237ac4be10eb72d4b5453d1f822a9a75df9c76571412c2ec72e6",
-      "size_bytes": 16154
+      "sha256": "111bdb71e7e5cdda70caa9efb41969f3e1e3955ffdaad12d86da7c7c19c87cbb",
+      "size_bytes": 16263
     },
     {
       "path": "crates/broker-workers/deploy/scripts/operator-artifacts.test.mjs",
@@ -385,13 +385,13 @@
     },
     {
       "path": "crates/broker-workers/deploy/scripts/operator-input.mjs",
-      "sha256": "4e46a9b477a64a93071e5607ddb50b4f067cedb3209ec8b716ccc4016385511e",
-      "size_bytes": 20467
+      "sha256": "9db5f5ab744e8173a9e3d853b37d1fe6c406f20ce004f6dc085608dad35e7dc4",
+      "size_bytes": 20554
     },
     {
       "path": "crates/broker-workers/deploy/scripts/operator-input.test.mjs",
-      "sha256": "82e08a83e0013b79eb42a7efce081ea570b4f859eec499b3141da818a098158d",
-      "size_bytes": 8637
+      "sha256": "1f03dc8f29ee83191bf8587cb5ff3b7b1f55fd928fe256aa9b51a223da855668",
+      "size_bytes": 10789
     },
     {
       "path": "crates/broker-workers/deploy/scripts/private-worker-deploy-lib.mjs",
@@ -945,8 +945,8 @@
     },
     {
       "path": "impl-docs/spec/credential-plane-protocol.schema.json",
-      "sha256": "2a97c4f963e32d541e3759d8d0da5d64ebcc7841878b5f99de0221032c4a6790",
-      "size_bytes": 175572
+      "sha256": "dbfcae4d059a64d390d3e37adc0ea97a1cc8771f84990062cdfd782090e498d6",
+      "size_bytes": 175590
     },
     {
       "path": "requirements.json",

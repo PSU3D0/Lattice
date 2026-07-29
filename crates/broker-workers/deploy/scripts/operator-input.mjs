@@ -15,10 +15,16 @@ const SPEND = /^\d+(?:\.\d{1,2})?$/;
 const RATE = /^[1-9]\d{0,5}$/;
 const PENDING_SIGNATURE = Object.freeze({ alg: "Ed25519", key_id: "pending", value: "pending" });
 
+function compareText(left, right) {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
 export function canonical(value) {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   if (value && typeof value === "object") {
-    return `{${Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, child]) => `${JSON.stringify(key)}:${canonical(child)}`).join(",")}}`;
+    return `{${Object.entries(value).sort(([left], [right]) => compareText(left, right)).map(([key, child]) => `${JSON.stringify(key)}:${canonical(child)}`).join(",")}}`;
   }
   return JSON.stringify(value);
 }
@@ -149,7 +155,7 @@ async function descriptors() {
     if (descriptor.contract_hash !== actual) fail(`generated descriptor contract hash mismatch: ${descriptor.contract?.contract_id ?? path.pathname}`);
     output.push(descriptor);
   }
-  output.sort((left, right) => canonical(left.contract.contract_id).localeCompare(canonical(right.contract.contract_id)));
+  output.sort((left, right) => compareText(left.contract.contract_id, right.contract.contract_id));
   return output;
 }
 
@@ -211,7 +217,7 @@ async function registryArtifacts(args, generatedDescriptors) {
   profile.class_payload.descriptor_hash = hash(canonical(profile.class_payload.descriptor));
   definitionPrehashes.set(profile.entry_ref, unsignedHash(profile));
 
-  definitions.sort((left, right) => canonical(left).localeCompare(canonical(right)));
+  definitions.sort((left, right) => compareText(canonical(left), canonical(right)));
   const decisions = definitions.map((definition) => ({
     schema_version: "0.2",
     critical_fields: [],
@@ -228,7 +234,7 @@ async function registryArtifacts(args, generatedDescriptors) {
     policy_hash: hash(canonical({ class: definition.class, implementation_digest: definition.class_payload.implementation_digest ?? definition.class_payload.descriptor_hash })),
     not_before: args.get("--not-before"),
     expires_at: args.get("--expires-at"),
-  })).sort((left, right) => canonical(left).localeCompare(canonical(right)));
+  })).sort((left, right) => compareText(canonical(left), canonical(right)));
   return { definitions, decisions, definitionPrehashes: Object.fromEntries(definitionPrehashes) };
 }
 
@@ -264,7 +270,7 @@ export async function generateInput(args, { now = Date.now() } = {}) {
     org_id: args.get("--org-id"),
     deployment_id: args.get("--deployment-id"),
     connector_ref: "connector.google.workspace@1",
-    contracts: generatedDescriptors.map(contractEntry).sort((left, right) => canonical(left).localeCompare(canonical(right))),
+    contracts: generatedDescriptors.map(contractEntry).sort((left, right) => compareText(left.contract_id, right.contract_id)),
     issuer: `${prefix}.operator`,
     key_id: args.get("--key-id"),
   };

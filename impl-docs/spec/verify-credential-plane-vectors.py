@@ -107,7 +107,11 @@ def schema_errors(value, schema, path="$"):
             errors += schema_errors(item, item_schema, f"{path}/{index}")
         if schema.get("uniqueItems") and len({jcs(item) for item in value}) != len(value):
             errors.append(f"{path}: duplicate items")
-        if schema.get("x-lattice-sorted") and value != sorted(value, key=jcs):
+        sorted_by = schema.get("x-lattice-sorted-by")
+        identity_keys = [item.get(sorted_by) if isinstance(item, dict) else None for item in value]
+        if sorted_by and (any(not isinstance(key, str) for key in identity_keys) or len(set(identity_keys)) != len(identity_keys) or identity_keys != sorted(identity_keys)):
+            errors.append(f"{path}: items are not uniquely sorted by {sorted_by}")
+        elif schema.get("x-lattice-sorted") and value != sorted(value, key=jcs):
             errors.append(f"{path}: items are not JCS sorted")
     if isinstance(value, str):
         if len(value) < schema.get("minLength", 0):

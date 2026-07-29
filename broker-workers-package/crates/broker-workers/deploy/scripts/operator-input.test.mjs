@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { generateKeyPairSync } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { chmod, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,7 +11,7 @@ import { parsePredicates } from "./operator-input.mjs";
 const generator = new URL("./operator-input.mjs", import.meta.url).pathname;
 const artifactsTool = new URL("./operator-artifacts.mjs", import.meta.url).pathname;
 const digest = (character) => character.repeat(64);
-const timestamp = (milliseconds) => new Date(Math.floor(milliseconds / 1000) * 1000).toISOString().replace(".000Z", "Z");
+const sha256 = (value) => `sha256:${createHash("sha256").update(value).digest("hex")}`;
 const validPredicates = JSON.stringify([{
   kind: "brokered_count",
   predicate_id: "durable-budget-and-dispatch",
@@ -19,13 +19,12 @@ const validPredicates = JSON.stringify([{
 }]);
 
 function baseArguments(directory, overrides = {}) {
-  const now = Date.now();
   const values = {
     "--org-id": "org-disposable",
     "--deployment-id": "deployment-disposable-1",
     "--prefix": "lattice-c5-test123",
-    "--not-before": timestamp(now - 60_000),
-    "--expires-at": timestamp(now + 86_400_000),
+    "--not-before": "2020-01-01T00:00:00Z",
+    "--expires-at": "2099-01-01T00:00:00Z",
     "--spend-limit-usd": "5.00",
     "--rate-limit-per-minute": "12",
     "--required-assurance-predicates": validPredicates,
@@ -62,7 +61,7 @@ test("generator derives, signs, and passes JS plus Rust bundle verification", as
   const config = JSON.parse(await readFile(configPath, "utf8"));
   assert.equal(config.artifacts.historical_inventory[0].value.items.length, 0);
   const contracts = config.artifacts.deployment_contract_set[0].value.contracts;
-  assert.deepEqual(contracts.map(({ contract_id }) => contract_id).sort(), [
+  assert.deepEqual(contracts.map(({ contract_id }) => contract_id), [
     "connector.google.gmail.send_message@1",
     "connector.google.sheets.append_row@1",
     "connector.google.sheets.create_spreadsheet@1",
@@ -130,6 +129,44 @@ test("generator derives, signs, and passes JS plus Rust bundle verification", as
   const mismatched = run(artifactsTool, ["build", "--config", configPath, "--key-file", keyPath, "--output", join(directory, "mismatch.json")]);
   assert.notEqual(mismatched.status, 0);
   assert.match(mismatched.stderr, /contract_set_hash mismatch/);
+});
+
+test("identical logical inputs produce byte-identical inputs and signed bundles", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "operator-determinism-"));
+  const configPath = join(directory, "operator-artifact-input.json");
+  const bundlePath = join(directory, "operator-artifact-bundle.json");
+  const keyPath = join(directory, "operator.pem");
+  const generatedKey = generateKeyPairSync("ed25519");
+  await writeFile(keyPath, generatedKey.privateKey.export({ format: "pem", type: "pkcs8" }), { mode: 0o600 });
+  await chmod(keyPath, 0o600);
+  const args = baseArguments(directory);
+
+  const firstGeneration = run(generator, args);
+  assert.equal(firstGeneration.status, 0, firstGeneration.stderr);
+  const firstInput = await readFile(configPath);
+  const firstBuild = run(artifactsTool, ["build", "--config", configPath, "--key-file", keyPath, "--output", bundlePath]);
+  assert.equal(firstBuild.status, 0, firstBuild.stderr);
+  const firstBundleBytes = await readFile(bundlePath);
+  const firstBundle = JSON.parse(firstBundleBytes);
+
+  const secondGeneration = run(generator, args);
+  assert.equal(secondGeneration.status, 0, secondGeneration.stderr);
+  const secondInput = await readFile(configPath);
+  const secondBuild = run(artifactsTool, ["build", "--config", configPath, "--key-file", keyPath, "--output", bundlePath]);
+  assert.equal(secondBuild.status, 0, secondBuild.stderr);
+  const secondBundleBytes = await readFile(bundlePath);
+  const secondBundle = JSON.parse(secondBundleBytes);
+
+  assert.deepEqual(secondInput, firstInput, "generated input bytes changed");
+  assert.deepEqual(secondBundleBytes, firstBundleBytes, "signed bundle bytes changed");
+  assert.equal(secondBundle.artifacts.deployment_contract_set[0].hash,
+    firstBundle.artifacts.deployment_contract_set[0].hash,
+    "contract_set_hash changed");
+  assert.equal(secondBundle.artifacts.deployment_standing_authority[0].hash,
+    firstBundle.artifacts.deployment_standing_authority[0].hash,
+    "standing_authority_hash changed");
+  assert.equal(sha256(secondBundleBytes), sha256(firstBundleBytes), "bundle hash changed");
+  assert.equal(JSON.parse(secondBuild.stdout).bundle_hash, sha256(secondBundleBytes));
 });
 
 test("rejects required kernel controls the broker does not implement", () => {

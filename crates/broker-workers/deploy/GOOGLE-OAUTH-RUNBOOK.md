@@ -33,7 +33,7 @@ The token egress Worker calls the pinned Google `tokeninfo` endpoint, validates 
 
 ## 3. Generate and sign operator artifacts offline
 
-Never hand-write `operator-artifact-input.json`. Generate it from the checked-in Google broker descriptors and registry shapes, supplying every deployment identity, validity, budget, assurance, recipient, and deployed module digest explicitly. Digests are exact 64-character lowercase hexadecimal values without a `sha256:` prefix. The assurance argument is exact JSON and must be non-empty, unique, and JCS-lexically sorted. This is the exact generator command shape an operator runs:
+Never hand-write `operator-artifact-input.json`. Generate it from the checked-in Google broker descriptors and registry shapes, supplying every deployment identity, validity, budget, assurance, recipient, and deployed module digest explicitly. Digests are exact 64-character lowercase hexadecimal values without a `sha256:` prefix. The assurance argument is exact JSON and must be non-empty, unique, and JCS-lexically sorted. `NOT_BEFORE` and `EXPIRES_AT` are stable inputs for one authority generation: record and reuse their exact values whenever regenerating the bundle for a broker or provider code change. Do not recompute them from the regeneration wall clock. Both timestamps must still describe a currently usable, strictly increasing window; changing either value is an authority renewal and intentionally changes the standing-authority and registry-decision hashes. This is the exact generator command shape an operator runs:
 
 ```bash
 node deploy/scripts/operator-input.mjs \

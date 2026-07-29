@@ -21,10 +21,16 @@ const REQUIRED = [
   "registry_decisions", "historical_inventory", "historical_key_evidence",
 ];
 
+function compareText(left, right) {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
 function canonical(value) {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   if (value && typeof value === "object") {
-    return `{${Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, child]) => `${JSON.stringify(key)}:${canonical(child)}`).join(",")}}`;
+    return `{${Object.entries(value).sort(([left], [right]) => compareText(left, right)).map(([key, child]) => `${JSON.stringify(key)}:${canonical(child)}`).join(",")}}`;
   }
   return JSON.stringify(value);
 }
@@ -180,7 +186,7 @@ function signDerivedArtifacts(config, key, keyId) {
     value.class_payload.descriptor_hash = sha(canonical(descriptor));
     signDefinition(value);
   }
-  signedDefinitionEntries.sort((left, right) => left.canonical_jcs.localeCompare(right.canonical_jcs));
+  signedDefinitionEntries.sort((left, right) => compareText(left.canonical_jcs, right.canonical_jcs));
 
   const decisions = config.artifacts?.registry_decisions;
   if (!Array.isArray(decisions) || decisions.length !== definitions.length) throw new Error("registry decision count mismatch");
@@ -190,7 +196,7 @@ function signDerivedArtifacts(config, key, keyId) {
     if (value.authority_key_id !== keyId || value.definition_hash !== expectedPrehashes[value.entry_ref] || !finalDefinitionHashes.has(value.entry_ref)) throw new Error(`registry decision definition_hash mismatch: ${value.entry_ref ?? "unknown"}`);
     value.definition_hash = finalDefinitionHashes.get(value.entry_ref);
     return entry("RegistryDecision", signArtifact(value, "RegistryDecision", key, keyId));
-  }).sort((left, right) => left.canonical_jcs.localeCompare(right.canonical_jcs));
+  }).sort((left, right) => compareText(left.canonical_jcs, right.canonical_jcs));
 
   const inventoryValue = single(config, "historical_inventory", "LegacyAdmissionInventory");
   if (inventoryValue.key_id !== keyId || !Array.isArray(inventoryValue.items) || inventoryValue.items.length !== 0 || inventoryValue.expires_at !== inventoryValue.created_at) throw new Error("legacy V1 inventory must be empty and non-executable");
