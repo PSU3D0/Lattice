@@ -122,7 +122,7 @@ fn zeroize_json(value: &mut Value) {
 pub(crate) fn validate(schema_name: &str, value: &Value) -> Result<(), BrokerError> {
     let maximum = if matches!(
         schema_name,
-        "ExecutionGrant" | "NodeLease" | "InvocationReceipt"
+        "ExecutionGrant" | "NodeLease" | "InvocationReceipt" | "LS1InvocationReceipt"
     ) {
         64 * 1024
     } else {

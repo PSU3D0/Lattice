@@ -2,21 +2,28 @@ mod model;
 
 macro_rules! public_type {
     ($name:ident, $tag:ident, $schema:literal) => {
+        public_type!($name, $tag, $schema, 1024 * 1024);
+    };
+    ($name:ident, $tag:ident, $schema:literal, $max:expr) => {
         pub enum $tag {}
         impl crate::credential::model::ModelTag for $tag {
             const SCHEMA: &'static str = $schema;
+            const MAX_BYTES: usize = $max;
         }
         pub type $name = crate::credential::model::PublicModel<$tag>;
     };
 }
+pub mod admission;
 pub mod commitment;
 pub mod connection;
 pub mod grant;
 pub mod legacy;
+pub mod lifecycle;
 pub mod policy;
 mod private_codec;
 pub mod profile;
 pub mod receipt;
+pub mod receipt_keys;
 pub mod registry;
 pub mod rotation;
 pub mod signing;
@@ -91,5 +98,7 @@ public_type!(
     "CredentialResponsePolicy"
 );
 
+#[cfg(test)]
+mod lifecycle_tests;
 #[cfg(test)]
 mod tests;

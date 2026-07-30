@@ -14,10 +14,10 @@ fn vectors() -> Value {
 }
 
 #[test]
-fn all_105_claimed_union_fixtures_validate_at_their_exact_schema_site() {
+fn all_141_claimed_union_fixtures_validate_at_their_exact_schema_site() {
     let vectors = vectors();
     let fixtures = vectors["union_fixtures"].as_array().unwrap();
-    assert_eq!(fixtures.len(), 105);
+    assert_eq!(fixtures.len(), 141);
     for fixture in fixtures {
         let pointer = fixture["schema_pointer"].as_str().unwrap();
         let reference = if pointer == "/" {

@@ -20,3 +20,30 @@ public_type!(
     InvocationReceiptTag,
     "InvocationReceipt"
 );
+
+pub(crate) fn verify_lifecycle_terminal_consistency(
+    receipt: &serde_json::Value,
+) -> Result<(), crate::BrokerError> {
+    let terminal = receipt
+        .get("terminal_state")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(crate::BrokerError::Brk109)?;
+    let observation = receipt
+        .get("provider_dispatch_observation")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(crate::BrokerError::Brk109)?;
+    match terminal {
+        "terminal_success" | "terminal_failure" if observation == "provider_response_observed" => {
+            Ok(())
+        }
+        "terminal_ambiguous"
+            if matches!(
+                observation,
+                "credential_exported" | "remote_operation_started" | "provider_response_observed"
+            ) =>
+        {
+            Ok(())
+        }
+        _ => Err(crate::BrokerError::Brk109),
+    }
+}

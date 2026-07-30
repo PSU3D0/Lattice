@@ -6,7 +6,154 @@ use crate::{
     signing::{BrokerSigner, BrokerVerifyingKey},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
+
+pub const AUTHORITY_MODEL_REVISION: &str = "lifecycle-separated-1";
+const LS1_PREFIX: &str = "lattice.credential-plane.0.2.lifecycle-separated-1.";
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LifecycleSignature {
+    algorithm: LifecycleAlgorithm,
+    key_id: String,
+    value: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+enum LifecycleAlgorithm {
+    Ed25519,
+}
+
+pub(crate) fn lifecycle_domain_for_schema(schema: &str) -> Option<&'static str> {
+    Some(match schema {
+        "LS1AuthorityModelCutover" => concat!(
+            "lattice.credential-plane.0.2.lifecycle-separated-1.",
+            "authority-model-cutover"
+        ),
+        "LS1AuthorizationObservation" => concat!(
+            "lattice.credential-plane.0.2.lifecycle-separated-1.",
+            "authorization-observation"
+        ),
+        "LS1ProviderGrantVersion" => concat!(
+            "lattice.credential-plane.0.2.lifecycle-separated-1.",
+            "provider-grant-version"
+        ),
+        "LS1ProviderGrantAdoptionRecord" => concat!(
+            "lattice.credential-plane.0.2.lifecycle-separated-1.",
+            "provider-grant-adoption"
+        ),
+        "LS1ConnectionAliasRecord" => concat!(
+            "lattice.credential-plane.0.2.lifecycle-separated-1.",
+            "connection-alias-record"
+        ),
+        "LS1StandingAuthority" => concat!(
+            "lattice.credential-plane.0.2.lifecycle-separated-1.",
+            "standing-authority"
+        ),
+        "LS1ContractSet" => concat!(
+            "lattice.credential-plane.0.2.lifecycle-separated-1.",
+            "contract-set"
+        ),
+        "LS1PolicyInstance" => concat!(
+            "lattice.credential-plane.0.2.lifecycle-separated-1.",
+            "policy-instance"
+        ),
+        "LS1RegistryDefinition" => concat!(
+            "lattice.credential-plane.0.2.lifecycle-separated-1.",
+            "registry-definition"
+        ),
+        "LS1RegistryDecision" => concat!(
+            "lattice.credential-plane.0.2.lifecycle-separated-1.",
+            "registry-decision"
+        ),
+        "LS1RegistryDecisionVector" => concat!(
+            "lattice.credential-plane.0.2.lifecycle-separated-1.",
+            "registry-decision-vector"
+        ),
+        "LS1CeilingAmendment" => concat!(
+            "lattice.credential-plane.0.2.lifecycle-separated-1.",
+            "ceiling-amendment"
+        ),
+        "LS1CorrectedBindingAttestation" => concat!(
+            "lattice.credential-plane.0.2.lifecycle-separated-1.",
+            "binding-attestation"
+        ),
+        "LS1DispatchAdmission" => concat!(
+            "lattice.credential-plane.0.2.lifecycle-separated-1.",
+            "dispatch-admission"
+        ),
+        "LS1InvocationReceipt" => concat!(
+            "lattice.credential-plane.0.2.lifecycle-separated-1.",
+            "invocation-receipt"
+        ),
+        "LS1LegacyAttemptInventory" => concat!(
+            "lattice.credential-plane.0.2.lifecycle-separated-1.",
+            "legacy-attempt-inventory"
+        ),
+        "LS1ReceiptVerificationKeyset" => concat!(
+            "lattice.credential-plane.0.2.lifecycle-separated-1.",
+            "receipt-verification-keyset"
+        ),
+        "LS1ReceiptKeyCompromiseRecord" => concat!(
+            "lattice.credential-plane.0.2.lifecycle-separated-1.",
+            "receipt-key-compromise"
+        ),
+        _ => return None,
+    })
+}
+
+pub(crate) fn verify_lifecycle_value(
+    schema: &str,
+    value: &serde_json::Value,
+    key: &BrokerVerifyingKey,
+) -> Result<(), BrokerError> {
+    super::model::validate(schema, value)?;
+    let domain = lifecycle_domain_for_schema(schema).ok_or(BrokerError::Brk004)?;
+    if !domain.starts_with(LS1_PREFIX)
+        || value.get("schema_version").and_then(|item| item.as_str()) != Some("0.2")
+        || value
+            .get("authority_model_revision")
+            .and_then(|item| item.as_str())
+            != Some(AUTHORITY_MODEL_REVISION)
+        || value.get("artifact_type").and_then(|item| item.as_str()) != schema.strip_prefix("LS1")
+    {
+        return Err(BrokerError::Brk004);
+    }
+    let signature: LifecycleSignature =
+        serde_json::from_value(value.get("signature").cloned().ok_or(BrokerError::Brk004)?)
+            .map_err(|_| BrokerError::Brk004)?;
+    if signature.algorithm != LifecycleAlgorithm::Ed25519
+        || value.get("key_id").and_then(|item| item.as_str()) != Some(signature.key_id.as_str())
+    {
+        return Err(BrokerError::Brk004);
+    }
+    let envelope = SignatureEnvelope {
+        alg: crate::artifacts::SignatureAlg::Ed25519,
+        key_id: signature.key_id,
+        value: signature.value,
+    };
+    let canonical = canonical::from_serde(value, 1024 * 1024)?;
+    key.verify_json(domain, canonical.as_bytes(), &envelope)
+}
+
+#[cfg(test)]
+pub(crate) fn verify_lifecycle_value_in_domain(
+    value: &serde_json::Value,
+    domain: &str,
+    key: &BrokerVerifyingKey,
+) -> Result<(), BrokerError> {
+    let signature: LifecycleSignature =
+        serde_json::from_value(value.get("signature").cloned().ok_or(BrokerError::Brk004)?)
+            .map_err(|_| BrokerError::Brk004)?;
+    let envelope = SignatureEnvelope {
+        alg: crate::artifacts::SignatureAlg::Ed25519,
+        key_id: signature.key_id,
+        value: signature.value,
+    };
+    let canonical = canonical::from_serde(value, 1024 * 1024)?;
+    key.verify_json(domain, canonical.as_bytes(), &envelope)
+}
 
 public_type!(RemoteCustodyEnvelopeV2, RemoteEnvelopeTag, "RemoteEnvelope");
 
