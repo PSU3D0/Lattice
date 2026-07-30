@@ -1280,11 +1280,9 @@ verifier fails on a missing, duplicate, extra, multi-matching, or invalid branch
 all vector fields without a third-party Python package; OpenSSL is required for
 Ed25519.
 
-Every object is closed. `x-lattice-sorted` and `x-lattice-sorted-by` annotations
-are mandatory semantic validation after JSON Schema validation and before JCS.
-Arrays marked `x-lattice-sorted` are unique and ascending by their canonical JCS
-bytes; arrays marked `x-lattice-sorted-by` are unique and ascending by the named
-stable identity field. Hash equality/recomputation,
+Every object is closed. `x-lattice-sorted` annotations are mandatory semantic
+validation after JSON Schema validation and before JCS; arrays so marked are
+unique and ascending by their canonical JCS bytes. Hash equality/recomputation,
 class/payload equality, scheme/config one-to-one mapping, time ordering,
 critical pointer resolution, signature/domain verification, status transition,
 dispatch-attempt/outcome/generation conditions, and monotonic authority checks

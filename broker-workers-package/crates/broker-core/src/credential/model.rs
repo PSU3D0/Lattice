@@ -192,19 +192,7 @@ fn walk_annotations(value: &Value, schema: &Value, defs: &Value) -> Result<(), B
         }
     }
     if let (Some(items), Some(item_schema)) = (value.as_array(), schema.get("items")) {
-        if let Some(field) = schema.get("x-lattice-sorted-by").and_then(Value::as_str) {
-            let mut previous: Option<&str> = None;
-            for item in items {
-                let current = item
-                    .get(field)
-                    .and_then(Value::as_str)
-                    .ok_or(BrokerError::Brk004)?;
-                if previous.is_some_and(|old| old >= current) {
-                    return Err(BrokerError::Brk004);
-                }
-                previous = Some(current);
-            }
-        } else if schema.get("x-lattice-sorted").is_some() {
+        if schema.get("x-lattice-sorted").is_some() {
             let mut previous: Option<Vec<u8>> = None;
             for item in items {
                 let bytes =

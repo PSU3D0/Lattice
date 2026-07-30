@@ -62,9 +62,9 @@ test("generator derives, signs, and passes JS plus Rust bundle verification", as
   assert.equal(config.artifacts.historical_inventory[0].value.items.length, 0);
   const contracts = config.artifacts.deployment_contract_set[0].value.contracts;
   assert.deepEqual(contracts.map(({ contract_id }) => contract_id), [
-    "connector.google.gmail.send_message@1",
-    "connector.google.sheets.append_row@1",
     "connector.google.sheets.create_spreadsheet@1",
+    "connector.google.sheets.append_row@1",
+    "connector.google.gmail.send_message@1",
   ]);
   // Each planner/projector must support EXACTLY its own operation. Granting a
   // family-wide set let the append_row planner claim create_spreadsheet.
@@ -131,7 +131,7 @@ test("generator derives, signs, and passes JS plus Rust bundle verification", as
   assert.match(mismatched.stderr, /contract_set_hash mismatch/);
 });
 
-test("identical logical inputs produce byte-identical inputs and signed bundles", async () => {
+test("identical explicit logical inputs and the same signing key produce byte-identical inputs and signed bundles", async () => {
   const directory = await mkdtemp(join(tmpdir(), "operator-determinism-"));
   const configPath = join(directory, "operator-artifact-input.json");
   const bundlePath = join(directory, "operator-artifact-bundle.json");

@@ -270,7 +270,7 @@ export async function generateInput(args, { now = Date.now() } = {}) {
     org_id: args.get("--org-id"),
     deployment_id: args.get("--deployment-id"),
     connector_ref: "connector.google.workspace@1",
-    contracts: generatedDescriptors.map(contractEntry).sort((left, right) => compareText(left.contract_id, right.contract_id)),
+    contracts: generatedDescriptors.map(contractEntry).sort((left, right) => compareText(canonical(left), canonical(right))),
     issuer: `${prefix}.operator`,
     key_id: args.get("--key-id"),
   };
