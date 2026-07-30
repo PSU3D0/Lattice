@@ -13,6 +13,15 @@ const GENERIC_ACTIVATION_RECIPIENT_PUBLIC_KEY_B64U = (GENERIC_ACTIVATION_KEYS.pu
 const OPERATOR_BUNDLE_KEYS=generateKeyPairSync("ed25519");
 const OPERATOR_BUNDLE_KEY_ID="operator-bundle-fixture";
 const OPERATOR_BUNDLE_PUBLIC_KEY_B64U=(OPERATOR_BUNDLE_KEYS.publicKey.export({format:"jwk"}) as JsonWebKey).x!;
+const BINDING_SIGNING_SEED = "4".repeat(64);
+const BINDING_SIGNING_KEY = createPrivateKey({
+  key: Buffer.concat([
+    Buffer.from("302e020100300506032b657004220420", "hex"),
+    Buffer.from(BINDING_SIGNING_SEED, "hex"),
+  ]),
+  format: "der",
+  type: "pkcs8",
+});
 const PROTOCOL_VECTORS=JSON.parse(await readFile(new URL("../../../../impl-docs/spec/credential-plane-protocol-vectors.json",import.meta.url),"utf8"));
 const OPERATOR_ARTIFACT_BUNDLE_JCS=makeOperatorBundleFixture({protocolVectors:PROTOCOL_VECTORS,privateKey:OPERATOR_BUNDLE_KEYS.privateKey,keyId:OPERATOR_BUNDLE_KEY_ID,publicKeyB64u:OPERATOR_BUNDLE_PUBLIC_KEY_B64U,activationRecipientKeyId:"private-channel-fixture",activationRecipientPublicKeyB64u:GENERIC_ACTIVATION_RECIPIENT_PUBLIC_KEY_B64U});
 const OPERATOR_ARTIFACT_BUNDLE_SHA256=`sha256:${createHash("sha256").update(OPERATOR_ARTIFACT_BUNDLE_JCS).digest("hex")}`;
@@ -38,7 +47,7 @@ const mf = new Miniflare({
         GOOGLE_EGRESS_SERVICE_AUTH: "local-egress-service-auth-not-production-123456",
         RECEIPT_SIGNING_SEED: "1111111111111111111111111111111111111111111111111111111111111111",
         COMMITMENT_KEY: "2222222222222222222222222222222222222222222222222222222222222222",
-        BINDING_SIGNING_SEED: "4444444444444444444444444444444444444444444444444444444444444444",
+        BINDING_SIGNING_SEED,
         BROKER_WORKER_WASM_SHA256: `sha256:${"e".repeat(64)}`, AUTH_DRIVER_WORKER_SHA256: `sha256:${"d".repeat(64)}`, GOOGLE_TOKEN_WORKER_SHA256: `sha256:${"c".repeat(64)}`, GOOGLE_PROVIDER_WORKER_SHA256: `sha256:${"b".repeat(64)}`, OPERATOR_ARTIFACT_BUNDLE_SHA256, OPERATOR_BUNDLE_KEY_ID, OPERATOR_BUNDLE_PUBLIC_KEY_B64U,
         CUSTODY_ROOT_KEY: "3333333333333333333333333333333333333333333333333333333333333333",
         LOCAL_TEST_MODE: "true",
@@ -97,7 +106,7 @@ const productionMf = new Miniflare({
       INVOKE_SERVICE_AUTH: "production-route-test-service-auth",
       GOOGLE_EGRESS_SERVICE_AUTH: "production-egress-service-auth-value-123456",
       RECEIPT_SIGNING_SEED: "1".repeat(64), COMMITMENT_KEY: "2".repeat(64),
-      BINDING_SIGNING_SEED: "4".repeat(64), BROKER_WORKER_WASM_SHA256: `sha256:${"e".repeat(64)}`, AUTH_DRIVER_WORKER_SHA256: `sha256:${"d".repeat(64)}`, GOOGLE_TOKEN_WORKER_SHA256: `sha256:${"c".repeat(64)}`, GOOGLE_PROVIDER_WORKER_SHA256: `sha256:${"b".repeat(64)}`, OPERATOR_ARTIFACT_BUNDLE_SHA256, OPERATOR_BUNDLE_KEY_ID, OPERATOR_BUNDLE_PUBLIC_KEY_B64U, CUSTODY_ROOT_KEY: "3".repeat(64),
+      BINDING_SIGNING_SEED, BROKER_WORKER_WASM_SHA256: `sha256:${"e".repeat(64)}`, AUTH_DRIVER_WORKER_SHA256: `sha256:${"d".repeat(64)}`, GOOGLE_TOKEN_WORKER_SHA256: `sha256:${"c".repeat(64)}`, GOOGLE_PROVIDER_WORKER_SHA256: `sha256:${"b".repeat(64)}`, OPERATOR_ARTIFACT_BUNDLE_SHA256, OPERATOR_BUNDLE_KEY_ID, OPERATOR_BUNDLE_PUBLIC_KEY_B64U, CUSTODY_ROOT_KEY: "3".repeat(64),
       PUBLIC_CALLBACK_BASE: "https://production.example",
       OAUTH_REDIRECT_URI: "https://production.example/v0.2/credential-callback",
       DEPLOYMENT_BOOTSTRAP_AUTH: "production-route-test-bootstrap",
@@ -290,6 +299,23 @@ function canonicalJson(value: unknown): string {
     return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
   }
   return JSON.stringify(value);
+}
+
+function signBindingAttestation(binding: Record<string, unknown>) {
+  const unsigned = { ...binding };
+  delete unsigned.signature;
+  const preimage = Buffer.concat([
+    Buffer.from("lattice.binding-attestation.v0.2"),
+    Buffer.from([0]),
+    Buffer.from(canonicalJson(unsigned)),
+  ]);
+  return {
+    ...binding,
+    signature: {
+      ...(binding.signature as Record<string, unknown>),
+      value: sign(null, preimage, BINDING_SIGNING_KEY).toString("base64url"),
+    },
+  };
 }
 
 function hpkeExtract(salt: Buffer, ikm: Buffer) { return createHmac("sha256", salt).update(ikm).digest(); }
@@ -1290,7 +1316,59 @@ function signedGenericProfile(descriptor: any) {
   return { ...unsigned, signature_b64u: sign(null, Buffer.from(canonicalJson(unsigned)), GENERIC_PROFILE_KEYS.privateKey).toString("base64url") };
 }
 
+const pa02BindingConflictIt = process.env.PA02_RUN_BINDING_CONFLICT === "1" ? it : it.skip;
+
 describe("production V2 broker routes", () => {
+  pa02BindingConflictIt("rejects a conflicting binding revision without mutating its old logical pointer", async () => {
+    const worker = await productionMf.getWorker("broker-production");
+    const auth = await sessionOn(worker, "production-route-test-pepper");
+    expect(auth.response.status).toBe(201);
+    const intent = await jsonRequest(worker, "/v0.2/connection-intents", {
+      connector_ref: "connector.google.workspace@1",
+      auth_profile_ref: "auth.google.workspace.oauth2@1",
+      execution_lane: "semantic_broker", custody: "hosted_broker",
+    }, sessionHeaders(auth.body.session_ref));
+    expect(intent.status).toBe(201);
+    const authorization = new URL((await intent.json() as any).next_action.url);
+    const callback = new URL("http://broker/v0.2/credential-callback");
+    callback.searchParams.set("state", authorization.searchParams.get("state")!);
+    callback.searchParams.set("code", `4/pa02-conflict-${randomBytes(8).toString("hex")}`);
+    const activated = await worker.fetch(callback);
+    expect(activated.status, await activated.clone().text()).toBe(200);
+    const connection = await activated.json() as any;
+    const authority = v2FlowAuthorityFixture();
+    const suffix = randomBytes(8).toString("hex");
+    const bindingRequest = {
+      connection_ref: connection.connection_ref, deployment_id: "deployment-fixture",
+      bundle_id: `bundle-pa02-conflict-${suffix}`, flow_ir_hash: authority.flowIrHash,
+      binding_lock_hash: `sha256:${createHash("sha256").update(suffix).digest("hex")}`,
+      flow_id: "flow-v2", flow_ir_json: authority.flowIrJson,
+      authority_manifest_json: authority.authorityManifestJson,
+      contracts: [authority.gmail.contract, authority.sheets.contract],
+    };
+    const installedResponse = await jsonRequest(worker, "/v0.2/bindings", bindingRequest, sessionHeaders(auth.body.session_ref));
+    expect(installedResponse.status, await installedResponse.clone().text()).toBe(201);
+    const installed = await installedResponse.json() as any;
+    const db = await productionMf.getD1Database("BROKER_DB", "broker-production");
+    const oldBindingRef = `binding_v2_old_${suffix}`;
+    await db.prepare("INSERT INTO binding_revisions_v2(org_id,binding_ref,logical_binding_ref,revision_hash,binding_hash,canonical_binding_json,authority_view_hash,material_generation,state,created_at) SELECT org_id,?,logical_binding_ref,?,?,canonical_binding_json,authority_view_hash,material_generation,'active',created_at FROM binding_revisions_v2 WHERE org_id=? AND binding_ref=?")
+      .bind(oldBindingRef, `revision-old-${suffix}`, `sha256:${createHash("sha256").update(`old-binding-${suffix}`).digest("hex")}`, "org-fixture", installed.binding_ref).run();
+    await db.prepare("UPDATE logical_bindings_v2 SET current_binding_ref=? WHERE org_id=? AND logical_binding_ref=?")
+      .bind(oldBindingRef, "org-fixture", installed.logical_binding_ref).run();
+    await db.prepare("UPDATE v2_host_records SET canonical_artifact_json=? WHERE org_id=? AND artifact_ref=?")
+      .bind(canonicalJson({ conflicting: true }), "org-fixture", installed.binding_ref).run();
+    const before = await db.prepare("SELECT l.current_binding_ref,(SELECT state FROM binding_revisions_v2 WHERE org_id=l.org_id AND binding_ref=?) AS old_state,(SELECT state FROM binding_revisions_v2 WHERE org_id=l.org_id AND binding_ref=?) AS target_state FROM logical_bindings_v2 l WHERE l.org_id=? AND l.logical_binding_ref=?")
+      .bind(oldBindingRef, installed.binding_ref, "org-fixture", installed.logical_binding_ref).first<any>();
+    expect(before).toEqual({ current_binding_ref: oldBindingRef, old_state: "active", target_state: "active" });
+
+    const conflicted = await jsonRequest(worker, "/v0.2/bindings", bindingRequest, sessionHeaders(auth.body.session_ref));
+    expect(conflicted.status).toBe(409);
+    expect((await conflicted.json() as any).error.code).toBe("BRK203");
+    const after = await db.prepare("SELECT l.current_binding_ref,(SELECT state FROM binding_revisions_v2 WHERE org_id=l.org_id AND binding_ref=?) AS old_state,(SELECT state FROM binding_revisions_v2 WHERE org_id=l.org_id AND binding_ref=?) AS target_state FROM logical_bindings_v2 l WHERE l.org_id=? AND l.logical_binding_ref=?")
+      .bind(oldBindingRef, installed.binding_ref, "org-fixture", installed.logical_binding_ref).first<any>();
+    expect(after).toEqual(before);
+  }, 45_000);
+
   it("denies executable V1 and performs binding, leases, exact grants, two effects and redelivery", async () => {
     const worker = await productionMf.getWorker("broker-production");
     const auth = await sessionOn(worker, "production-route-test-pepper");
@@ -1329,11 +1407,18 @@ describe("production V2 broker routes", () => {
     for (const response of bindingBodies) {
       expect([200, 201], response.text).toContain(response.status);
     }
-    const installedRefs = new Set(bindingBodies.map(response => JSON.parse(response.text).binding_ref));
-    expect(installedRefs.size).toBe(1);
-    const binding = JSON.parse(bindingBodies[0].text);
+    const installedBindings = bindingBodies.map(response => JSON.parse(response.text));
+    expect(new Set(installedBindings.map(value => value.logical_binding_ref)).size).toBe(1);
+    expect(new Set(installedBindings.map(value => value.binding_ref)).size).toBe(1);
+    expect(new Set(installedBindings.map(value => value.binding_hash)).size).toBe(1);
+    expect(new Set(installedBindings.map(value => canonicalJson(value.binding))).size).toBe(1);
+    const binding = installedBindings[0];
     expect(binding.binding.schema_version).toBe("0.2");
     const productionDb = await productionMf.getD1Database("BROKER_DB", "broker-production");
+    const storedBinding = await productionDb.prepare("SELECT h.canonical_artifact_json,r.canonical_binding_json FROM v2_host_records h JOIN binding_revisions_v2 r ON r.org_id=h.org_id AND r.binding_ref=h.artifact_ref WHERE h.org_id=? AND h.artifact_ref=?")
+      .bind("org-fixture", binding.binding_ref).first<any>();
+    expect(storedBinding?.canonical_artifact_json).toBe(canonicalJson(binding.binding));
+    expect(storedBinding?.canonical_binding_json).toBe(canonicalJson(binding.binding));
     expect((await productionDb.prepare("SELECT COUNT(*) AS count FROM v2_host_records WHERE org_id=? AND connection_ref=? AND artifact_kind='binding'")
       .bind("org-fixture", connection.connection_ref).first<any>())?.count).toBe(1);
     const lifecycle = await productionDb.prepare("SELECT l.state AS logical_state,r.state AS revision_state FROM logical_bindings_v2 l JOIN binding_revisions_v2 r ON r.org_id=l.org_id AND r.logical_binding_ref=l.logical_binding_ref WHERE r.org_id=? AND r.binding_ref=?")
@@ -1346,7 +1431,21 @@ describe("production V2 broker routes", () => {
     const freshEvents = await productionDb.prepare("SELECT phase FROM credential_cutover_events_v2 WHERE org_id=? AND connection_ref=? ORDER BY event_sequence")
       .bind("org-fixture", connection.connection_ref).all<any>();
     expect(freshEvents.results.map((row: any) => row.phase)).toEqual(["registry_verified", "binding_verified", "fence_switched", "legacy_material_destroyed", "complete"]);
-    const expiredBinding = { ...binding.binding, expires_at: "2000-01-01T00:00:00Z" };
+    const tamperedSignatureBytes = Buffer.from(binding.binding.signature.value, "base64url");
+    tamperedSignatureBytes[0] ^= 1;
+    const tamperedSignatureBinding = {
+      ...binding.binding,
+      signature: {
+        ...binding.binding.signature,
+        value: tamperedSignatureBytes.toString("base64url"),
+      },
+    };
+    await productionDb.prepare("UPDATE v2_host_records SET canonical_artifact_json=? WHERE org_id=? AND artifact_ref=?")
+      .bind(canonicalJson(tamperedSignatureBinding), "org-fixture", binding.binding_ref).run();
+    const invalidSignatureReplay = await jsonRequest(worker, "/v0.2/bindings", bindingRequest, sessionHeaders(auth.body.session_ref));
+    expect(invalidSignatureReplay.status).toBe(409);
+    expect((await invalidSignatureReplay.json() as any).error.code).toBe("BRK203");
+    const expiredBinding = signBindingAttestation({ ...binding.binding, expires_at: "2000-01-01T00:00:00Z" });
     await productionDb.prepare("UPDATE v2_host_records SET canonical_artifact_json=? WHERE org_id=? AND artifact_ref=?")
       .bind(canonicalJson(expiredBinding), "org-fixture", binding.binding_ref).run();
     const staleReplay = await jsonRequest(worker, "/v0.2/bindings", bindingRequest, sessionHeaders(auth.body.session_ref));
@@ -1425,15 +1524,26 @@ describe("production V2 broker routes", () => {
       expect(result.receipt.schema_version).toBe("0.2");
       expect(result.receipt.dispatch_attempt).toBe(1);
       expect(result.receipt.claims.provider_dispatch_observed).toBe(true);
+      const terminal = await productionDb.prepare("SELECT canonical_receipt_json,response_projection_json FROM v2_invocation_outbox WHERE org_id=? AND grant_ref=?")
+        .bind("org-fixture", grants[node.alias].grant_ref).first<any>();
+      expect(terminal?.canonical_receipt_json).toBe(canonicalJson(result.receipt));
       const receiptLookup = await authenticatedFetch(worker, `/v0.2/receipts/${result.receipt_ref}`, auth.body.session_ref);
       expect(receiptLookup.status).toBe(200);
-      expect((await receiptLookup.json() as any).receipt.schema_version).toBe("0.2");
+      const receiptLookupBody = await receiptLookup.json() as any;
+      expect(canonicalJson(receiptLookupBody.receipt)).toBe(terminal?.canonical_receipt_json);
       const replay = await jsonRequest(worker, "/internal/v0.2/invoke", {
         session_ref: auth.body.session_ref, grant_ref: grants[node.alias].grant_ref,
         input: grants[node.alias].input,
       }, { ...sessionHeaders(auth.body.session_ref), "x-lattice-service-auth": "production-route-test-service-auth" });
       expect(replay.status).toBe(200);
-      expect((await replay.json() as any).redelivery).toBe(true);
+      const replayBody = await replay.json() as any;
+      expect(replayBody.redelivery).toBe(true);
+      expect(replayBody.receipt_ref).toBe(result.receipt_ref);
+      expect(canonicalJson(replayBody.receipt)).toBe(terminal?.canonical_receipt_json);
+      expect(canonicalJson(replayBody.response)).toBe(canonicalJson(result.response));
+      const terminalAfterReplay = await productionDb.prepare("SELECT canonical_receipt_json,response_projection_json FROM v2_invocation_outbox WHERE org_id=? AND grant_ref=?")
+        .bind("org-fixture", grants[node.alias].grant_ref).first<any>();
+      expect(terminalAfterReplay).toEqual(terminal);
     }
     const altered = await jsonRequest(worker, "/internal/v0.2/invoke", {
       session_ref: auth.body.session_ref, grant_ref: grants.sheets.grant_ref,
