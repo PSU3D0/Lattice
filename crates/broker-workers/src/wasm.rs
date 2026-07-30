@@ -31,7 +31,20 @@ use subtle::ConstantTimeEq;
 use wasm_bindgen::{JsValue, closure::Closure, prelude::wasm_bindgen};
 use worker::{Context, Env, Method, Request, RequestInit, Response, State, durable_object, event};
 
+mod v2_binding;
+mod v2_dispatch;
+mod v2_legacy_authority;
 mod v2_production;
+mod v2_provider_grant;
+mod v2_receipt;
+mod v2_types;
+
+use v2_binding::*;
+use v2_dispatch::*;
+use v2_legacy_authority::*;
+use v2_receipt::*;
+use v2_types::*;
+
 pub use v2_production::V2AuthorityDurableObject;
 
 const LEDGER_SNAPSHOT_KEY: &str = "broker:ledger:snapshot:v1";
