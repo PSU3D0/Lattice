@@ -1,7 +1,7 @@
-Status: Draft 0.2
+Status: Normative 0.2 with lifecycle-separated-1 correction
 Purpose: normative protocol / migration plan
 Owner: Runtime / Connectors / Security
-Last reviewed: 2026-07-21
+Last reviewed: 2026-07-30
 
 # Provider-Neutral Credential Plane Protocol (0.2)
 
@@ -19,6 +19,16 @@ and signed receipts--while replacing its OAuth/Google-shaped credential plane.
 OAuth is one registered profile, OAuth scopes are one authorization-claim
 vocabulary, and Google is one static registry entry. Runtime implementation is
 outside this packet.
+
+The accepted authority-lifecycle correction is normative in
+`credential-plane-lifecycle-separated-1.md`. It retains public protocol `0.2`
+but defines distinct `LS1<class>` schemas, requires critical
+`authority_model_revision: "lifecycle-separated-1"`, and freezes new
+class-specific domains. Pre-fix classes in this document retain their original
+meaning and domains for verification or quarantine only; they MUST NOT be
+reinterpreted, default-filled, or accepted as corrected dispatch authority.
+Where lifecycle-separated-1 conflicts with pre-fix admission or lifecycle
+semantics below, the focused correction governs corrected artifacts.
 
 ## 1. Scope, decisions, and relationship to `0.1`
 
@@ -1270,11 +1280,13 @@ The schema catalogue includes:
 - legacy commitments, inventory/decision, historical keys, and version fences.
 
 `impl-docs/spec/credential-plane-protocol-vectors.json` is the normative
-machine-readable vector set. It contains 17 complete signed artifacts and key,
-14 commitments with every input/intermediate/output byte, and one complete
-schema-valid fixture for every branch of every root, named, and nested `oneOf`
-site listed in `union_fixture_claims` (105 fixtures across 22 sites at C0). The
-claim list is exhaustive and MUST equal schema discovery: the
+machine-readable vector set. Its preserved pre-fix segment contains 17 complete
+signed artifacts, 14 commitments, and 105 union fixtures. The normative
+`lifecycle_separated_1` segment adds 18 corrected signed artifacts, nine
+length-delimited commitments, 59 negatives, seven historical receipt
+classifications, 18 corrected root fixtures, and 18 internal phase fixtures,
+for 141 union fixtures total.
+The claim list is exhaustive and MUST equal schema discovery: the
 verifier fails on a missing, duplicate, extra, multi-matching, or invalid branch.
 `impl-docs/spec/verify-credential-plane-vectors.py` MUST recompute and validate
 all vector fields without a third-party Python package; OpenSSL is required for
