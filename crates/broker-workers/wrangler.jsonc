@@ -28,6 +28,7 @@
     "AI_GATEWAY_SPEND_LIMIT_USD": "0",
     "AI_GATEWAY_RATE_LIMIT_PER_MINUTE": "0",
     "BROKER_WORKER_WASM_SHA256": "REPLACE_WITH_PACKAGED_PRODUCTION_WASM_SHA256",
+    "ADMISSION_AUTHORITY_KEY_ID": "REPLACE_WITH_ADMISSION_AUTHORITY_KEY_ID",
     "AUTH_DRIVER_WORKER_SHA256": "REPLACE_WITH_AUTH_DRIVER_SOURCE_SHA256",
     "GOOGLE_TOKEN_WORKER_SHA256": "REPLACE_WITH_GOOGLE_TOKEN_SOURCE_SHA256",
     "GOOGLE_PROVIDER_WORKER_SHA256": "REPLACE_WITH_GOOGLE_PROVIDER_SOURCE_SHA256",
@@ -67,6 +68,10 @@
       {
         "name": "V2_AUTHORITY_DO",
         "class_name": "V2AuthorityDurableObject"
+      },
+      {
+        "name": "ADMISSION_AUTHORITY_DO",
+        "class_name": "AdmissionAuthorityDurableObject"
       }
     ]
   },
@@ -77,6 +82,12 @@
         "ConnectionRefreshDurableObject",
         "CredentialStateDurableObject",
         "V2AuthorityDurableObject"
+      ]
+    },
+    {
+      "tag": "v2-admission-authority-lifecycle-separated-1",
+      "new_sqlite_classes": [
+        "AdmissionAuthorityDurableObject"
       ]
     }
   ],

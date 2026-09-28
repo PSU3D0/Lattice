@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod activation;
+pub mod admission_authority;
 pub mod composition;
 pub mod credential_state;
 pub mod cutover;
@@ -14,12 +15,16 @@ pub mod protocol;
 pub mod refresh;
 pub mod registry;
 
+#[cfg(test)]
+mod admission_authority_tests;
+
 #[cfg(target_arch = "wasm32")]
 mod wasm;
 
 #[cfg(target_arch = "wasm32")]
 pub use wasm::{
-    ConnectionRefreshDurableObject, CredentialStateDurableObject, V2AuthorityDurableObject,
+    AdmissionAuthorityDurableObject, ConnectionRefreshDurableObject, CredentialStateDurableObject,
+    V2AuthorityDurableObject,
 };
 
 #[cfg(all(target_arch = "wasm32", feature = "test-fixtures"))]
